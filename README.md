@@ -1,7 +1,5 @@
 # GRL-SNAM: Geometric Reinforcement Learning for Navigation and Mapping
 
-**Anonymous submission to ICLR 2026**
-
 This repository contains the implementation of **GRL-SNAM**, a geometric reinforcement learning framework for simultaneous navigation and mapping in unknown environments using Hamiltonian mechanics and differential policy optimization.
 
 ## Overview
