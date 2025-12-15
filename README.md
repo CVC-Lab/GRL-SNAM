@@ -293,8 +293,4 @@ python -m eval_coef_energy \
 
 ## Contact
 
-For questions or issues, please open a GitHub issue (anonymous communication for double-blind review).
-
----
-
-**Note**: This is an anonymous submission. Author information will be revealed upon acceptance.
+For questions or issues, please open a GitHub issue.
