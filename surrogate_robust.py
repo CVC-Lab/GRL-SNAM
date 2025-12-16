@@ -117,8 +117,9 @@ def integrate_surrogate_v2(o0: torch.Tensor, v0: torch.Tensor, goal: torch.Tenso
             dmin = torch.where(mask, d, torch.full_like(d, float('inf'))).min(dim=1).values
         min_clear = torch.minimum(min_clear, dmin)
         a = (F_bar + F_goal - gamma.unsqueeze(-1) * v) / float(mass)
-        o = o + active * dt.unsqueeze(-1) * v
-        v = v + active * dt.unsqueeze(-1) * a
+        v = v + active * dt.unsqueeze(-1) * a  # v_{n+1}
+        o = o + active * dt.unsqueeze(-1) * v  # uses v_{n+1}
+      
     return o, v, min_clear
 
 def multi_start_penalty(o0: torch.Tensor, v0: torch.Tensor, goal: torch.Tensor,
