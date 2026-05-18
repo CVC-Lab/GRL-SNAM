@@ -1,0 +1,74 @@
+[project]
+name = "grl-snam"
+version = "0.1.0"
+description = "GRL-SNAM: Geometric Reinforcement Learning for Simultaneous Navigation and Mapping"
+authors = [{ name = "GRL-SNAM authors" }]
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+keywords = ["reinforcement-learning", "navigation", "robotics", "hamiltonian", "geometry"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.1",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "imageio>=2.31",
+]
+
+[project.urls]
+Homepage = "https://github.com/CVC-Lab/GRL-SNAM"
+Repository = "https://github.com/CVC-Lab/GRL-SNAM"
+"Bug Tracker" = "https://github.com/CVC-Lab/GRL-SNAM/issues"
+
+[tool.poetry]
+packages = [
+    { include = "grl_snam" },
+    { include = "scripts" },
+    { include = "experiments" },
+    { include = "src" },
+    { include = "train_coef_energy.py" },
+    { include = "eval_coef_energy.py" },
+    { include = "surrogate_robust.py" },
+]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0"
+pytest-cov = ">=4.1"
+ruff = ">=0.4"
+
+[build-system]
+requires = ["poetry-core>=1.8"]
+build-backend = "poetry.core.masonry.api"
+
+# -----------------------------------------------------------------------------
+# Tooling
+# -----------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# Only lint the new packaging shim, tests, and src/. The legacy flat-layout
+# research modules (experiments/, scripts/, train_*.py, eval_*.py, etc.) are
+# kept out of CI lint to avoid churn on imported third-party / generated code.
+include = ["grl_snam/**/*.py", "tests/**/*.py"]
+extend-exclude = ["build", "dist", "__pycache__", ".venv", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = [
+    "E501",  # line length handled by formatter
+    "E741",  # ambiguous variable names tolerated in math-heavy research code
+]
