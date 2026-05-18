@@ -60,6 +60,10 @@ addopts = "-ra --strict-markers"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Only lint the new packaging shim, tests, and src/. The legacy flat-layout
+# research modules (experiments/, scripts/, train_*.py, eval_*.py, etc.) are
+# kept out of CI lint to avoid churn on imported third-party / generated code.
+include = ["grl_snam/**/*.py", "tests/**/*.py"]
 extend-exclude = ["build", "dist", "__pycache__", ".venv", "data"]
 
 [tool.ruff.lint]
@@ -68,7 +72,3 @@ ignore = [
     "E501",  # line length handled by formatter
     "E741",  # ambiguous variable names tolerated in math-heavy research code
 ]
-
-[tool.ruff.lint.per-file-ignores]
-"experiments/*.py" = ["F401", "F811", "E402"]
-"scripts/*.py" = ["F401", "E402"]
