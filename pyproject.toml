@@ -1,23 +1,34 @@
-[tool.poetry]
+[project]
 name = "grl-snam"
 version = "0.1.0"
 description = "GRL-SNAM: Geometric Reinforcement Learning for Simultaneous Navigation and Mapping"
-authors = ["GRL-SNAM authors"]
+authors = [{ name = "GRL-SNAM authors" }]
 license = "MIT"
 readme = "README.md"
-homepage = "https://github.com/jrigdon/GRL-SNAM"
-repository = "https://github.com/jrigdon/GRL-SNAM"
+requires-python = ">=3.10,<3.14"
 keywords = ["reinforcement-learning", "navigation", "robotics", "hamiltonian", "geometry"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+dependencies = [
+    "torch>=2.1",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "imageio>=2.31",
+]
+
+[project.urls]
+Homepage = "https://github.com/CVC-Lab/GRL-SNAM"
+Repository = "https://github.com/CVC-Lab/GRL-SNAM"
+"Bug Tracker" = "https://github.com/CVC-Lab/GRL-SNAM/issues"
+
+[tool.poetry]
 packages = [
     { include = "grl_snam" },
     { include = "scripts" },
@@ -28,20 +39,10 @@ packages = [
     { include = "surrogate_robust.py" },
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.10,<3.14"
-torch = ">=2.1"
-numpy = ">=1.24"
-matplotlib = ">=3.7"
-imageio = ">=2.31"
-
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0"
 pytest-cov = ">=4.1"
 ruff = ">=0.4"
-
-[tool.poetry.urls]
-"Bug Tracker" = "https://github.com/jrigdon/GRL-SNAM/issues"
 
 [build-system]
 requires = ["poetry-core>=1.8"]
