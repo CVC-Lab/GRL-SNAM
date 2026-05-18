@@ -1,0 +1,38 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Build artefacts
+build/
+dist/
+*.whl
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Training / experiment outputs
+runs/
+checkpoints/
+data/
+*.pt
+*.pth
+*.ckpt
+
+# Poetry
+poetry.lock.user

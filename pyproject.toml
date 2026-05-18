@@ -1,0 +1,73 @@
+[tool.poetry]
+name = "grl-snam"
+version = "0.1.0"
+description = "GRL-SNAM: Geometric Reinforcement Learning for Simultaneous Navigation and Mapping"
+authors = ["GRL-SNAM authors"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/jrigdon/GRL-SNAM"
+repository = "https://github.com/jrigdon/GRL-SNAM"
+keywords = ["reinforcement-learning", "navigation", "robotics", "hamiltonian", "geometry"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+packages = [
+    { include = "grl_snam" },
+    { include = "scripts" },
+    { include = "experiments" },
+    { include = "src" },
+    { include = "train_coef_energy.py" },
+    { include = "eval_coef_energy.py" },
+    { include = "surrogate_robust.py" },
+]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.14"
+torch = ">=2.1"
+numpy = ">=1.24"
+matplotlib = ">=3.7"
+imageio = ">=2.31"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0"
+pytest-cov = ">=4.1"
+ruff = ">=0.4"
+
+[tool.poetry.urls]
+"Bug Tracker" = "https://github.com/jrigdon/GRL-SNAM/issues"
+
+[build-system]
+requires = ["poetry-core>=1.8"]
+build-backend = "poetry.core.masonry.api"
+
+# -----------------------------------------------------------------------------
+# Tooling
+# -----------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["build", "dist", "__pycache__", ".venv", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = [
+    "E501",  # line length handled by formatter
+    "E741",  # ambiguous variable names tolerated in math-heavy research code
+]
+
+[tool.ruff.lint.per-file-ignores]
+"experiments/*.py" = ["F401", "F811", "E402"]
+"scripts/*.py" = ["F401", "E402"]
