@@ -20,38 +20,26 @@ GRL-SNAM addresses navigation in unknown environments by:
 
 ## Installation
 
-GRL-SNAM is a Poetry-managed, pip-installable Python package. The simplest install:
-
-```bash
-pip install grl-snam        # once published to PyPI
-```
-
-For local development:
-
-```bash
-git clone <repository-url>
-cd GRL-SNAM
-poetry install              # installs runtime + dev dependencies
-poetry run pytest           # run the smoke tests
-```
-
-To use GRL-SNAM as a dependency in a downstream project (e.g. the
-`grl_snam_dbg` extension), add it to your own ``pyproject.toml``:
-
-```toml
-[tool.poetry.dependencies]
-grl-snam = "^0.1"
-```
-
 ### Requirements
-- Python >= 3.10, < 3.14
-- PyTorch >= 2.1
-- NumPy, Matplotlib, imageio (installed automatically)
-
-### Manual setup (without Poetry)
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
+Python >= 3.8
+PyTorch >= 2.0
+NumPy
+imageio
+matplotlib
+```
+
+### Setup
+```bash
+# Clone the repository
+git clone <repository-url>
+cd grl-snam
+
+# Install dependencies
+pip install torch torchvision numpy imageio matplotlib
+
+# Optional: Install for video generation
+pip install imageio-ffmpeg
 ```
 
 ## Repository Structure
