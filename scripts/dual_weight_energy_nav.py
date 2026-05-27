@@ -68,6 +68,17 @@ class DualWeightConfig:
     plan_horizon: int = 6
     plan_goal_index: int = 3
     plan_radius_frac: float = 0.85
+    # Multi-candidate plans provide a general way to represent locally
+    # multi-modal maneuvers (reverse/forward, left/right, gate choices) without
+    # hard-coding scenario-specific losses.  Candidate selection uses generic
+    # geometric feasibility scores and the selected candidate becomes the local
+    # energy target.
+    plan_candidates: int = 1
+    plan_score_w_goal: float = 1.0
+    plan_score_w_clear: float = 4.0
+    plan_score_w_dyn: float = 0.05
+    plan_score_w_len: float = 0.02
+    plan_score_safe_margin: float = 0.05
 
     def to_dict(self) -> Dict[str, float | int | bool]:
         return asdict(self)
@@ -132,7 +143,7 @@ class DualWeightEnergyNet(nn.Module):
         self.plan_head = nn.Sequential(
             nn.Linear(c.ctx_channels + 8, 128), nn.SiLU(),
             nn.Linear(128, 128), nn.SiLU(),
-            nn.Linear(128, max(1, int(c.plan_horizon)) * 2),
+            nn.Linear(128, max(1, int(c.plan_candidates)) * max(1, int(c.plan_horizon)) * 2),
         )
 
         # Small residual energy.  The residual is deliberately bounded and scaled
@@ -229,22 +240,96 @@ class DualWeightEnergyNet(nn.Module):
         lam_next = lam + dlam + dlam_analytic
         return torch.clamp(lam_next, self.cfg.lambda_min, self.cfg.lambda_max)
 
-    def predict_plan(self, ctx: torch.Tensor, aux: torch.Tensor, hat_d_vec: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """Predict a local short-horizon motion plan from context.
+    def _score_plan_candidates(
+        self,
+        plan_seq_candidates: torch.Tensor,
+        obs_feats: Optional[torch.Tensor],
+        obs_mask: Optional[torch.Tensor],
+        goal_feats: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Generic geometric score for selecting one candidate local plan.
 
-        The plan lives in the vehicle-local frame and is bounded by the local
-        grid radius.  Training can supervise it with saved teacher pose_seq;
-        online deployment uses the predicted plan directly, so no MPC teacher is
-        needed at test time.
+        This score is deliberately scenario-agnostic.  It trades off progress
+        toward the global goal, signed-clearance feasibility, smooth local
+        curvature, and excessive path length.  The score is used only to select
+        the local target; the planner itself is still trained by supervised and
+        best-of-M losses in ``train_dual_weight_energy.py``.
+        """
+        B, M, K, _ = plan_seq_candidates.shape
+        dtype = plan_seq_candidates.dtype
+        device = plan_seq_candidates.device
+
+        if goal_feats is not None and goal_feats.numel() > 0:
+            goal_xy = goal_feats[:, :2].to(device=device, dtype=dtype)
+            goal_term = torch.linalg.norm(plan_seq_candidates[:, :, -1, :] - goal_xy[:, None, :], dim=-1)
+        else:
+            goal_term = torch.zeros(B, M, device=device, dtype=dtype)
+
+        if obs_feats is None or obs_feats.shape[1] == 0 or obs_mask is None:
+            clear_term = torch.zeros(B, M, device=device, dtype=dtype)
+        else:
+            C = obs_feats[..., :2].to(device=device, dtype=dtype)
+            R = obs_feats[..., 2].to(device=device, dtype=dtype).clamp_min(1e-6)
+            mask = obs_mask.to(device=device).bool()
+            diff = plan_seq_candidates[:, :, :, None, :] - C[:, None, None, :, :]
+            d = torch.linalg.norm(diff, dim=-1) - R[:, None, None, :]
+            d = torch.where(mask[:, None, None, :], d, torch.full_like(d, 1.0e6))
+            min_d = d.min(dim=-1).values
+            margin = float(self.cfg.plan_score_safe_margin)
+            clear_term = torch.relu(margin - min_d).pow(2).mean(dim=-1)
+
+        if K >= 3:
+            acc = plan_seq_candidates[:, :, 2:, :] - 2.0 * plan_seq_candidates[:, :, 1:-1, :] + plan_seq_candidates[:, :, :-2, :]
+            dyn_term = acc.pow(2).sum(dim=-1).mean(dim=-1)
+        else:
+            dyn_term = torch.zeros(B, M, device=device, dtype=dtype)
+        if K >= 2:
+            path_len = torch.linalg.norm(plan_seq_candidates[:, :, 1:, :] - plan_seq_candidates[:, :, :-1, :], dim=-1).sum(dim=-1)
+        else:
+            path_len = torch.linalg.norm(plan_seq_candidates[:, :, -1, :], dim=-1)
+
+        return (
+            float(self.cfg.plan_score_w_goal) * goal_term
+            + float(self.cfg.plan_score_w_clear) * clear_term
+            + float(self.cfg.plan_score_w_dyn) * dyn_term
+            + float(self.cfg.plan_score_w_len) * path_len
+        )
+
+    def predict_plan(
+        self,
+        ctx: torch.Tensor,
+        aux: torch.Tensor,
+        hat_d_vec: torch.Tensor,
+        obs_feats: Optional[torch.Tensor] = None,
+        obs_mask: Optional[torch.Tensor] = None,
+        goal_feats: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Predict and select a local short-horizon motion plan.
+
+        The head emits ``M`` candidate plans with ``K`` local waypoints.  At
+        deployment, a generic feasibility/progress score selects one candidate.
+        Offline training can use best-of-M supervision so the planner does not
+        average distinct feasible maneuvers into one bad intermediate goal.
         """
         B = ctx.shape[0]
         K = max(1, int(self.cfg.plan_horizon))
-        raw = self.plan_head(torch.cat([ctx, aux], dim=-1)).view(B, K, 2)
-        radius = hat_d_vec.to(ctx.device, ctx.dtype).view(B, 1, 1) * float(self.cfg.plan_radius_frac)
-        plan_seq = radius * torch.tanh(raw)
+        M = max(1, int(self.cfg.plan_candidates))
+        raw = self.plan_head(torch.cat([ctx, aux], dim=-1)).view(B, M, K, 2)
+        radius = hat_d_vec.to(ctx.device, ctx.dtype).view(B, 1, 1, 1) * float(self.cfg.plan_radius_frac)
+        plan_seq_candidates = radius * torch.tanh(raw)
+        scores = self._score_plan_candidates(plan_seq_candidates, obs_feats, obs_mask, goal_feats)
+        best_idx = scores.argmin(dim=1)
+        ar = torch.arange(B, device=ctx.device)
+        plan_seq = plan_seq_candidates[ar, best_idx]
         idx = min(max(0, int(self.cfg.plan_goal_index)), K - 1)
         plan_goal = plan_seq[:, idx, :]
-        return {"plan_seq": plan_seq, "plan_goal": plan_goal}
+        return {
+            "plan_seq_candidates": plan_seq_candidates,
+            "plan_scores": scores,
+            "plan_best_idx": best_idx,
+            "plan_seq": plan_seq,
+            "plan_goal": plan_goal,
+        }
 
     @staticmethod
     def goal_feats_from_xy(goal_xy: torch.Tensor) -> torch.Tensor:
@@ -386,20 +471,24 @@ class DualWeightEnergyNet(nn.Module):
         progress: Optional[torch.Tensor] = None,
         stall: Optional[torch.Tensor] = None,
         prev_align: Optional[torch.Tensor] = None,
+        plan_goal_override: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         ctx, alpha = self.encode_context(obs_feats, obs_mask, goal_feats)
         aux = self.make_aux_features(obs_feats, obs_mask, goal_feats, stage_changed, progress, stall, prev_align)
         lambdas = self.update_lambda(ctx, lambda_prev, aux)
-        plan = self.predict_plan(ctx, aux, hat_d_vec)
+        plan = self.predict_plan(ctx, aux, hat_d_vec, obs_feats=obs_feats, obs_mask=obs_mask, goal_feats=goal_feats)
+        plan_goal_effective = plan["plan_goal"]
+        if plan_goal_override is not None:
+            plan_goal_effective = plan_goal_override.to(device=grid_xy.device, dtype=grid_xy.dtype)
         if bool(self.cfg.use_plan_goal):
-            effective_goal_map = self.goal_map_from_xy(grid_xy, plan["plan_goal"])
-            effective_goal_feats = self.goal_feats_from_xy(plan["plan_goal"])
+            effective_goal_map = self.goal_map_from_xy(grid_xy, plan_goal_effective)
+            effective_goal_feats = self.goal_feats_from_xy(plan_goal_effective)
         else:
             effective_goal_map = goal_map
             effective_goal_feats = goal_feats
         potentials = self.compose_potential(barrier_stack, effective_goal_map, coord_map, alpha, lambdas, ctx)
         fields = self.vector_field(potentials, grid_xy, obs_feats, obs_mask, effective_goal_feats, alpha, lambdas, hat_d_vec)
-        return {**potentials, **fields, **plan, "goal_map_effective": effective_goal_map, "goal_feats_effective": effective_goal_feats, "alpha": alpha, "lambda": lambdas, "ctx": ctx, "aux": aux}
+        return {**potentials, **fields, **plan, "plan_goal_effective": plan_goal_effective, "goal_map_effective": effective_goal_map, "goal_feats_effective": effective_goal_feats, "alpha": alpha, "lambda": lambdas, "ctx": ctx, "aux": aux}
 
 
 # ----------------------------- losses and utilities -----------------------------
@@ -592,7 +681,7 @@ def recompute_with_lambda(
         ctx, alpha = model.encode_context(obs_feats, obs_mask, goal_feats)
     if aux is None:
         aux = model.make_aux_features(obs_feats, obs_mask, goal_feats)
-    plan = model.predict_plan(ctx, aux, hat_d_vec)
+    plan = model.predict_plan(ctx, aux, hat_d_vec, obs_feats=obs_feats, obs_mask=obs_mask, goal_feats=goal_feats)
     if bool(model.cfg.use_plan_goal):
         effective_goal_map = model.goal_map_from_xy(grid_xy, plan["plan_goal"])
         effective_goal_feats = model.goal_feats_from_xy(plan["plan_goal"])

@@ -86,6 +86,7 @@ class DualWeightTrainer:
         limit_cfg: Optional[AckermannLimitConfig] = None,
         replay_cfg: Optional[Dict[str, float]] = None,
         parking_cfg: Optional[Dict[str, float]] = None,
+        alt_cfg: Optional[Dict[str, float]] = None,
     ):
         self.model = model.to(device)
         self.device = device
@@ -97,6 +98,8 @@ class DualWeightTrainer:
         self.limit_cfg = limit_cfg or AckermannLimitConfig()
         self.replay_cfg = replay_cfg or {}
         self.parking_cfg = parking_cfg or {}
+        self.alt_cfg = alt_cfg or {}
+        self.current_phase = "plan" if bool(self.alt_cfg.get("planner_only", False)) else "full"
         self.replay = FailureReplayBuffer(
             capacity=int(self.replay_cfg.get("capacity", 0)),
             seed=int(self.replay_cfg.get("seed", 0)),
@@ -417,27 +420,159 @@ class DualWeightTrainer:
         return score.detach(), tags, metrics
 
 
-    def _planner_supervision_loss(self, out: Dict[str, torch.Tensor], data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Supervise the generic short-horizon planner with offline teacher pose_seq.
+    def _plan_target_sequence(self, data: Dict[str, torch.Tensor], K: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return K local sub-goal targets from the offline teacher trajectory.
 
-        This is the offline-only part of the method: the planner learns a local
-        feasible motion segment from MPC/teacher rollouts.  At deployment, the
-        same plan head runs from observations only; no MPC is queried.
+        ``index`` mode uses the saved pose_seq entries directly. ``arclength``
+        mode re-samples the teacher path by physical distance, which is usually
+        more stable for parking/recovery because the teacher may slow down or
+        reverse while the desired geometric sub-goals should remain meaningful.
+        """
+        if "pose_seq_xy" not in data:
+            device = data["pos_xy"].device
+            return data["pos_xy"].new_zeros(data["pos_xy"].shape[0], K, 2), torch.zeros(data["pos_xy"].shape[0], K, device=device, dtype=torch.bool)
+        seq = data["pose_seq_xy"]
+        B, T, _ = seq.shape
+        mask = data.get("pose_seq_mask", torch.ones(B, T, device=seq.device, dtype=torch.bool)).to(seq.device).bool()
+        K = min(K, max(1, int(self.loss_weights.get("plan_steps", K))))
+        mode = str(self.loss_weights.get("plan_target_mode", "index")).lower()
+        if mode != "arclength":
+            KK = min(K, T)
+            tgt = seq[:, :KK, :]
+            m = mask[:, :KK]
+            if KK < K:
+                pad = seq.new_zeros(B, K - KK, 2)
+                mpad = torch.zeros(B, K - KK, device=seq.device, dtype=torch.bool)
+                tgt = torch.cat([tgt, pad], dim=1)
+                m = torch.cat([m, mpad], dim=1)
+            return tgt, m
+
+        # Non-differentiable target construction is fine: this is teacher data.
+        out = seq.new_zeros(B, K, 2)
+        out_mask = torch.zeros(B, K, device=seq.device, dtype=torch.bool)
+        arc_step = float(self.loss_weights.get("plan_arc_step", 0.25))
+        for b in range(B):
+            valid = mask[b]
+            pts = seq[b, valid]
+            if pts.numel() == 0:
+                continue
+            path = torch.cat([data["pos_xy"][b:b + 1].to(seq.device, seq.dtype), pts], dim=0)
+            ds = torch.linalg.norm(path[1:] - path[:-1], dim=-1)
+            cum = torch.cat([ds.new_zeros(1), torch.cumsum(ds, dim=0)], dim=0)
+            total = float(cum[-1].detach().cpu())
+            if total <= 1e-8:
+                continue
+            if arc_step > 0:
+                targets = torch.arange(1, K + 1, device=seq.device, dtype=seq.dtype) * arc_step
+                targets = torch.clamp(targets, max=total)
+            else:
+                targets = torch.linspace(total / K, total, K, device=seq.device, dtype=seq.dtype)
+            for j in range(K):
+                sj = targets[j]
+                hi = int(torch.searchsorted(cum, sj).clamp(min=1, max=cum.numel() - 1).item())
+                lo = hi - 1
+                denom = (cum[hi] - cum[lo]).clamp_min(1e-8)
+                a = ((sj - cum[lo]) / denom).clamp(0, 1)
+                out[b, j] = (1.0 - a) * path[lo] + a * path[hi]
+                out_mask[b, j] = True
+        return out, out_mask
+
+    def _planner_supervision_loss(self, out: Dict[str, torch.Tensor], data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Best-of-M short-horizon planner imitation loss.
+
+        With M>1 candidates, this avoids averaging multiple feasible maneuvers
+        into one invalid local goal.  The selected candidate is still chosen by
+        a generic feasibility score for deployment; this best-of-M term teaches
+        at least one candidate to match the offline teacher segment.
         """
         if "pose_seq_xy" not in data or "plan_seq" not in out:
             return out["F"].new_zeros(())
-        K = min(out["plan_seq"].shape[1], data["pose_seq_xy"].shape[1])
-        K = min(K, int(self.loss_weights.get("plan_steps", K)))
+        K = min(int(self.loss_weights.get("plan_steps", out["plan_seq"].shape[1])), out["plan_seq"].shape[1])
         if K <= 0:
             return out["F"].new_zeros(())
-        pred = out["plan_seq"][:, :K, :]
-        tgt = data["pose_seq_xy"][:, :K, :].to(pred.device, pred.dtype)
-        mask = data.get("pose_seq_mask", torch.ones(pred.shape[:2], device=pred.device, dtype=torch.bool))[:, :K]
+        tgt, mask = self._plan_target_sequence(data, K)
         if not mask.any():
-            return pred.new_zeros(())
+            return out["F"].new_zeros(())
         scale = data["hat_d_vec"].view(-1, 1, 1).clamp_min(1e-6)
+        if "plan_seq_candidates" in out:
+            pred = out["plan_seq_candidates"][:, :, :K, :]
+            M = pred.shape[1]
+            tgt_m = tgt[:, None, :, :].to(pred.device, pred.dtype)
+            mask_m = mask[:, None, :].to(pred.device).expand(-1, M, -1)
+            err = ((pred - tgt_m) / scale[:, None]).pow(2).sum(dim=-1)
+            denom = mask_m.float().sum(dim=-1).clamp_min(1.0)
+            per_cand = (err * mask_m.float()).sum(dim=-1) / denom
+            best = per_cand.min(dim=1).values
+            return best.mean()
+        pred = out["plan_seq"][:, :K, :]
+        tgt = tgt.to(pred.device, pred.dtype)
+        mask = mask.to(pred.device)
         err = ((pred - tgt) / scale).pow(2).sum(dim=-1)
         return err[mask].mean()
+
+    def _planner_feasibility_losses(self, out: Dict[str, torch.Tensor], data: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Generic planner regularizers independent of scenario labels."""
+        if "plan_seq" not in out:
+            z = out["F"].new_zeros(())
+            return z, z, z, z
+        seq = out["plan_seq"]
+        B, K, _ = seq.shape
+        # Safety of the selected local plan, measured in signed clearance.
+        if data["obs_feats"].shape[1] == 0:
+            L_clear = seq.new_zeros(())
+        else:
+            clear_vec, _min_clear = self._signed_clearance_violation_at(data, seq)
+            L_clear = clear_vec.mean()
+        # Kinematic smoothness / curvature proxy in local coordinates.
+        if K >= 3:
+            acc = seq[:, 2:, :] - 2.0 * seq[:, 1:-1, :] + seq[:, :-2, :]
+            L_dyn = (acc.pow(2).sum(dim=-1)).mean()
+        else:
+            L_dyn = seq.new_zeros(())
+        # Weak monotonicity: do not move the final short-horizon waypoint much
+        # farther from the global goal than the current pose.  A slack avoids
+        # forbidding temporary recovery motions such as reversing out of traps.
+        goal = data["goal_feats"][:, :2].to(seq.device, seq.dtype)
+        d0 = torch.linalg.norm(goal - data["pos_xy"].to(seq.device, seq.dtype), dim=-1)
+        d1 = torch.linalg.norm(goal - seq[:, -1, :], dim=-1)
+        slack = float(self.loss_weights.get("plan_progress_slack", 0.25))
+        L_progress = torch.relu(d1 - d0 - slack).pow(2).mean()
+        # Candidate diversity: discourage all candidate endpoints from collapsing.
+        if "plan_seq_candidates" in out and out["plan_seq_candidates"].shape[1] > 1:
+            ends = out["plan_seq_candidates"][:, :, -1, :]
+            diff = ends[:, :, None, :] - ends[:, None, :, :]
+            D = torch.linalg.norm(diff, dim=-1)
+            M = D.shape[1]
+            tri = torch.triu(torch.ones(M, M, device=D.device, dtype=torch.bool), diagonal=1)
+            margin = float(self.loss_weights.get("plan_diversity_margin", 0.20))
+            L_div = torch.relu(margin - D[:, tri]).pow(2).mean()
+        else:
+            L_div = seq.new_zeros(())
+        return L_clear, L_dyn, L_progress, L_div
+
+    def _planner_only_losses(self, out: Dict[str, torch.Tensor], data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        L_plan = self._planner_supervision_loss(out, data)
+        L_clear, L_dyn, L_progress, L_div = self._planner_feasibility_losses(out, data)
+        w_plan = float(self.loss_weights.get("plan", 1.0))
+        if w_plan <= 0:
+            w_plan = 1.0
+        loss = (
+            w_plan * L_plan
+            + float(self.loss_weights.get("plan_clear", 0.0)) * L_clear
+            + float(self.loss_weights.get("plan_dyn", 0.0)) * L_dyn
+            + float(self.loss_weights.get("plan_progress", 0.0)) * L_progress
+            + float(self.loss_weights.get("plan_diversity", 0.0)) * L_div
+        )
+        return {
+            "loss": loss,
+            "L_plan": L_plan.detach(),
+            "L_plan_clear": L_clear.detach(),
+            "L_plan_dyn": L_dyn.detach(),
+            "L_plan_progress": L_progress.detach(),
+            "L_plan_diversity": L_div.detach(),
+            "plan_goal_norm": torch.linalg.norm(out.get("plan_goal", data["pos_xy"]), dim=-1).mean().detach(),
+            "plan_score": out.get("plan_scores", loss.new_zeros(1)).detach().mean(),
+        }
 
     def _plan_tracking_rollout_loss(self, data: Dict[str, torch.Tensor], out: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Train the energy/force field to track its own predicted plan.
@@ -621,6 +756,7 @@ class DualWeightTrainer:
         L_waypoint = self._waypoint_alignment_loss(F_at, data)
         L_rollout = self._teacher_rollout_loss(data, out)
         L_plan = self._planner_supervision_loss(out, data)
+        L_plan_clear, L_plan_dyn, L_plan_progress, L_plan_div = self._planner_feasibility_losses(out, data)
         L_plan_track = self._plan_tracking_rollout_loss(data, out)
         L_contact, contact_rate, contact_min_clear = self._contact_sliding_loss(F_at, data)
         constraints = {"clear": C_clear, "act": C_act, "stall": C_stall, "tv": C_tv, "smooth": C_smooth}
@@ -644,6 +780,10 @@ class DualWeightTrainer:
             + float(self.loss_weights.get("waypoint", 0.0)) * L_waypoint
             + float(self.loss_weights.get("rollout", 0.0)) * L_rollout
             + float(self.loss_weights.get("plan", 0.0)) * L_plan
+            + float(self.loss_weights.get("plan_clear", 0.0)) * L_plan_clear
+            + float(self.loss_weights.get("plan_dyn", 0.0)) * L_plan_dyn
+            + float(self.loss_weights.get("plan_progress", 0.0)) * L_plan_progress
+            + float(self.loss_weights.get("plan_diversity", 0.0)) * L_plan_div
             + float(self.loss_weights.get("plan_track", 0.0)) * L_plan_track
             + float(self.loss_weights.get("contact", 0.0)) * L_contact
             + float(self.loss_weights.get("alpha", 1e-4)) * L_alpha
@@ -663,8 +803,13 @@ class DualWeightTrainer:
             "L_waypoint": L_waypoint.detach(),
             "L_rollout": L_rollout.detach(),
             "L_plan": L_plan.detach(),
+            "L_plan_clear": L_plan_clear.detach(),
+            "L_plan_dyn": L_plan_dyn.detach(),
+            "L_plan_progress": L_plan_progress.detach(),
+            "L_plan_diversity": L_plan_div.detach(),
             "L_plan_track": L_plan_track.detach(),
             "plan_goal_norm": torch.linalg.norm(out.get("plan_goal", F_at.new_zeros(F_at.shape)), dim=-1).mean().detach(),
+            "plan_score": out.get("plan_scores", F_at.new_zeros(F_at.shape[0], 1)).detach().mean(),
             "L_contact": L_contact.detach(),
             "contact_rate": contact_rate,
             "contact_min_clear": contact_min_clear,
@@ -692,6 +837,41 @@ class DualWeightTrainer:
                 delta = max(-step_clip, min(step_clip, delta))
             self.mu[name] = min(mu_max, max(0.0, self.mu[name] + delta))
 
+    def _teacher_plan_goal_override(self, data: Dict[str, torch.Tensor], train: bool) -> Optional[torch.Tensor]:
+        """Optionally use the offline teacher sub-goal as the local energy target.
+
+        This is useful during the energy-controller phase: first check whether
+        the local energy dynamics can track a correct short-horizon target, then
+        gradually substitute the learned planner's own target.  No teacher is
+        used at deployment.
+        """
+        if not bool(self.model.cfg.use_plan_goal) or "pose_seq_xy" not in data:
+            return None
+        source = str(self.alt_cfg.get("energy_plan_source", "predicted")).lower()
+        if source == "predicted":
+            return None
+        if source == "teacher":
+            prob = 1.0
+        else:
+            prob = float(self.alt_cfg.get("teacher_plan_prob", 0.5)) if train else 0.0
+        if prob <= 0.0 or self.current_phase == "plan":
+            return None
+        if prob < 1.0 and self.rng.random() > prob:
+            return None
+        K = int(self.model.cfg.plan_horizon)
+        tgt, mask = self._plan_target_sequence(data, K)
+        idx = min(max(0, int(self.model.cfg.plan_goal_index)), tgt.shape[1] - 1)
+        valid = mask[:, idx]
+        if not valid.any():
+            return None
+        goal = tgt[:, idx, :].to(data["pos_xy"].device, data["pos_xy"].dtype)
+        # If a few samples have no target at this index, fall back to the last
+        # available target or the current global goal.
+        if not valid.all():
+            fallback = data["goal_feats"][:, :2].to(goal.device, goal.dtype)
+            goal = torch.where(valid[:, None], goal, fallback)
+        return goal
+
     def _forward_loss(
         self,
         batch: Dict[str, torch.Tensor],
@@ -700,13 +880,18 @@ class DualWeightTrainer:
         train: bool,
     ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         data = self._data_to_device(batch)
+        phase = "plan" if bool(self.alt_cfg.get("planner_only", False)) else str(self.current_phase)
         with torch.set_grad_enabled(train):
+            plan_goal_override = self._teacher_plan_goal_override(data, train=train)
             out = self.model(
                 **{k: data[k] for k in ["grid_xy", "barrier_stack", "goal_map", "coord_map", "obs_feats", "obs_mask", "goal_feats", "hat_d_vec"]},
                 lambda_prev=lambda_prev,
                 stage_changed=stage_changed,
+                plan_goal_override=plan_goal_override,
             )
-            if self.training_mode == "auglag":
+            if phase == "plan":
+                loss_dict = self._planner_only_losses(out, data)
+            elif self.training_mode == "auglag":
                 loss_dict = self._auglag_losses(out, data, lambda_prev)
             else:
                 loss_dict = dual_energy_losses(
@@ -798,13 +983,33 @@ class DualWeightTrainer:
         for batch in loader:
             B = batch["goal_map"].shape[0]
             lambda_prev, stage_changed = self._state_features(batch["meta"], B)
-            data, out, loss_dict = self._forward_loss(batch, lambda_prev, stage_changed, train=train)
-            if train:
-                self._optimizer_step(loss_dict["loss"])
-            self.lambda_state = out["lambda"].detach()
-            self._log_loss_dict(logs, loss_dict)
-            self._log_lambda_means(logs, out["lambda"])
-            if train and current_epoch >= int(self.replay_cfg.get("start_epoch", 0)):
+            if train and bool(self.alt_cfg.get("alternate", False)):
+                last_data = last_out = None
+                for _ in range(max(1, int(self.alt_cfg.get("plan_steps", 1)))):
+                    self.current_phase = "plan"
+                    data, out, loss_dict = self._forward_loss(batch, lambda_prev, stage_changed, train=True)
+                    self._optimizer_step(loss_dict["loss"])
+                    self._log_loss_dict(logs, loss_dict, prefix="plan_phase/")
+                    last_data, last_out = data, out
+                for _ in range(max(1, int(self.alt_cfg.get("energy_steps", 1)))):
+                    self.current_phase = "energy"
+                    data, out, loss_dict = self._forward_loss(batch, lambda_prev, stage_changed, train=True)
+                    self._optimizer_step(loss_dict["loss"])
+                    self._log_loss_dict(logs, loss_dict, prefix="energy_phase/")
+                    self._log_lambda_means(logs, out["lambda"], prefix="energy_phase/")
+                    last_data, last_out = data, out
+                self.current_phase = "full"
+                data, out = last_data, last_out
+            else:
+                self.current_phase = "plan" if bool(self.alt_cfg.get("planner_only", False)) else "full"
+                data, out, loss_dict = self._forward_loss(batch, lambda_prev, stage_changed, train=train)
+                if train:
+                    self._optimizer_step(loss_dict["loss"])
+                self._log_loss_dict(logs, loss_dict)
+                self._log_lambda_means(logs, out["lambda"])
+            if out is not None and "lambda" in out:
+                self.lambda_state = out["lambda"].detach()
+            if train and (not bool(self.alt_cfg.get("planner_only", False))) and current_epoch >= int(self.replay_cfg.get("start_epoch", 0)):
                 self._maybe_add_failure_replay(batch, data, out, lambda_prev, logs)
                 if len(self.replay) >= int(self.replay_cfg.get("warmup", 4)) and self.rng.random() < float(self.replay_cfg.get("prob", 0.0)):
                     rb = self.replay.sample()
@@ -900,10 +1105,26 @@ def main():
                     help="Number of teacher pose_seq steps used by --w-rollout.")
     ap.add_argument("--w-plan", type=float, default=0.0,
                     help="Supervise the generic short-horizon planner with saved pose_seq. Offline only; no MPC at deployment.")
+    ap.add_argument("--w-plan-clear", type=float, default=0.0,
+                    help="Generic signed-clearance feasibility loss on predicted short-horizon plans.")
+    ap.add_argument("--w-plan-dyn", type=float, default=0.0,
+                    help="Generic smoothness/curvature penalty on predicted short-horizon plans.")
+    ap.add_argument("--w-plan-progress", type=float, default=0.0,
+                    help="Weak progress consistency penalty for predicted short-horizon plans.")
+    ap.add_argument("--w-plan-diversity", type=float, default=0.0,
+                    help="Best-of-M diversity penalty preventing candidate plans from collapsing to the same endpoint.")
     ap.add_argument("--w-plan-track", type=float, default=0.0,
-                    help="Train the energy controller to track its own predicted plan.")
+                    help="Train the energy controller to track its own predicted plan via differentiable local integration.")
     ap.add_argument("--plan-supervision-steps", type=int, default=6,
                     help="Number of pose_seq steps used by --w-plan.")
+    ap.add_argument("--plan-target-mode", type=str, default="arclength", choices=["index", "arclength"],
+                    help="How to extract sub-goal targets from pose_seq for planner imitation.")
+    ap.add_argument("--plan-arc-step", type=float, default=0.25,
+                    help="Meters between arclength-resampled planner sub-goals; <=0 uses uniform arclength.")
+    ap.add_argument("--plan-progress-slack", type=float, default=0.25,
+                    help="Allowed increase in global-goal distance for short recovery maneuvers before progress penalty applies.")
+    ap.add_argument("--plan-diversity-margin", type=float, default=0.20,
+                    help="Minimum desired endpoint separation among multi-candidate plans.")
     ap.add_argument("--plan-track-steps", type=int, default=4,
                     help="Number of predicted plan steps tracked by the local energy rollout.")
     ap.add_argument("--w-contact", type=float, default=0.0,
@@ -994,6 +1215,20 @@ def main():
     ap.add_argument("--plan-horizon", type=int, default=6)
     ap.add_argument("--plan-goal-index", type=int, default=3)
     ap.add_argument("--plan-radius-frac", type=float, default=0.85)
+    ap.add_argument("--plan-candidates", type=int, default=1,
+                    help="Number of candidate short-horizon plans emitted by the planner head. Use >1 for multi-modal scenes.")
+    ap.add_argument("--planner-only", action="store_true",
+                    help="Train only the short-horizon planner objective. Useful as Stage A pretraining.")
+    ap.add_argument("--alternate-plan-energy", action="store_true",
+                    help="Per mini-batch alternate planner updates and local-energy/controller updates.")
+    ap.add_argument("--alt-plan-steps", type=int, default=1,
+                    help="Planner-only updates per batch when --alternate-plan-energy is enabled.")
+    ap.add_argument("--alt-energy-steps", type=int, default=1,
+                    help="Energy/controller updates per batch when --alternate-plan-energy is enabled.")
+    ap.add_argument("--energy-plan-source", type=str, default="predicted", choices=["predicted", "teacher", "mixed"],
+                    help="For energy/controller updates, optionally use teacher sub-goals before switching to predicted planner goals.")
+    ap.add_argument("--teacher-plan-prob", type=float, default=0.5,
+                    help="Probability of using teacher sub-goal when --energy-plan-source=mixed.")
     args = ap.parse_args()
 
     torch.set_num_threads(max(1, int(args.threads)))
@@ -1030,6 +1265,7 @@ def main():
         plan_horizon=args.plan_horizon,
         plan_goal_index=args.plan_goal_index,
         plan_radius_frac=args.plan_radius_frac,
+        plan_candidates=args.plan_candidates,
     )
     model = DualWeightEnergyNet(H=args.H, W=args.W, cfg=cfg)
     if args.resume:
@@ -1055,8 +1291,16 @@ def main():
         "rollout": args.w_rollout,
         "rollout_steps": args.rollout_supervision_steps,
         "plan": args.w_plan,
+        "plan_clear": args.w_plan_clear,
+        "plan_dyn": args.w_plan_dyn,
+        "plan_progress": args.w_plan_progress,
+        "plan_diversity": args.w_plan_diversity,
         "plan_track": args.w_plan_track,
         "plan_steps": args.plan_supervision_steps,
+        "plan_target_mode": args.plan_target_mode,
+        "plan_arc_step": args.plan_arc_step,
+        "plan_progress_slack": args.plan_progress_slack,
+        "plan_diversity_margin": args.plan_diversity_margin,
         "plan_track_steps": args.plan_track_steps,
         "contact": args.w_contact,
         "contact_band": args.contact_band,
@@ -1124,16 +1368,24 @@ def main():
         "start_epoch": args.parking_augment_start_epoch,
         "use_auglag": bool(args.parking_use_auglag),
     }
+    alt_cfg = {
+        "planner_only": bool(args.planner_only),
+        "alternate": bool(args.alternate_plan_energy),
+        "plan_steps": args.alt_plan_steps,
+        "energy_steps": args.alt_energy_steps,
+        "energy_plan_source": args.energy_plan_source,
+        "teacher_plan_prob": args.teacher_plan_prob,
+    }
     limit_cfg = AckermannLimitConfig(args.v_min, args.v_max, args.steering_max, args.accel_max, args.steering_rate_max, args.dt)
     trainer = DualWeightTrainer(
         model, args.device, args.lr, weights, training_mode=args.training_mode,
         constraint_cfg=constraint_cfg, teacher_cfg=teacher_cfg, limit_cfg=limit_cfg,
-        replay_cfg=replay_cfg, parking_cfg=parking_cfg,
+        replay_cfg=replay_cfg, parking_cfg=parking_cfg, alt_cfg=alt_cfg,
     )
     with open(os.path.join(args.outdir, "config.json"), "w") as f:
         json.dump({
             "model": cfg.to_dict(), "loss_weights": weights, "constraint_cfg": constraint_cfg,
-            "teacher_cfg": teacher_cfg, "replay_cfg": replay_cfg, "parking_cfg": parking_cfg,
+            "teacher_cfg": teacher_cfg, "replay_cfg": replay_cfg, "parking_cfg": parking_cfg, "alt_cfg": alt_cfg,
             "training_mode": args.training_mode, "data_format": data_format, "args": vars(args)
         }, f, indent=2)
 
@@ -1151,6 +1403,7 @@ def main():
             "teacher_cfg": teacher_cfg,
             "replay_cfg": replay_cfg,
             "parking_cfg": parking_cfg,
+            "alt_cfg": alt_cfg,
             "training_mode": args.training_mode,
             "multiplier_state": trainer.mu,
             "logs": logs,
