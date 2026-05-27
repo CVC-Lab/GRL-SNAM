@@ -245,24 +245,55 @@ class NavMaximinLocalPatches(Dataset):
 
 # ---------- collate (variable #obstacles)
 
+def _normalize_NHW(x: torch.Tensor) -> torch.Tensor:
+    """Normalize a per-sample barrier tensor to [N,H,W].
+
+    The intended dataset format is [N,H,W].  This helper also tolerates
+    accidental [1,N,H,W] tensors from older cached artifacts and [H,W] tensors
+    for a single barrier map.  Empty tensors must still carry the grid shape as
+    [0,H,W].
+    """
+    if x.ndim == 4 and x.shape[0] == 1:
+        x = x.squeeze(0)
+    elif x.ndim == 2:
+        x = x.unsqueeze(0)
+    if x.ndim != 3:
+        raise ValueError(f"barrier_stack item must have shape [N,H,W], [1,N,H,W], or [H,W], got {tuple(x.shape)}")
+    return x
+
+
 def _pad_stack_NHW(items: List[torch.Tensor]):
-    Nmax = max([x.shape[0] if x.numel() else 0 for x in items]) if items else 0
-    if Nmax == 0:
-        B,H,W = items[0].shape[1], items[0].shape[2], items[0].shape[3]
+    """Pad variable-obstacle barrier stacks into [B,Nmax,H,W].
+
+    Robust to batches where every sample has zero local obstacles.  The previous
+    version tried to read items[0].shape[3] when Nmax==0, but an empty per-sample
+    stack has shape [0,H,W], so shape[3] does not exist.
+    """
+    if not items:
+        raise ValueError("_pad_stack_NHW received an empty batch")
+    norm_items = [_normalize_NHW(x) for x in items]
+    H, W = norm_items[0].shape[-2:]
+    dtype = norm_items[0].dtype
+    device = norm_items[0].device
+    for j, x in enumerate(norm_items):
+        if x.shape[-2:] != (H, W):
+            raise ValueError(f"all barrier stacks must share H,W={(H,W)}, item {j} has {tuple(x.shape[-2:])}")
+    Nmax = max([x.shape[0] for x in norm_items])
     outs, mask = [], []
-    for x in items:
-        if x.numel() == 0:
-            H,W = items[0].shape[-2:]
-            outs.append(torch.zeros(Nmax, H, W, dtype=items[0].dtype))
-            mask.append(torch.zeros(Nmax, dtype=torch.bool))
+    for x in norm_items:
+        n = x.shape[0]
+        if n < Nmax:
+            pad = torch.zeros(Nmax - n, H, W, dtype=x.dtype, device=x.device)
+            outs.append(torch.cat([x, pad], dim=0))
+            m = torch.zeros(Nmax, dtype=torch.bool, device=x.device)
+            m[:n] = True
+            mask.append(m)
         else:
-            n,H,W = x.shape
-            if n < Nmax:
-                pad = torch.zeros(Nmax - n, H, W, dtype=x.dtype)
-                outs.append(torch.cat([x, pad], dim=0))
-                m = torch.zeros(Nmax, dtype=torch.bool); m[:n] = True; mask.append(m)
-            else:
-                outs.append(x); m = torch.ones(n, dtype=torch.bool); mask.append(m)
+            outs.append(x)
+            mask.append(torch.ones(n, dtype=torch.bool, device=x.device))
+    if Nmax == 0:
+        outs = [torch.zeros(0, H, W, dtype=dtype, device=device) for _ in norm_items]
+        mask = [torch.zeros(0, dtype=torch.bool, device=device) for _ in norm_items]
     return torch.stack(outs, 0), torch.stack(mask, 0)
 
 def _pad_stack_ND(items: List[torch.Tensor], D: int):

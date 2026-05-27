@@ -35,10 +35,8 @@ class GenCfg:
     snapshot_every: int = 5
 
     # start/goal and stage geometry
-    # start = np.array([-1.0, -0.5], float)
-    # goal  = np.array([ 9.0,  0.2], float)
-    start = np.array([0.0, 2.5], float)
-    goal  = np.array([ 9.0,  -1.2], float)
+    start = np.array([-1.0, -0.5], float)
+    goal  = np.array([ 9.0,  0.2], float)
     stage_size = (2.6, 2.0)
     overlap = 0.30
 

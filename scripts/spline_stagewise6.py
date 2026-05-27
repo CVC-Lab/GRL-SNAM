@@ -534,48 +534,30 @@ class IPCBarrier:
     def __init__(self, obstacles: ObstacleProviderTorch, d_hat=1.0, violation_penalty=-5e2,
                  eps=1e-9, max_grad=200.0, max_b=200.0):
         self.obs = obstacles
-        self.d_hat = float(d_hat)
-        self.vp = float(violation_penalty)
-        self.eps = float(eps)
-        self.max_grad = float(max_grad)
-        self.max_b = float(max_b)
+        self.d_hat=float(d_hat); self.vp=float(violation_penalty)
+        self.eps=float(eps); self.max_grad=float(max_grad); self.max_b=float(max_b)
 
     def _piecewise(self, d: torch.Tensor):
-        # scalar d_hat (as before)
         dh = d.new_tensor(self.d_hat)
+        # soft distance to keep C1 and avoid log blow-up
         safe = torch.clamp(d, min=self.eps)
-        b_in = -(d - dh) ** 2 * torch.log(safe / dh)
+        # barrier
+        b_in = -(d - dh)**2 * torch.log(safe / dh)  # same form
         dbdd_in = (dh - d) * (2.0 * torch.log(safe / dh) - dh / safe) + 1.0
 
-        b = torch.where(d <= self.eps, self.vp, torch.where(d < dh, b_in, torch.zeros_like(d)))
-        dbdd = torch.where(d <= self.eps, self.vp, torch.where(d < dh, dbdd_in, torch.zeros_like(d)))
+        b = torch.where(d<=self.eps, self.vp, torch.where(d<dh, b_in, torch.zeros_like(d)))
+        dbdd = torch.where(d<=self.eps, self.vp, torch.where(d<dh, dbdd_in, torch.zeros_like(d)))
 
+        # clamp both barrier and gradient to avoid spikes
         b = torch.clamp(b, 0.0, self.max_b)
         dbdd = torch.clamp(dbdd, -self.max_grad, self.max_grad)
         return b, dbdd
 
     def barrier_and_grad(self, q: torch.Tensor):
-        """
-        Uses per-obstacle weights W from the obstacle provider:
-            b_total = sum_j W_j * b_j
-            g_total = sum_j W_j * (db/dd)_j * n_j
-        Backward-compatible: if all W_j == 1, behavior is unchanged.
-        """
-        d, g = self.obs.compute_all(q)             # d: (K,C), g: (K,C,2)
-        if d.shape[1] == 0:
-            # No obstacles => no force, no barrier
-            return q.new_zeros(q.shape[0]), q.new_zeros(q.shape)
+        d,g = self.obs.compute_all(q); b,dbdd = self._piecewise(d)
+        return b.sum(-1), (dbdd.unsqueeze(-1)*g).sum(-2)
 
-        b, dbdd = self._piecewise(d)               # (K,C), (K,C)
-        # Broadcast W: (C,) -> (K,C)
-        W = self.obs.W.to(device=d.device, dtype=d.dtype)
-        if W.ndim == 1:
-            W = W.unsqueeze(0).expand_as(d)
-        # Weighted sums
-        b_sum = (W * b).sum(dim=-1)                # (K,)
-        g_sum = ((W * dbdd).unsqueeze(-1) * g).sum(dim=-2)  # (K,2)
-        return b_sum, g_sum
-
+    
 
 # --------------------------- periodic cubic B-spline ---------------------------
 
@@ -986,32 +968,12 @@ class StagewiseHyperelasticPlanner:
                                                 w_goal=1.0, w_radial=2.0, w_tangential=1.2, w_flow=0.8, w_boundary=0.5)
         self.sys.d_hat = torch.tensor(self.inflate, dtype=self.sys.dtype)  # friction/contact gate uses this
         
-    # def stage_slice(self, C,R,W) -> Tuple[np.ndarray,np.ndarray,np.ndarray]:
-    #     st = self.sm.current(); 
-    #     xmin,xmax,ymin,ymax = st.bounds
-    #     m = (C[:,0] >= xmin-0.5) & (C[:,0] <= xmax+0.5) & (C[:,1] >= ymin-0.5) & (C[:,1] <= ymax+0.5)
-    #     if np.any(m): return C[m],R[m],W[m]
-    #     return [], [], []
-    
-    def stage_slice(self, C, R, W):
-        """Crop obstacles to the current live bounds (keeps old signature)."""
+    def stage_slice(self, C,R,W) -> Tuple[np.ndarray,np.ndarray,np.ndarray]:
         st = self.sm.current(); 
-        b = st.bounds
-        if b is None or len(C) == 0:
-            return C, R, W
-        infl = getattr(self, "boundary_inflation", 0.2)
-        x0,x1,y0,y1 = b
-        x0 -= infl; x1 += infl; y0 -= infl; y1 += infl
-
-        # circle-vs-AABB test (branchless, vectorized)
-        # distance from center to box along each axis (0 if inside slab)
-        zero = np.zeros_like(R, dtype=C.dtype)
-        dx = np.maximum.reduce([x0 - C[:, 0], zero, C[:, 0] - x1])
-        dy = np.maximum.reduce([y0 - C[:, 1], zero, C[:, 1] - y1])
-
-        # intersect iff dx^2 + dy^2 <= r^2  (use < if you don't want "touching" to count)
-        m = (dx*dx + dy*dy) <= (R*R)
-        return C[m], R[m], W[m] if hasattr(W, "__len__") and len(W)==len(C) else W
+        xmin,xmax,ymin,ymax = st.bounds
+        m = (C[:,0] >= xmin-0.5) & (C[:,0] <= xmax+0.5) & (C[:,1] >= ymin-0.5) & (C[:,1] <= ymax+0.5)
+        if np.any(m): return C[m],R[m],W[m]
+        return [], [], []
 
     def step(self, dt, world_obs: WorldObstacles):
         st = self.sm.current()
@@ -1025,7 +987,7 @@ class StagewiseHyperelasticPlanner:
         #barrier = IPCBarrier(obs_t, d_hat=world_obs.d_hat)
         self.initial_timer_counter += 1
         if self.initial_timer_counter <= 10:
-            info = self.sys.step(0.01 * self.initial_timer_counter * dt, obs_t, barrier, self.stage_field, st.bounds, tuple(st.exit_point))
+            info = self.sys.step(0.1 * dt, obs_t, barrier, self.stage_field, st.bounds, tuple(st.exit_point))
         else:
             info = self.sys.step(dt, obs_t, barrier, self.stage_field, st.bounds, tuple(st.exit_point))
         advanced = self.sm.advance_if_needed(np.array(info["center"],float))
