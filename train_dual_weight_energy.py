@@ -823,9 +823,59 @@ class DualWeightTrainer:
         out_losses["clearance_mode_signed"] = lam.new_tensor(1.0 if self._clearance_mode() == "signed" else 0.0)
         return out_losses
 
+    def _canonicalize_epoch_logs(self, logs: Dict[str, float]) -> None:
+        """Populate top-level aliases for staged/alternating training logs.
+
+        In alternating mode the planner and energy/controller losses are logged
+        under ``plan_phase/*`` and ``energy_phase/*``.  The checkpointing code
+        and augmented-Lagrangian multiplier update expect canonical top-level
+        keys such as ``loss`` and ``C_clear``.  Without these aliases Stage C can
+        finish an epoch but crash at ``logs["loss"]`` and, more subtly, the
+        AL multipliers would be updated from zeros instead of the energy-phase
+        constraint values.
+        """
+        # Scalar used for checkpoint selection.  Prefer the actual full loss,
+        # otherwise combine the alternating phase losses.
+        if "loss" not in logs:
+            phase_losses = [
+                logs[k] for k in ("plan_phase/loss", "energy_phase/loss")
+                if k in logs
+            ]
+            if phase_losses:
+                logs["loss"] = float(sum(phase_losses))
+            elif "energy_phase/loss" in logs:
+                logs["loss"] = float(logs["energy_phase/loss"])
+            elif "plan_phase/loss" in logs:
+                logs["loss"] = float(logs["plan_phase/loss"])
+
+        # Canonical constraint aliases for AL multiplier updates.  In Stage C,
+        # constraints are defined by the energy/controller phase, not the
+        # planner-only phase.
+        for name in self.mu:
+            key = f"C_{name}"
+            phase_key = f"energy_phase/C_{name}"
+            if key not in logs and phase_key in logs:
+                logs[key] = float(logs[phase_key])
+
+        # Convenience aliases for common diagnostics.
+        for key in (
+            "C_clear_raw", "C_clear_current", "min_clear_signed",
+            "C_reverse", "force_norm", "lambda", "alpha",
+            "L_plan", "L_plan_track", "L_rollout", "L_cmd",
+            "plan_goal_norm",
+        ):
+            phase_key = f"energy_phase/{key}"
+            plan_key = f"plan_phase/{key}"
+            if key not in logs and phase_key in logs:
+                logs[key] = float(logs[phase_key])
+            elif key not in logs and plan_key in logs:
+                logs[key] = float(logs[plan_key])
+
     def _update_multipliers(self, logs: Dict[str, float]) -> None:
         if self.training_mode != "auglag":
             return
+        # Ensure alternating-mode constraint logs are visible as C_clear, C_act, ...
+        self._canonicalize_epoch_logs(logs)
         for name in self.mu:
             eps = float(self.constraint_cfg.get(f"eps_{name}", 0.0))
             rho = float(self.constraint_cfg.get(f"rho_{name}", 1.0))
@@ -1036,6 +1086,9 @@ class DualWeightTrainer:
 
         denom = max(1, n)
         logs = {k: v / denom for k, v in logs.items()}
+        # Add top-level loss/constraint aliases before replay/parking rescaling
+        # and before augmented-Lagrangian multiplier updates.
+        self._canonicalize_epoch_logs(logs)
         if n_replay > 0:
             for k in list(logs.keys()):
                 if k.startswith("replay/"):
@@ -1410,8 +1463,17 @@ def main():
             "lambda_names": model.lambda_names,
         }
         torch.save(ckpt, os.path.join(args.outdir, "latest.pt"))
-        if logs["loss"] < best:
-            best = logs["loss"]
+        monitor_loss = logs.get("loss")
+        if monitor_loss is None:
+            # Defensive fallback for future staged modes: prefer the controller
+            # phase, then planner phase, then any logged loss-like scalar.
+            monitor_loss = logs.get("energy_phase/loss", logs.get("plan_phase/loss"))
+        if monitor_loss is None:
+            candidates = [float(v) for k, v in logs.items() if k.endswith("loss") or k == "loss"]
+            monitor_loss = min(candidates) if candidates else float("inf")
+            logs["loss"] = float(monitor_loss)
+        if float(monitor_loss) < best:
+            best = float(monitor_loss)
             torch.save(ckpt, os.path.join(args.outdir, "best.pt"))
         if ep % 10 == 0 or ep == args.epochs - 1:
             torch.save(ckpt, os.path.join(args.outdir, f"epoch_{ep:03d}.pt"))
