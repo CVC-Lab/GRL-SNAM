@@ -2,6 +2,8 @@
 
 This repository contains the implementation of **GRL-SNAM**, a geometric reinforcement learning framework for simultaneous navigation and mapping in unknown environments using Hamiltonian mechanics and differential policy optimization.
 
+📖 **Documentation:** [Developer Guide](docs/developer-guide.md) · [PyPI Publishing Roadmap](docs/pypi-publishing-roadmap.md)
+
 ## Overview
 
 GRL-SNAM addresses navigation in unknown environments by:
