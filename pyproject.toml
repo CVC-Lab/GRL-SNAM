@@ -43,6 +43,7 @@ packages = [
 pytest = ">=8.0"
 pytest-cov = ">=4.1"
 ruff = ">=0.4"
+black = ">=24.0"
 
 [build-system]
 requires = ["poetry-core>=1.8"]
@@ -56,6 +57,10 @@ build-backend = "poetry.core.masonry.api"
 minversion = "8.0"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
 
 [tool.ruff]
 line-length = 100
