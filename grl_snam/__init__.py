@@ -37,6 +37,5 @@ def __getattr__(name: str):
     if name in {"CoefEnergyNet", "integrate_surrogate"}:
         from train_coef_energy import CoefEnergyNet, integrate_surrogate  # noqa: PLC0415
 
-        return {"CoefEnergyNet": CoefEnergyNet,
-                "integrate_surrogate": integrate_surrogate}[name]
+        return {"CoefEnergyNet": CoefEnergyNet, "integrate_surrogate": integrate_surrogate}[name]
     raise AttributeError(f"module 'grl_snam' has no attribute {name!r}")
