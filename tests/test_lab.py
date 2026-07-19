@@ -7,7 +7,7 @@ is skipped where the compiled pycvc / pycvc_gl bindings aren't importable.
 import pytest
 
 from grl_snam_lab import terrain_mesh
-from grl_snam_lab.lab import polyline_indices, _flatten_points
+from grl_snam_lab.lab import _flatten_points, polyline_indices
 
 
 def test_terrain_mesh_counts_and_placement():
