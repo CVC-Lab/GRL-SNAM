@@ -1,0 +1,86 @@
+schema_version: 1
+
+recipe:
+  name: grl-snam
+  upstream_version: "0.1.0"
+  cvc_revision: 1
+  maintainer: "cvcpkg group"
+  maintainer_email: "info@cvcpkg.org"
+  maintainer_url: "https://cvcpkg.org"
+  homepage: https://github.com/CVC-Lab/GRL-SNAM
+  license: MIT
+  tags: [scientific, python, wheel, reinforcement-learning]
+  description: >-
+    GRL-SNAM — Geometric Reinforcement Learning for Simultaneous Navigation
+    and Mapping.  A pure-Python (torch-based) research library packaged from
+    its PEP 621 sdist and installed into the prefix interpreter's own
+    site-packages, so one activatable cvcpkg prefix carries libcvc's pycvc
+    bindings and the importable `grl_snam` API side by side.
+
+source:
+  # Pure-Python noarch sdist: a single artifact valid on every platform, so
+  # there is no per-platform `artifacts` map — cvcpkg falls back to this
+  # top-level url/sha256 (the documented pure-Python case).  cvcpkg fetches
+  # the tarball and verifies the sha256 before build.sh runs; the install is
+  # then offline.
+  type: python_sdist
+  url: https://github.com/CVC-Lab/GRL-SNAM/releases/download/v0.1.0/grl_snam-0.1.0.tar.gz
+  sha256: "69ac558244f063291966cdad2d8ea71041172bc4d55d1f3fb2578cc64c7c9116"
+  strip_components: 1
+
+python:
+  # grl-snam ships pure Python (py3-none-any).  `abi3` collapses the wheel
+  # matrix to a single recipe that serves every interpreter from `interpreter`
+  # upward rather than one recipe per cpXYZ column.  `build_isolation: false`
+  # builds the wheel against the prefix using the pinned poetry-core backend
+  # (build_requires) instead of a pip-downloaded copy — the hermeticity payoff.
+  interpreter: python311
+  abi: abi3
+  build_isolation: false
+  build_requires:
+    - "poetry-core>=1.8,<3"
+
+patches: []
+
+depends:
+  build:
+    - name: python311
+  runtime:
+    - name: python311
+    # libcvc ships the pycvc Python bindings into the prefix site-packages, so
+    # grl_snam can `import cvc` from the same activatable prefix.
+    - name: libcvc
+    - name: numpy-cp311
+
+build:
+  # Pure Python: built once, valid everywhere (platform: any / noarch).
+  build_type_independent: true
+  matrix:
+    - platform: any
+      script: build.sh
+
+package:
+  files:
+    - lib/python3.11*/site-packages/grl_snam/
+    - lib/python3.11*/site-packages/grl_snam-0.1.0.dist-info/
+    - lib/python3.11*/site-packages/scripts/
+    - lib/python3.11*/site-packages/experiments/
+    - lib/python3.11*/site-packages/src/
+    - lib/python3.11*/site-packages/train_coef_energy.py
+    - lib/python3.11*/site-packages/eval_coef_energy.py
+    - lib/python3.11*/site-packages/surrogate_robust.py
+
+notes: >-
+  Provenance & follow-ups.  (1) The sdist is the artifact built from
+  CVC-Lab/GRL-SNAM (`grl_snam-0.1.0.tar.gz`); the pinned sha256 is that
+  file's hash.  The url points at the v0.1.0 GitHub release asset — publish
+  that release (or mirror the sdist to a cvcpkg source host) so the fetch
+  resolves.  (2) This single recipe targets python311 and installs into its
+  site-packages; a per-interpreter matrix (grl-snam × cp311/cp312/cp313, as
+  numpy does) is the follow-on for full 3.10–3.13 coverage.  (3) Runtime PyPI
+  deps: numpy is covered by numpy-cp311; torch (>=2.1), matplotlib (>=3.7)
+  and imageio (>=2.31) still need python_wheel recipes (Phase 7 "more wheels
+  remain") before this closure fully resolves.  (4) build_isolation:false
+  needs the pinned poetry-core backend importable in the build interpreter —
+  a poetry-core wheel recipe is the remaining Phase-7 prerequisite (else build
+  with network isolation on).
