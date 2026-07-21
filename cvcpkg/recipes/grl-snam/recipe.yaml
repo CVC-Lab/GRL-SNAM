@@ -25,7 +25,7 @@ source:
   # then offline.
   type: python_sdist
   url: https://github.com/CVC-Lab/GRL-SNAM/releases/download/v0.1.0/grl_snam-0.1.0.tar.gz
-  sha256: "69ac558244f063291966cdad2d8ea71041172bc4d55d1f3fb2578cc64c7c9116"
+  sha256: "208f21688e5634de128b5ab4ec77e9563e903a62888ecda81e2afa384bd01cd2"
   strip_components: 1
 
 python:
