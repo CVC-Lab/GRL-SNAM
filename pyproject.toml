@@ -31,6 +31,7 @@ Repository = "https://github.com/CVC-Lab/GRL-SNAM"
 [tool.poetry]
 packages = [
     { include = "grl_snam" },
+    { include = "grl_snam_lab" },
     { include = "scripts" },
     { include = "experiments" },
     { include = "src" },
