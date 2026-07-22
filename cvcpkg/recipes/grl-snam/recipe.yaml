@@ -47,9 +47,10 @@ depends:
     - name: python311
   runtime:
     - name: python311
-    # libcvc ships the pycvc Python bindings into the prefix site-packages, so
-    # grl_snam can `import cvc` from the same activatable prefix.
-    - name: libcvc
+    # The lab imports pycvc + pycvc_gl (the scriptable scene). Those bindings
+    # are no longer bundled in libcvc (libcvc is a pure C++ SDK now); they ship
+    # as the pycvc-gl package, which pulls in libcvc + numpy transitively.
+    - name: pycvc-gl
     - name: numpy-cp311
 
 build:
