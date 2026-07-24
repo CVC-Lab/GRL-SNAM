@@ -95,7 +95,11 @@ class Lab:
 
     def __init__(self):
         self._pycvc, self._gl = _require_pycvc()
-        self._scene = self._gl.Scene()
+        # One app handle owns this Lab's whole graphics context. Every pycvc
+        # object built below (geometry/volume) and the scene co-own it via
+        # shared_ptr, so it outlives them — there is no global singleton.
+        self._app = self._pycvc.make_app()
+        self._scene = self._gl.Scene(self._app)
 
     # -- meshes --------------------------------------------------------------
 
@@ -109,7 +113,7 @@ class Lab:
         """Add a triangle mesh (obstacle / building / surface) from flat
         row-major ``vertices`` (``[x,y,z,...]``) and ``triangles``
         (``[i,j,k,...]``)."""
-        g = self._pycvc.Geometry()
+        g = self._pycvc.geometry(self._app)
         g.add_vertices(list(vertices))
         g.add_triangles(list(triangles))
         if color is not None:
@@ -136,7 +140,7 @@ class Lab:
         verts, n = _flatten_points(points)
         if n < 2:
             raise ValueError("add_path needs at least 2 points")
-        g = self._pycvc.Geometry()
+        g = self._pycvc.geometry(self._app)
         g.add_vertices(verts)
         g.add_lines(polyline_indices(n))
         if color is not None:
@@ -151,7 +155,7 @@ class Lab:
         verts, n = _flatten_points(positions)
         if n < 1:
             raise ValueError("add_markers needs at least 1 position")
-        g = self._pycvc.Geometry()
+        g = self._pycvc.geometry(self._app)
         g.add_vertices(verts)
         if color is not None:
             g.set_colors(list(color) * g.num_vertices())
@@ -173,7 +177,7 @@ class Lab:
         scalars; ``dims`` = (nx, ny, nz); ``bounds`` = the object-space box.
         """
         nx, ny, nz = dims
-        v = self._pycvc.Volume()
+        v = self._pycvc.volume(self._app)
         v.set_float_grid(list(values), nx, ny, nz, *bounds)
         self._scene.add_volume(name, v)
         return self
