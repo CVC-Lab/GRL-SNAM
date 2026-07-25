@@ -55,6 +55,22 @@ if [ -z "${libdir}" ]; then
   exit 1
 fi
 PYTHONPATH="${libdir}${PYTHONPATH:+:${PYTHONPATH}}" "${py}" -c "
-import grl_snam
-print('grl_snam', getattr(grl_snam, '__version__', '(no __version__)'), 'from', grl_snam.__file__)
+import grl_snam, grl_snam_lab
+# grl_snam_lab imports without the compiled bindings (pycvc is lazy); the live
+# demo + standalone entry points must be exposed for the volrover3 REPL and the
+# grl-snam-lab-demo console script.
+for fn in ('Lab', 'run_in_volrover', 'run_standalone', 'demo_scene'):
+    assert hasattr(grl_snam_lab, fn), 'grl_snam_lab missing ' + fn
+import grl_snam.selftest  # the grl-snam-selftest console entry point
+print('grl_snam', getattr(grl_snam, '__version__', '(no __version__)'),
+      '| grl_snam_lab', grl_snam_lab.__version__, 'from', grl_snam_lab.__file__)
 "
+
+# The console scripts must be installed by the wheel's entry-points into bin/.
+for _s in grl-snam-selftest grl-snam-lab-demo; do
+  if [ ! -x "${CVC_INSTALL_DIR}/bin/${_s}" ]; then
+    echo "build.sh: expected console script bin/${_s} not installed" >&2
+    exit 1
+  fi
+done
+echo "grl-snam: console scripts installed: grl-snam-selftest, grl-snam-lab-demo"
