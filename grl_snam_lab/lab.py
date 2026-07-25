@@ -93,13 +93,30 @@ class Lab:
     """A live 3D GRL-SNAM scene: add terrain, obstacles, agent paths, agents,
     and scalar fields, then show it. Domain-general — no dataset knowledge."""
 
-    def __init__(self):
+    def __init__(self, app=None, scene=None):
+        """Build a Lab.
+
+        Standalone (default): ``Lab()`` creates its own pycvc app + a fresh
+        ``pycvc_gl.Scene`` and renders through ``show()`` / ``render_png()``.
+
+        Embedded: pass an existing ``app`` and/or ``scene`` to drive a HOST's
+        live scene instead — e.g. inside volrover3::
+
+            import vrhost
+            lab = Lab(app=vrhost.app(), scene=vrhost.scene())
+            lab.add_terrain(...)      # appears in the running volrover3 window
+
+        ``scene`` (a ``pycvc_gl.Scene`` that adopts the host's live SceneGraph)
+        makes every ``add_*`` mutate the running scene; don't call ``show()`` in
+        that mode — the host owns the render loop. If only ``app`` is given, a new
+        Scene is built on it; if only ``scene`` is given, its app is reused.
+        """
         self._pycvc, self._gl = _require_pycvc()
         # One app handle owns this Lab's whole graphics context. Every pycvc
         # object built below (geometry/volume) and the scene co-own it via
         # shared_ptr, so it outlives them — there is no global singleton.
-        self._app = self._pycvc.make_app()
-        self._scene = self._gl.Scene(self._app)
+        self._app = app if app is not None else self._pycvc.make_app()
+        self._scene = scene if scene is not None else self._gl.Scene(self._app)
 
     # -- meshes --------------------------------------------------------------
 
