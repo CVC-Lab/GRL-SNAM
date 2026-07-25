@@ -52,6 +52,12 @@ depends:
     # as the pycvc-gl package, which pulls in libcvc + numpy transitively.
     - name: pycvc-gl
     - name: numpy-cp311
+    # The surrogate-dynamics numerics + the grl-snam-selftest correctness demo
+    # need torch (CPU). The visual lab path (pycvc-gl) does not.
+    - name: torch-cp311
+    # NOTE: the full research core (train/eval, grl_snam.*) also imports
+    # matplotlib + imageio — pending cvcpkg recipes; the two demos (viz +
+    # selftest) do not need them, so they are omitted until those land.
 
 build:
   # Pure Python: built once, valid everywhere (platform: any / noarch).

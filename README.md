@@ -56,6 +56,72 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
+## Demos & entry points
+
+GRL-SNAM installs **two console scripts** plus a **volrover3 REPL** entry point.
+GRL-SNAM and volrover3 are installed **separately** and do **not** depend on each
+other — both depend only on `pycvc` + `pycvc_gl` (from libcvc / cvcpkg). The lab
+detects volrover3 at runtime via the host-injected `vrhost` module.
+
+### 1. Numerical correctness demo (console) — `grl-snam-selftest`
+Exercises the surrogate navigation dynamics (`integrate_surrogate_v2`) on small,
+seeded, self-contained cases; needs `torch`, runs in ~1 s, no dataset.
+
+```bash
+grl-snam-selftest          # or: python -m grl_snam.selftest
+```
+**Expected output** — four `PASS` checks and `OK`:
+```
+grl-snam-selftest: exercising integrate_surrogate_v2 (surrogate navigation dynamics)
+  [PASS] shapes (o,v,min_clear)              o(1, 2) v(1, 2) clr(1,)
+  [PASS] goal-seeking reduces distance       |o0-goal|=20.000 -> |oT-goal|=0.00x
+  [PASS] goal-seeking output finite          ...
+  [PASS] IPC barrier path stays finite       min_clear=...
+  [PASS] deterministic (reproducible)        two runs bit-identical
+grl-snam-selftest: OK — surrogate dynamics correct
+```
+It proves: goal-seeking (the damped spring reduces distance to goal), the IPC
+collision barrier stays numerically finite, and the integrator is deterministic.
+
+### 2. Standalone visual lab demo (console) — `grl-snam-lab-demo`
+Builds a demo scene (terrain + an agent track + a marker) in a **self-owned**
+window (needs `pycvc`/`pycvc_gl` + a GL display), or renders it offscreen:
+
+```bash
+grl-snam-lab-demo            # opens an interactive window
+grl-snam-lab-demo out.png    # headless: writes a PNG snapshot
+```
+**Expected to see** — a green Gaussian-bump **terrain** surface, a yellow looping
+**agent track** draped above it, and a red **marker** at the agent's start.
+
+### 3. Live demo inside volrover3 (REPL) — `grl_snam_lab.run_in_volrover()`
+The same scene, but rendered into a **running volrover3's live viewport** — the
+whole point of the embedded interpreter. In volrover3's Python Console (REPL tab):
+
+```python
+>>> import grl_snam_lab
+>>> grl_snam_lab.run_in_volrover()
+grl_snam_lab: live volrover3 scene now has 3 node(s) (terrain + agent0_track + agent0) — look at the viewport.
+```
+**Expected to see** — the terrain + track + marker appear **in the volrover3 3D
+window you already have open** (not a separate window); you can orbit/zoom them
+with the app's camera, toggle them in the scene tree, and drive them further from
+the REPL. Outside volrover3 (`vrhost` absent) it prints a clear message pointing
+you at `run_standalone()` / `grl-snam-lab-demo`.
+
+### 4. DBG variant — the full gym (`grl_snam_dbg`)
+The dataset-specific extension lives in the separate **`grl_snam_dbg`** project
+(it depends on GRL-SNAM, not the other way round). Its `grl_snam_dbg_demo.py`
+runs the **full communication-resilient navigation gym** end-to-end (~2 min,
+seeded): radio/material/jammer physics → episode generation → the 7-head
+coefficient network forward pass → differentiable surrogate rollout → phased
+GPU/CPU training → evaluation metrics → online adaptation. **Expected to see** a
+staged console report of what each phase produced (loss curves, metrics, a
+trained model), and — once the DBG→lab adapter lands — the `austin_south` terrain
+with 28 agents moving along their `movement_bundle.v1` tracks and a live
+path-loss field volume rendered in volrover3. That adapter + demo are the DBG
+project's deliverable, keeping DBG-specific code out of this general library.
+
 ## Repository Structure
 
 ```

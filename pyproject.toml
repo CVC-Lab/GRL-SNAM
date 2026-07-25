@@ -28,6 +28,15 @@ Homepage = "https://github.com/CVC-Lab/GRL-SNAM"
 Repository = "https://github.com/CVC-Lab/GRL-SNAM"
 "Bug Tracker" = "https://github.com/CVC-Lab/GRL-SNAM/issues"
 
+[project.scripts]
+# Numerical correctness demo — exercises the surrogate navigation dynamics and
+# asserts goal-seeking / finiteness / determinism (needs torch). ~1s, no data.
+grl-snam-selftest = "grl_snam.selftest:main"
+# Standalone visual lab demo (needs pycvc/pycvc_gl + a GL context): opens a window,
+# or `grl-snam-lab-demo out.png` renders offscreen. Inside volrover3 use the REPL
+# instead: `import grl_snam_lab; grl_snam_lab.run_in_volrover()`.
+grl-snam-lab-demo = "grl_snam_lab.demo:main"
+
 [tool.poetry]
 packages = [
     { include = "grl_snam" },

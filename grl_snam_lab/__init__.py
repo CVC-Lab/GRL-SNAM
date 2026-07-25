@@ -24,11 +24,20 @@ Example::
     lab.add_path("agent0", [(x0, y0, z0), (x1, y1, z1), ...])
     lab.add_field("risk", risk_grid, bounds=(-100, -100, 0, 100, 100, 20))
     lab.show()                       # or lab.render_png("scene.png")
+
+Ready-to-run demo — inside a running volrover3 (Python Console REPL)::
+
+    >>> import grl_snam_lab
+    >>> grl_snam_lab.run_in_volrover()   # terrain + track + marker in the live window
+
+...or standalone (own window / PNG) via ``run_standalone()`` or the
+``grl-snam-lab-demo`` console script.
 """
 
 from __future__ import annotations
 
+from .demo import demo_scene, run_in_volrover, run_standalone
 from .lab import Lab, terrain_mesh
 
-__all__ = ["Lab", "terrain_mesh"]
+__all__ = ["Lab", "terrain_mesh", "demo_scene", "run_in_volrover", "run_standalone"]
 __version__ = "0.1.0"
