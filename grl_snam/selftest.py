@@ -43,8 +43,8 @@ def main(argv: list[str] | None = None) -> int:
     def coeffs(N: int):
         return dict(
             alphas=torch.ones(B, N, dtype=f64),  # barrier strength per obstacle
-            beta=torch.ones(B, dtype=f64),       # goal-spring stiffness
-            gamma=torch.ones(B, dtype=f64),      # velocity damping
+            beta=torch.ones(B, dtype=f64),  # goal-spring stiffness
+            gamma=torch.ones(B, dtype=f64),  # velocity damping
             d_hat=torch.full((B,), 2.0, dtype=f64),  # barrier activation distance
             dt=torch.full((B,), 0.05, dtype=f64),
             H=torch.full((B,), 400, dtype=torch.long),
@@ -64,21 +64,35 @@ def main(argv: list[str] | None = None) -> int:
     o, v, clr = integrate_surrogate_v2(o0, v0, goal, empty2, empty1, emptym, **coeffs(0))
     d0 = torch.linalg.norm(o0 - goal).item()
     d1 = torch.linalg.norm(o - goal).item()
-    checks.append(("shapes (o,v,min_clear)", tuple(o.shape) == (B, 2) and tuple(v.shape) == (B, 2)
-                   and tuple(clr.shape) == (B,), f"o{tuple(o.shape)} v{tuple(v.shape)} clr{tuple(clr.shape)}"))
-    checks.append(("goal-seeking reduces distance", d1 < d0, f"|o0-goal|={d0:.3f} -> |oT-goal|={d1:.3f}"))
+    checks.append(
+        (
+            "shapes (o,v,min_clear)",
+            tuple(o.shape) == (B, 2) and tuple(v.shape) == (B, 2) and tuple(clr.shape) == (B,),
+            f"o{tuple(o.shape)} v{tuple(v.shape)} clr{tuple(clr.shape)}",
+        )
+    )
+    checks.append(
+        ("goal-seeking reduces distance", d1 < d0, f"|o0-goal|={d0:.3f} -> |oT-goal|={d1:.3f}")
+    )
     checks.append(("goal-seeking output finite", bool(torch.isfinite(o).all()), f"oT={o.tolist()}"))
 
     # ── 2. Finite through the IPC barrier (N=1, obstacle beside the path) ────
     C = torch.tensor([[[0.0, 6.0]]], dtype=f64)  # off the x-axis direct path
     R = torch.full((B, 1), 2.0, dtype=f64)
     mask = torch.ones(B, 1, dtype=torch.bool)
-    ob_o, ob_v, ob_clr = integrate_surrogate_v2(o0, v0, goal, C, R, mask, **coeffs(1),
-                                                robot_radius=0.5)
-    barrier_finite = bool(torch.isfinite(ob_o).all() and torch.isfinite(ob_v).all()
-                          and torch.isfinite(ob_clr).all())
-    checks.append(("IPC barrier path stays finite", barrier_finite,
-                   f"min_clear={ob_clr.item():.4f}, oT={ob_o.tolist()}"))
+    ob_o, ob_v, ob_clr = integrate_surrogate_v2(
+        o0, v0, goal, C, R, mask, **coeffs(1), robot_radius=0.5
+    )
+    barrier_finite = bool(
+        torch.isfinite(ob_o).all() and torch.isfinite(ob_v).all() and torch.isfinite(ob_clr).all()
+    )
+    checks.append(
+        (
+            "IPC barrier path stays finite",
+            barrier_finite,
+            f"min_clear={ob_clr.item():.4f}, oT={ob_o.tolist()}",
+        )
+    )
 
     # ── 3. Determinism (identical inputs -> identical outputs) ──────────────
     o_a, v_a, c_a = integrate_surrogate_v2(o0, v0, goal, C, R, mask, **coeffs(1), robot_radius=0.5)

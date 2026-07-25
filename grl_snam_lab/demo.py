@@ -111,7 +111,9 @@ def main(argv: list[str] | None = None) -> int:
         prog="grl-snam-lab-demo",
         description="GRL-SNAM lab demo (terrain + agent track + marker), standalone.",
     )
-    ap.add_argument("png", nargs="?", help="write an offscreen PNG here instead of opening a window")
+    ap.add_argument(
+        "png", nargs="?", help="write an offscreen PNG here instead of opening a window"
+    )
     args = ap.parse_args(argv)
     try:
         run_standalone(png=args.png)
