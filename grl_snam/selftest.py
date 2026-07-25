@@ -53,6 +53,10 @@ def main(argv: list[str] | None = None) -> int:
     o0 = torch.tensor([[-10.0, 0.0]], dtype=f64)
     v0 = torch.zeros(B, 2, dtype=f64)
     goal = torch.tensor([[10.0, 0.0]], dtype=f64)
+    # robot_radius must be a (B,) tensor (the shape the planner calls it with);
+    # a scalar would break the internal `rr[:, None]` broadcast.
+    rr0 = torch.zeros(B, dtype=f64)  # a point robot
+    rr = torch.full((B,), 0.5, dtype=f64)  # a finite-radius robot
 
     print("grl-snam-selftest: exercising integrate_surrogate_v2 (surrogate navigation dynamics)")
     checks: list[tuple[str, bool, str]] = []
@@ -61,7 +65,9 @@ def main(argv: list[str] | None = None) -> int:
     empty2 = torch.zeros(B, 0, 2, dtype=f64)
     empty1 = torch.zeros(B, 0, dtype=f64)
     emptym = torch.zeros(B, 0, dtype=torch.bool)
-    o, v, clr = integrate_surrogate_v2(o0, v0, goal, empty2, empty1, emptym, **coeffs(0))
+    o, v, clr = integrate_surrogate_v2(
+        o0, v0, goal, empty2, empty1, emptym, **coeffs(0), robot_radius=rr0
+    )
     d0 = torch.linalg.norm(o0 - goal).item()
     d1 = torch.linalg.norm(o - goal).item()
     checks.append(
@@ -81,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     R = torch.full((B, 1), 2.0, dtype=f64)
     mask = torch.ones(B, 1, dtype=torch.bool)
     ob_o, ob_v, ob_clr = integrate_surrogate_v2(
-        o0, v0, goal, C, R, mask, **coeffs(1), robot_radius=0.5
+        o0, v0, goal, C, R, mask, **coeffs(1), robot_radius=rr
     )
     barrier_finite = bool(
         torch.isfinite(ob_o).all() and torch.isfinite(ob_v).all() and torch.isfinite(ob_clr).all()
@@ -95,8 +101,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # ── 3. Determinism (identical inputs -> identical outputs) ──────────────
-    o_a, v_a, c_a = integrate_surrogate_v2(o0, v0, goal, C, R, mask, **coeffs(1), robot_radius=0.5)
-    o_b, v_b, c_b = integrate_surrogate_v2(o0, v0, goal, C, R, mask, **coeffs(1), robot_radius=0.5)
+    o_a, v_a, c_a = integrate_surrogate_v2(o0, v0, goal, C, R, mask, **coeffs(1), robot_radius=rr)
+    o_b, v_b, c_b = integrate_surrogate_v2(o0, v0, goal, C, R, mask, **coeffs(1), robot_radius=rr)
     deterministic = bool(torch.equal(o_a, o_b) and torch.equal(v_a, v_b) and torch.equal(c_a, c_b))
     checks.append(("deterministic (reproducible)", deterministic, "two runs bit-identical"))
 
