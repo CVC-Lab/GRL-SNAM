@@ -33,47 +33,86 @@ __all__ = [
     "demo_scene",
     "agent_position",
     "animate_agent",
+    "terrain_height",
     "run_in_volrover",
     "run_standalone",
     "TRACK",
 ]
 
-# The agent's closed trajectory: a radius-78 loop undulating in Z, draped above a
-# 200x200 terrain. Shared by the static path (drawn whole) and the animation (the
-# agent walks it).
-TRACK = [
-    (78.0 * math.cos(k * 0.2), 78.0 * math.sin(k * 0.2), 16.0 + 4.0 * math.sin(k * 0.6))
-    for k in range(32)
-]
+# ── World geometry ───────────────────────────────────────────────────────────
+# The terrain is an ANALYTIC height field h(x,y) over a 200x200 world box; the
+# drawn terrain mesh samples it, and the agent + track DRAPE onto it (so the
+# robot sits on the ground, not floating). The agent walks a SMOOTH analytic
+# loop (a real circle, not a coarse polygon), so its position AND its heading
+# vary continuously — the earlier 32-gon made the chase camera jerk at each
+# vertex because the velocity jumped there.
+
+TERRAIN_BOUNDS = (-100.0, -100.0, 100.0, 100.0)  # (min_x, min_y, max_x, max_y)
+TRACK_RADIUS = 70.0  # loop radius (world units)
+LOOP_SECONDS = 22.0  # time for the agent to walk one full lap at speed 1.0
+AGENT_LIFT = 0.4  # small lift so the marker base clears z-fighting with terrain
+_N_TRACK = 180  # drawn-polyline resolution (fine => looks like a smooth circle)
 
 
-def _terrain_heights(n: int = 32):
-    return [
-        [10.0 * math.exp(-(((i - n / 2) ** 2 + (j - n / 2) ** 2) / 90.0)) for j in range(n)]
-        for i in range(n)
-    ]
+def terrain_height(x: float, y: float) -> float:
+    """Analytic terrain height at world ``(x, y)`` — gentle rolling hills (a central
+    rise, two bumps, a low ripple). The single source of truth for the terrain: the
+    mesh samples it and the agent/track drape onto it."""
+    h = 14.0 * math.exp(-((x * x + y * y) / 3000.0))  # central hill
+    h += 8.0 * math.exp(-(((x - 55.0) ** 2 + (y + 35.0) ** 2) / 900.0))  # bump
+    h += 6.0 * math.exp(-(((x + 45.0) ** 2 + (y - 50.0) ** 2) / 1200.0))  # bump
+    h += 2.5 * math.sin(x * 0.06) * math.cos(y * 0.05)  # ripple
+    return h
 
 
-def _agent_marker_mesh(size: float = 6.0):
-    """A small upward tetrahedron centred at the ORIGIN — a marker that reads from
-    any angle (a single point is nearly invisible at scene scale). Built ONCE and
-    then MOVED via the node transform (see ``animate_agent``), never rebuilt."""
+def _terrain_heights(n: int = 56):
+    """Sample ``terrain_height`` on an n x n grid over TERRAIN_BOUNDS (row-major,
+    row index -> y, col index -> x), matching ``terrain_mesh``'s layout."""
+    min_x, min_y, max_x, max_y = TERRAIN_BOUNDS
+    sx = (max_x - min_x) / (n - 1)
+    sy = (max_y - min_y) / (n - 1)
+    return [[terrain_height(min_x + j * sx, min_y + i * sy) for j in range(n)] for i in range(n)]
+
+
+def _loop_point(theta: float):
+    """A point on the agent's demo loop at angle ``theta``, draped onto the terrain.
+
+    The radius WANDERS (a 3-lobed modulation) so the heading changes at a varying
+    rate — this is a stand-in for a real GRL-SNAM path, and it gives the
+    position-driven chase camera genuine direction changes to smooth. (The camera
+    never sees this function; it only sees the emitted positions.)"""
+    r = TRACK_RADIUS + 8.0 * math.sin(3.0 * theta)
+    x = r * math.cos(theta)
+    y = r * math.sin(theta)
+    return (x, y, terrain_height(x, y) + AGENT_LIFT)
+
+
+# The drawn track: a fine, closed, draped ring (looks like a smooth circle on the
+# terrain). Shared by the static path (drawn whole) and the animation.
+TRACK = [_loop_point(2.0 * math.pi * k / _N_TRACK) for k in range(_N_TRACK + 1)]
+
+
+def _agent_marker_mesh(size: float = 5.0):
+    """A small upward tetrahedron with its BASE at local z=0 (apex at +size), so
+    placing it via setPosition(x, y, terrain_height) sits it ON the ground. Built
+    ONCE at the origin and then MOVED via the node transform (see animate_agent)."""
     s = size
     verts = [0.0, 0.0, s, -s, -s, 0.0, s, -s, 0.0, 0.0, s, 0.0]
     tris = [0, 1, 2, 0, 2, 3, 0, 3, 1, 1, 3, 2]
     return verts, tris
 
 
-def agent_position(t: float, speed: float = 6.0):
-    """The agent's (x,y,z) at time ``t`` — linearly interpolated along the closed
-    ``TRACK`` so it moves smoothly, at ``speed`` track-points per second, looping."""
-    n = len(TRACK)
-    f = (t * speed) % n
-    i = int(f)
-    j = (i + 1) % n
-    a = f - i
-    p, q = TRACK[i], TRACK[j]
-    return tuple(p[k] * (1.0 - a) + q[k] * a for k in range(3))
+def _theta(t: float, speed: float) -> float:
+    return 2.0 * math.pi * ((t * speed / LOOP_SECONDS) % 1.0)
+
+
+def agent_position(t: float, speed: float = 1.0):
+    """The agent's (x, y, z) at time ``t`` on the demo loop, draped onto the
+    terrain. ``speed`` scales time (1.0 => one lap per LOOP_SECONDS). This is only
+    a stand-in path for the demo — the live GRL-SNAM planner will supply real
+    positions; feed whichever stream you have to ``ChaseCamera`` (grl_snam_lab.camera),
+    which derives the camera heading from the positions themselves."""
+    return _loop_point(_theta(t, speed))
 
 
 def animate_agent(lab: Lab, t: float) -> Lab:

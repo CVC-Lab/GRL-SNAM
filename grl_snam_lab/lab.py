@@ -136,9 +136,9 @@ class Lab:
         g = self._pycvc.geometry(self._app)
         g.add_vertices(list(vertices))
         g.add_triangles(list(triangles))
-        if color is not None:
-            g.set_colors(list(color) * g.num_vertices())
         self._scene.addGraphics(name, g)
+        if color is not None:
+            self.recolor(name, color)  # single-color material (faithful; see recolor)
         return self
 
     def add_terrain(
@@ -161,9 +161,9 @@ class Lab:
         g = self._pycvc.geometry(self._app)
         g.add_vertices(verts)
         g.add_lines(polyline_indices(n))
-        if color is not None:
-            g.set_colors(list(color) * g.num_vertices())
         self._scene.addGraphics(name, g)
+        if color is not None:
+            self.recolor(name, color)  # single-color material (faithful; see recolor)
         return self
 
     def add_markers(
@@ -175,9 +175,9 @@ class Lab:
             raise ValueError("add_markers needs at least 1 position")
         g = self._pycvc.geometry(self._app)
         g.add_vertices(verts)
-        if color is not None:
-            g.set_colors(list(color) * g.num_vertices())
         self._scene.addGraphics(name, g)
+        if color is not None:
+            self.recolor(name, color)  # single-color material (faithful; see recolor)
         return self
 
     # -- scalar fields -------------------------------------------------------
@@ -219,10 +219,17 @@ class Lab:
         return self
 
     def recolor(self, name: str, color: Color):
-        """Recolor mesh node ``name`` in place (single-color material)."""
+        """Recolor node ``name`` in place with a single flat material color.
+
+        Uses the node's material color (setUseSingleColor + setColor), NOT
+        per-vertex colors: cvcGL renders per-vertex float colors through VTK's
+        lookup table (a channel-mangling bug — a red mesh comes out blue), so a
+        uniform color must go through the actor property to be faithful.
+        """
         gn = self._scene.geometry_node(name)
         if gn is None:
             raise KeyError(f"grl_snam_lab.Lab.recolor: no mesh node named {name!r}")
+        gn.setUseSingleColor(True)
         gn.setColor(*[float(c) for c in color])
         return self
 
