@@ -200,6 +200,16 @@ class Lab:
         self._scene.addGraphics(name, v)
         return self
 
+    # -- external / VTK props ------------------------------------------------
+
+    def add_prop(self, name: str, prop, bounds: Bounds3D):
+        """Add a pre-built VTK prop (e.g. a ``vtkActor`` loaded from glTF/OBJ) as a
+        named scene node. ``bounds`` = ``(min_x, min_y, min_z, max_x, max_y,
+        max_z)`` (used for framing/clipping). Lets a whole city mesh join the
+        scene without going through cvc::geometry. See ``grl_snam_lab.scenes``."""
+        self._gl.add_prop(self._scene, name, prop, *[float(c) for c in bounds])
+        return self
+
     # -- in-place UPDATE (the animation path) --------------------------------
 
     def node(self, name: str):
