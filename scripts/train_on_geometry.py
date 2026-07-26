@@ -66,7 +66,7 @@ def make_batch(pool, centers_n, radn, rr, bs=64):
     si = np.random.randint(0, len(pool), bs)
     o0 = pool[si]
     ang = np.random.uniform(0, 2 * np.pi, bs).astype(np.float32)
-    dist = np.random.uniform(1.5, 3.0, bs).astype(np.float32)
+    dist = np.random.uniform(1.0, 2.0, bs).astype(np.float32)  # reachable within the horizon
     goal = (o0 + np.stack([np.cos(ang), np.sin(ang)], 1) * dist[:, None]).astype(np.float32)
 
     nbs = [_nearby(centers_n, o0[i]) for i in range(bs)]
@@ -96,9 +96,14 @@ def main() -> None:
     ap.add_argument("--region", type=float, default=430.0,
                     help="working-region half-extent (world units) around the scene center")
     ap.add_argument("--batch", type=int, default=64)
-    ap.add_argument("--horizon", type=int, default=24, help="rollout steps per train sample")
+    ap.add_argument("--horizon", type=int, default=28, help="rollout steps per train sample")
     ap.add_argument("--dt", type=float, default=0.06)
-    ap.add_argument("--d-hat", type=float, default=2.0, help="IPC barrier activation distance")
+    ap.add_argument("--d-hat-world", type=float, default=25.0,
+                    help="IPC barrier reach in WORLD units (~one street width). Kept LOCAL: a "
+                         "large reach makes every point sit inside many overlapping barriers "
+                         "(a 'sea of repulsion') that stalls the agent in a dense scene.")
+    ap.add_argument("--w-reg", type=float, default=0.3,
+                    help="weight anchoring coefficients to the known-good navigating regime")
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--threads", type=int, default=6)
     ap.add_argument("--eval-episodes", type=int, default=30)
@@ -130,7 +135,8 @@ def main() -> None:
 
     model = CoefEnergyNet()
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
-    H, dt, d_hat = args.horizon, args.dt, args.d_hat
+    H, dt = args.horizon, args.dt
+    d_hat = args.d_hat_world * S  # barrier reach in the normalized regime (local, not global)
     t0 = time.time()
     for it in range(args.steps):
         o0, v0, goal, C, R, mask, of, gf = make_batch(pool, centers_n, radn, rr, args.batch)
@@ -143,10 +149,17 @@ def main() -> None:
             robot_radius=torch.full((B,), rr), margin_factor=0.5,
         )
         L_goal = ((oT - goal) ** 2).sum(-1).mean()                                   # reach it
-        L_pen = torch.nn.functional.softplus((rr - clr) / 0.05).mean()               # keep clearance
-        vmag = (vT ** 2).sum(-1).clamp_min(1e-9).sqrt()
-        L_vel = torch.nn.functional.softplus((vmag - 0.6) / 0.05).mean()             # don't rush
-        loss = L_goal + 8.0 * L_pen + 1.0 * L_vel
+        # Penalize COLLISION only (clr below a thin margin), NOT proximity: streets are
+        # narrow, so navigating them needs low positive clearance. A speed cap or an
+        # over-eager clearance penalty makes staying put (max clearance / min speed) beat
+        # moving, and the net collapses to a crawl (gamma >> beta). No speed cap.
+        L_pen = torch.nn.functional.softplus((0.02 - clr) / 0.02).mean()
+        # Anchor coefficients to the known-good navigating regime (beta~3, gamma~4,
+        # alpha~3) so the self-supervised optimizer stays in the stable basin while the
+        # task terms adapt them per situation.
+        L_reg = ((be - 3.0) ** 2).mean() + ((ga - 4.0) ** 2).mean() + \
+                (((al - 3.0) ** 2) * mask).sum() / mask.sum().clamp_min(1)
+        loss = L_goal + 3.0 * L_pen + args.w_reg * L_reg
         opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)

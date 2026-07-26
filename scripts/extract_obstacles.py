@@ -78,7 +78,9 @@ def main() -> None:
     ap.add_argument("bundle_dir", help="dir with terrain.json + buildings.glb")
     ap.add_argument("-o", "--out", default=None, help="output .npz (default <bundle>/obstacles.npz)")
     ap.add_argument("--grid", type=int, default=512, help="occupancy raster resolution")
-    ap.add_argument("--block", type=int, default=4, help="coarsen factor (obstacle granularity)")
+    ap.add_argument("--block", type=int, default=2,
+                    help="coarsen factor (obstacle granularity). Finer (2) gives ~7 m circles that "
+                         "leave streets navigable; coarser (4) gives ~14 m circles that crowd them.")
     args = ap.parse_args()
 
     data = extract(args.bundle_dir, grid=args.grid, block=args.block)

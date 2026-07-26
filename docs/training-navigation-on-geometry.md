@@ -92,20 +92,32 @@ python scripts/train_on_geometry.py obstacles.npz -o coef_energy.pt \
 ```
 
 Each optimizer step samples a batch of **local** navigation problems (start at a
-random free point, aim at a nearby goal 1.5–3.0 units away), rolls the surrogate
-forward `H` steps with the net's predicted coefficients, and minimizes:
+random free point, aim at a nearby *reachable* goal 1.0–2.0 units away), rolls the
+surrogate forward `H` steps with the net's predicted coefficients, and minimizes:
 
 ```
-L = L_goal  +  8.0 * L_penetration  +  1.0 * L_speed
-      │              │                      │
-   reach the      keep clearance ≥        don't rush
-   local goal     robot radius            (cap terminal speed)
+L = L_goal  +  3.0 * L_collision  +  0.3 * L_coef_reg
+      │              │                    │
+   reach the      penalize ACTUAL      anchor coefficients to the
+   local goal     penetration only     known-good navigating regime
+                  (not proximity)      (beta~3, gamma~4, alpha~3)
 ```
 
-all backpropagated through the rollout. **Local** goals are deliberate: a policy
-trained to reach *nearby* goals learns obstacle-avoiding local progress that
-*chains* into a full cross-map route at inference. Training on far goals instead
-rewards rushing in a straight line — which clips buildings.
+all backpropagated through the rollout. Two hard-won details make or break this:
+
+1. **Do not cap speed, and penalize collision — not proximity.** Streets are
+   narrow, so navigating them *requires* low positive clearance. A speed cap or a
+   proximity penalty makes staying put (max clearance, min speed) beat moving, and
+   the net collapses to a **crawl** (damping `gamma` ≫ goal-spring `beta`, agent
+   immobile). Penalize only *actual* penetration (clearance below a thin margin).
+2. **Regularize toward the known-good regime.** The self-supervised rollout
+   objective has degenerate optima (crawl, or erratic overshoot). Anchoring the
+   predicted coefficients to the working hand-set values keeps the optimizer in the
+   stable, navigating basin while the task terms adapt them per situation.
+
+**Local** goals are deliberate: a policy trained to reach *nearby* goals learns
+obstacle-avoiding local progress that *chains* into a route at inference — the
+paper's **stagewise** decomposition (§Scope).
 
 #### The scale-normalization step (important)
 
@@ -120,8 +132,13 @@ normalizes a **working region** into the tuned regime:
   consistently.
 
 For Austin, `--region 430` gives `scale ≈ 0.0116` (a ~860 m working area at the
-tuned zoom, `radn ≈ 0.16`, robot radius `≈ 0.035`). Widen `--region` to cover more
-map at coarser zoom, or run several regions to cover a large city.
+tuned zoom). Two geometry knobs matter in a real city: the obstacle circles come
+from `extract_obstacles.py --block 2` (~7 m circles that leave 20 m streets
+navigable — `radn ≈ 0.08`; coarser 14 m circles crowd them shut), and the IPC
+barrier reach is kept **local** (`--d-hat-world 25`, ~one street width) so the
+agent isn't stalled by a "sea of repulsion" from many overlapping barriers. Widen
+`--region` to cover more map at coarser zoom, or run several regions for a large
+city.
 
 ### Step 3 — Run the trained policy
 
@@ -138,24 +155,45 @@ At inference the loop, per step:
 4. `integrate_surrogate_v2` advances one step; the agent is draped onto the
    terrain and rendered.
 
-The demo scaffold is
-[`examples/volrover_grl_snam_planner.py`](../examples/volrover_grl_snam_planner.py)
-(load it from volrover3's Jobs tab). It currently ships with hand-set coefficients
-in a known-good regime; loading a `coef_energy.pt` checkpoint swaps the hand-set
-coefficients for the learned network + online adaptation — "the entire feature set
-in play."
+Two demo scaffolds load from volrover3's Jobs tab:
+
+- [`examples/volrover_grl_snam_planner.py`](../examples/volrover_grl_snam_planner.py)
+  — the learned policy's **native regime**: a handful of sparse circular obstacles,
+  where the surrogate navigates end-to-end. Load a `coef_energy.pt` checkpoint to
+  drive it with the learned network + online adaptation.
+- [`examples/volrover_grl_snam_austin_learned.py`](../examples/volrover_grl_snam_austin_learned.py)
+  — the **stagewise** demo on real Austin: an A* occupancy route is the
+  collision-free spine, and the trained `CoefEnergyNet` + `HistSecantController` do
+  the local reactive control between route sub-goals (see §Scope for why).
+
+### Scope — where the learned policy carries the whole navigation, and where a route helps
+
+The surrogate is a **circular-obstacle** potential field. It navigates cleanly when
+obstacles are **sparse and roughly round** (its native regime — rings, dungeons, a
+few pillars). A **dense rectilinear city** is the hard case: thousands of building
+footprints become thousands of overlapping circular barriers that conflict, and a
+point-agent gets pushed *through* corners no matter the coefficients (measured on
+Austin: even hand-set good coefficients reach 0–1/4 goals with heavy penetration).
+This is a property of the obstacle model, not of the training.
+
+So on a dense city, use the paper's own answer — **stagewise decomposition**: an
+occupancy-grid **A\* route** handles the global path through the streets (rectilinear
+geometry, done exactly), and the learned policy + online adaptation handle **local**
+reactive control within each stage, with the route as a collision-free spine. That
+is what the Austin demo does. For fully learned end-to-end navigation, keep the scene
+in the surrogate's native sparse-obstacle regime.
 
 ---
 
 ## 4. How long does training take?
 
-Measured on this workstation (6 CPU threads, batch 64, horizon 24):
+Measured on this workstation (6 CPU threads, batch 64, horizon 28):
 
 | Metric | Value |
 |--------|-------|
-| Per step | ~270–310 ms |
-| 5000 steps | **~22–26 min** |
-| Convergence | `L_goal` falls 100 → ~6 within the first ~1500 steps |
+| Per step (`--block 2`, ~28k obstacles) | ~270–400 ms |
+| 5000 steps | **~22–33 min** |
+| Convergence | the goal term drops steadily; per-stage reaching becomes reliable within the first few thousand steps |
 | Inference | ~7 ms/step (real-time driving) |
 
 A **GPU** cuts training roughly 10–20× (single-digit minutes for 5000 steps); the
@@ -195,8 +233,9 @@ specific map. The two are complementary.
 | Online adaptation | `HistSecantController`, `OnlineFinetuner` (`grl_snam.adaptation`) |
 | Geometry ingestion | [`scripts/extract_obstacles.py`](../scripts/extract_obstacles.py) |
 | Self-supervised trainer | [`scripts/train_on_geometry.py`](../scripts/train_on_geometry.py) |
-| Live demo scaffold | [`examples/volrover_grl_snam_planner.py`](../examples/volrover_grl_snam_planner.py) |
-| Scene helpers (terrain/glTF/occupancy) | `pycvc_gl.scenes` |
+| Live demo (native sparse-obstacle regime) | [`examples/volrover_grl_snam_planner.py`](../examples/volrover_grl_snam_planner.py) |
+| Live demo (stagewise, real Austin) | [`examples/volrover_grl_snam_austin_learned.py`](../examples/volrover_grl_snam_austin_learned.py) |
+| Scene helpers (terrain/glTF/occupancy/route) | `pycvc_gl.scenes` |
 
 See the [Developer Guide](developer-guide.md) for the underlying stagewise
 navigation model.
