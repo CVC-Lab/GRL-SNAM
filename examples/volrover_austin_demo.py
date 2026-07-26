@@ -52,6 +52,7 @@ _BUNDLE = os.environ.get(
 
 _app = vrhost.app()
 _lab = Lab(app=_app, scene=vrhost.scene())
+_lab.set_axis_visible(False)  # hide the XYZ gnomon — a distraction for this demo
 # Real Austin terrain + buildings; `_sample(x, y)` is the terrain height (drape).
 _sample = load_geometry_bundle(_lab, _BUNDLE)
 

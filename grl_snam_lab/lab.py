@@ -247,6 +247,11 @@ class Lab:
 
     # -- lifecycle -----------------------------------------------------------
 
+    def set_axis_visible(self, visible: bool):
+        """Show/hide the scene's XYZ axis gnomon (a distraction for clean demos)."""
+        self._scene.setAxisVisible(bool(visible))
+        return self
+
     def pump(self):
         self._scene.processEvents()
         return self
