@@ -45,6 +45,13 @@ patches: []
 depends:
   build:
     - name: python311
+    # Test/lint tools for the `test:` block below. cvcpkg has no separate
+    # test-deps group, so they are depends.build edges: staged into the build
+    # prefix and stripped from the shipped bundle (never a runtime dependency
+    # of grl-snam). Recipes live in libcvc-deps/recipes/{pytest,ruff,black}.
+    - name: pytest
+    - name: ruff
+    - name: black
   runtime:
     - name: python311
     # The lab imports pycvc + pycvc_gl (the scriptable scene). Those bindings
@@ -65,6 +72,15 @@ build:
   matrix:
     - platform: any
       script: build.sh
+
+# Bundle self-test — the cvcpkg-native counterpart to the GRL-SNAM CI test job.
+# Runs `pytest -q` under the build prefix (where depends.build staged pytest/
+# ruff/black and depends.runtime staged the pycvc-gl + numpy + torch closure)
+# against the just-built package. A non-zero exit means the bundle is broken and
+# must not ship. The FULL lint+test suite over the working tree runs in CI
+# (.github/workflows/ci.yml), which installs this same closure via cvcpkg.
+test:
+  script: test.sh
 
 package:
   files:
