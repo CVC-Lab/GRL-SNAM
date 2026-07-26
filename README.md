@@ -109,7 +109,42 @@ with the app's camera, toggle them in the scene tree, and drive them further fro
 the REPL. Outside volrover3 (`vrhost` absent) it prints a clear message pointing
 you at `run_standalone()` / `grl-snam-lab-demo`.
 
-### 4. DBG variant — the full gym (`grl_snam_dbg`)
+### 4. Learned SDF navigation on real geometry — the live drive demos
+
+The navigator can be **trained on a real scene** (terrain + city mesh) and driven
+live in volrover3. Two prep steps (once), then load a demo as a volrover3 job. See
+[docs/training-navigation-on-geometry.md](docs/training-navigation-on-geometry.md).
+
+**Prep — build the SDF + train the policy** (CPU, a few minutes):
+```bash
+python scripts/build_sdf.py <bundle> --source edt      # footprint SDF (or --source cvc for cvc::sdf)
+python scripts/train_sdf.py <bundle>/nav_sdf.npz -o checkpoints/coef_sdf.pt --steps 1500
+```
+
+**Run inside volrover3** — from the app's **Jobs tab → Load Script… → Run as Job**,
+or headless via the CLI:
+```bash
+export GRL_SNAM_CHECKPOINT=$PWD/checkpoints/coef_sdf.pt
+export GRL_SNAM_SCENE_BUNDLE=/path/to/austin_south      # dir with terrain.json + buildings.glb
+volrover3 --run-job examples/volrover_grl_snam_austin_freedrive.py
+```
+`--run-job` loads a file that defines `step(dt)` and ticks it cooperatively (it
+appears in the Python Console Jobs tab). Env vars: `GRL_SNAM_CHECKPOINT` (trained
+`.pt`), `GRL_SNAM_SCENE_BUNDLE` (scene dir), `GRL_SNAM_SDF` (prebuilt `nav_sdf.npz`;
+else built at load), `GRL_SNAM_ROOT` (repo path if not on the default).
+
+Drive demos in `examples/`:
+- **`volrover_grl_snam_austin_freedrive.py`** — end-to-end: the learned SDF policy
+  finds its own way START→GOAL with **no route**, plus a wall-follow escape for
+  local minima. Retarget the goal live to watch it redirect.
+- **`volrover_grl_snam_austin_learned.py`** — stagewise: an A* occupancy route is a
+  collision-free spine; the learned policy drives locally between sub-goals (robust
+  for adversarial start/goal pairs).
+- **`volrover_grl_snam_planner.py`** — the surrogate's native sparse-obstacle regime.
+
+Capture a drive to video **offscreen** (no window): `scripts/capture_drive_video.py`.
+
+### 5. DBG variant — the full gym (`grl_snam_dbg`)
 The dataset-specific extension lives in the separate **`grl_snam_dbg`** project
 (it depends on GRL-SNAM, not the other way round). Its `grl_snam_dbg_demo.py`
 runs the **full communication-resilient navigation gym** end-to-end (~2 min,
