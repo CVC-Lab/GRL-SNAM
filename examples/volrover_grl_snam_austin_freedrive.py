@@ -97,15 +97,38 @@ _vpose = VehiclePose(_sample, lift=0.25)
 # ── end-to-end learned navigation state (no route — carrot toward the true goal) ──
 _o = torch.from_numpy(_w2n(_START)).unsqueeze(0).float(); _v = torch.zeros(1, 2)
 _GN = _w2n(_GOAL); _done = False
+_best = 1e9; _stall = 0; _mode = "seek"; _turn = 1.0; _dhit = 0.0   # wall-follow escape state
+
+
+@torch.no_grad()
+def _sdf_normal(on):
+    _, nrm = _field.sample(torch.from_numpy(on).unsqueeze(0).float())
+    return nrm[0].numpy()
 
 
 @torch.no_grad()
 def _nav_step():
-    global _o, _v, _done
+    """One end-to-end step. Normally aim a carrot straight at the goal; if progress
+    STALLS (a potential-field local minimum), follow the wall tangentially — a
+    'bug'-style escape — until the agent rounds the obstacle and progress resumes."""
+    global _o, _v, _done, _best, _stall, _mode, _turn, _dhit
     if _done:
         w = _n2w(_o[0].numpy()); return float(w[0]), float(w[1])
-    p = _o[0].numpy(); dvec = _GN - p; dist = float(np.linalg.norm(dvec))
-    carrot = (p + dvec / (dist + 1e-6) * min(1.8, dist)).astype(np.float32)   # local goal toward the true goal
+    p = _o[0].numpy(); dg = float(np.linalg.norm(_GN - p)); gdir = (_GN - p) / (dg + 1e-6)
+    if dg < _best - 1e-3:
+        _best = dg; _stall = 0
+    else:
+        _stall += 1
+    if _mode == "seek" and _stall > 70:                       # stuck -> start following the wall
+        nrm = _sdf_normal(p); t = np.array([-nrm[1], nrm[0]], np.float32)
+        _turn = 1.0 if np.dot(t, gdir) >= 0 else -1.0; _dhit = dg; _mode = "wall"; _stall = 0
+    if _mode == "wall":
+        nrm = _sdf_normal(p); t = _turn * np.array([-nrm[1], nrm[0]], np.float32)
+        carrot = (p + (0.6 * t + 0.4 * nrm) * 1.6).astype(np.float32)   # slide along the wall
+        if dg < _dhit - 1.2 or _stall > 240:                  # rounded it (or give up escaping)
+            _mode = "seek"; _best = dg; _stall = 0
+    else:
+        carrot = (p + gdir * min(1.8, dg)).astype(np.float32)  # local goal toward the true goal
     gt = torch.from_numpy(carrot).unsqueeze(0)
     al, be, ga = _model(sdf_nav.coef_feats(_field, _o, gt))
     _o, _v, _ = sdf_nav.sdf_rollout(_field, _o, _v, gt, al, be, ga, 1, nsub=_NSUB, **_kw)
