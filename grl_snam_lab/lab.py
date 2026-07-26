@@ -97,7 +97,7 @@ class Lab:
         """Build a Lab.
 
         Standalone (default): ``Lab()`` creates its own pycvc app + a fresh
-        ``pycvc_gl.Scene`` and renders through ``show()`` / ``render_png()``.
+        ``pycvc_gl.SceneGraph`` and renders through ``show()`` / ``render_png()``.
 
         Embedded: pass an existing ``app`` and/or ``scene`` to drive a HOST's
         live scene instead — e.g. inside volrover3::
@@ -106,17 +106,20 @@ class Lab:
             lab = Lab(app=vrhost.app(), scene=vrhost.scene())
             lab.add_terrain(...)      # appears in the running volrover3 window
 
-        ``scene`` (a ``pycvc_gl.Scene`` that adopts the host's live SceneGraph)
-        makes every ``add_*`` mutate the running scene; don't call ``show()`` in
-        that mode — the host owns the render loop. If only ``app`` is given, a new
-        Scene is built on it; if only ``scene`` is given, its app is reused.
+        ``scene`` is the host's live ``pycvc_gl.SceneGraph`` (adopted via
+        ``vrhost.scene()``); every ``add_*`` mutates the running scene. Don't call
+        ``show()`` in that mode — the host owns the render loop. If only ``app`` is
+        given, a new SceneGraph is built on it; if only ``scene`` is given, its app
+        is reused.
         """
         self._pycvc, self._gl = _require_pycvc()
         # One app handle owns this Lab's whole graphics context. Every pycvc
         # object built below (geometry/volume) and the scene co-own it via
         # shared_ptr, so it outlives them — there is no global singleton.
         self._app = app if app is not None else self._pycvc.make_app()
-        self._scene = scene if scene is not None else self._gl.Scene(self._app)
+        # The REAL cvcGL SceneGraph (directly wrapped — not a facade): add_*
+        # return the live node; move()/recolor() mutate it in place.
+        self._scene = scene if scene is not None else self._gl.SceneGraph(self._app)
 
     # -- meshes --------------------------------------------------------------
 
@@ -135,7 +138,7 @@ class Lab:
         g.add_triangles(list(triangles))
         if color is not None:
             g.set_colors(list(color) * g.num_vertices())
-        self._scene.add_geometry(name, g)
+        self._scene.addGraphics(name, g)
         return self
 
     def add_terrain(
@@ -150,9 +153,7 @@ class Lab:
 
     # -- agents & paths ------------------------------------------------------
 
-    def add_path(
-        self, name: str, points: Iterable[Sequence[float]], color: Color | None = None
-    ):
+    def add_path(self, name: str, points: Iterable[Sequence[float]], color: Color | None = None):
         """Add an agent trajectory as a polyline through ``points``."""
         verts, n = _flatten_points(points)
         if n < 2:
@@ -162,7 +163,7 @@ class Lab:
         g.add_lines(polyline_indices(n))
         if color is not None:
             g.set_colors(list(color) * g.num_vertices())
-        self._scene.add_geometry(name, g)
+        self._scene.addGraphics(name, g)
         return self
 
     def add_markers(
@@ -176,7 +177,7 @@ class Lab:
         g.add_vertices(verts)
         if color is not None:
             g.set_colors(list(color) * g.num_vertices())
-        self._scene.add_geometry(name, g)
+        self._scene.addGraphics(name, g)
         return self
 
     # -- scalar fields -------------------------------------------------------
@@ -196,25 +197,51 @@ class Lab:
         nx, ny, nz = dims
         v = self._pycvc.volume(self._app)
         v.set_float_grid(list(values), nx, ny, nz, *bounds)
-        self._scene.add_volume(name, v)
+        self._scene.addGraphics(name, v)
+        return self
+
+    # -- in-place UPDATE (the animation path) --------------------------------
+
+    def node(self, name: str):
+        """The live scene node named ``name`` (a ``pycvc_gl.GraphicsNode``), or
+        ``None`` if absent. Call ``.setPosition/.setScale/.setRotation/
+        .setTransform/.resetTransform`` on it to move it without a rebuild."""
+        return self._scene.getGraphics(name)
+
+    def move(self, name: str, x: float, y: float, z: float):
+        """Move node ``name`` to ``(x, y, z)`` by mutating its transform — the
+        geometry + actor are reused, nothing is destroyed or recreated. This is
+        the per-frame animation primitive (build once, ``move`` each frame)."""
+        n = self._scene.getGraphics(name)
+        if n is None:
+            raise KeyError(f"grl_snam_lab.Lab.move: no node named {name!r}")
+        n.setPosition(float(x), float(y), float(z))
+        return self
+
+    def recolor(self, name: str, color: Color):
+        """Recolor mesh node ``name`` in place (single-color material)."""
+        gn = self._scene.geometry_node(name)
+        if gn is None:
+            raise KeyError(f"grl_snam_lab.Lab.recolor: no mesh node named {name!r}")
+        gn.setColor(*[float(c) for c in color])
         return self
 
     # -- lifecycle -----------------------------------------------------------
 
     def pump(self):
-        self._scene.pump()
+        self._scene.processEvents()
         return self
 
     def num_nodes(self) -> int:
         return self._scene.num_graphics()
 
     def has(self, name: str) -> bool:
-        return self._scene.has(name)
+        return self._scene.hasGraphics(name)
 
     def show(self, title: str = "GRL-SNAM lab", width: int = 1024, height: int = 768):
         """Open an interactive window (blocks until closed; needs a display)."""
-        self._scene.show(title, width, height)
+        self._gl.show(self._scene, title, width, height)
 
     def render_png(self, path: str, width: int = 1024, height: int = 768):
         """Render one frame to a PNG (offscreen; needs a GL context)."""
-        self._scene.render_png(path, width, height)
+        self._gl.render_png(self._scene, path, width, height)
