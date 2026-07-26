@@ -47,6 +47,12 @@ jobs:
           # Test THIS checkout's grl_snam / grl_snam_lab (the PR's code); the
           # compiled pycvc_gl + numpy + torch come from the cvcpkg prefix.
           export PYTHONPATH="${PWD}:${PYTHONPATH:-}"
+          # The compiled bindings (_pycvc_gl / _pycvc) link libcvc.so.3, cvcGL,
+          # VTK etc. from the prefix's lib/, and we run the prefix python without
+          # sourcing its activate script, so put the prefix lib dir on the loader
+          # path — otherwise `import pycvc_gl` fails with
+          # "libcvc.so.3: cannot open shared object file".
+          export LD_LIBRARY_PATH="${PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
           echo "== black --check =="
           "${PY}" -m black --check grl_snam tests
