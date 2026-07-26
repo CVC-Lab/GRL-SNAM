@@ -166,22 +166,43 @@ Two demo scaffolds load from volrover3's Jobs tab:
   collision-free spine, and the trained `CoefEnergyNet` + `HistSecantController` do
   the local reactive control between route sub-goals (see §Scope for why).
 
-### Scope — where the learned policy carries the whole navigation, and where a route helps
+### Obstacle model — circles vs. SDF (why the city needs an SDF)
 
-The surrogate is a **circular-obstacle** potential field. It navigates cleanly when
-obstacles are **sparse and roughly round** (its native regime — rings, dungeons, a
-few pillars). A **dense rectilinear city** is the hard case: thousands of building
-footprints become thousands of overlapping circular barriers that conflict, and a
-point-agent gets pushed *through* corners no matter the coefficients (measured on
-Austin: even hand-set good coefficients reach 0–1/4 goals with heavy penetration).
-This is a property of the obstacle model, not of the training.
+The **base** surrogate (`integrate_surrogate_v2`) is a **circular-obstacle** field.
+It navigates cleanly when obstacles are sparse and round (rings, dungeons, a few
+pillars — the `volrover_grl_snam_planner.py` regime). A **dense rectilinear city**
+defeats it: thousands of building footprints become thousands of overlapping circular
+barriers that conflict, and a point-agent is pushed *through* corners no matter the
+coefficients (measured on Austin: even hand-set good coefficients reach 0–1/4 goals
+with heavy penetration). That is a property of the obstacle model, not the training.
 
-So on a dense city, use the paper's own answer — **stagewise decomposition**: an
-occupancy-grid **A\* route** handles the global path through the streets (rectilinear
-geometry, done exactly), and the learned policy + online adaptation handle **local**
-reactive control within each stage, with the route as a collision-free spine. That
-is what the Austin demo does. For fully learned end-to-end navigation, keep the scene
-in the surrogate's native sparse-obstacle regime.
+The fix is a **signed distance field (SDF)** obstacle model (`sdf_nav.py`): the
+barrier repels along the *true wall normal*, so the learned surrogate navigates
+streets and corners cleanly. On Austin, stagewise + SDF reaches **3/4 with ~0
+penetration** and the learned surrogate **drives every step** (vs the circle model,
+which drove none). Same self-supervised recipe — the field is differentiable
+(`grid_sample`), so `sdf_nav.CoefMLP` trains through the rollout exactly like
+`CoefEnergyNet`, biased toward the known-good regime so it starts near-optimal.
+
+Build the SDF, then train:
+
+```bash
+python scripts/build_sdf.py <bundle> --source edt      # grl-snam's exact footprint EDT (default)
+#                                     --source cvc      # OR CVC's mesh-exact 3-D SDF (pycvc.sdf, SDF_V2)
+python scripts/train_sdf.py <bundle>/nav_sdf.npz -o checkpoints/coef_sdf.pt --steps 1500
+```
+
+`--source cvc` uses the CVC compute layer and returns a full **3-D** volume (sliced
+to the ground plane for 2-D nav) — the natural substrate for extending GRL-SNAM to
+3-D navigation later. The `SDFField` / surrogate / net consume either source
+identically.
+
+**Global topology still needs a planner.** A pure potential field — SDF or not — has
+local minima (dead-ends, U-shaped clusters), so a long cross-city A→B can still trap.
+So the demo keeps the paper's **stagewise** structure: an occupancy-grid A\* route is
+the collision-free spine (global path), and the *learned SDF surrogate* does the
+local navigation between route sub-goals (now genuinely, not as a fallback). The
+route + a footprint check guarantee the drive never enters a building.
 
 ---
 
@@ -231,8 +252,11 @@ specific map. The two are complementary.
 | Coefficient network | `CoefEnergyNet` (`train_coef_energy.py` → `grl_snam.network`) |
 | Local feature builder | `eval_coef_energy.build_local_feats` |
 | Online adaptation | `HistSecantController`, `OnlineFinetuner` (`grl_snam.adaptation`) |
-| Geometry ingestion | [`scripts/extract_obstacles.py`](../scripts/extract_obstacles.py) |
-| Self-supervised trainer | [`scripts/train_on_geometry.py`](../scripts/train_on_geometry.py) |
+| Geometry ingestion (circles) | [`scripts/extract_obstacles.py`](../scripts/extract_obstacles.py) |
+| Self-supervised trainer (circles) | [`scripts/train_on_geometry.py`](../scripts/train_on_geometry.py) |
+| **SDF obstacle model** (city-grade) | [`sdf_nav.py`](../sdf_nav.py) — EDT + cvc::sdf builders, `SDFField`, `sdf_rollout`, `CoefMLP` |
+| SDF field builder (`edt`/`cvc`) | [`scripts/build_sdf.py`](../scripts/build_sdf.py) |
+| SDF trainer | [`scripts/train_sdf.py`](../scripts/train_sdf.py) |
 | Live demo (native sparse-obstacle regime) | [`examples/volrover_grl_snam_planner.py`](../examples/volrover_grl_snam_planner.py) |
 | Live demo (stagewise, real Austin) | [`examples/volrover_grl_snam_austin_learned.py`](../examples/volrover_grl_snam_austin_learned.py) |
 | Scene helpers (terrain/glTF/occupancy/route) | `pycvc_gl.scenes` |
