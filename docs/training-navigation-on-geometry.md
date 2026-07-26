@@ -163,8 +163,33 @@ Two demo scaffolds load from volrover3's Jobs tab:
   drive it with the learned network + online adaptation.
 - [`examples/volrover_grl_snam_austin_learned.py`](../examples/volrover_grl_snam_austin_learned.py)
   — the **stagewise** demo on real Austin: an A* occupancy route is the
-  collision-free spine, and the trained `CoefEnergyNet` + `HistSecantController` do
-  the local reactive control between route sub-goals (see §Scope for why).
+  collision-free spine, and the trained policy does the local reactive control
+  between route sub-goals (see the two-modes note below).
+- [`examples/volrover_grl_snam_austin_freedrive.py`](../examples/volrover_grl_snam_austin_freedrive.py)
+  — the **free-drive** demo: no route at all; the policy finds its own way and can
+  re-target the goal live.
+
+### Two ways to drive — route-staged vs. free-drive
+
+Once trained, the SDF policy can navigate a real scene **two ways**. Both use the
+*same* learned policy; they differ only in whether a classical planner supplies the
+global path. This is the GRL-SNAM stagewise idea (a stage planner + a learned local
+policy) vs. pure end-to-end navigation.
+
+| | **Route-staged** (stagewise) | **Free-drive** (end-to-end) |
+|---|---|---|
+| Global path | **A\* occupancy route** — a collision-free spine through the streets | **none** — a moving carrot toward the goal |
+| Who navigates | learned policy does **local** control between route sub-goals | learned policy does **all** of it |
+| Local minima | avoided by construction (the route threads free space) | escaped by a **wall-follow** ("bug"): when progress stalls it slides along the wall until it rounds the obstacle |
+| Robustness | handles **any** start/goal on a dense city | can stall on adversarial pairs — curate start/goal, or rely on the escape |
+| Goal changes | fixed A→B (re-plan to change) | **re-target live** — the policy redirects on the fly |
+| Best for | a reliable A→B demo on a dense city | showing **emergent, end-to-end** learned pathfinding |
+| Script | [`volrover_grl_snam_austin_learned.py`](../examples/volrover_grl_snam_austin_learned.py) | [`volrover_grl_snam_austin_freedrive.py`](../examples/volrover_grl_snam_austin_freedrive.py) |
+
+The surrogate's **native** end-to-end regime — sparse round obstacles, no route
+needed — is [`volrover_grl_snam_planner.py`](../examples/volrover_grl_snam_planner.py).
+To capture any of these to video **offscreen** (no window), use
+[`scripts/capture_drive_video.py`](../scripts/capture_drive_video.py).
 
 ### Obstacle model — circles vs. SDF (why the city needs an SDF)
 
