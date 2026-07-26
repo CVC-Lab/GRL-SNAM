@@ -64,9 +64,13 @@ def add_terrain_json(lab, path: str, name: str = "terrain", color=(0.34, 0.40, 0
     return terrain_sampler(path)
 
 
-def add_gltf(lab, path: str, name: str, color=(0.74, 0.74, 0.78), opacity: float = 1.0):
+def add_gltf(
+    lab, path: str, name: str, color=(0.74, 0.74, 0.78), opacity: float = 1.0, parent: str = ""
+):
     """Load a glTF/GLB mesh with VTK and add it to ``lab`` as one named prop node.
-    Returns the ``vtkActor``. Needs the vtk-python wrappers (vtkmodules)."""
+    ``parent`` (default the root) makes it a CHILD of that node so it stays aligned
+    to and moves with it (e.g. buildings under the terrain). Returns the
+    ``vtkActor``. Needs the vtk-python wrappers (vtkmodules)."""
     from vtkmodules.vtkIOGeometry import vtkGLTFReader
     from vtkmodules.vtkFiltersGeometry import vtkCompositeDataGeometryFilter
     from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
@@ -82,14 +86,21 @@ def add_gltf(lab, path: str, name: str, color=(0.74, 0.74, 0.78), opacity: float
 
     mapper = vtkPolyDataMapper()
     mapper.SetInputData(pd)
+    mapper.SetStatic(1)  # geometry never changes -> VTK caches the VBO, no per-frame rebuild
     mapper.ScalarVisibilityOff()  # use the single material color, not any glTF scalars
     actor = vtkActor()
     actor.SetMapper(mapper)
-    actor.GetProperty().SetColor(*color)
-    actor.GetProperty().SetOpacity(opacity)
+    prop = actor.GetProperty()
+    prop.SetColor(*color)
+    prop.SetOpacity(opacity)
+    # Ground-level views leave many building faces facing away from the light; a
+    # strong ambient term keeps them from going black so the city reads clearly.
+    prop.SetAmbient(0.45)
+    prop.SetDiffuse(0.7)
+    prop.SetSpecular(0.05)
 
     b = pd.GetBounds()  # (xmin,xmax, ymin,ymax, zmin,zmax)
-    lab.add_prop(name, actor, (b[0], b[2], b[4], b[1], b[3], b[5]))
+    lab.add_prop(name, actor, (b[0], b[2], b[4], b[1], b[3], b[5]), parent=parent)
     return actor
 
 
@@ -111,5 +122,7 @@ def load_geometry_bundle(
     if buildings:
         glb = os.path.join(bundle_dir, "buildings.glb")
         if os.path.exists(glb):
-            add_gltf(lab, glb, "buildings", color=building_color)
+            # buildings are CHILDREN of the terrain node so they stay aligned to it
+            # (same world frame) and move with any terrain transform.
+            add_gltf(lab, glb, "buildings", color=building_color, parent="terrain")
     return sampler
