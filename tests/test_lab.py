@@ -1,66 +1,47 @@
-"""Tests for grl_snam_lab.
+"""Tests for grl_snam.demos.lab — the analytic lab demo.
 
-The geometry helpers are pure Python and always run; the end-to-end Lab test
-is skipped where the compiled pycvc / pycvc_gl bindings aren't importable.
+The pure geometry (terrain height, agent loop, track) always runs; the end-to-end
+scene build is skipped where the compiled pycvc / pycvc_gl bindings aren't importable.
 """
 
 import pytest
 
-from grl_snam_lab import terrain_mesh
-from grl_snam_lab.lab import _flatten_points, polyline_indices
+from grl_snam.demos import lab
 
 
-def test_terrain_mesh_counts_and_placement():
-    heights = [[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]  # 2 rows x 3 cols
-    verts, tris = terrain_mesh(heights, bounds=(-10, -20, 10, 20))
-    assert len(verts) == 2 * 3 * 3  # 6 vertices * xyz
-    assert len(tris) == (2 - 1) * (3 - 1) * 6  # 2 cells * 2 tris * 3 idx
-    # first vertex at (min_x, min_y, height[0][0]); last at (max_x, max_y, h[-1][-1])
-    assert verts[0:3] == [-10.0, -20.0, 0.0]
-    assert verts[-3:] == [10.0, 20.0, 5.0]
+def test_terrain_height_peaks_at_centre():
+    assert lab.terrain_height(0.0, 0.0) > lab.terrain_height(95.0, 95.0)
 
 
-def test_terrain_mesh_rejects_degenerate():
-    with pytest.raises(ValueError):
-        terrain_mesh([[1.0]], bounds=(0, 0, 1, 1))
+def test_track_is_closed_and_draped():
+    assert len(lab.TRACK) == lab._N_TRACK + 1
+    assert lab.TRACK[0] == pytest.approx(lab.TRACK[-1], abs=1e-9)  # closed loop
+    x, y, z = lab.TRACK[0]
+    assert abs(z - (lab.terrain_height(x, y) + lab.AGENT_LIFT)) < 1e-6
 
 
-def test_polyline_indices():
-    assert polyline_indices(4) == [0, 1, 1, 2, 2, 3]
-    assert polyline_indices(1) == []
+def test_agent_position_wraps_one_lap():
+    a = lab.agent_position(0.0)
+    b = lab.agent_position(lab.LOOP_SECONDS)  # exactly one lap -> back to start
+    assert all(abs(u - v) < 1e-6 for u, v in zip(a, b))
 
 
-def test_flatten_points():
-    buf, n = _flatten_points([(1, 2, 3), (4, 5, 6)])
-    assert n == 2 and buf == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+def test_terrain_heights_grid_shape():
+    g = lab._terrain_heights(8)
+    assert len(g) == 8 and all(len(row) == 8 for row in g)
 
 
 # ── end-to-end (requires the compiled bindings) ─────────────────────────
-
 pytest.importorskip("pycvc", reason="pycvc bindings not installed")
 pytest.importorskip("pycvc_gl", reason="pycvc_gl bindings not installed")
 
 
-def test_lab_builds_a_scene():
-    from grl_snam_lab import Lab
+def test_lab_demo_builds_a_scene():
+    # Build the scene graph and assert its nodes — but do NOT render_png here: offscreen
+    # GL rendering segfaults on headless CI runners (there is no GL context).
+    from pycvc_gl.lab import Lab
 
-    lab = Lab()
-    lab.add_terrain([[0, 0, 0], [0, 1, 0], [0, 0, 0]], bounds=(-5, -5, 5, 5))
-    lab.add_mesh(
-        "bldg",
-        [0, 0, 0, 2, 0, 0, 0, 2, 0],
-        [0, 1, 2],
-        color=(0.6, 0.6, 0.6),
-    )
-    lab.add_path("agent0", [(-4, 0, 1), (0, 0, 1), (4, 2, 1)], color=(1, 0, 0))
-    lab.add_markers("agents", [(-4, 0, 1), (4, 2, 1)])
-    lab.add_field(
-        "risk",
-        [float(i % 5) for i in range(3 * 3 * 3)],
-        dims=(3, 3, 3),
-        bounds=(-5, -5, 0, 5, 5, 4),
-    )
-    lab.pump()
-    for name in ("terrain", "bldg", "agent0", "agents", "risk"):
-        assert lab.has(name), f"missing node {name}"
-    assert lab.num_nodes() == 5
+    scene = lab.demo_scene(Lab())
+    assert scene.num_nodes() >= 3
+    for name in ("terrain", "agent0_track", "agent0"):
+        assert scene.has(name)
