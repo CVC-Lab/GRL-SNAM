@@ -61,3 +61,14 @@ def test_hud_lines_and_stats():
     assert any("coeffs" in ln for ln in lines)
     assert any("reached" in ln for ln in lines)
     assert stats.steps == 1
+
+
+def test_goals_reached_counts_distinct_not_per_frame():
+    stats = NavStats()
+    # goal 0 reported reached over 3 frames, then goal 1 over 2 frames -> 2 distinct, not 5
+    for _ in range(3):
+        stats.update(NavMetrics(goal_index=0, reached=True))
+    for _ in range(2):
+        stats.update(NavMetrics(goal_index=1, reached=True))
+    assert stats.goals_reached == 2
+    assert stats.steps == 5

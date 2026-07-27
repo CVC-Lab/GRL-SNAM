@@ -208,5 +208,5 @@ def step(dt: float) -> None:
     _S["lab"].node("agent0").setTransform(_S["vpose"].update(m.x, m.y, dt))
     eye, tgt, up = _S["chase"].update((m.x, m.y, _S["sample"](m.x, m.y)), dt)
     _S["cam"].look(eye, tgt, up)
-    _S["metrics"].publish(m)
+    _S["metrics"].publish(m, dt)
     _S["lab"].pump()
