@@ -143,8 +143,15 @@ class MetricsPublisher:
         self._base = base
         self._print_every = print_every
         self._n = 0
+        self._prev = None
 
-    def publish(self, m: NavMetrics) -> None:
+    def publish(self, m: NavMetrics, dt: float | None = None) -> None:
+        # report the on-screen ground speed (frame displacement / dt), not the sim-time
+        # speed, so the HUD matches what the viewer sees.
+        if dt and dt > 0 and self._prev is not None:
+            dx, dy = m.x - self._prev[0], m.y - self._prev[1]
+            m.speed_mps = (dx * dx + dy * dy) ** 0.5 / dt
+        self._prev = (m.x, m.y)
         self._n += 1
         for k, v in m.as_dict().items():
             if isinstance(v, bool):

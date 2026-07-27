@@ -50,17 +50,17 @@ class NavStats:
 
     steps: int = 0
     penetration_steps: int = 0
-    goals_reached: int = 0
     min_clearance_m: float = field(default=1e9)
     total_path_m: float = 0.0
     _prev: tuple | None = None
+    _reached: set = field(default_factory=set)
 
     def update(self, m: NavMetrics) -> None:
         self.steps += 1
         if m.inside_building:
             self.penetration_steps += 1
         if m.reached:
-            self.goals_reached += 1
+            self._reached.add(m.goal_index)  # count DISTINCT goals, not per-frame reached flags
         self.min_clearance_m = min(self.min_clearance_m, m.clearance_m)
         if self._prev is not None:
             dx, dy = m.x - self._prev[0], m.y - self._prev[1]
@@ -70,6 +70,11 @@ class NavStats:
     @property
     def penetration_pct(self) -> float:
         return 100.0 * self.penetration_steps / max(1, self.steps)
+
+    @property
+    def goals_reached(self) -> int:
+        """Distinct goals reached over the drive (by goal index)."""
+        return len(self._reached)
 
 
 def hud_lines(m: NavMetrics, stats: NavStats | None = None) -> list[str]:

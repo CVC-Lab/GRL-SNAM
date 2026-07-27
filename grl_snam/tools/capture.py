@@ -314,6 +314,9 @@ def render_drive(
         camera.SetFocalPoint(px + head[0] * ahead, py + head[1] * ahead, zt - 2.0)
         camera.SetViewUp(0, 0, 1)
         if hud_actor is not None:
+            # report the PLAYBACK ground speed (matches what the viewer sees), not the
+            # sim-time speed: frame-to-frame displacement x frame rate.
+            m.speed_mps = float(nn) * fps
             stats.update(m)
             hud_actor.SetInput("\n".join(hud_lines(m, stats)))
         rw.Render()
