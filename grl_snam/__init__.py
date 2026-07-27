@@ -4,8 +4,8 @@ This module is a thin façade over the project's flat module layout
 (`train_coef_energy.py`, `surrogate_robust.py`, `eval_coef_energy.py`,
 `src/utils/`, `scripts/`, `experiments/`).  The flat layout is preserved
 for backward compatibility with the original research code; this package
-exposes a stable, importable API for downstream consumers (e.g. the
-`grl_snam_dbg` extension).
+exposes a stable, importable API for downstream consumers (e.g. a
+private downstream extension).
 
 Typical use::
 

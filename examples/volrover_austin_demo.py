@@ -2,8 +2,8 @@
 # a LIVE volrover3 window, GROUNDED: it drives the STREETS (routed around the
 # buildings, draped on the terrain), filmed by a low third-person chase camera.
 #
-# Loads a geometry_bundle (terrain heightfield + glTF city mesh) — by default the
-# CVC-DBG "austin_south" bundle (3 km x 3 km around the UT campus) — rasterizes the
+# Loads a geometry_bundle (terrain heightfield + glTF city mesh) — by default an
+# "austin_south" OSM/SRTM bundle (3 km x 3 km around the UT campus) — rasterizes the
 # buildings into an occupancy grid, A*-plans a grounded patrol loop through the
 # free space (streets), drapes it on the real terrain, and follows the vehicle
 # with grl_snam_lab.camera.ChaseCamera (position-driven, ready for live GRL-SNAM
@@ -18,7 +18,7 @@
 # contributors, ODbL (https://openstreetmap.org/copyright); SRTM terrain is US
 # public domain. Credit OpenStreetMap in any published render.
 #
-# LAYERING: volrover3 does NOT depend on GRL-SNAM (or on the CVC-DBG assets). This
+# LAYERING: volrover3 does NOT depend on GRL-SNAM (or on the scene assets). This
 # runs under volrover3's generic job runner when GRL-SNAM is installed and the
 # bundle is present.
 
@@ -47,7 +47,7 @@ except ImportError as exc:  # pragma: no cover - only meaningful inside volrover
 
 _BUNDLE = os.environ.get(
     "GRL_SNAM_SCENE_BUNDLE",
-    "/home/joe/src/cvc/CVC-DBG/platoon-sim/scene_viewer/exports/scenes/austin_south",
+    os.path.expanduser("~/scenes/austin_south"),  # set GRL_SNAM_SCENE_BUNDLE to your bundle dir
 )
 
 _app = vrhost.app()
