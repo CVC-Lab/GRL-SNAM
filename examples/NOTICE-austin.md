@@ -1,7 +1,7 @@
 # Attribution — Austin scene geometry (`volrover_austin_demo.py`)
 
 The `volrover_austin_demo.py` example renders real-world Austin, TX geometry from
-a `geometry_bundle` (e.g. the CVC-DBG `austin_south` bundle). That geometry is
+a `geometry_bundle` (e.g. an `austin_south` OSM/SRTM export). That geometry is
 derived from public sources and must be credited when you publish renders:
 
 - **Buildings, roads, water** — © **OpenStreetMap** contributors, licensed under

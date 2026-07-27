@@ -50,7 +50,7 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("run INSIDE volrover3 (Jobs tab -> Load Script)") from exc
 
 _BUNDLE = os.environ.get("GRL_SNAM_SCENE_BUNDLE",
-                         "/home/joe/src/cvc/CVC-DBG/platoon-sim/scene_viewer/exports/scenes/austin_south")
+                         os.path.expanduser("~/scenes/austin_south"))  # set to your bundle dir
 _CKPT = os.environ.get("GRL_SNAM_CHECKPOINT", os.path.join(_ROOT, "checkpoints", "coef_sdf_austin.pt"))
 torch.set_num_threads(2)
 

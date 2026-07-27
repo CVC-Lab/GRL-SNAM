@@ -37,8 +37,8 @@ poetry install              # installs runtime + dev dependencies
 poetry run pytest           # run the smoke tests
 ```
 
-To use GRL-SNAM as a dependency in a downstream project (e.g. the
-`grl_snam_dbg` extension), add it to your own ``pyproject.toml``:
+To use GRL-SNAM as a dependency in a downstream project, add it to your own
+``pyproject.toml``:
 
 ```toml
 [tool.poetry.dependencies]
