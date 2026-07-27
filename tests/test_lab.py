@@ -36,6 +36,12 @@ pytest.importorskip("pycvc", reason="pycvc bindings not installed")
 pytest.importorskip("pycvc_gl", reason="pycvc_gl bindings not installed")
 
 
-def test_lab_demo_builds_a_scene(tmp_path):
-    out = lab.run_standalone(png=str(tmp_path / "lab.png"))
-    assert out.num_nodes() >= 3
+def test_lab_demo_builds_a_scene():
+    # Build the scene graph and assert its nodes — but do NOT render_png here: offscreen
+    # GL rendering segfaults on headless CI runners (there is no GL context).
+    from pycvc_gl.lab import Lab
+
+    scene = lab.demo_scene(Lab())
+    assert scene.num_nodes() >= 3
+    for name in ("terrain", "agent0_track", "agent0"):
+        assert scene.has(name)
