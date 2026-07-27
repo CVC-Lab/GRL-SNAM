@@ -5,7 +5,7 @@
 #
 # The path is produced by iterating grl_snam's differentiable surrogate rollout
 # (dynamics.integrate_surrogate_v2) one step at a time — the same physics-informed
-# integrator the DBG gym trains through (semi-implicit Euler + IPC obstacle
+# integrator downstream training runs through (semi-implicit Euler + IPC obstacle
 # barrier). Control coefficients here are hand-set to a known-good regime; with a
 # trained CoefEnergyNet checkpoint you'd predict them per step and refine online
 # with grl_snam.adaptation.HistSecantController (the "continuous learning" loop) —

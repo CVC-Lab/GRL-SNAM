@@ -1,8 +1,8 @@
 """Demo: build a synthetic GRL-SNAM scene in the lab and show / snapshot it.
 
 General GRL-SNAM only — a wavy terrain, a couple of obstacle meshes, two
-agent trajectories, agent markers, and a risk field. A DBG adapter would
-instead feed a real movement_bundle.v1 through the same Lab API.
+agent trajectories, agent markers, and a risk field. A downstream adapter
+would instead feed its own real track data through the same Lab API.
 
 Run (with pycvc / pycvc_gl on PYTHONPATH and a display):
     python examples/lab_demo.py           # interactive window

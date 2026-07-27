@@ -3,12 +3,12 @@
 A thin, **domain-general** layer over the CVC graphics stack (``pycvc`` +
 ``pycvc_gl``, the SWIG bindings for libcvc / cvcGL). It speaks the vocabulary
 of GRL-SNAM — *terrain*, *obstacles*, *agent paths*, *agents*, and *scalar
-fields* (risk / SDF / path-loss) — and turns each into a live 3D scene node.
+fields* (e.g. risk / SDF) — and turns each into a live 3D scene node.
 It knows nothing about any specific mission or dataset.
 
 Downstream projects adapt it by feeding their own data through this API — e.g.
-a DBG loader reads a ``movement_bundle.v1`` and calls :meth:`Lab.add_path`
-once per soldier track. Keep dataset-specific code in the downstream project;
+an adapter reads that project's own track format and calls :meth:`Lab.add_path`
+once per agent track. Keep dataset-specific code in the downstream project;
 keep this package general.
 
 The graphics backend (``pycvc``/``pycvc_gl``) is imported lazily so the module
