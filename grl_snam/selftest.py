@@ -13,8 +13,8 @@ construction — no dataset, no training, ~1 second:
   4. SHAPES: (o, v, min_clear) come back as (B,2), (B,2), (B,).
 
 This is the correctness counterpart to the visual grl_snam_lab demo. It needs
-torch (a declared GRL-SNAM dependency); the DBG *full-gym* end-to-end demo lives
-in the grl_snam_dbg project.
+torch (a declared GRL-SNAM dependency); the applied full-gym end-to-end demo lives
+in a separate, private downstream project.
 
 Run: ``grl-snam-selftest`` (installed console script) or ``python -m grl_snam.selftest``.
 """

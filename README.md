@@ -142,20 +142,26 @@ Drive demos in `examples/`:
   for adversarial start/goal pairs).
 - **`volrover_grl_snam_planner.py`** — the surrogate's native sparse-obstacle regime.
 
-Capture a drive to video **offscreen** (no window): `scripts/capture_drive_video.py`.
+**Capture a drive to video — offscreen, no window** (the same way the demo films are
+made: a scripted chase camera through VTK — the VolRover3 engine — not a screen grab):
+```bash
+# one fixed A→B run
+python scripts/capture_drive_video.py <bundle> checkpoints/coef_sdf.pt \
+    --start -361 114 --goal 185 50 -o drive.mp4
+# the DYNAMIC multi-goal free-drive: goals re-targeted live, drone chase cam, ~3 min
+python scripts/capture_multigoal_video.py <bundle> checkpoints/coef_sdf.pt \
+    --sdf <bundle>/nav_sdf.npz --minutes 3 -o multigoal.mp4
+```
+Both run headless (offscreen GL is fine) and only need the volrover env + a trained
+checkpoint + a scene bundle + ffmpeg — no display, no live app window.
 
-### 5. DBG variant — the full gym (`grl_snam_dbg`)
-The dataset-specific extension lives in the separate **`grl_snam_dbg`** project
-(it depends on GRL-SNAM, not the other way round). Its `grl_snam_dbg_demo.py`
-runs the **full communication-resilient navigation gym** end-to-end (~2 min,
-seeded): radio/material/jammer physics → episode generation → the 7-head
-coefficient network forward pass → differentiable surrogate rollout → phased
-GPU/CPU training → evaluation metrics → online adaptation. **Expected to see** a
-staged console report of what each phase produced (loss curves, metrics, a
-trained model), and — once the DBG→lab adapter lands — the `austin_south` terrain
-with 28 agents moving along their `movement_bundle.v1` tracks and a live
-path-loss field volume rendered in volrover3. That adapter + demo are the DBG
-project's deliverable, keeping DBG-specific code out of this general library.
+### 5. Dataset-specific extensions
+Applied, dataset-specific work lives in **separate downstream projects** that depend on
+GRL-SNAM (not the other way round) and keep their dataset-specific code and models out
+of this general library. Such an extension reuses exactly the pieces shown above — the
+differentiable surrogate, the coefficient network, and the `pycvc`/`pycvc_gl` scene
+bindings — and versions its own additions in its own repository. This library stays
+general; the extensions stay separate and private.
 
 ## Repository Structure
 

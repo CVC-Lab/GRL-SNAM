@@ -3,7 +3,7 @@
 A domain-general 3D lab for GRL-SNAM built on the CVC graphics stack
 (`pycvc` + `pycvc_gl`, the Python bindings for libcvc / cvcGL). It speaks
 general GRL-SNAM vocabulary — **terrain, obstacles, agent paths, agents,
-scalar fields (risk / SDF / path-loss)** — and turns each into a live 3D
+scalar fields (e.g. risk / SDF)** — and turns each into a live 3D
 scene node. It has **no** mission- or dataset-specific knowledge.
 
 ```python
@@ -17,12 +17,12 @@ lab.show()                 # interactive window (needs a display)
 # lab.render_png("s.png")  # offscreen snapshot
 ```
 
-## Adapting for DBG (and other datasets)
+## Adapting for a dataset
 
-Keep dataset-specific code **in the downstream project**. A DBG adapter reads
-a `movement_bundle.v1` and drives the same general API — e.g. one `add_path`
-per soldier track, `add_field` for a path-loss raster, `add_mesh` for the
-scene's buildings. The lab stays general; the mapping lives with the data.
+Keep dataset-specific code **in the downstream project**. An adapter reads that
+project's own track format and drives the same general API — e.g. one `add_path`
+per agent track, `add_field` for a scalar raster, `add_mesh` for the scene's
+buildings. The lab stays general; the mapping lives with the data.
 
 ## Requirements
 
