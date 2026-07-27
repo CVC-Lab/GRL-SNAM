@@ -17,6 +17,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "click>=8.1",
     "torch>=2.1",
     "numpy>=1.24",
     "matplotlib>=3.7",
@@ -29,24 +30,25 @@ Repository = "https://github.com/CVC-Lab/GRL-SNAM"
 "Bug Tracker" = "https://github.com/CVC-Lab/GRL-SNAM/issues"
 
 [project.scripts]
-# Numerical correctness demo — exercises the surrogate navigation dynamics and
-# asserts goal-seeking / finiteness / determinism (needs torch). ~1s, no data.
+# The unified command-line interface — one entry point for every workflow
+# (selftest / obstacles / build-sdf / train / capture / pipeline / demo / eval).
+grl-snam = "grl_snam.cli:main"
+# Back-compat aliases (also reachable as `grl-snam selftest` / `grl-snam lab-demo`):
 grl-snam-selftest = "grl_snam.selftest:main"
-# Standalone visual lab demo (needs pycvc/pycvc_gl + a GL context): opens a window,
-# or `grl-snam-lab-demo out.png` renders offscreen. Inside volrover3 use the REPL
-# instead: `import grl_snam_lab; grl_snam_lab.run_in_volrover()`.
-grl-snam-lab-demo = "grl_snam_lab.demo:main"
+grl-snam-lab-demo = "grl_snam.demos.lab:main"
 
 [tool.poetry]
 packages = [
     { include = "grl_snam" },
-    { include = "grl_snam_lab" },
     { include = "scripts" },
     { include = "experiments" },
     { include = "src" },
+    # Research core kept as top-level modules (imported by grl_snam + downstreams);
+    # sdf_nav.py was previously omitted here — a real packaging bug now fixed.
     { include = "train_coef_energy.py" },
     { include = "eval_coef_energy.py" },
     { include = "surrogate_robust.py" },
+    { include = "sdf_nav.py" },
 ]
 
 [tool.poetry.group.dev.dependencies]
@@ -86,4 +88,5 @@ select = ["E", "F", "W", "I", "UP"]
 ignore = [
     "E501",  # line length handled by formatter
     "E741",  # ambiguous variable names tolerated in math-heavy research code
+    "UP031", # printf-style %-format is idiomatic in the ported research/print code
 ]

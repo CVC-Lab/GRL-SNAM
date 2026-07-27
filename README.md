@@ -56,106 +56,87 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-## Demos & entry points
+## Command-line interface (`grl-snam`)
 
-GRL-SNAM installs **two console scripts** plus a **volrover3 REPL** entry point.
-GRL-SNAM and volrover3 are installed **separately** and do **not** depend on each
-other — both depend only on `pycvc` + `pycvc_gl` (from libcvc / cvcpkg). The lab
-detects volrover3 at runtime via the host-injected `vrhost` module.
-
-### 1. Numerical correctness demo (console) — `grl-snam-selftest`
-Exercises the surrogate navigation dynamics (`integrate_surrogate_v2`) on small,
-seeded, self-contained cases; needs `torch`, runs in ~1 s, no dataset.
+Installing GRL-SNAM puts one console script on your `PATH` — **`grl-snam`** — the single
+entry point for every workflow, from a raw world model to a running demo. (`grl-snam`,
+`grl-snam-selftest`, and `grl-snam-lab-demo` are the installed scripts; the last two are
+aliases for `grl-snam selftest` / `grl-snam lab-demo`.)
 
 ```bash
-grl-snam-selftest          # or: python -m grl_snam.selftest
+grl-snam --help
 ```
-**Expected output** — four `PASS` checks and `OK`:
-```
-grl-snam-selftest: exercising integrate_surrogate_v2 (surrogate navigation dynamics)
-  [PASS] shapes (o,v,min_clear)              o(1, 2) v(1, 2) clr(1,)
-  [PASS] goal-seeking reduces distance       |o0-goal|=20.000 -> |oT-goal|=0.00x
-  [PASS] goal-seeking output finite          ...
-  [PASS] IPC barrier path stays finite       min_clear=...
-  [PASS] deterministic (reproducible)        two runs bit-identical
-grl-snam-selftest: OK — surrogate dynamics correct
-```
-It proves: goal-seeking (the damped spring reduces distance to goal), the IPC
-collision barrier stays numerically finite, and the integrator is deterministic.
 
-### 2. Standalone visual lab demo (console) — `grl-snam-lab-demo`
-Builds a demo scene (terrain + an agent track + a marker) in a **self-owned**
-window (needs `pycvc`/`pycvc_gl` + a GL display), or renders it offscreen:
+| Command | What it does |
+|---|---|
+| `grl-snam selftest` | numerical correctness check (surrogate dynamics; no data) |
+| `grl-snam obstacles BUNDLE` | world model → circular-obstacle set (`.npz`) |
+| `grl-snam build-sdf BUNDLE` | world model → navigation SDF (`.npz`) |
+| `grl-snam train SDF.npz` | self-supervised SDF-coefficient training |
+| `grl-snam capture drive\|multigoal …` | drive the policy → mp4 offscreen, with a live HUD |
+| `grl-snam pipeline BUNDLE` | the whole chain: world model → SDF → train → video |
+| `grl-snam demo NAME` | run a demo live inside VolRover3 |
+| `grl-snam lab-demo [PNG]` | standalone lab visualization |
+| `grl-snam eval` / `train-coef` | the CoefEnergyNet evaluator / trainer (legacy track) |
+
+A `BUNDLE` is a **world model** — a directory with `terrain.json` (heightfield) +
+`buildings.glb` (city mesh), e.g. an OpenStreetMap + SRTM export. The heavy work lives
+in `grl_snam.tools`; the demos in `grl_snam.demos`; the graphics deps (`pycvc_gl`, VTK,
+`vrhost`) load lazily, so `grl-snam --help` runs anywhere.
+
+### The learned-nav pipeline, end to end
+
+From nothing but a world model to a rendered demo, in one command:
 
 ```bash
-grl-snam-lab-demo            # opens an interactive window
-grl-snam-lab-demo out.png    # headless: writes a PNG snapshot
+grl-snam pipeline path/to/austin_south           # build-sdf → train → multigoal video
 ```
-**Expected to see** — a green Gaussian-bump **terrain** surface, a yellow looping
-**agent track** draped above it, and a red **marker** at the agent's start.
 
-### 3. Live demo inside volrover3 (REPL) — `grl_snam_lab.run_in_volrover()`
-The same scene, but rendered into a **running volrover3's live viewport** — the
-whole point of the embedded interpreter. In volrover3's Python Console (REPL tab):
+…or step by step (each artifact is reusable):
 
-```python
->>> import grl_snam_lab
->>> grl_snam_lab.run_in_volrover()
-grl_snam_lab: live volrover3 scene now has 3 node(s) (terrain + agent0_track + agent0) — look at the viewport.
-```
-**Expected to see** — the terrain + track + marker appear **in the volrover3 3D
-window you already have open** (not a separate window); you can orbit/zoom them
-with the app's camera, toggle them in the scene tree, and drive them further from
-the REPL. Outside volrover3 (`vrhost` absent) it prints a clear message pointing
-you at `run_standalone()` / `grl-snam-lab-demo`.
-
-### 4. Learned SDF navigation on real geometry — the live drive demos
-
-The navigator can be **trained on a real scene** (terrain + city mesh) and driven
-live in volrover3. Two prep steps (once), then load a demo as a volrover3 job. See
-[docs/training-navigation-on-geometry.md](docs/training-navigation-on-geometry.md).
-
-**Prep — build the SDF + train the policy** (CPU, a few minutes):
 ```bash
-python scripts/build_sdf.py <bundle> --source edt      # footprint SDF (or --source cvc for cvc::sdf)
-python scripts/train_sdf.py <bundle>/nav_sdf.npz -o checkpoints/coef_sdf.pt --steps 1500
+grl-snam build-sdf path/to/austin_south                              # → nav_sdf.npz
+grl-snam train     path/to/austin_south/nav_sdf.npz -o coef_sdf.pt --steps 1500
+grl-snam capture multigoal path/to/austin_south coef_sdf.pt --minutes 3 -o drive.mp4
 ```
 
-**Run inside volrover3** — from the app's **Jobs tab → Load Script… → Run as Job**,
-or headless via the CLI:
+`build-sdf`/`train` run on CPU in a few minutes (GPU auto-used if present).
+`capture` renders the real 3-D scene **offscreen** through VTK (the VolRover3 engine —
+not a screen grab) and draws a **live metrics HUD** on every frame: the network's
+predicted coefficients (α, β, γ), wall clearance, speed, escape mode, and building
+penetration. `--source cvc` on `build-sdf` uses CVC's mesh-exact 3-D SDF instead of the
+footprint EDT. See [docs/training-navigation-on-geometry.md](docs/training-navigation-on-geometry.md).
+
+### Live inside VolRover3
+
 ```bash
-export GRL_SNAM_CHECKPOINT=$PWD/checkpoints/coef_sdf.pt
-export GRL_SNAM_SCENE_BUNDLE=/path/to/austin_south      # dir with terrain.json + buildings.glb
-volrover3 --run-job examples/volrover_grl_snam_austin_freedrive.py
+grl-snam demo --list                             # the registered demos
+grl-snam demo austin-freedrive --bundle path/to/austin_south --checkpoint coef_sdf.pt
 ```
-`--run-job` loads a file that defines `step(dt)` and ticks it cooperatively (it
-appears in the Python Console Jobs tab). Env vars: `GRL_SNAM_CHECKPOINT` (trained
-`.pt`), `GRL_SNAM_SCENE_BUNDLE` (scene dir), `GRL_SNAM_SDF` (prebuilt `nav_sdf.npz`;
-else built at load), `GRL_SNAM_ROOT` (repo path if not on the default).
 
-Drive demos in `examples/`:
-- **`volrover_grl_snam_austin_freedrive.py`** — end-to-end: the learned SDF policy
-  finds its own way START→GOAL with **no route**, plus a wall-follow escape for
-  local minima. Retarget the goal live to watch it redirect.
-- **`volrover_grl_snam_austin_learned.py`** — stagewise: an A* occupancy route is a
-  collision-free spine; the learned policy drives locally between sub-goals (robust
-  for adversarial start/goal pairs).
-- **`volrover_grl_snam_planner.py`** — the surrogate's native sparse-obstacle regime.
+`grl-snam demo NAME` shells out to `volrover3 --run-job` with the demo module (set
+`VOLROVER3_BIN` if `volrover3` isn't on `PATH`); you can also load the module from the
+app's **Jobs tab → Load Script → Run as Job**. Each demo publishes the same live metrics
+into the state tree under `grl_snam.metrics.*` — the hook for an in-app HUD panel — and
+prints them to the console. Demos:
 
-**Capture a drive to video — offscreen, no window** (the same way the demo films are
-made: a scripted chase camera through VTK — the VolRover3 engine — not a screen grab):
+- **`austin-freedrive`** — end-to-end learned SDF free-drive, **no route**, live goal retarget.
+- **`austin-learned`** — stagewise: an A* route spine + learned SDF local control (robust).
+- **`austin-planner`** — the surrogate in its native sparse-obstacle regime.
+- **`austin-patrol`** — a grounded A* street patrol (non-learned baseline).
+- **`lab`** — the analytic terrain + an agent walking a draped loop.
+
+Env for the Austin demos: `GRL_SNAM_SCENE_BUNDLE`, `GRL_SNAM_CHECKPOINT`, `GRL_SNAM_SDF`
+(prebuilt `nav_sdf.npz`; else built at load).
+
+### selftest & lab-demo
+
 ```bash
-# one fixed A→B run
-python scripts/capture_drive_video.py <bundle> checkpoints/coef_sdf.pt \
-    --start -361 114 --goal 185 50 -o drive.mp4
-# the DYNAMIC multi-goal free-drive: goals re-targeted live, drone chase cam, ~3 min
-python scripts/capture_multigoal_video.py <bundle> checkpoints/coef_sdf.pt \
-    --sdf <bundle>/nav_sdf.npz --minutes 3 -o multigoal.mp4
+grl-snam selftest            # four PASS checks: goal-seeking, IPC-finite, deterministic
+grl-snam lab-demo out.png    # offscreen snapshot of the analytic lab (omit PNG for a window)
 ```
-Both run headless (offscreen GL is fine) and only need the volrover env + a trained
-checkpoint + a scene bundle + ffmpeg — no display, no live app window.
 
-### 5. Dataset-specific extensions
+### Dataset-specific extensions
 Applied, dataset-specific work lives in **separate downstream projects** that depend on
 GRL-SNAM (not the other way round) and keep their dataset-specific code and models out
 of this general library. Such an extension reuses exactly the pieces shown above — the
