@@ -48,10 +48,14 @@ depends:
     # Test/lint tools for the `test:` block below. cvcpkg has no separate
     # test-deps group, so they are depends.build edges: staged into the build
     # prefix and stripped from the shipped bundle (never a runtime dependency
-    # of grl-snam). Recipes live in libcvc-deps/recipes/{pytest,ruff,black}.
-    - name: pytest
+    # of grl-snam). Every cvcpkg python package is a per-interpreter column
+    # (libcvc-deps recipes pytest-cp311/black-cp311, ...): pin the cp311
+    # columns to match this recipe's python311 runtime, so pytest imports the
+    # same interpreter's site-packages the grl-snam closure installs into.
+    # ruff is a plain binary tool (no interpreter column).
+    - name: pytest-cp311
     - name: ruff
-    - name: black
+    - name: black-cp311
   runtime:
     - name: python311
     # The lab imports pycvc + pycvc_gl (the scriptable scene). Those bindings
