@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# recipes/grl-snam/build.sh — install the GRL-SNAM pure-Python package
-# (source.type python_sdist) into the prefix interpreter's site-packages.
+# recipes/grl-snam-cp31X/build.sh — install the GRL-SNAM pure-Python package
+# (source.type python_sdist) into the column interpreter's site-packages.
+#
+# This script is column-generic: it is byte-identical across the
+# grl-snam-cp311/cp312/cp313 recipe dirs (keep the copies in lockstep) and is
+# parameterized entirely off CVC_PYTHON_INTERPRETER, which the builder exports
+# from the recipe's python.interpreter — the same pattern as libcvc-deps'
+# recipes/_common/python-wheel.sh.
 #
 # cvcpkg fetches the sdist and verifies its sha256 (source.type python_sdist)
 # and extracts it to $CVC_SOURCE_DIR before this runs.  GRL-SNAM is pure Python
@@ -13,10 +19,12 @@ set -euo pipefail
 : "${CVC_DEPS_PREFIX:?CVC_DEPS_PREFIX must be set}"
 
 # Resolve the target interpreter inside the prefix from the recipe's
-# python.interpreter (e.g. python311 -> python3.11).  We install into that
-# interpreter's own site-packages so a single activatable prefix carries both
-# libcvc's pycvc bindings and the importable grl_snam package.
-interp="${CVC_PYTHON_INTERPRETER:?CVC_PYTHON_INTERPRETER must be set (recipe python.interpreter)}"
+# python.interpreter (e.g. python312 -> python3.12), falling back to python311
+# (the original single-column recipe's interpreter) if the builder did not
+# export it.  We install into that interpreter's own site-packages so a single
+# activatable prefix carries both libcvc's pycvc bindings and the importable
+# grl_snam package.
+interp="${CVC_PYTHON_INTERPRETER:-python311}"
 digits="${interp#python}"            # python311 -> 311
 ver="${digits:0:1}.${digits:1}"      # 311 -> 3.11
 py="${CVC_DEPS_PREFIX}/bin/python${ver}"

@@ -9,40 +9,50 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Single interpreter (python 3.11): the graphics/ML closure grl_snam_lab
-    # needs — pycvc-gl (the scriptable-scene bindings), numpy-cp311 and
-    # torch-cp311 — are cp311 columns in the cvcpkg catalog. Multi-interpreter
-    # coverage follows the cp312/cp313 columns of that closure.
+    strategy:
+      fail-fast: false
+      # One linux job per interpreter column: the grl-snam recipe matrix
+      # (grl-snam-cp311/cp312/cp313) pins the matching pycvc-gl / numpy /
+      # torch columns from the cvcpkg catalog, and each leg runs the suite
+      # under that column's interpreter. No 313t leg: pycvc-gl has no cp313t
+      # column (SWIG is not free-threaded-safe).
+      matrix:
+        py: ["311", "312", "313"]
+    name: test (cp${{ matrix.py }})
     steps:
       - uses: actions/checkout@v5
 
       # Install grl-snam's whole dependency closure (build + runtime) from the
-      # cvcpkg catalog into a prefix: python311, pycvc-gl (which pulls pycvc +
-      # libcvc + cvcgl + vtk transitively), numpy + torch (CPU), and the
-      # pytest/ruff/black test/lint tools (grl-snam's depends.build). This
-      # replaces the old `pip install`: pip cannot install pycvc-gl (a cvcpkg
-      # package, not on PyPI), so `from pycvc_gl... import *` used to
-      # ModuleNotFoundError in CI. The recipe is the single source of truth for
-      # the closure (`install-deps <recipe>`), so there is no requirements file.
+      # cvcpkg catalog into a prefix: python31X, pycvc-gl-cp31X (which pulls
+      # pycvc + libcvc + cvcgl + vtk transitively), numpy-cp31X + torch-cp31X
+      # (CPU), and the pytest-cp31X/ruff/black-cp31X test/lint tools (the
+      # recipe's depends.build). This replaces the old `pip install`: pip
+      # cannot install pycvc-gl (a cvcpkg package, not on PyPI), so
+      # `from pycvc_gl... import *` used to ModuleNotFoundError in CI. The
+      # column recipe is the single source of truth for the closure
+      # (`install-deps <recipe>`), so there is no requirements file.
       - name: Install dependency closure via cvcpkg
         id: deps
         uses: transfix/libcvc-deps/.github/actions/cvcpkg-install@master
         with:
-          recipe: cvcpkg/recipes/grl-snam
+          recipe: cvcpkg/recipes/grl-snam-cp${{ matrix.py }}
           build_type: Release
 
       - name: Lint + test
         env:
           PREFIX: ${{ steps.deps.outputs.path }}
+          PY_DIGITS: ${{ matrix.py }}
         run: |
           set -euo pipefail
           if [ -z "${PREFIX}" ]; then
-            echo "::error::cvcpkg install-deps failed to resolve the grl-snam closure."
-            echo "::error::Is it published? Needs pycvc-gl +cvc.6 (package layout),"
-            echo "::error::torch-cp311, and pytest/ruff/black in the cvcpkg catalog."
+            echo "::error::cvcpkg install-deps failed to resolve the grl-snam-cp${PY_DIGITS} closure."
+            echo "::error::Is it published? Needs pycvc-gl-cp${PY_DIGITS}, numpy-cp${PY_DIGITS},"
+            echo "::error::torch-cp${PY_DIGITS}, pytest-cp${PY_DIGITS}, black-cp${PY_DIGITS}"
+            echo "::error::and ruff in the cvcpkg catalog."
             exit 1
           fi
-          PY="${PREFIX}/bin/python3.11"
+          PYVER="${PY_DIGITS:0:1}.${PY_DIGITS:1}"   # 311 -> 3.11
+          PY="${PREFIX}/bin/python${PYVER}"
 
           # Test THIS checkout's grl_snam / grl_snam_lab (the PR's code); the
           # compiled pycvc_gl + numpy + torch come from the cvcpkg prefix.
