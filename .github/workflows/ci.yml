@@ -67,6 +67,9 @@ jobs:
           echo "== black --check =="
           "${PY}" -m black --check grl_snam tests
           echo "== ruff check =="
-          "${PREFIX}/bin/ruff" check .
+          # --exclude _libcvc-deps: the cvcpkg-install action checks the
+          # libcvc-deps repo out into the workspace (for the cvcpkg source +
+          # recipes); linting THIS repo must not sweep that checkout.
+          "${PREFIX}/bin/ruff" check . --exclude _libcvc-deps
           echo "== pytest =="
           "${PY}" -m pytest -q
