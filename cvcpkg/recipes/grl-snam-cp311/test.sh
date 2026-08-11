@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# cvcpkg/recipes/grl-snam/test.sh — bundle self-test for the grl-snam package.
+# cvcpkg/recipes/grl-snam-cp31X/test.sh — bundle self-test for a grl-snam
+# per-interpreter column package.
+#
+# Column-generic: byte-identical across grl-snam-cp311/cp312/cp313 (keep the
+# copies in lockstep), parameterized off CVC_PYTHON_INTERPRETER (the recipe's
+# python.interpreter, exported by the builder) with a python311 fallback.
 #
 # Invoked by the packager after build.sh installs grl_snam / grl_snam_lab into
 # $CVC_INSTALL_DIR. It runs under the build prefix, where:
-#   * depends.build staged the test/lint tools (pytest, ruff, black), and
-#   * depends.runtime staged the runtime closure (python311, pycvc-gl, numpy,
-#     torch) into $CVC_DEPS_PREFIX's own interpreter.
+#   * depends.build staged the test/lint tools (pytest-cp31X, ruff,
+#     black-cp31X), and
+#   * depends.runtime staged the runtime closure (python31X, pycvc-gl-cp31X,
+#     numpy-cp31X, torch-cp31X) into $CVC_DEPS_PREFIX's own interpreter.
 # Non-zero exit => the bundle is broken and must not ship.
 #
 # This is the cvcpkg-native counterpart to the GRL-SNAM CI test job. The v0.1.0
@@ -13,22 +19,26 @@
 # that imports the just-built package (proving the runner works and the runtime
 # closure resolves); when a future release carries its suite, we run that
 # instead. The FULL lint+test over the working tree runs in CI, which installs
-# this exact closure via `cvcpkg install-deps`.
+# this exact closure via `cvcpkg install-deps` — once per interpreter column.
 set -euo pipefail
 
 : "${CVC_INSTALL_DIR:?CVC_INSTALL_DIR must be set}"
 : "${CVC_SOURCE_DIR:?CVC_SOURCE_DIR must be set}"
 : "${CVC_DEPS_PREFIX:?CVC_DEPS_PREFIX must be set}"
 
-PY="${CVC_DEPS_PREFIX}/bin/python3.11"
-[ -x "${PY}" ] || { echo "FAIL: no python3.11 in deps prefix (${CVC_DEPS_PREFIX})"; exit 1; }
+# Column interpreter (python312 -> 3.12), python311 fallback.
+interp="${CVC_PYTHON_INTERPRETER:-python311}"
+digits="${interp#python}"            # python311 -> 311
+ver="${digits:0:1}.${digits:1}"      # 311 -> 3.11
+PY="${CVC_DEPS_PREFIX}/bin/python${ver}"
+[ -x "${PY}" ] || { echo "FAIL: no python${ver} in deps prefix (${CVC_DEPS_PREFIX})"; exit 1; }
 
 # Make the just-built grl_snam / grl_snam_lab importable alongside the deps
 # already on the prefix interpreter's path (pycvc-gl, numpy, torch).
 SP="$(find "${CVC_INSTALL_DIR}" -maxdepth 3 -type d -name site-packages -print -quit || true)"
 export PYTHONPATH="${SP:-}${PYTHONPATH:+:${PYTHONPATH}}"
 
-echo "-- grl-snam bundle self-test --"
+echo "-- grl-snam bundle self-test (python${ver}) --"
 echo "-- test/lint tools staged via depends.build --"
 "${PY}" -m pytest --version
 "${PY}" -m black --version
