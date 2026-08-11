@@ -45,6 +45,17 @@ echo "installing grl_snam into ${CVC_INSTALL_DIR} using ${py}"
 #                       network resolution, which is what makes air-gapped
 #                       installs work.
 # --no-compile:         ship .py only; no host-specific .pyc in the bundle.
+# --no-build-isolation means pip does NOT download the PEP-517 backend into a
+# throwaway venv: poetry-core must ALREADY be importable by ${py}.  It is a
+# depends.build edge (poetry-core-cp31X), extracted into the deps prefix on
+# the remote builder; a local build with build/deps prefix SEPARATION stages
+# it in CVC_BUILD_PREFIX instead, so bridge that site-packages onto
+# PYTHONPATH too (same pattern as libcvc-deps' generated backend recipes).
+if [ -n "${CVC_BUILD_PREFIX:-}" ]; then
+  _bp_site="${CVC_BUILD_PREFIX}/lib/python${ver}/site-packages"
+  [ -d "${_bp_site}" ] && export PYTHONPATH="${_bp_site}${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+
 "${py}" -m pip install \
   --no-deps \
   --no-build-isolation \
@@ -62,23 +73,16 @@ if [ -z "${libdir}" ]; then
   echo "build.sh: no site-packages found under ${CVC_INSTALL_DIR}" >&2
   exit 1
 fi
+# Assert only what the PINNED v0.1.0 sdist actually ships: grl_snam +
+# grl_snam_lab (Lab/terrain_mesh).  The selftest module, the lab run_* entry
+# points and the grl-snam-selftest / grl-snam-lab-demo console scripts all
+# POSTDATE the v0.1.0 release (the sdist declares no [project.scripts] at
+# all) — asserting them here can never pass until the recipes pin a newer
+# release, at which point this smoke should grow back with it.
 PYTHONPATH="${libdir}${PYTHONPATH:+:${PYTHONPATH}}" "${py}" -c "
 import grl_snam, grl_snam_lab
-# grl_snam_lab imports without the compiled bindings (pycvc is lazy); the live
-# demo + standalone entry points must be exposed for the volrover3 REPL and the
-# grl-snam-lab-demo console script.
-for fn in ('Lab', 'run_in_volrover', 'run_standalone', 'demo_scene'):
+for fn in ('Lab', 'terrain_mesh'):
     assert hasattr(grl_snam_lab, fn), 'grl_snam_lab missing ' + fn
-import grl_snam.selftest  # the grl-snam-selftest console entry point
 print('grl_snam', getattr(grl_snam, '__version__', '(no __version__)'),
       '| grl_snam_lab', grl_snam_lab.__version__, 'from', grl_snam_lab.__file__)
 "
-
-# The console scripts must be installed by the wheel's entry-points into bin/.
-for _s in grl-snam-selftest grl-snam-lab-demo; do
-  if [ ! -x "${CVC_INSTALL_DIR}/bin/${_s}" ]; then
-    echo "build.sh: expected console script bin/${_s} not installed" >&2
-    exit 1
-  fi
-done
-echo "grl-snam: console scripts installed: grl-snam-selftest, grl-snam-lab-demo"

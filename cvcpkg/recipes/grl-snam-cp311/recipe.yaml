@@ -50,6 +50,11 @@ patches: []
 depends:
   build:
     - name: python311
+    # The PEP-517 backend (poetry.core.masonry.api): build.sh pip-installs the
+    # sdist with --no-build-isolation --no-index, so the backend must already
+    # be importable in the build prefix — this column edge stages it there
+    # (libcvc-deps recipes/poetry-core-cp311, satisfying python.build_requires).
+    - name: poetry-core-cp311
     # Test/lint tools for the `test:` block below. cvcpkg has no separate
     # test-deps group, so they are depends.build edges: staged into the build
     # prefix and stripped from the shipped bundle (never a runtime dependency
@@ -95,6 +100,7 @@ test:
 package:
   files:
     - lib/python3.11/site-packages/grl_snam/
+    - lib/python3.11/site-packages/grl_snam_lab/
     - lib/python3.11/site-packages/grl_snam-0.1.0.dist-info/
     - lib/python3.11/site-packages/scripts/
     - lib/python3.11/site-packages/experiments/
@@ -114,6 +120,5 @@ notes: >-
   has none.  (3) Runtime PyPI deps: numpy/torch are covered by their cvcpkg
   columns; matplotlib (>=3.7) and imageio (>=2.31) still need python_wheel
   recipes before the full research core resolves.  (4) build_isolation:false
-  needs the pinned poetry-core backend importable in the build interpreter —
-  a poetry-core wheel recipe is the remaining prerequisite (else build with
-  network isolation on).
+  needs the pinned poetry-core backend importable in the build interpreter;
+  the depends.build edge on poetry-core-cp311 (libcvc-deps) satisfies it.
