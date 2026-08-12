@@ -28,7 +28,26 @@ from .metrics import NavMetrics
 class SdfNavigator:
     """Drive a point agent across a trained SDF field toward a (retargetable) goal."""
 
-    def __init__(self, field, model, meta, *, reach_tol: float = 0.8):
+    #: default kinematic-bicycle parameters (normalized units; L ~ 3 m at the
+    #: Austin scale). Overridable per-instance via ``vehicle=dict(...)``.
+    VEHICLE_DEFAULTS = dict(L=0.035, delta_max=0.6, a_max=1.5, a_lat_max=1.0, k_steer=0.8)
+
+    def __init__(
+        self,
+        field,
+        model,
+        meta,
+        *,
+        reach_tol: float = 0.8,
+        dynamics: str = "point",
+        vehicle: dict | None = None,
+    ):
+        if dynamics not in ("point", "bicycle"):
+            raise ValueError(f"dynamics must be 'point' or 'bicycle', got {dynamics!r}")
+        self._dyn = dynamics
+        self._veh = {**self.VEHICLE_DEFAULTS, **(vehicle or {})}
+        self.th = torch.zeros(1)  # heading (rad); meaningful in bicycle mode
+        self.sp = torch.zeros(1)  # forward speed;  meaningful in bicycle mode
         self.field = field
         self.model = model
         self.meta = meta
@@ -65,6 +84,9 @@ class SdfNavigator:
     def start(self, start_world, goal_world):
         self.o = torch.from_numpy(self.w2n(start_world)).unsqueeze(0).float()
         self.v = torch.zeros(1, 2)
+        gd = self.w2n(goal_world) - self.o[0].numpy()
+        self.th = torch.tensor([math.atan2(float(gd[1]), float(gd[0]))])
+        self.sp = torch.zeros(1)
         self.step_i = 0
         self.set_goal(goal_world)
         return self
@@ -76,6 +98,32 @@ class SdfNavigator:
         p = self.o[0].numpy()
         self._reset_goal_state(float(np.linalg.norm(self._gn - p)))
 
+    def track_goal(self, goal_world, *, goal_index: int | None = None):
+        """Retarget a *moving* goal without disturbing the escape machinery.
+
+        ``set_goal`` resets the whole goal state — including ``_stall`` — which
+        is right for a discrete new objective but wrong called per-frame on a
+        moving target: zeroing the stall counter every frame permanently
+        disables the wall-follow escape, and the agent livelocks in any concave
+        corner. Conversely the counter itself measures *closing*, so a target
+        that legitimately recedes would false-trigger the escape while tracking
+        is going fine.
+
+        ``track_goal`` therefore (a) updates the goal in place, leaving
+        ``_mode``/``_stall``/``_turn`` alone, and (b) switches stall detection
+        to *displacement* — "am I moving?" instead of "am I closing?" — until
+        the next ``set_goal``/``start``.
+        """
+        self._gn = self.w2n(goal_world)
+        if goal_index is not None:
+            self.goal_index = goal_index
+        dg = float(np.linalg.norm(self._gn - self.o[0].numpy()))
+        # Re-base the progress accounting to the new goal; NOT the escape state.
+        self._best = min(self._best, dg)
+        self._init = max(self._init, dg, 1e-6)
+        self._tracking = True
+        self.reached = False
+
     def _reset_goal_state(self, dist0):
         self._best = dist0
         self._init = max(dist0, 1e-6)
@@ -84,6 +132,9 @@ class SdfNavigator:
         self._turn = 1.0
         self._dhit = 0.0
         self.reached = False
+        self._tracking = False
+        self._pos_hist = []  # recent positions (normalized) for displacement stall
+        self._wall_entry = None  # position where wall-follow was entered
 
     @torch.no_grad()
     def _sdf_normal(self, on):
@@ -99,7 +150,21 @@ class SdfNavigator:
         dg = float(np.linalg.norm(self._gn - p))
         gdir = (self._gn - p) / (dg + 1e-6)
 
-        if dg < self._best - 1e-3:
+        if self._tracking:
+            # Displacement stall: "am I moving?", not "am I closing?". Against
+            # a moving target the goal distance may legitimately never improve,
+            # and (the reverse trap) resetting on every retarget would disable
+            # the escape entirely. Window of 40 steps ~ 2.4 s at dt=0.06.
+            self._pos_hist.append(p.copy())
+            if len(self._pos_hist) > 40:
+                self._pos_hist.pop(0)
+                moved = float(np.linalg.norm(p - self._pos_hist[0]))
+                if moved < 0.15:
+                    self._stall += 1
+                else:
+                    self._stall = 0
+            self._best = min(self._best, dg)  # progress metric only
+        elif dg < self._best - 1e-3:
             self._best = dg
             self._stall = 0
         else:
@@ -111,6 +176,7 @@ class SdfNavigator:
             tang = np.array([-nrm[1], nrm[0]], np.float32)
             self._turn = 1.0 if np.dot(tang, gdir) >= 0 else -1.0
             self._dhit = dg
+            self._wall_entry = p.copy()
             self._mode = "wall"
             self._stall = 0
 
@@ -118,7 +184,19 @@ class SdfNavigator:
             nrm = self._sdf_normal(p)
             tang = self._turn * np.array([-nrm[1], nrm[0]], np.float32)
             carrot = (p + (0.6 * tang + 0.4 * nrm) * 1.6).astype(np.float32)
-            if dg < self._dhit - 1.2 or self._stall > 240:  # rounded it, or give up escaping
+            if self._tracking:
+                # The dg-based exit assumes a fixed goal; under tracking, exit
+                # once we have genuinely moved away from where we got stuck (or
+                # give up). The moving carrot then re-acquires naturally.
+                escaped = (
+                    self._wall_entry is not None
+                    and float(np.linalg.norm(p - self._wall_entry)) > 2.0
+                )
+                if escaped or dg < self._dhit - 1.2 or self._stall > 240:
+                    self._mode = "seek"
+                    self._best = dg
+                    self._stall = 0
+            elif dg < self._dhit - 1.2 or self._stall > 240:  # rounded it, or gave up
                 self._mode = "seek"
                 self._best = dg
                 self._stall = 0
@@ -127,9 +205,27 @@ class SdfNavigator:
 
         gt = torch.from_numpy(carrot).unsqueeze(0)
         al, be, ga = self.model(sdf_nav.coef_feats(self.field, self.o, gt))
-        self.o, self.v, _ = sdf_nav.sdf_rollout(
-            self.field, self.o, self.v, gt, al, be, ga, 1, nsub=self.nsub, **self.kw
-        )
+        if self._dyn == "bicycle":
+            self.o, self.th, self.sp, _ = sdf_nav.bicycle_rollout(
+                self.field,
+                self.o,
+                self.th,
+                self.sp,
+                gt,
+                al,
+                be,
+                ga,
+                1,
+                nsub=self.nsub,
+                **self.kw,
+                **self._veh,
+            )
+            head = torch.stack([torch.cos(self.th), torch.sin(self.th)], -1)
+            self.v = self.sp.unsqueeze(-1) * head  # keep .v meaningful for callers
+        else:
+            self.o, self.v, _ = sdf_nav.sdf_rollout(
+                self.field, self.o, self.v, gt, al, be, ga, 1, nsub=self.nsub, **self.kw
+            )
         self.step_i += 1
 
         # metrics at the new position
@@ -162,6 +258,7 @@ class SdfNavigator:
             goal_wall_align=align,
             goal_index=self.goal_index,
             reached=self.reached,
+            heading_rad=float(self.th[0]) if self._dyn == "bicycle" else 0.0,
         )
 
     def drive_to_goal(self, max_steps: int = 1300, *, stop_at_reach: bool = True):

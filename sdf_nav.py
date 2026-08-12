@@ -28,6 +28,8 @@ Scale: like the base surrogate, work in a ~10-unit normalized regime
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -164,6 +166,115 @@ def sdf_rollout(field: SDFField, o, v, goal, al, be, ga, steps, *, rr, d_hat, dt
             v = torch.where(sp > vmax, v * vmax / sp, v)
             o = o + hdt * v
     return o, v, minclr
+
+
+def bicycle_rollout(
+    field: SDFField,
+    o,
+    th,
+    sp,
+    goal,
+    al,
+    be,
+    ga,
+    steps,
+    *,
+    rr,
+    d_hat,
+    dt,
+    nsub=1,
+    vmax=0.9,
+    L=0.035,
+    delta_max=0.6,
+    a_max=1.5,
+    a_lat_max=1.0,
+    k_steer=0.8,
+):
+    """Differentiable *kinematic bicycle* rollout over the same SDF barrier.
+
+    Where :func:`sdf_rollout` integrates a holonomic point (it can translate
+    sideways, so a turning radius is meaningless), this promotes heading to
+    simulated state and moves like a vehicle::
+
+        th' = (sp / L) * tan(delta)     x' = sp*cos(th)    y' = sp*sin(th)
+
+    The learned coefficients keep their meaning — ``al`` scales the IPC wall
+    barrier, ``be`` the goal spring, ``ga`` damping — but they act through the
+    vehicle's actuators instead of directly on velocity:
+
+    * longitudinal: ``a = clamp(F . heading - ga*sp, +-a_max)`` — the barrier
+      decelerates an approach head-on, the goal spring accelerates, damping is
+      drag on speed;
+    * steering: pure pursuit toward ``goal`` (the carrot the navigator already
+      feeds), ``delta = atan2(2 L sin(alpha), L_d)``, plus a bounded barrier
+      bias ``k_steer * tanh(F_bar . left)`` so walls *steer* the vehicle away
+      rather than shoving it sideways (a car cannot strafe);
+    * the lateral-acceleration cap ``sp^2 * |tan(delta)| / L <= a_lat_max``
+      makes it slow down for corners on its own — the single cheapest thing
+      that reads as "vehicle" instead of "dot".
+
+    ``delta_max`` fixes the minimum turning radius ``R_min = L / tan(delta_max)``.
+    Speed is forward-only in ``[0, vmax]``: a carrot behind the vehicle produces
+    an arcing turn-around at full steer, not a reverse. Everything is built from
+    smooth/clamped torch ops, so gradients flow for self-supervised training
+    exactly as they do through :func:`sdf_rollout`.
+
+    Args are as :func:`sdf_rollout` except the state: ``th`` and ``sp`` are
+    ``[B]`` heading (radians) and speed. Returns ``(o, th, sp, min_clearance)``.
+    """
+    hdt = dt / nsub
+    tan_dmax = math.tan(delta_max)
+    minclr = torch.full((o.shape[0],), 9.9, device=o.device)
+    for _ in range(steps):
+        for _s in range(nsub):
+            phi, nrm = field.sample(o)
+            d = phi - rr
+            minclr = torch.minimum(minclr, d.detach())
+
+            F_bar = -(al * _ipc_dbdd(d, d_hat)).unsqueeze(-1) * nrm
+            F_goal = -be.unsqueeze(-1) * (o - goal)
+            F = F_bar + F_goal
+
+            head = torch.stack([torch.cos(th), torch.sin(th)], -1)  # [B,2]
+            left = torch.stack([-torch.sin(th), torch.cos(th)], -1)  # [B,2]
+
+            # longitudinal: project the virtual force onto the heading; damping
+            # becomes drag on speed. Clamped to the actuator limit.
+            a_long = ((F * head).sum(-1) - ga * sp).clamp(-a_max, a_max)
+
+            # steering: pure pursuit toward the carrot + bounded barrier bias.
+            to_goal = goal - o
+            L_d = to_goal.norm(dim=-1).clamp_min(1e-6)
+            ang = torch.atan2(to_goal[:, 1], to_goal[:, 0]) - th
+            sin_a = torch.sin(ang)  # sin()/cos() absorb the angle wrap
+            cos_a = torch.cos(ang)
+            behind = cos_a < 0.0
+            # Pure pursuit degenerates when the carrot is behind: sin(pi)=0
+            # gives zero steer while the goal spring brakes, and the vehicle
+            # parks facing away. Forward-only turn-around instead: full steer
+            # toward sign(sin_a) (ties broken toward +) at a creep speed.
+            turn_sign = torch.where(sin_a >= 0.0, torch.ones_like(sin_a), -torch.ones_like(sin_a))
+            delta = torch.where(behind, turn_sign * delta_max, torch.atan2(2.0 * L * sin_a, L_d))
+            delta = delta + k_steer * torch.tanh((F_bar * left).sum(-1))
+            delta = delta.clamp(-delta_max, delta_max)
+
+            # corner speed limit from the lateral-acceleration cap.
+            kappa = torch.tan(delta).abs() / L
+            v_corner = torch.sqrt(a_lat_max / kappa.clamp_min(tan_dmax / (L * 400.0)))
+            v_lim = torch.minimum(torch.full_like(v_corner, vmax), v_corner)
+
+            # While turning around, hold a creep speed so th' = sp/L tan(delta)
+            # stays nonzero -- braking to rest would freeze the arc.
+            v_creep = 0.5 * v_corner
+            a_long = torch.where(behind, (v_creep - sp) / hdt, a_long)
+            a_long = a_long.clamp(-a_max, a_max)
+
+            # semi-implicit: speed, then heading with the new speed, then position.
+            sp = (sp + hdt * a_long).clamp(torch.zeros_like(v_lim), v_lim)
+            th = th + hdt * (sp / L) * torch.tan(delta)
+            head = torch.stack([torch.cos(th), torch.sin(th)], -1)
+            o = o + hdt * sp.unsqueeze(-1) * head
+    return o, th, sp, minclr
 
 
 class CoefMLP(nn.Module):
