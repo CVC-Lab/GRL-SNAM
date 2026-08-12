@@ -5,7 +5,12 @@ recipe:
   upstream_version: "0.1.0"
   # cvc_revision 1 of the per-interpreter columns, which supersede the published
   # bare `grl-snam` package (that recipe targeted python311 only).
-  cvc_revision: 1
+  # Bumped 1 -> 2: complete the declared PyPI closure — click (the
+  # `grl-snam` CLI imports it at startup; every console script died
+  # without it), plus matplotlib + imageio, whose cvcpkg columns now
+  # exist (libcvc-deps), closing the "pending cvcpkg recipes" note
+  # this recipe shipped with.
+  cvc_revision: 2
   maintainer: "cvcpkg group"
   maintainer_email: "info@cvcpkg.org"
   maintainer_url: "https://cvcpkg.org"
@@ -76,9 +81,16 @@ depends:
     # The surrogate-dynamics numerics + the grl-snam-selftest correctness demo
     # need torch (CPU). The visual lab path (pycvc-gl) does not.
     - name: torch-cp313
-    # NOTE: the full research core (train/eval, grl_snam.*) also imports
-    # matplotlib + imageio — pending cvcpkg recipes; the two demos (viz +
-    # selftest) do not need them, so they are omitted until those land.
+    # The `grl-snam` CLI (and every console-script alias) is Click-based
+    # and imports click at startup — pyproject declares it; the recipe
+    # previously omitted it, so the installed entry points could not
+    # even --help.
+    - name: click-cp313
+    # The demo/capture path (grl_snam.demos, pipeline video capture)
+    # renders through matplotlib and writes frames through imageio;
+    # their cvcpkg columns exist now, completing the declared closure.
+    - name: matplotlib-cp313
+    - name: imageio-cp313
 
 build:
   # Pure Python: built once, valid everywhere (platform: any / noarch).
@@ -117,8 +129,8 @@ notes: >-
   resolves.  (2) This is the cp313 column of the grl-snam per-interpreter
   matrix (grl-snam-cp311/cp312/cp313); the three columns supersede the
   published bare `grl-snam` recipe.  No cp313t column while pycvc-gl (SWIG)
-  has none.  (3) Runtime PyPI deps: numpy/torch are covered by their cvcpkg
-  columns; matplotlib (>=3.7) and imageio (>=2.31) still need python_wheel
-  recipes before the full research core resolves.  (4) build_isolation:false
+  has none.  (3) Runtime PyPI deps: the full declared closure — click, numpy,
+  torch, matplotlib, imageio — is covered by cvcpkg columns; nothing
+  is pending.  (4) build_isolation:false
   needs the pinned poetry-core backend importable in the build interpreter;
   the depends.build edge on poetry-core-cp313 (libcvc-deps) satisfies it.
