@@ -105,28 +105,41 @@ class BeliefGrid:
             return 0
 
         before = self.logodds > 0.0
+
+        # All rays marched in lockstep as [n_rays, n_steps] index arrays — the
+        # per-cell Python loop was ~100x slower and dominated the sim step.
         angles = heading_rad + (np.arange(n_rays) / max(n_rays, 1) - 0.5) * fov_rad
-        for a in angles:
-            dx, dy = np.cos(a), np.sin(a)
-            # DDA in cell space; step is one cell diagonal at most.
-            fr, fc = float(r0), float(c0)
-            sr = dy * (cell_w / cell_h)  # keep world-isotropic rays on an
-            sc = dx  # anisotropic raster
-            n = max(abs(sr), abs(sc), 1e-9)
-            sr, sc = sr / n, sc / n
-            dist_cells = 0.0
-            range_cells = range_m / cell_w
-            while dist_cells <= range_cells:
-                r, c = int(round(fr)), int(round(fc))
-                if not self.in_bounds(r, c):
-                    break
-                if truth_occ[r, c]:
-                    self.logodds[r, c] = min(self.logodds[r, c] + L_OCC, L_CLAMP)
-                    break  # occlusion: nothing visible beyond the hit
-                self.logodds[r, c] = max(self.logodds[r, c] + L_FREE, -L_CLAMP)
-                fr += sr
-                fc += sc
-                dist_cells += 1.0
+        dxy = np.stack([np.cos(angles), np.sin(angles)], -1)  # world dirs
+        sr = dxy[:, 1] * (cell_w / cell_h)  # keep world-isotropic rays on an
+        sc = dxy[:, 0]  # anisotropic raster
+        norm = np.maximum(np.maximum(np.abs(sr), np.abs(sc)), 1e-9)
+        sr, sc = sr / norm, sc / norm
+
+        n_steps = int(range_m / cell_w) + 1
+        steps = np.arange(n_steps, dtype=np.float64)
+        rows = np.rint(r0 + sr[:, None] * steps[None, :]).astype(np.intp)
+        cols = np.rint(c0 + sc[:, None] * steps[None, :]).astype(np.intp)
+
+        inside = (rows >= 0) & (rows < self.ny) & (cols >= 0) & (cols < self.nx)
+        rows_c = np.clip(rows, 0, self.ny - 1)
+        cols_c = np.clip(cols, 0, self.nx - 1)
+        hit = truth_occ[rows_c, cols_c] & inside  # [R, S]
+
+        # First hit (or first out-of-bounds) truncates each ray; the hit cell
+        # itself is marked occupied and nothing beyond it is seen — occlusion.
+        stop = hit | ~inside
+        any_stop = stop.any(axis=1)
+        first_stop = np.where(any_stop, stop.argmax(axis=1), n_steps)
+        idx = np.broadcast_to(steps, hit.shape)
+        free_mask = inside & (idx < first_stop[:, None])
+        occ_mask = hit & (idx == first_stop[:, None])
+
+        # Accumulate per-visit evidence exactly as the scalar loop did (a cell
+        # crossed by several rays gets several increments), then clamp.
+        delta = np.zeros_like(self.logodds)
+        np.add.at(delta, (rows_c[free_mask], cols_c[free_mask]), L_FREE)
+        np.add.at(delta, (rows_c[occ_mask], cols_c[occ_mask]), L_OCC)
+        np.clip(self.logodds + delta, -L_CLAMP, L_CLAMP, out=self.logodds)
 
         flips = int(np.count_nonzero((self.logodds > 0.0) != before))
         if flips:
