@@ -46,6 +46,17 @@ def _open_field():
     return field, meta
 
 
+def _wall_field(col_lo=44, col_hi=48, row_lo=8, row_hi=56, n=64):
+    """A straight vertical wall, built through the REAL EDT path (nonzero
+    normals) — the open-field fixture cannot exercise barrier interactions."""
+    occ = np.zeros((n, n), bool)
+    occ[row_lo:row_hi, col_lo:col_hi] = True
+    bounds = (-100.0, -100.0, 100.0, 100.0)
+    scale = 0.05
+    phi, nx_g, ny_g = sdf_nav.build_sdf(occ, bounds, scale)
+    return sdf_nav.SDFField(phi, nx_g, ny_g, bounds, (0.0, 0.0), scale)
+
+
 def _coef(b=1.0, g=4.0, be=3.0):
     one = torch.ones(1)
     return b * one, be * one, g * one
@@ -122,7 +133,7 @@ def test_acceleration_cap_holds():
     for _ in range(150):
         o, th, sp, _c = _roll(field, o, th, sp, goal, 1)
         now = float(sp[0])
-        assert now - last <= VEH["a_max"] * DT + 1e-6, "acceleration cap leaked"
+        assert abs(now - last) <= VEH["a_max"] * DT + 1e-6, "accel/decel cap leaked"
         last = now
         peak = max(peak, now)
     # It reaches vmax en route; the *final* speed is low because it brakes on
@@ -211,10 +222,11 @@ def test_navigator_bicycle_mode_reaches_a_goal():
     model = sdf_nav.CoefMLP()
     model.eval()
     nav = SdfNavigator(field, model, meta, dynamics="bicycle")
-    nav.start((-50.0, 0.0), (50.0, 0.0))
+    nav.start((-50.0, 0.0), (50.0, 50.0))  # diagonal: heading must be nonzero
     ms, best_i, _o, _v = nav.drive_to_goal(max_steps=3000)
     assert ms[best_i].goal_dist_m < ms[0].goal_dist_m * 0.2, "barely progressed"
-    assert any(abs(m.heading_rad) >= 0.0 for m in ms)  # field populated
+    assert max(abs(m.heading_rad) for m in ms) > 0.1, "heading never left zero"
+    assert all(-math.pi <= m.heading_rad <= math.pi for m in ms), "heading not wrapped"
     # .v stays meaningful for existing consumers (capture, VehiclePose)
     assert nav.v.shape == (1, 2)
 
@@ -292,3 +304,97 @@ def test_track_goal_rejects_nothing_but_updates_goal_and_index():
     assert nav.goal_index == 7
     gw = nav.n2w(nav._gn)
     assert np.allclose(gw, [30.0, 40.0], atol=1e-4)
+
+
+# ── wall-field regressions (from the adversarial review) ────────────────────
+
+
+def test_head_on_wall_never_penetrates_and_recovers():
+    """The a_max clamp on the SUMMED force meant the goal spring out-pulled the
+    barrier: every entry speed 0.3..0.9 buried the vehicle center ~1.9 m inside
+    the wall, unrecoverably (sp>=0, th'~sp). The stopping-distance governor
+    must hold clearance at EVERY entry speed, and the vehicle must stay
+    maneuverable (able to move away afterwards) rather than freeze."""
+    field = _wall_field()
+    goal = torch.tensor([[3.0, 0.0]])  # beyond the wall: max spring pull
+    for v0 in (0.3, 0.5, 0.7, 0.9):
+        o = torch.tensor([[-2.5, 0.0]])
+        th = torch.zeros(1)
+        sp = torch.full((1,), v0)
+        minclr = 9.9
+        for _ in range(400):
+            o, th, sp, mc = _roll(field, o, th, sp, goal, 1)
+            minclr = min(minclr, float(mc))
+        assert minclr > -1e-6, f"entry {v0}: penetrated (min d {minclr:.3f})"
+        # not frozen: point it away and it must actually leave
+        away = torch.tensor([[-4.0, 0.0]])
+        o2 = o.clone()
+        for _ in range(300):
+            # the navigator runs with reverse enabled -- a nose-in car without
+            # reverse physically cannot escape, which is the point of the gear
+            o2, th, sp, _mc = _roll(field, o2, th, sp, away, 1, allow_reverse=True)
+        assert float((o2 - o).norm()) > 0.3, f"entry {v0}: frozen at the wall"
+
+
+def test_barrier_bias_does_not_attract_into_the_wall():
+    """The inherited piecewise b' is POSITIVE over (0.39 d_hat, d_hat) — an
+    attraction band. Fed raw to the steering wheel it out-voted pure pursuit
+    ~15x and dragged a lane-keeping vehicle from d=0.25 onto the b'=0 shell.
+    The bias must use the repulsive part only: a commanded lane inside d_hat
+    holds."""
+    field = _wall_field()
+    # drive parallel to the wall (wall face at x ~ -6.5 world/normalized ~ -0.33)
+    o = torch.tensor([[-1.0, -1.6]])
+    th = torch.tensor([math.pi / 2])  # +y, parallel to the wall
+    sp = torch.full((1,), 0.5)
+    phi0, _ = field.sample(o)
+    d0 = float(phi0[0]) - RR
+    min_d = 9.9
+    for i in range(220):
+        carrot = torch.tensor([[-1.0, float(o[0, 1]) + 1.5]])  # stay in lane
+        o, th, sp, mc = _roll(field, o, th, sp, carrot, 1)
+        min_d = min(min_d, float(mc))
+    assert min_d > 0.5 * d0, f"dragged toward the wall: min d {min_d:.3f} vs lane d0 {d0:.3f}"
+
+
+def test_retarget_behind_at_speed_respects_decel_cap():
+    """Flipping the carrot behind at vmax used to shed ~15x a_max of speed in
+    one substep via the direct clamp to v_lim. Braking is an actuator."""
+    field, _ = _open_field()
+    o = torch.zeros(1, 2)
+    th = torch.zeros(1)
+    sp = torch.zeros(1)
+    goal = torch.tensor([[8.0, 0.0]])
+    for _ in range(80):  # cruise up to speed
+        o, th, sp, _c = _roll(field, o, th, sp, goal, 1)
+    assert float(sp[0]) > 0.8
+    goal = torch.tensor([[-8.0, 0.0]])  # hard flip
+    last = float(sp[0])
+    for _ in range(120):
+        o, th, sp, _c = _roll(field, o, th, sp, goal, 1)
+        now = float(sp[0])
+        assert abs(now - last) <= VEH["a_max"] * DT + 1e-6, "decel cap leaked on flip"
+        last = now
+
+
+def test_turnaround_creep_speed_is_bounded():
+    """The creep target must be the DESIGN creep (half the full-steer corner
+    speed), not the bias-inflated v_corner of a partially-steered instant."""
+    field, _ = _open_field()
+    design_creep = 0.5 * math.sqrt(VEH["a_lat_max"] * VEH["L"] / math.tan(VEH["delta_max"]))
+    o = torch.zeros(1, 2)
+    th = torch.zeros(1)
+    sp = torch.zeros(1)
+    goal = torch.tensor([[-5.0, 0.01]])
+    speeds = []
+    for _ in range(150):
+        o, th, sp, _c = _roll(field, o, th, sp, goal, 1)
+        # only sample while the goal is still behind (mid turn-around)
+        head = np.array([math.cos(float(th[0])), math.sin(float(th[0]))])
+        to_g = goal[0].numpy() - o[0].numpy()
+        if float(np.dot(head, to_g)) < 0:
+            speeds.append(float(sp[0]))
+    assert speeds, "never observed the behind phase"
+    assert (
+        max(speeds) <= 1.5 * design_creep + 1e-6
+    ), f"turn-around lunged to {max(speeds):.3f} (design creep {design_creep:.3f})"

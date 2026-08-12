@@ -26,6 +26,7 @@ Pieces:
 Scale: like the base surrogate, work in a ~10-unit normalized regime
 (``pos_normalized = (world - center) * scale``); the SDF is stored normalized too.
 """
+
 from __future__ import annotations
 
 import math
@@ -38,13 +39,24 @@ import torch.nn.functional as F
 
 # ── exact Euclidean distance transform (Felzenszwalb & Huttenlocher), no scipy ──
 def _edt1d(f: np.ndarray) -> np.ndarray:
-    n = len(f); d = np.empty(n); v = np.zeros(n, dtype=np.intp); z = np.empty(n + 1); INF = 1e20
-    k = 0; v[0] = 0; z[0] = -INF; z[1] = INF
+    n = len(f)
+    d = np.empty(n)
+    v = np.zeros(n, dtype=np.intp)
+    z = np.empty(n + 1)
+    INF = 1e20
+    k = 0
+    v[0] = 0
+    z[0] = -INF
+    z[1] = INF
     for q in range(1, n):
         s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k])
         while s <= z[k]:
-            k -= 1; s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k])
-        k += 1; v[k] = q; z[k] = s; z[k + 1] = INF
+            k -= 1
+            s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k])
+        k += 1
+        v[k] = q
+        z[k] = s
+        z[k + 1] = INF
     k = 0
     for q in range(n):
         while z[k + 1] < q:
@@ -69,15 +81,25 @@ def build_sdf(occ: np.ndarray, bounds, scale: float):
     ny, nx = occ.shape
     mnx, mny, mxx, mxy = bounds
     cell_w = (mxx - mnx) / (nx - 1)
-    phi_w = (np.sqrt(_edt2(occ)) - np.sqrt(_edt2(~occ))) * cell_w   # signed world metres
+    phi_w = (np.sqrt(_edt2(occ)) - np.sqrt(_edt2(~occ))) * cell_w  # signed world metres
     phi = (phi_w * scale).astype(np.float32)
-    gy, gx = np.gradient(phi)                                        # dphi/dy(row), dphi/dx(col)
+    gy, gx = np.gradient(phi)  # dphi/dy(row), dphi/dx(col)
     gmag = np.sqrt(gx * gx + gy * gy) + 1e-9
     return phi, (gx / gmag).astype(np.float32), (gy / gmag).astype(np.float32)
 
 
-def build_sdf_cvc(verts, tris, bounds, scale, *, dim=(256, 256, 48), z_frac=0.12,
-                  algo=None, flip=False, return_volume=False):
+def build_sdf_cvc(
+    verts,
+    tris,
+    bounds,
+    scale,
+    *,
+    dim=(256, 256, 48),
+    z_frac=0.12,
+    algo=None,
+    flip=False,
+    return_volume=False,
+):
     """MESH-EXACT signed distance field via **cvc::sdf** (the CVC compute layer),
     as an alternative to the footprint EDT (``build_sdf``). Builds a ``cvc::geometry``
     from the flat ``verts`` (``[x,y,z,...]``) + ``tris`` (``[i,j,k,...]``), runs
@@ -101,11 +123,24 @@ def build_sdf_cvc(verts, tris, bounds, scale, *, dim=(256, 256, 48), z_frac=0.12
     zmin, zmax = (min(zs), max(zs)) if zs else (0.0, 1.0)
     algo = pycvc.SDF_V2 if algo is None else algo
     nx3, ny3, nz3 = dim
-    vol = pycvc.sdf(app, g, nx3, ny3, nz3, float(mnx), float(mny), float(zmin),
-                    float(mxx), float(mxy), float(zmax), algo, bool(flip))
-    arr = np.asarray(vol.grid()).astype(np.float32)          # cvc grid() axis order is [Z, Y, X]
+    vol = pycvc.sdf(
+        app,
+        g,
+        nx3,
+        ny3,
+        nz3,
+        float(mnx),
+        float(mny),
+        float(zmin),
+        float(mxx),
+        float(mxy),
+        float(zmax),
+        algo,
+        bool(flip),
+    )
+    arr = np.asarray(vol.grid()).astype(np.float32)  # cvc grid() axis order is [Z, Y, X]
     kz = int(z_frac * (nz3 - 1))
-    phi_w = arr[kz, :, :]                                     # [Y(row), X(col)] — matches the occupancy grid
+    phi_w = arr[kz, :, :]  # [Y(row), X(col)] — matches the occupancy grid
     # NOTE: verify x/y orientation against your occupancy on first use (compare
     # sign(phi_w) to the footprint mask); transpose here if your scene is mirrored.
     phi = (phi_w * scale).astype(np.float32)
@@ -131,9 +166,12 @@ class SDFField:
         wy = on[:, 1] / self.S + self.cy
         gx = 2 * (wx - self.mnx) / (self.mxx - self.mnx) - 1
         gy = 2 * (wy - self.mny) / (self.mxy - self.mny) - 1
-        grid = torch.stack([gx, gy], -1)[None, None]                # [1,1,B,2]
-        out = F.grid_sample(self.field, grid, mode="bilinear", align_corners=True,
-                            padding_mode="border")[0, :, 0, :].t()  # [B,3]
+        grid = torch.stack([gx, gy], -1)[None, None]  # [1,1,B,2]
+        out = F.grid_sample(
+            self.field, grid, mode="bilinear", align_corners=True, padding_mode="border"
+        )[
+            0, :, 0, :
+        ].t()  # [B,3]
         nrm = out[:, 1:3]
         return out[:, 0], nrm / (nrm.norm(dim=-1, keepdim=True) + 1e-6)
 
@@ -145,8 +183,7 @@ def _ipc_dbdd(d: torch.Tensor, d_hat: float) -> torch.Tensor:
     return torch.where(d < d_hat, val, torch.zeros_like(d))
 
 
-def sdf_rollout(field: SDFField, o, v, goal, al, be, ga, steps, *, rr, d_hat, dt,
-                nsub=1, vmax=0.9):
+def sdf_rollout(field: SDFField, o, v, goal, al, be, ga, steps, *, rr, d_hat, dt, nsub=1, vmax=0.9):
     """Differentiable SDF surrogate rollout. ``al,be,ga`` are ``[B]`` coefficients.
     Returns ``(oT, vT, min_clearance[B])``. Substep (``nsub``>1) + ``vmax`` clamp at
     inference so a fast step can't tunnel a thin wall; ``nsub=1`` is fine for the
@@ -158,7 +195,7 @@ def sdf_rollout(field: SDFField, o, v, goal, al, be, ga, steps, *, rr, d_hat, dt
             phi, nrm = field.sample(o)
             d = phi - rr
             minclr = torch.minimum(minclr, d.detach())
-            F_bar = -(al * _ipc_dbdd(d, d_hat)).unsqueeze(-1) * nrm   # push out along wall normal
+            F_bar = -(al * _ipc_dbdd(d, d_hat)).unsqueeze(-1) * nrm  # push out along wall normal
             F_goal = -be.unsqueeze(-1) * (o - goal)
             a = F_bar + F_goal - ga.unsqueeze(-1) * v
             v = v + hdt * a
@@ -189,6 +226,7 @@ def bicycle_rollout(
     a_max=1.5,
     a_lat_max=1.0,
     k_steer=0.8,
+    allow_reverse=False,
 ):
     """Differentiable *kinematic bicycle* rollout over the same SDF barrier.
 
@@ -254,23 +292,128 @@ def bicycle_rollout(
             # parks facing away. Forward-only turn-around instead: full steer
             # toward sign(sin_a) (ties broken toward +) at a creep speed.
             turn_sign = torch.where(sin_a >= 0.0, torch.ones_like(sin_a), -torch.ones_like(sin_a))
-            delta = torch.where(behind, turn_sign * delta_max, torch.atan2(2.0 * L * sin_a, L_d))
-            delta = delta + k_steer * torch.tanh((F_bar * left).sum(-1))
+            # Adaptive lookahead: with a carrot ~30 wheelbases away, textbook
+            # pure pursuit commands ~3 degrees even at a 90-degree heading
+            # error -- no low-speed steering authority at all. Shrink the
+            # effective lookahead with speed (floor 4L) so a slow vehicle can
+            # steer hard; at speed L_d_eff ~ L_d and tracking is unchanged.
+            L_d_eff = torch.minimum(L_d, (1.2 * sp + 4.0 * L).clamp_min(4.0 * L))
+            delta = torch.where(
+                behind, turn_sign * delta_max, torch.atan2(2.0 * L * sin_a, L_d_eff)
+            )
+            # Steering bias uses only the REPULSIVE part of the barrier. The
+            # inherited piecewise b' (surrogate_robust's +1-shifted form) is
+            # positive over d in (0.39 d_hat, d_hat) -- an attraction band --
+            # and tanh saturation made that bias out-vote pure pursuit ~15x,
+            # dragging the vehicle onto the b'=0 shell instead of its lane.
+            # The force term F_bar keeps the original form (point-mode parity);
+            # only what feeds the steering wheel is clamped repulsive-only,
+            # which also removes the 0.6 rad steering slew at the d_hat shell.
+            F_rep = -(al * _ipc_dbdd(d, d_hat).clamp(max=0.0)).unsqueeze(-1) * nrm
+            delta = delta + k_steer * torch.tanh((F_rep * left).sum(-1))
             delta = delta.clamp(-delta_max, delta_max)
 
             # corner speed limit from the lateral-acceleration cap.
             kappa = torch.tan(delta).abs() / L
             v_corner = torch.sqrt(a_lat_max / kappa.clamp_min(tan_dmax / (L * 400.0)))
-            v_lim = torch.minimum(torch.full_like(v_corner, vmax), v_corner)
+
+            # stopping-distance governor: never drive faster than you can stop
+            # inside the clearance ahead (v^2 <= 2 a_max (d - margin)). Forces
+            # alone cannot guarantee this -- with weak/untrained coefficients
+            # the goal spring's forward pull beats the barrier head-on, and
+            # clamping the NET force to a_max means the barrier can never
+            # out-brake the engine. Brakes are a constraint, not a force.
+            #
+            # DIRECTIONAL, or it deadlocks: only the velocity component INTO
+            # the wall consumes stopping distance -- driving parallel to a
+            # wall at small clearance is fine. An isotropic cap pins speed to
+            # ~0 head-on, and a bicycle cannot turn at zero speed (th' ~ v),
+            # so the vehicle would park nose-in forever.
+            v_stop = torch.sqrt(2.0 * a_max * (d - 0.5 * rr).clamp_min(0.0))
+            # Into-wall component of the MOTION direction (reversing flips
+            # it): a vehicle backing away from a wall is not approaching it.
+            motion_sign = torch.where(sp >= 0.0, torch.ones_like(sp), -torch.ones_like(sp))
+            approach = (-(nrm * head).sum(-1) * motion_sign).clamp(0.0, 1.0)  # 1 = head-on
+            # The constraint is on the INTO-wall component only:
+            # sp * approach <= v_stop. When the heading has no into-wall
+            # component the bound must vanish entirely -- v_stop/max(approach,
+            # floor) gets this wrong at the margin, where v_stop == 0 makes
+            # the limit 0 in EVERY direction and the vehicle deadlocks: too
+            # close to move, unable to move away because it cannot move.
+            v_stop_dir = torch.where(
+                approach > 0.05,
+                v_stop / approach.clamp_min(0.05),
+                torch.full_like(v_stop, vmax),
+            )
+            v_lim = torch.minimum(
+                torch.full_like(v_corner, vmax), torch.minimum(v_corner, v_stop_dir)
+            )
+
+            # Maneuvering creep: turning requires motion. When a hard steer is
+            # commanded, keep a small speed floor so the vehicle can rotate
+            # out of a nose-in stop; its own stopping distance (v^2 / 2a_max)
+            # is far inside the governor margin, so this cannot cause
+            # penetration -- only escape.
+            hard_steer = delta.abs() >= 0.7 * delta_max
+            # Creep is allowed slightly INSIDE the governor's stop margin
+            # (0.5 rr): the governor parks the vehicle exactly at that margin,
+            # and if the creep cutoff sat at the same distance the two would
+            # deadlock nose-in at v=0, unable to rotate.
+            can_move = d > 0.25 * rr
+            v_floor = torch.where(
+                hard_steer & can_move, torch.full_like(v_lim, 0.08), torch.zeros_like(v_lim)
+            )
+            v_lim = torch.maximum(v_lim, v_floor)
 
             # While turning around, hold a creep speed so th' = sp/L tan(delta)
-            # stays nonzero -- braking to rest would freeze the arc.
-            v_creep = 0.5 * v_corner
-            a_long = torch.where(behind, (v_creep - sp) / hdt, a_long)
+            # stays nonzero -- braking to rest would freeze the arc. The same
+            # applies at a nose-in stop against a wall: if the vehicle is
+            # (near) stationary and a hard steer is commanded, drive the speed
+            # toward the maneuvering floor.
+            # Creep target capped at its DESIGN value (half the full-steer
+            # corner speed): v_corner is computed from the biased/clamped
+            # delta, so at partial steer it can be several times larger and
+            # the turn-around would lunge. The barrier's decelerating
+            # projection stays active in the behind branch (the full F.head
+            # would re-introduce the parks-facing-away freeze: the goal
+            # spring is negative when the goal is behind).
+            v_creep = torch.minimum(
+                0.5 * v_corner,
+                torch.full_like(v_corner, 0.5 * math.sqrt(a_lat_max * L / tan_dmax)),
+            )
+            a_long = torch.where(
+                behind,
+                (v_creep - sp) / hdt + torch.clamp((F_bar * head).sum(-1), max=0.0),
+                a_long,
+            )
+            stuck_turning = hard_steer & can_move & (sp.abs() < 0.06)
+            a_long = torch.where(stuck_turning, torch.maximum(a_long, (0.08 - sp) / hdt), a_long)
+            if allow_reverse:
+                # A nose-in car with no reverse gear cannot escape: the forward
+                # creep arc (radius R_min) dips toward the wall and burns its
+                # clearance before the heading comes around. When the carrot is
+                # behind AND the nose is against the wall, back out with
+                # opposite steer -- reversing with delta rotates the heading
+                # the other way, exactly as a real car backs out of a spot.
+                head_on = (-(nrm * head).sum(-1)).clamp(0.0, 1.0) > 0.6
+                nose_blocked = behind & head_on & (d < 0.5 * rr + 0.02)
+                a_long = torch.where(nose_blocked, (-0.10 - sp) / hdt, a_long)
+                delta = torch.where(nose_blocked, -delta, delta)
             a_long = a_long.clamp(-a_max, a_max)
 
-            # semi-implicit: speed, then heading with the new speed, then position.
-            sp = (sp + hdt * a_long).clamp(torch.zeros_like(v_lim), v_lim)
+            # semi-implicit: speed, then heading with the new speed, then
+            # position. Speed approaches v_lim through the ACTUATOR, not a
+            # clamp -- clamping straight to v_lim shed up to ~15x a_max of
+            # speed in a single substep when the carrot flipped behind. The
+            # brakes are still only a_max strong, so sp may exceed v_lim
+            # transiently while shedding speed; the steering clamp below
+            # keeps the lateral invariant exact during exactly that window
+            # (the vehicle carves a wider arc while braking, as a car does).
+            a_long = torch.minimum(a_long, (v_lim - sp) / hdt).clamp(-a_max, a_max)
+            sp_min = -0.25 * vmax if allow_reverse else 0.0
+            sp = (sp + hdt * a_long).clamp(torch.full_like(sp, sp_min), torch.full_like(sp, vmax))
+            d_cap = torch.atan(a_lat_max * L / sp.square().clamp_min(1e-9))
+            delta = torch.clamp(delta, -d_cap, d_cap)
             th = th + hdt * (sp / L) * torch.tan(delta)
             head = torch.stack([torch.cos(th), torch.sin(th)], -1)
             o = o + hdt * sp.unsqueeze(-1) * head
@@ -284,9 +427,13 @@ class CoefMLP(nn.Module):
 
     def __init__(self, hidden=64, bias=(1.0, 3.0, 4.0)):
         super().__init__()
-        self.net = nn.Sequential(nn.Linear(5, hidden), nn.SiLU(),
-                                 nn.Linear(hidden, hidden), nn.SiLU(),
-                                 nn.Linear(hidden, 3))
+        self.net = nn.Sequential(
+            nn.Linear(5, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, 3),
+        )
         self.register_buffer("bias", torch.tensor(bias))
 
     def forward(self, feat):

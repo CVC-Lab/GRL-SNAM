@@ -30,7 +30,9 @@ class SdfNavigator:
 
     #: default kinematic-bicycle parameters (normalized units; L ~ 3 m at the
     #: Austin scale). Overridable per-instance via ``vehicle=dict(...)``.
-    VEHICLE_DEFAULTS = dict(L=0.035, delta_max=0.6, a_max=1.5, a_lat_max=1.0, k_steer=0.8)
+    VEHICLE_DEFAULTS = dict(
+        L=0.035, delta_max=0.6, a_max=1.5, a_lat_max=1.0, k_steer=0.8, allow_reverse=True
+    )
 
     def __init__(
         self,
@@ -136,6 +138,21 @@ class SdfNavigator:
         self._pos_hist = []  # recent positions (normalized) for displacement stall
         self._wall_entry = None  # position where wall-follow was entered
 
+    def set_state(self, o, v):
+        """Restore a bookmarked ``(o, v)`` — e.g. drive_to_goal's closest
+        approach — keeping bicycle state consistent: with forward-only speed,
+        ``v = sp * [cos th, sin th]`` encodes ``(th, sp)`` exactly whenever
+        ``sp > 0``; at rest the previous heading is kept (a stopped vehicle
+        points wherever it points). ``last_best_th``/``last_best_sp`` hold the
+        exact values when available."""
+        self.o = o.clone()
+        self.v = v.clone()
+        if self._dyn == "bicycle":
+            sp = float(v[0].norm())
+            if sp > 1e-6:
+                self.th = torch.tensor([math.atan2(float(v[0, 1]), float(v[0, 0]))])
+            self.sp = torch.tensor([sp])
+
     @torch.no_grad()
     def _sdf_normal(self, on):
         _, nrm = self.field.sample(torch.from_numpy(on).unsqueeze(0).float())
@@ -159,7 +176,10 @@ class SdfNavigator:
             if len(self._pos_hist) > 40:
                 self._pos_hist.pop(0)
                 moved = float(np.linalg.norm(p - self._pos_hist[0]))
-                if moved < 0.15:
+                # Arrived-and-holding is not a stall: a tracker parked ON its
+                # (currently stationary) target would otherwise fire the
+                # wall-follow escape at the goal.
+                if moved < 0.15 and dg > self.reach_tol:
                     self._stall += 1
                 else:
                     self._stall = 0
@@ -192,7 +212,10 @@ class SdfNavigator:
                     self._wall_entry is not None
                     and float(np.linalg.norm(p - self._wall_entry)) > 2.0
                 )
-                if escaped or dg < self._dhit - 1.2 or self._stall > 240:
+                # No dg-based exit here: _dhit was captured against a goal
+                # that may have MOVED since — a fleeing target can make
+                # dg < _dhit - 1.2 true while the vehicle is still pinned.
+                if escaped or self._stall > 240:
                     self._mode = "seek"
                     self._best = dg
                     self._stall = 0
@@ -258,7 +281,11 @@ class SdfNavigator:
             goal_wall_align=align,
             goal_index=self.goal_index,
             reached=self.reached,
-            heading_rad=float(self.th[0]) if self._dyn == "bicycle" else 0.0,
+            heading_rad=(
+                math.atan2(math.sin(float(self.th[0])), math.cos(float(self.th[0])))
+                if self._dyn == "bicycle"
+                else 0.0
+            ),
         )
 
     def drive_to_goal(self, max_steps: int = 1300, *, stop_at_reach: bool = True):
@@ -272,6 +299,8 @@ class SdfNavigator:
         since_best = 0
         best_o = self.o.clone()
         best_v = self.v.clone()
+        self.last_best_th = self.th.clone()
+        self.last_best_sp = self.sp.clone()
         for _ in range(max_steps):
             m = self.step()
             out.append(m)
@@ -280,6 +309,8 @@ class SdfNavigator:
                 best_i = len(out) - 1
                 best_o = self.o.clone()
                 best_v = self.v.clone()
+                self.last_best_th = self.th.clone()
+                self.last_best_sp = self.sp.clone()
                 since_best = 0
             else:
                 since_best += 1
@@ -287,6 +318,8 @@ class SdfNavigator:
                 best_i = len(out) - 1
                 best_o = self.o.clone()
                 best_v = self.v.clone()
+                self.last_best_th = self.th.clone()
+                self.last_best_sp = self.sp.clone()
                 break
             if since_best > 340:  # stuck / orbiting — stop; caller re-targets
                 break
