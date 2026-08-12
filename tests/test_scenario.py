@@ -144,7 +144,7 @@ def test_unit_marks_trigger_rebuild_and_decay():
 
     saw_dynamic = False
     for _ in range(600):
-        rec = sc.step()
+        sc.step()
         occ = sc.dyn.occupancy(sc._t())
         if occ[ur, uc]:
             saw_dynamic = True
