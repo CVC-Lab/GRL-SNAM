@@ -33,7 +33,13 @@ from pathlib import Path
 
 import numpy as np
 
-from grl_snam.cinema import SmoothCamera, building_height_grid, clear_eye, frame_group
+from grl_snam.cinema import (
+    SmoothCamera,
+    building_height_grid,
+    clear_shot,
+    frame_group,
+    shot_angles,
+)
 from grl_snam.clock import WorldClock
 from grl_snam.fog_trace import Trace
 
@@ -222,6 +228,8 @@ def capture_finale(
     dt_frame = 1.0 / fps
 
     seats: dict[str, tuple[float, float, float]] = {}
+    az_pref = [shot_angles(0.0, low_deg=elevation_deg)[1]]
+    az_prev = [az_pref[0]]
     frames = out.parent / f"_finale_{out.stem}"
     shutil.rmtree(frames, ignore_errors=True)
     (frames / "main").mkdir(parents=True, exist_ok=True)
@@ -251,9 +259,26 @@ def capture_finale(
             hud["_title"].SetInput(f"AUSTIN  ·  {len(keys)} vehicles  ·  t = {clock.t():6.1f} s")
 
             _show(scene, keys, "mark_", False)
-            eye, focal, _r = frame_group(pts, elevation_deg=elevation_deg, fill=0.80)
+            elev, azim = shot_angles(f / max(n_frames - 1, 1), low_deg=elevation_deg)
             if height_grid is not None:
-                eye = clear_eye(eye, focal, height_grid, world_bounds, margin_m=25.0)
+                # Carry the bearing forward and add only the schedule's DRIFT to
+                # it. Preferring the scheduled bearing outright would snap the
+                # camera back the instant an obstruction cleared; this way a
+                # detour around a stadium is kept and drifted onward from.
+                az_pref[0] += azim - az_prev[0]
+                eye, focal, _r, used = clear_shot(
+                    pts,
+                    height_grid,
+                    world_bounds,
+                    elevation_deg=elev,
+                    azimuth_deg=az_pref[0],
+                    fill=0.80,
+                    margin_m=25.0,
+                )
+                az_pref[0] = used
+            else:
+                eye, focal, _r = frame_group(pts, elevation_deg=elev, azimuth_deg=azim, fill=0.80)
+            az_prev[0] = azim
             eye, focal = cam.update(eye, focal, dt_frame)
 
             # Size the beacons off the FINAL camera distance, so they stay a

@@ -104,6 +104,7 @@ def clear_eye(
     ground_margin_m: float = 2.0,
     samples: int = 64,
     near_cut: float = 0.88,
+    tail_m: float | None = None,
 ):
     """Lift ``eye`` until the whole segment to ``focal`` clears the skyline.
 
@@ -123,6 +124,14 @@ def clear_eye(
     """
     eye = np.asarray(eye, np.float64)
     focal = np.asarray(focal, np.float64)
+    if tail_m is not None:
+        # A cut expressed as a FRACTION means a wide shot stops checking
+        # hundreds of metres short of its subject. Expressed as a distance, the
+        # exempt zone is the same few metres of ground the subject stands on
+        # whatever the shot size, so wide shots get checked almost all the way
+        # in and close shots still get their approach.
+        dist = float(np.linalg.norm(focal - eye))
+        near_cut = float(np.clip(1.0 - tail_m / max(dist, 1e-6), 0.5, 0.985))
     t = np.linspace(0.0, near_cut, samples)
     p = eye[None, :] + t[:, None] * (focal - eye)[None, :]
     # The margin is about not clipping BUILDINGS. Demanding the same clearance
@@ -155,6 +164,105 @@ def frame_group(points, *, elevation_deg=38.0, azimuth_deg=215.0, fill=0.62, min
     el, az = np.radians(elevation_deg), np.radians(azimuth_deg)
     offset = np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)], np.float64)
     return focal + offset * dist, focal, radius
+
+
+def clear_shot(
+    points,
+    height: np.ndarray,
+    bounds,
+    *,
+    elevation_deg: float,
+    azimuth_deg: float,
+    fill: float = 0.62,
+    margin_m: float = DEFAULT_MARGIN_M,
+    tail_m: float = 30.0,
+    bearings: int = 24,
+    turn_cost_m_per_deg: float = 1.1,
+    hidden_cost_m: float = 400.0,
+    subject_tail_m: float = 8.0,
+):
+    """Frame the group from the bearing that sees it, not just from over it.
+
+    :func:`clear_eye` can only answer occlusion by climbing, and climbing is
+    the wrong answer when the thing in the way is right next to the subject: a
+    stadium wall 30 m from the group would push the camera hundreds of metres
+    up and flatten the shot into a plan view. A camera operator would step
+    sideways instead.
+
+    So try every bearing, cost each by the lift it still needs, and take the
+    cheapest — with a penalty for turning away from the bearing the shot
+    schedule asked for, so the camera holds its intended angle whenever that
+    angle works and only swings out when it genuinely cannot see. The penalty
+    is in metres-of-lift per degree, which is what makes the two commensurable.
+
+    Searching elevation as well was tried and dropped: it tripled the cost and
+    moved 1 blocked ray in 960. What is left after the bearing search is a
+    vehicle driving hard against a wall, where the ray grazes that wall in its
+    final few metres -- no camera position fixes that, and visually it does not
+    need fixing, because the vehicle is at the building's edge and in plain
+    sight.
+
+    The bearing is scored on whether the SUBJECTS are visible, not merely on
+    whether the line to their centroid is. Those differ exactly when it matters:
+    the centroid of a group straddling a corner sits in the open while half the
+    group is behind the wall. Hiding a vehicle is priced far above any lift, so
+    clearance wins the argument and lift and bearing only break ties.
+
+    Returns ``(eye, focal, radius, azimuth_used)``.
+    """
+    pts = np.asarray(points, np.float64).reshape(-1, 3)
+    best = None
+    for k in range(int(bearings)):
+        az = azimuth_deg + 360.0 * k / int(bearings)
+        eye, focal, radius = frame_group(
+            points, elevation_deg=elevation_deg, azimuth_deg=az, fill=fill
+        )
+        lifted = clear_eye(eye, focal, height, bounds, margin_m=margin_m, tail_m=tail_m)
+        lift = float(lifted[2] - eye[2])
+        hidden = _hidden_count(lifted, pts, height, bounds, tail_m=subject_tail_m)
+        # Shortest way round: 350 degrees off is 10 degrees off.
+        turn = abs((az - azimuth_deg + 180.0) % 360.0 - 180.0)
+        cost = hidden_cost_m * hidden + lift + turn_cost_m_per_deg * turn
+        if best is None or cost < best[0]:
+            best = (cost, lifted, focal, radius, az)
+        if cost == 0.0:  # nothing hidden, no lift, no turn -- cannot do better
+            break
+    _c, eye, focal, radius, az = best
+    return eye, focal, radius, az
+
+
+def _hidden_count(eye, pts, height, bounds, *, tail_m: float = 8.0, samples: int = 48) -> int:
+    """How many of ``pts`` the skyline hides from ``eye``."""
+    eye = np.asarray(eye, np.float64)
+    d = np.linalg.norm(pts - eye[None, :], axis=1)
+    cut = np.clip(1.0 - tail_m / np.maximum(d, 1e-6), 0.3, 0.99)
+    # One ray per subject, sampled in lockstep: (subjects, samples, 3).
+    t = cut[:, None] * np.linspace(0.0, 1.0, samples)[None, :]
+    p = eye[None, None, :] + t[:, :, None] * (pts - eye[None, :])[:, None, :]
+    h = sample_height(height, bounds, p[:, :, 0], p[:, :, 1])
+    return int(np.count_nonzero(np.any(p[:, :, 2] < h + 1.0, axis=1)))
+
+
+def shot_angles(
+    u: float, *, low_deg: float = 26.0, high_deg: float = 56.0, drift_deg: float = 28.0
+):
+    """Elevation and azimuth for normalised clip progress ``u`` in [0, 1].
+
+    Opens high and wide — an establishing angle that reads the city as a map —
+    then eases down to a low angle where the vehicles have the skyline behind
+    them and the geometry has depth. The decay is exponential rather than
+    linear so the descent is over early and the rest of the clip is steady:
+    a camera still descending during the action reads as indecision.
+
+    Azimuth drifts slowly and monotonically. That is what makes a static city
+    look three-dimensional — parallax the viewer did not ask for. Slowly is the
+    operative word: a bearing that chases the group's heading swings hard every
+    time the group re-forms, which is exactly when the viewer needs a stable
+    frame of reference.
+    """
+    u = float(np.clip(u, 0.0, 1.0))
+    elevation = low_deg + (high_deg - low_deg) * float(np.exp(-u / 0.12))
+    return elevation, 215.0 + drift_deg * u
 
 
 class SmoothCamera:

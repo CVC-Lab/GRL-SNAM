@@ -10,10 +10,13 @@ import pytest
 
 from grl_snam.cinema import (
     SmoothCamera,
+    _hidden_count,
     building_height_grid,
     clear_eye,
+    clear_shot,
     frame_group,
     sample_height,
+    shot_angles,
 )
 
 BOUNDS = (-100.0, -100.0, 100.0, 100.0)
@@ -159,3 +162,96 @@ def test_smoothing_lags_toward_the_target_and_converges():
         e, f = cam.update([100, 0, 0], [50, 0, 0], 0.05)
     assert e[0] == pytest.approx(100.0, abs=0.5)
     assert f[0] == pytest.approx(50.0, abs=0.5)
+
+
+# ── choosing a bearing that can actually see the group ──────────────────────
+
+
+def test_a_wall_between_camera_and_group_is_walked_around_not_climbed_over():
+    """The whole point of the bearing search: step sideways, don't crane up.
+
+    A group standing just east of a tall slab, with the scheduled bearing
+    looking through it. :func:`clear_eye` alone can only answer by climbing —
+    which flattens the shot into a plan view — so the search should find a
+    bearing that simply sees past the slab instead.
+    """
+    occ = np.zeros((N, N), bool)
+    occ[20:44, 30:34] = True  # a north-south slab
+    verts = []
+    for r in (20, 43):
+        for c in (30, 33):
+            x = BOUNDS[0] + c / (N - 1) * (BOUNDS[2] - BOUNDS[0])
+            y = BOUNDS[1] + r / (N - 1) * (BOUNDS[3] - BOUNDS[1])
+            verts += [x, y, 0.0, x, y, 60.0]
+    height = building_height_grid(verts, BOUNDS, N, occ=occ)
+
+    pts = [(20.0, -6.0, 1.0), (20.0, 0.0, 1.0), (20.0, 6.0, 1.0)]  # east of the slab
+    west = 180.0  # straight through it
+
+    blind, focal, _r = frame_group(pts, elevation_deg=18.0, azimuth_deg=west, fill=0.8)
+    lifted = clear_eye(blind, focal, height, BOUNDS, margin_m=10.0, tail_m=20.0)
+    assert lifted[2] - blind[2] > 10.0, "the naive shot really is obstructed"
+
+    eye, _f, _r2, used = clear_shot(
+        pts, height, BOUNDS, elevation_deg=18.0, azimuth_deg=west, fill=0.8, margin_m=10.0
+    )
+    assert _hidden_count(eye, np.array(pts), height, BOUNDS) == 0
+    # It went around rather than up: the chosen eye is no higher than the
+    # unobstructed framing height for its own bearing.
+    ref, _f2, _r3 = frame_group(pts, elevation_deg=18.0, azimuth_deg=used, fill=0.8)
+    assert eye[2] - ref[2] < 1.0
+    assert abs((used - west + 180.0) % 360.0 - 180.0) > 30.0
+
+
+def test_an_unobstructed_shot_keeps_the_bearing_it_was_given():
+    """No obstruction, no deviation — the schedule owns the camera."""
+    occ = np.zeros((N, N), bool)
+    height = building_height_grid([0.0, 0.0, 0.0], BOUNDS, N, occ=occ)
+    pts = [(0.0, -8.0, 1.0), (0.0, 8.0, 1.0)]
+    _e, _f, _r, used = clear_shot(
+        pts, height, BOUNDS, elevation_deg=30.0, azimuth_deg=215.0, fill=0.8
+    )
+    assert used == pytest.approx(215.0)
+
+
+def test_a_group_split_by_a_tower_is_scored_on_the_vehicles_not_the_centroid():
+    """The centroid can sit in the open while half the group is behind a wall.
+
+    This is why the search scores visibility of the subjects themselves: a
+    bearing chosen on centroid clearance alone passes this case while hiding a
+    vehicle.
+    """
+    occ, verts = _tower(height=50.0)
+    height = building_height_grid(verts, BOUNDS, N, occ=occ)
+    # Straddle the tower, so the centroid lands on top of it.
+    cx = BOUNDS[0] + 32 / (N - 1) * (BOUNDS[2] - BOUNDS[0])
+    cy = BOUNDS[1] + 32 / (N - 1) * (BOUNDS[3] - BOUNDS[1])
+    pts = [(cx - 34.0, cy, 1.0), (cx + 34.0, cy, 1.0)]
+    eye, _f, _r, _u = clear_shot(
+        pts, height, BOUNDS, elevation_deg=22.0, azimuth_deg=0.0, fill=0.8, margin_m=10.0
+    )
+    assert _hidden_count(eye, np.array(pts), height, BOUNDS) == 0
+
+
+def test_the_tail_exemption_is_a_distance_not_a_fraction():
+    """A fractional cut stops checking hundreds of metres short on a wide shot."""
+    occ, verts = _tower(height=45.0)
+    height = building_height_grid(verts, BOUNDS, N, occ=occ)
+    cx = BOUNDS[0] + 32 / (N - 1) * (BOUNDS[2] - BOUNDS[0])
+    cy = BOUNDS[1] + 32 / (N - 1) * (BOUNDS[3] - BOUNDS[1])
+    focal = np.array([cx + 46.0, cy, 1.0])
+    eye = np.array([cx - 600.0, cy, 60.0])  # far out west, tower just short of focal
+    # 12% of a 646 m shot is 78 m -- the tower sits inside that and is missed.
+    assert clear_eye(eye, focal, height, BOUNDS, margin_m=8.0, near_cut=0.88)[2] == eye[2]
+    # As a distance, only the last 20 m are exempt, so the tower is seen.
+    assert clear_eye(eye, focal, height, BOUNDS, margin_m=8.0, tail_m=20.0)[2] > eye[2]
+
+
+def test_shot_opens_high_and_settles_low():
+    hi, _a0 = shot_angles(0.0, low_deg=26.0, high_deg=56.0)
+    mid, _a1 = shot_angles(0.25, low_deg=26.0, high_deg=56.0)
+    lo, az_end = shot_angles(1.0, low_deg=26.0, high_deg=56.0)
+    assert hi == pytest.approx(56.0)
+    assert lo == pytest.approx(26.0, abs=0.1)
+    assert mid < 0.5 * (hi + lo), "the descent front-loads, it is not linear"
+    assert az_end > shot_angles(0.0)[1], "bearing drifts monotonically"
