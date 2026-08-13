@@ -186,3 +186,69 @@ class BeliefRoutePlanner:
             return None
         cells = simplify(grid, cells)
         return [self._c2w(r, c) for r, c in cells]
+
+
+def free_components(occ: np.ndarray, inflate_cells: int):
+    """Label connected free space UNDER THE PLANNER'S OWN INFLATION.
+
+    Picking endpoints from raw free space is the trap: a cell can be free and
+    still unreachable once the route is inflated for clearance, so a run drives
+    most of the way and then reports no route for the last stretch (measured on
+    Austin: 1550 m driven, then no_route 147 m short). Endpoints have to come
+    from the same space the planner will actually search.
+
+    Returns ``(labels, sizes)`` with 0 = blocked, 1..n = component ids.
+    """
+    grid = ~inflate(occ, inflate_cells)
+    ny, nx = grid.shape
+    labels = np.zeros((ny, nx), np.int32)
+    sizes: dict[int, int] = {}
+    nxt = 0
+    for r0 in range(ny):
+        for c0 in range(nx):
+            if not grid[r0, c0] or labels[r0, c0]:
+                continue
+            nxt += 1
+            n = 0
+            stack = [(r0, c0)]
+            labels[r0, c0] = nxt
+            while stack:
+                r, c = stack.pop()
+                n += 1
+                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    rr, cc = r + dr, c + dc
+                    if 0 <= rr < ny and 0 <= cc < nx and grid[rr, cc] and not labels[rr, cc]:
+                        labels[rr, cc] = nxt
+                        stack.append((rr, cc))
+            sizes[nxt] = n
+    return labels, sizes
+
+
+def far_pair_in_free_space(occ: np.ndarray, bounds, inflate_cells: int, *, rng=None):
+    """A start/goal pair that is guaranteed routable: both drawn from the
+    LARGEST inflated-free component, and far apart within it."""
+    labels, sizes = free_components(occ, inflate_cells)
+    if not sizes:
+        raise ValueError("no free space at this inflation — the map is closed")
+    best = max(sizes, key=lambda k: sizes[k])
+    rows, cols = np.nonzero(labels == best)
+    mnx, mny, mxx, mxy = (float(b) for b in bounds)
+    ny, nx = occ.shape
+
+    def to_world(r, c):
+        return (
+            mnx + c / (nx - 1) * (mxx - mnx),
+            mny + r / (ny - 1) * (mxy - mny),
+        )
+
+    # Two passes of "farthest point from here" — a cheap graph diameter that
+    # keeps both endpoints inside the component rather than at opposite map
+    # corners which may be in different ones.
+    i0 = 0
+    for _ in range(2):
+        d = (rows - rows[i0]) ** 2 + (cols - cols[i0]) ** 2
+        i0 = int(np.argmax(d))
+    a = i0
+    d = (rows - rows[a]) ** 2 + (cols - cols[a]) ** 2
+    b = int(np.argmax(d))
+    return to_world(rows[a], cols[a]), to_world(rows[b], cols[b]), sizes[best]

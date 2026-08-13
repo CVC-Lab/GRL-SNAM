@@ -86,8 +86,9 @@ def test_seek_time_lands_on_the_containing_quantum():
 # ── the story specs ─────────────────────────────────────────────────────────
 
 
-def test_the_three_stories_exist_and_are_self_consistent():
-    assert set(STORIES) == {"ghost", "blocker", "unit"}
+def test_the_stories_exist_and_are_self_consistent():
+    # The three originals must survive; later scenes are additive.
+    assert {"ghost", "blocker", "unit"} <= set(STORIES)
     for key, st in STORIES.items():
         assert st.key == key
         assert st.title and st.subtitle

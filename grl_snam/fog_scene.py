@@ -32,15 +32,31 @@ import numpy as np
 
 # Palette. Deliberately few, high-contrast colours: at map scale a viewer has
 # to decode the frame in about a second.
-GROUND = (0.13, 0.14, 0.16)
+# The ground plate IS the fog: unseen is the default state of the world, and
+# knowledge is painted on top of it.
+GROUND = (0.055, 0.06, 0.07)
 GHOST = (0.95, 0.72, 0.25)  # believed-but-absent (amber)
 WALL = (0.85, 0.25, 0.22)  # confirmed obstacle (red)
 UNIT = (0.90, 0.35, 0.75)  # transient dynamic mark (magenta)
 ROUTE = (0.35, 0.65, 1.00)  # planned spine (blue)
 TRACK = (0.98, 0.85, 0.30)  # driven path (yellow)
+# The full-knowledge path, drawn under a fog run as the thing to compare
+# against. Deliberately dim: it is a reference, not a second vehicle.
+REFERENCE = (0.30, 0.42, 0.52)
 CAR = (0.97, 0.97, 0.97)
 GOAL = (1.00, 0.45, 0.20)
 START = (0.35, 0.85, 0.45)
+# Fog of war is three-tier and the tiers must be visually ordered: never seen
+# is darkest, remembered is dimmer than lit, and what the sensor can see right
+# now gets no overlay at all.
+FOG_REMEMBERED = (0.13, 0.14, 0.16)  # mapped once, not visible now
+FOG_VISIBLE = (0.20, 0.22, 0.26)  # inside the sensor's reach right now
+# Real geometry the agent has NOT discovered. Drawn as an outline so a viewer
+# can see something is there while the agent's route walks straight past it --
+# the single most important thing to show, because otherwise the audience has
+# no way to know the map is wrong.
+SILHOUETTE = (0.42, 0.46, 0.55)
+FOV = (0.30, 0.72, 0.95)
 
 # The vehicle is ~4.5 m long in world units, which is a speck on a 200 m map.
 # Draw it larger than life so the heading is legible; the DYNAMICS are honest,
@@ -48,9 +64,24 @@ START = (0.35, 0.85, 0.45)
 CAR_L, CAR_W = 12.0, 6.0
 
 # A 16:9 ground plate keeps ResetCamera's framing stable across stories and
-# gives the capture a fixed rectangle to calibrate its crop against.
+# gives the capture a fixed rectangle to calibrate its crop against. Sized
+# from the STORY's bounds -- these were constants tuned for the +-100 m fog
+# stories, and on a 1200 m city the plate ended up smaller than the world, so
+# the crop calibrated onto a patch in the middle and the clip showed a
+# fraction of the map.
 PLATE_HALF_Y = 100.0
 PLATE_HALF_X = PLATE_HALF_Y * 16.0 / 9.0
+
+
+def plate_half(story) -> tuple[float, float]:
+    """Half-extents of a 16:9 plate that covers the story's world."""
+    mnx, mny, mxx, mxy = story.bounds
+    hx, hy = max(abs(mnx), abs(mxx)), max(abs(mny), abs(mxy))
+    if hx / hy < 16.0 / 9.0:
+        hx = hy * 16.0 / 9.0
+    else:
+        hy = hx * 9.0 / 16.0
+    return hx, hy
 
 
 def quad(x0, y0, x1, y1, z):
@@ -83,6 +114,68 @@ def cells_mesh(mask, story, z, *, inset=0.12):
         verts += [x - dx, y - dy, z, x + dx, y - dy, z, x + dx, y + dy, z, x - dx, y + dy, z]
         tris += [base, base + 1, base + 2, base, base + 2, base + 3]
     return verts, tris
+
+
+def outline_segments(mask, story, z):
+    """Boundary edges of a cell mask, as disjoint line segments.
+
+    Emits an edge only where a set cell meets an unset one, so a solid block
+    yields its outline rather than a grid of every cell. Vectorised: the four
+    shifted comparisons are the whole algorithm, which keeps this affordable
+    even at Austin grid sizes.
+
+    Returns ``(vertices, indices)`` for ``geometry.add_lines`` -- index PAIRS,
+    not a polyline, because the boundary is generally several disjoint loops.
+    """
+    m = np.asarray(mask, bool)
+    if not m.any():
+        return None, None
+    mnx, mny, mxx, mxy = story.bounds
+    cw = (mxx - mnx) / (story.n - 1)
+    ch = (mxy - mny) / (story.n - 1)
+    verts: list[float] = []
+    idx: list[int] = []
+
+    def edge(r0, c0, r1, c1):
+        # cell corner coordinates (cell centre offset by half a cell)
+        x0 = mnx + (c0 - 0.5) * cw
+        y0 = mny + (r0 - 0.5) * ch
+        x1 = mnx + (c1 - 0.5) * cw
+        y1 = mny + (r1 - 0.5) * ch
+        base = len(verts) // 3
+        verts.extend([x0, y0, z, x1, y1, z])
+        idx.extend([base, base + 1])
+
+    pad = np.zeros((m.shape[0] + 2, m.shape[1] + 2), bool)
+    pad[1:-1, 1:-1] = m
+    core = pad[1:-1, 1:-1]
+    up, down = pad[:-2, 1:-1], pad[2:, 1:-1]
+    left, right = pad[1:-1, :-2], pad[1:-1, 2:]
+    for rr, cc in zip(*np.nonzero(core & ~up)):
+        edge(rr, cc, rr, cc + 1)
+    for rr, cc in zip(*np.nonzero(core & ~down)):
+        edge(rr + 1, cc, rr + 1, cc + 1)
+    for rr, cc in zip(*np.nonzero(core & ~left)):
+        edge(rr, cc, rr + 1, cc)
+    for rr, cc in zip(*np.nonzero(core & ~right)):
+        edge(rr, cc + 1, rr + 1, cc + 1)
+    return verts, idx
+
+
+def add_segments(lab, name, verts, idx, color):
+    """Disjoint line segments. Lab.add_path would connect them into one
+    polyline, which for a boundary means spurious edges across the scene."""
+    g = lab._pycvc.geometry(lab._app)
+    g.add_vertices(verts)
+    g.add_lines(idx)
+    lab._scene.addGraphics(name, g)
+    return lab
+
+
+def ring_points(cx, cy, radius, z, segments=72):
+    """A closed circle as a polyline -- the sensor's range at a glance."""
+    ang = np.linspace(0.0, 2.0 * np.pi, segments + 1)
+    return [(float(cx + radius * np.cos(a)), float(cy + radius * np.sin(a)), z) for a in ang]
 
 
 def _style(scene, name, *, color=None, mode=None, line_width=None, point_size=None, opacity=None):
@@ -128,15 +221,20 @@ def build(lab, story, trace) -> dict:
     """Create every node once. Returns the mutable render state."""
     scene = lab._scene
 
-    v, t = quad(-PLATE_HALF_X, -PLATE_HALF_Y, PLATE_HALF_X, PLATE_HALF_Y, 0.0)
-    lab.add_mesh("ground", v, t, GROUND)
+    hx, hy = plate_half(story)
+    v, t = quad(-hx, -hy, hx, hy, 0.0)
+    # With a complete map there is nothing hidden, so the ground is LIT rather
+    # than dark: the no-fog variant is the baseline the fog run is compared
+    # against, and drawing fog over a map the agent fully knows would be a lie.
+    lab.add_mesh("ground", v, t, FOG_REMEMBERED if getattr(story, "no_fog", False) else GROUND)
 
-    # Truth obstacles that exist from the start (none in these three stories,
-    # but a story with a pre-existing wall renders it for free).
-    for i, rect in enumerate(story.truth_rects):
-        x0, y0, x1, y1 = story.rect_world(rect)
-        v, t = quad(x0, y0, x1, y1, 0.6)
-        lab.add_mesh(f"truth{i}", v, t, WALL)
+    # Ground truth is NOT drawn directly. It reaches the frame only through
+    # what the agent believes (red), what it believes wrongly (amber), and
+    # what it has not found (outline) -- see apply(). Drawing truth_rects here
+    # painted every real building as known the moment the scene loaded, which
+    # silently revealed the answer and made the fog decorative. The three
+    # original stories had no truth_rects, so the bug stayed invisible until a
+    # scene with real geometry was added.
 
     sx, sy = story.start
     gx, gy = story.waypoints[-1]
@@ -144,6 +242,11 @@ def build(lab, story, trace) -> dict:
     lab.add_markers("goal", [(gx, gy, 1.2)], GOAL)
     _style(scene, "start", mode="points", point_size=16)
     _style(scene, "goal", mode="points", point_size=22)
+    # A moving target leaves its own trail, so the chase is legible as a chase
+    # rather than as a vehicle wandering toward a mark that keeps jumping.
+    lab.add_path("goal_track", [(gx, gy, 1.15), (gx + 0.1, gy, 1.15)], GOAL)
+    _style(scene, "goal_track", mode="lines", line_width=2)
+    scene.geometry_node("goal_track").setVisible(False)
 
     # Placeholders so every node exists before the first frame; a node created
     # mid-playback in a live host is the least-exercised path there is.
@@ -158,8 +261,31 @@ def build(lab, story, trace) -> dict:
     v, t = quad(CAR_L / 2, -CAR_W / 6, CAR_L / 2 + 4.0, CAR_W / 6, 1.5)
     lab.add_mesh("nose", v, t, GOAL)
 
+    # The sensor's reach, drawn as a ring that follows the vehicle. Created
+    # here so the node exists before the first frame; moved, not re-meshed.
+    if trace.sensor_range_m > 0:
+        lab.add_path("fov", ring_points(sx, sy, trace.sensor_range_m, 1.6), FOV)
+        _style(scene, "fov", mode="lines", line_width=2)
+
+    # An optional reference path: what the SAME drive looked like with a
+    # complete map. Drawn once, underneath everything, so a viewer can see
+    # exactly where ignorance cost distance.
+    ref = getattr(story, "reference_xy", None)
+    if ref is not None and len(ref) >= 2:
+        step = max(1, len(ref) // 400)
+        lab.add_path("reference", [(float(x), float(y), 1.05) for x, y in ref[::step]], REFERENCE)
+        _style(scene, "reference", mode="lines", line_width=3)
+
     _hide_chrome(lab)
-    return {"snap": -2, "belief_nodes": set(), "track_every": 3, "frame": 0}
+    return {
+        "snap": -2,
+        "fov_snap": -2,
+        "belief_nodes": set(),
+        "track_every": 3,
+        "frame": 0,
+        "fov_origin": (sx, sy),
+        "goal_origin": (gx, gy),
+    }
 
 
 def apply(lab, story, trace, t, state):
@@ -177,17 +303,21 @@ def apply(lab, story, trace, t, state):
 
     # Belief is a step function: re-mesh only when the sensor changed its mind.
     snap = trace.snapshot_index_at(t)
-    if snap != state["snap"]:
+    fov_k = trace.fov_index_at(t)
+    if snap != state["snap"] or fov_k != state["fov_snap"]:
         state["snap"] = snap
         occ, dyn, _ = trace.belief_at(t)
+        truth_now = trace.truth_at(t)
+        if truth_now is None:  # traces recorded before truth was captured
+            truth_now = story.truth_grid()
 
         # Believed-occupied cells that reality does NOT have are ghosts; ones
         # it does have are confirmed. Colouring them differently is the entire
         # point of story 1 and it is a measurement, not a renderer heuristic.
         truth = story.truth_grid()
         for key, mask, color, z in (
-            ("ghost", occ & ~truth, GHOST, 0.5),
-            ("wall", occ & truth, WALL, 0.6),
+            ("ghost", occ & ~truth_now, GHOST, 0.5),
+            ("wall", occ & truth_now, WALL, 0.6),
             ("unit", dyn, UNIT, 0.7),
         ):
             v, tri = cells_mesh(mask, story, z)
@@ -204,6 +334,70 @@ def apply(lab, story, trace, t, state):
         if len(route) >= 2:
             lab.add_path("route", [(float(x), float(y), 1.0) for x, y in route], ROUTE)
             _style(scene, "route", color=ROUTE, mode="lines", line_width=5)
+
+    # ── fog of war: three tiers + the undiscovered silhouette ────────────────
+    # Re-meshed only when the sensor sweep actually changed (every sense tick,
+    # not every frame): at 0.5x playback that is roughly one frame in six.
+    if fov_k != state["fov_snap"]:
+        state["fov_snap"] = fov_k
+        fov = trace.fov_at(t)
+        if getattr(story, "no_fog", False):
+            fov = None
+        if fov is not None:
+            visible, seen = fov
+            truth = trace.truth_at(t)
+            if truth is None:
+                truth = story.truth_grid()
+            for key, mask, color, z in (
+                ("fog_seen", seen & ~visible, FOG_REMEMBERED, 0.28),
+                ("fog_now", visible, FOG_VISIBLE, 0.30),
+            ):
+                v, tri = cells_mesh(mask, story, z, inset=0.0)
+                if v is None:
+                    if key in state["belief_nodes"]:
+                        scene.geometry_node(key).setVisible(False)
+                    continue
+                lab.add_mesh(key, v, tri, color)
+                _style(scene, key, color=color)
+                scene.geometry_node(key).setVisible(True)
+                state["belief_nodes"].add(key)
+
+            # Real geometry the agent has not found. The viewer sees the
+            # outline; the agent's route does not know it exists.
+            occ, _dyn, _k = trace.belief_at(t)
+            undiscovered = truth & ~occ
+            v, idx = outline_segments(undiscovered, story, 0.9)
+            if v is None:
+                if "silhouette" in state["belief_nodes"]:
+                    scene.geometry_node("silhouette").setVisible(False)
+            else:
+                add_segments(lab, "silhouette", v, idx, SILHOUETTE)
+                _style(scene, "silhouette", color=SILHOUETTE, mode="lines", line_width=2)
+                scene.geometry_node("silhouette").setVisible(True)
+                state["belief_nodes"].add("silhouette")
+
+    # The target may be moving: translate its marker to where the trace says it
+    # is, and trail it, rather than leaving it at the story's opening waypoint.
+    goal = trace.goal_at(t)
+    if goal is not None:
+        ogx, ogy = state["goal_origin"]
+        dx, dy = goal[0] - ogx, goal[1] - ogy
+        scene.geometry_node("goal").setTransform([1, 0, 0, dx, 0, 1, 0, dy, 0, 0, 1, 0, 0, 0, 0, 1])
+        if state["frame"] % state["track_every"] == 0 and (abs(dx) > 1e-6 or abs(dy) > 1e-6):
+            i, _ = trace._tick_index(t)
+            gx_a, gy_a = trace.rows["goal_x"][: i + 1], trace.rows["goal_y"][: i + 1]
+            if len(gx_a) >= 2:
+                step = max(1, len(gx_a) // 300)
+                pts = [(float(a), float(b), 1.15) for a, b in zip(gx_a[::step], gy_a[::step])]
+                lab.add_path("goal_track", pts, GOAL)
+                _style(scene, "goal_track", color=GOAL, mode="lines", line_width=2)
+                scene.geometry_node("goal_track").setVisible(True)
+
+    # The FOV ring rides along with the vehicle rather than being rebuilt.
+    if trace.sensor_range_m > 0 and scene.hasGraphics("fov"):
+        ox, oy = state["fov_origin"]
+        n = scene.geometry_node("fov")
+        n.setTransform([1, 0, 0, pose.x - ox, 0, 1, 0, pose.y - oy, 0, 0, 1, 0, 0, 0, 0, 1])
 
     state["frame"] += 1
     if state["frame"] % state["track_every"] == 0:

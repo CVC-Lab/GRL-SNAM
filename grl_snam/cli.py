@@ -248,6 +248,62 @@ def fog_all_cmd(out_dir, fps, speed) -> None:
     click.echo(f"reel={reel}")
 
 
+# ── the finale ───────────────────────────────────────────────────────────────
+@main.command()
+@click.argument("bundle", type=click.Path(exists=True, file_okay=False))
+@click.option("-o", "--out-dir", default="finale", show_default=True)
+@click.option("--fps", default=24, show_default=True)
+@click.option("--speed", default=6.0, show_default=True, help="world seconds per clip second")
+@click.option("--width", default=1600, show_default=True)
+@click.option("--record/--no-record", default=True, help="re-record the traces first")
+def finale(bundle, out_dir, fps, speed, width, record) -> None:
+    """Eight vehicles across real city geometry: rendezvous, then pursuit.
+
+    BUNDLE is a scene bundle directory (terrain + buildings). There is no
+    default: the geometry lives outside this repository.
+    """
+    from .tools import finale_capture, finale_record
+    from .tools.austin import occupancy
+
+    out = Path(out_dir)
+    (out / "traces").mkdir(parents=True, exist_ok=True)
+    if record:
+        click.echo("recording (this is the slow part) ...")
+        finale_record.record_both(
+            bundle,
+            out / "traces",
+            progress=lambda k, n: click.echo(f"  tick {k}") if k % 400 == 0 else None,
+        )
+    occ, bounds = occupancy(bundle)
+    size = (int(width) // 2 * 2, int(width * 9 / 16) // 2 * 2)
+    # The pursuit frames its targets with the vehicles, so the closing gap is
+    # on screen. The rendezvous does not: its goals are a kilometre away at the
+    # start, and framing them would hold the whole map -- and eight specks --
+    # for the entire clip. The minimap already answers "where are they going".
+    acts = (("finale_rendezvous", False), ("finale_pursuit", True))
+
+    # One camera move across both acts. The elevation/bearing schedule is split
+    # in proportion to each act's LENGTH, so it runs continuously in time rather
+    # than restarting -- and the camera state is handed from one act to the next
+    # so the second picks up exactly where the first left off.
+    durs = [finale_capture.act_duration_s(out / "traces" / a) for a, _g in acts]
+    total = sum(durs) or 1.0
+    edges, acc = [], 0.0
+    for d in durs:
+        edges.append((acc / total, (acc + d) / total))
+        acc += d
+
+    cam_state = None
+    for (act, frame_goals), u_range in zip(acts, edges):
+        mp4, cam_state = finale_capture.capture_finale(
+            out / "traces" / act, bundle, out / f"{act}.mp4",
+            fps=fps, speed=speed, size=size, occ=occ, world_bounds=bounds,
+            frame_goals=frame_goals, camera_in=cam_state, u_range=u_range,
+            progress=lambda f, n, a=act: click.echo(f"  {a} {f}/{n}") if f % 100 == 0 else None,
+        )  # fmt: skip
+        click.echo(f"  {act} -> {mp4}")
+
+
 # ── full pipeline ────────────────────────────────────────────────────────────
 @main.command()
 @click.argument("bundle", type=click.Path(exists=True, file_okay=False))

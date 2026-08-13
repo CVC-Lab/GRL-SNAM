@@ -38,6 +38,9 @@ import torch.nn.functional as F
 
 
 # ── exact Euclidean distance transform (Felzenszwalb & Huttenlocher), no scipy ──
+_EDT_INF = 1e20
+
+
 def _edt1d(f: np.ndarray) -> np.ndarray:
     n = len(f)
     d = np.empty(n)
@@ -65,10 +68,62 @@ def _edt1d(f: np.ndarray) -> np.ndarray:
     return d
 
 
+def _edt1d_rows(F: np.ndarray) -> np.ndarray:
+    """Felzenszwalb's 1-D distance transform, run over EVERY ROW at once.
+
+    Identical algorithm to :func:`_edt1d` -- lower envelope of the parabolas
+    ``(q - v)^2 + f[v]`` -- but the outer sweep is the only Python-level loop
+    and each step operates on all rows simultaneously. ``np.apply_along_axis``
+    calls the scalar kernel once per line, which at 512^2 is ~1024 calls each
+    looping 512 times; that measured 3.4 s and was 83% of a scenario step,
+    against a docstring elsewhere claiming milliseconds.
+    """
+    m, n = F.shape
+    if n == 1:
+        return F.copy()
+    rows = np.arange(m)
+    k = np.zeros(m, np.intp)
+    v = np.zeros((m, n), np.intp)
+    z = np.empty((m, n + 1), np.float64)
+    z[:, 0] = -_EDT_INF
+    z[:, 1] = _EDT_INF
+
+    for q in range(1, n):
+        fq = F[:, q] + q * q
+        # Pop parabolas from the envelope until this one intersects above the
+        # previous boundary. k never goes below 0: z[:,0] is -inf, so the
+        # comparison is false there for any finite s.
+        for _ in range(n):
+            vk = v[rows, k]
+            s = (fq - (F[rows, vk] + vk * vk)) / (2.0 * (q - vk))
+            pop = (s <= z[rows, k]) & (k > 0)
+            if not pop.any():
+                break
+            k[pop] -= 1
+        k += 1
+        v[rows, k] = q
+        z[rows, k] = s
+        z[rows, k + 1] = _EDT_INF
+
+    k[:] = 0
+    out = np.empty((m, n), np.float64)
+    for q in range(n):
+        for _ in range(n):
+            adv = z[rows, k + 1] < q
+            if not adv.any():
+                break
+            k[adv] += 1
+        vk = v[rows, k]
+        d = q - vk
+        out[:, q] = d * d + F[rows, vk]
+    return out
+
+
 def _edt2(mask: np.ndarray) -> np.ndarray:
     """Squared Euclidean distance (grid units) from each cell to the nearest True."""
-    f = np.where(mask, 0.0, 1e20)
-    return np.apply_along_axis(_edt1d, 1, np.apply_along_axis(_edt1d, 0, f))
+    f = np.where(mask, 0.0, _EDT_INF)
+    # columns, then rows -- the 2-D transform is separable.
+    return _edt1d_rows(_edt1d_rows(f.T).T)
 
 
 def build_sdf(occ: np.ndarray, bounds, scale: float):

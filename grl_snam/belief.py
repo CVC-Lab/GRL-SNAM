@@ -45,6 +45,15 @@ class BeliefGrid:
         # Bumped whenever any cell crosses the 0.5 boundary — the caller's cue
         # that the planning surface changed and the SDF is worth rebuilding.
         self.version = 0
+        # Cells the LAST sweep could actually see (free cells along a ray plus
+        # the cell each ray terminated on). This is the agent's instantaneous
+        # field of view, as distinct from `logodds`, which is its memory — and
+        # the difference between the two is exactly what a viewer needs to see
+        # to understand fog of war. Empty until the first sense().
+        self.last_visible = np.zeros((self.ny, self.nx), bool)
+        # Every cell ever seen. Remembered-but-not-currently-visible is the
+        # middle tier of the classic three-tier fog.
+        self.ever_seen = np.zeros((self.ny, self.nx), bool)
 
     # ── coordinates ─────────────────────────────────────────────────────────
     def world_to_cell(self, x, y):
@@ -102,6 +111,7 @@ class BeliefGrid:
 
         r0, c0 = self.world_to_cell(pos_world[0], pos_world[1])
         if not self.in_bounds(r0, c0):
+            self.last_visible = np.zeros((self.ny, self.nx), bool)
             return 0
 
         before = self.logodds > 0.0
@@ -120,7 +130,17 @@ class BeliefGrid:
         rows = np.rint(r0 + sr[:, None] * steps[None, :]).astype(np.intp)
         cols = np.rint(c0 + sc[:, None] * steps[None, :]).astype(np.intp)
 
-        inside = (rows >= 0) & (rows < self.ny) & (cols >= 0) & (cols < self.nx)
+        # True RANGE limit, in world units. The DDA above normalises each ray by
+        # its dominant component, so a step is one cell along that axis and the
+        # reachable set is a SQUARE: a diagonal ray travels sqrt(2) times
+        # farther than an axis-aligned one. Drawing the sensor's range as a ring
+        # made that visible -- the lit region overflowed the circle. Clip by
+        # actual distance so `range_m` means the same thing in every direction.
+        dist = np.hypot(
+            (rows - r0) * cell_h,
+            (cols - c0) * cell_w,
+        )
+        inside = (rows >= 0) & (rows < self.ny) & (cols >= 0) & (cols < self.nx) & (dist <= range_m)
         rows_c = np.clip(rows, 0, self.ny - 1)
         cols_c = np.clip(cols, 0, self.nx - 1)
         hit = truth_occ[rows_c, cols_c] & inside  # [R, S]
@@ -133,6 +153,14 @@ class BeliefGrid:
         idx = np.broadcast_to(steps, hit.shape)
         free_mask = inside & (idx < first_stop[:, None])
         occ_mask = hit & (idx == first_stop[:, None])
+
+        # The swept field of view: every cell a ray reached, including the one
+        # it stopped on. Free of extra cost -- the masks already exist.
+        visible = np.zeros((self.ny, self.nx), bool)
+        visible[rows_c[free_mask], cols_c[free_mask]] = True
+        visible[rows_c[occ_mask], cols_c[occ_mask]] = True
+        self.last_visible = visible
+        self.ever_seen |= visible
 
         # Accumulate per-visit evidence exactly as the scalar loop did (a cell
         # crossed by several rays gets several increments), then clamp.

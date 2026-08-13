@@ -29,6 +29,12 @@ _ROW_FIELDS = (
     "clearance_m",
     "goal_dist_m",
     "goal_index",
+    # The goal MOVES in a pursuit scenario. Recording only goal_dist_m meant
+    # the renderer had no way to place the marker, so it drew the story's
+    # initial waypoint forever and the target appeared to stand still while
+    # the vehicle chased something invisible.
+    "goal_x",
+    "goal_y",
     "belief_version",
     "rebuilt",
     "sensed",
@@ -51,13 +57,19 @@ def record(
     max_steps: int | None = None,
     story: Story | None = None,
     progress=None,
+    truth_occ=None,
+    prior_occ=None,
 ) -> Path:
-    """Run ``story_key`` once and write ``trace.npz`` + ``trace.json``."""
+    """Run ``story_key`` once and write ``trace.npz`` + ``trace.json``.
+
+    ``truth_occ``/``prior_occ`` let a caller supply a rasterized world (a real
+    city) in place of the story's declarative rectangles.
+    """
     story = story or STORIES[story_key]
     out = Path(out_dir) if out_dir else Path("traces") / story.key
     out.mkdir(parents=True, exist_ok=True)
 
-    sc = build_scenario(story, model, seed=seed)
+    sc = build_scenario(story, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ)
     # replay mode: the recorder owns the tick, wall time is irrelevant here.
     clock = WorldClock(fixed_dt=story.dt, mode="replay")
 
@@ -66,6 +78,11 @@ def record(
     snap_occ: list[np.ndarray] = []
     snap_dyn: list[np.ndarray] = []
     routes: list[np.ndarray] = []
+    truth_ticks: list[int] = []
+    truth_snaps: list[np.ndarray] = []
+    fov_ticks: list[int] = []
+    fov_vis: list[np.ndarray] = []
+    fov_seen: list[np.ndarray] = []
 
     def snapshot(tick: int) -> None:
         occ = sc.belief.to_occupancy(unknown=story.unknown)
@@ -75,7 +92,28 @@ def record(
         snap_dyn.append(np.packbits(dyn.ravel()))
         routes.append(np.asarray(sc.route or [], np.float32).reshape(-1, 2))
 
+    def truth_snapshot(tick: int) -> None:
+        # Ground truth CHANGES: events raise and demolish walls, movers drive
+        # around. Colour classification (known wall vs believed-but-absent
+        # ghost vs undiscovered silhouette) is a comparison against truth AT
+        # THAT MOMENT, so the trace has to carry it. Using the story's initial
+        # truth painted every discovered blocker as a ghost -- inverted, and
+        # shipped that way.
+        truth_ticks.append(tick)
+        truth_snaps.append(np.packbits(sc.truth_now.ravel()))
+
+    def fov_snapshot(tick: int) -> None:
+        # Recorded on every SENSE, not only when belief changes: the field of
+        # view sweeps with the vehicle even on ticks where it learns nothing,
+        # and a fog overlay that only moved on discoveries would look broken.
+        # 1152 bytes per 96x96 snapshot before compression -- cheap.
+        fov_ticks.append(tick)
+        fov_vis.append(np.packbits(sc.belief.last_visible.ravel()))
+        fov_seen.append(np.packbits(sc.belief.ever_seen.ravel()))
+
     snapshot(0)  # the prior map, before a single ray is cast
+    sc._stamp_movers()
+    truth_snapshot(0)
 
     limit = max_steps or story.max_steps
     for _ in range(limit):
@@ -99,6 +137,9 @@ def record(
         rows["clearance_m"].append(clearance)
         rows["goal_dist_m"].append(rec.goal_dist_m)
         rows["goal_index"].append(rec.goal_index)
+        gx, gy = sc.waypoints[sc.wp_i]
+        rows["goal_x"].append(float(gx))
+        rows["goal_y"].append(float(gy))
         rows["belief_version"].append(rec.belief_version)
         rows["rebuilt"].append(bool(rec.rebuilt))
         rows["sensed"].append(sc.step_i % story.sense_every == 0)
@@ -106,6 +147,9 @@ def record(
 
         if rec.rebuilt:
             snapshot(clock.tick())
+        if rows["sensed"][-1]:
+            fov_snapshot(clock.tick())
+            truth_snapshot(clock.tick())
         if progress and clock.tick() % 50 == 0:
             progress(clock.tick(), limit)
         if sc.done:
@@ -143,6 +187,19 @@ def record(
     npz["snap_occ"] = np.stack(snap_occ)
     npz["snap_dyn"] = np.stack(snap_dyn)
     offsets = np.cumsum([0] + [len(r) for r in routes])
+    npz["truth_tick"] = np.asarray(truth_ticks, np.int64)
+    npz["truth_snap"] = (
+        np.stack(truth_snaps)
+        if truth_snaps
+        else np.zeros((0, (story.n * story.n + 7) // 8), np.uint8)
+    )
+    npz["fov_tick"] = np.asarray(fov_ticks, np.int64)
+    npz["fov_vis"] = (
+        np.stack(fov_vis) if fov_vis else np.zeros((0, (story.n * story.n + 7) // 8), np.uint8)
+    )
+    npz["fov_seen"] = (
+        np.stack(fov_seen) if fov_seen else np.zeros((0, (story.n * story.n + 7) // 8), np.uint8)
+    )
     npz["route_offsets"] = offsets.astype(np.int64)
     npz["route_points"] = (
         np.concatenate(routes) if any(len(r) for r in routes) else np.empty((0, 2), np.float32)
@@ -171,6 +228,10 @@ def record(
         "truth_rects": [list(r) for r in story.truth_rects],
         "prior_rects": [list(r) for r in story.prior_rects],
         "captions": [list(c) for c in story.captions],
+        "sensor_range_m": float(story.sensor.get("range_m", 0.0)),
+        "sense_every": int(story.sense_every),
+        "use_planner": bool(story.use_planner),
+        "nav": "route+sdf" if story.use_planner else "sdf-only",
         "cam": story.cam,
         "seed": seed,
         "torch": torch_version,

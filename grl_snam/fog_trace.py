@@ -52,11 +52,22 @@ def _lerp_angle(a: float, b: float, f: float) -> float:
 class Trace:
     """Reader for a recorded fog-of-war run."""
 
-    def __init__(self, rows: dict, snaps: dict, routes: list, manifest: dict):
+    def __init__(
+        self,
+        rows: dict,
+        snaps: dict,
+        routes: list,
+        manifest: dict,
+        fov: dict | None = None,
+        truth: dict | None = None,
+    ):
         self.rows = rows
         self.snaps = snaps
         self.routes = routes
         self.manifest = manifest
+        self.fov = fov
+        self.truth = truth
+        self.sensor_range_m = float(manifest.get("sensor_range_m", 0.0))
 
         self.fixed_dt = float(manifest["fixed_dt"])
         self.story_key = manifest["story"]
@@ -82,7 +93,15 @@ class Trace:
         offs = z["route_offsets"]
         pts = z["route_points"]
         routes = [pts[offs[i] : offs[i + 1]] for i in range(len(offs) - 1)]
-        return cls(rows, snaps, routes, manifest)
+        # Older traces predate the field-of-view snapshots; absent is not an
+        # error, the renderer simply draws no fog for them.
+        fov = None
+        if "fov_tick" in z.files:
+            fov = {"tick": z["fov_tick"], "vis": z["fov_vis"], "seen": z["fov_seen"]}
+        truth = None
+        if "truth_tick" in z.files:
+            truth = {"tick": z["truth_tick"], "snap": z["truth_snap"]}
+        return cls(rows, snaps, routes, manifest, fov, truth)
 
     # ── queries ─────────────────────────────────────────────────────────────
     @property
@@ -138,6 +157,26 @@ class Trace:
             f,
         )
 
+    def goal_at(self, t: float) -> tuple[float, float] | None:
+        """Where the target is at world time ``t``.
+
+        Interpolated between ticks for the same reason the pose is: a marker
+        that steps once per world tick judders visibly at playback rates.
+        Returns None for traces recorded before the goal was captured, and the
+        caller falls back to the story's static waypoint.
+        """
+        if "goal_x" not in self.rows:
+            return None
+        i, f = self._tick_index(t)
+        gx, gy = self.rows["goal_x"], self.rows["goal_y"]
+        if f == 0.0 or i + 1 >= self.n_ticks:
+            return float(gx[i]), float(gy[i])
+        j = i + 1
+        return (
+            float(gx[i] + (gx[j] - gx[i]) * f),
+            float(gy[i] + (gy[j] - gy[i]) * f),
+        )
+
     def snapshot_index_at(self, t: float) -> int:
         """Which belief snapshot is current at ``t``. Belief is a step
         function: it changes only when the sensor changed its mind."""
@@ -157,6 +196,50 @@ class Trace:
         occ = np.unpackbits(self.snaps["occ"][k], count=ny * nx).astype(bool).reshape(ny, nx)
         dyn = np.unpackbits(self.snaps["dyn"][k], count=ny * nx).astype(bool).reshape(ny, nx)
         return occ, dyn, k
+
+    def has_fov(self) -> bool:
+        return bool(self.fov is not None and len(self.fov["tick"]))
+
+    def fov_at(self, t: float) -> tuple[np.ndarray, np.ndarray] | None:
+        """``(visible_now, ever_seen)`` at world time ``t``.
+
+        Two masks, because fog of war is three-tier and needs both: never seen
+        (dark), seen but not currently visible (dim — the agent's memory), and
+        visible right now (clear). Returns None for traces recorded before the
+        field of view was captured.
+        """
+        if not self.has_fov():
+            return None
+        i, _ = self._tick_index(t)
+        k = int(np.searchsorted(self.fov["tick"], i, side="right") - 1)
+        if k < 0:
+            k = 0
+        ny, nx = self.shape
+        vis = np.unpackbits(self.fov["vis"][k], count=ny * nx).astype(bool).reshape(ny, nx)
+        seen = np.unpackbits(self.fov["seen"][k], count=ny * nx).astype(bool).reshape(ny, nx)
+        return vis, seen
+
+    def fov_index_at(self, t: float) -> int:
+        """Which FOV snapshot is current — so the renderer can skip re-meshing
+        when it has not changed."""
+        if not self.has_fov():
+            return -1
+        i, _ = self._tick_index(t)
+        return max(0, int(np.searchsorted(self.fov["tick"], i, side="right") - 1))
+
+    def truth_at(self, t: float) -> np.ndarray | None:
+        """Ground truth as it stood at world time ``t``.
+
+        Not the story's initial truth: events raise walls and movers drive, so
+        'is this believed cell actually real?' is a question about the world
+        at that moment.
+        """
+        if self.truth is None or not len(self.truth["tick"]):
+            return None
+        i, _ = self._tick_index(t)
+        k = max(0, int(np.searchsorted(self.truth["tick"], i, side="right") - 1))
+        ny, nx = self.shape
+        return np.unpackbits(self.truth["snap"][k], count=ny * nx).astype(bool).reshape(ny, nx)
 
     def route_at(self, t: float) -> np.ndarray:
         k = self.snapshot_index_at(t)
