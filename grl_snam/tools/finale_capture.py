@@ -252,10 +252,18 @@ def capture_finale(
                 seats[k] = (pose.x, pose.y, z)
                 tr = traces[k]
                 i, _ = tr._tick_index(t)
-                hud[k].SetInput(
-                    f"{k}  {tr.rows['speed_mps'][i]:5.1f} m/s"
-                    f"   goal {tr.rows['goal_dist_m'][i]:6.0f} m"
+                # Distance to the GOAL, computed from the recorded goal
+                # position -- not `goal_dist_m`, which is the distance to the
+                # route carrot and therefore sits at one lookahead (~14 m) for
+                # the entire drive. A HUD that reads "goal 14 m" from the far
+                # side of the city is worse than no HUD.
+                g = tr.goal_at(t)
+                dist = (
+                    float(np.hypot(pose.x - g[0], pose.y - g[1]))
+                    if g is not None
+                    else float(tr.rows["goal_dist_m"][i])
                 )
+                hud[k].SetInput(f"{k}  {tr.rows['speed_mps'][i]:5.1f} m/s   goal {dist:6.0f} m")
             hud["_title"].SetInput(f"AUSTIN  ·  {len(keys)} vehicles  ·  t = {clock.t():6.1f} s")
 
             _show(scene, keys, "mark_", False)
