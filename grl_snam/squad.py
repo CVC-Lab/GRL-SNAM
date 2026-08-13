@@ -103,15 +103,27 @@ class Squad:
         Done before sensing, so a peer is discovered the same way a wall is:
         by a ray landing on it. An agent never sees its own footprint, or it
         would map itself as an obstacle and refuse to move.
+
+        Handed over as a MASK rather than written straight into ``truth_now``.
+        Writing it directly did not survive: the first thing ``FogScenario.step``
+        does is ``_stamp_movers``, whose opening line is
+        ``truth_now = truth.copy()`` -- so every peer footprint was erased
+        microseconds after being stamped, before anything sensed against it.
+        Measured with eight agents 17 m apart: 63 cells stamped, 0 surviving.
+        The squad was mutually invisible, which also made its zero-collision
+        result vacuous, peers being absent from the grid that penetration is
+        scored against. A mask the scenario ORs in is order-independent and
+        cannot be clobbered.
         """
         boxes = {k: self._footprint(sc, half_m) for k, sc in self.scenarios.items()}
         for k, sc in self.scenarios.items():
-            sc.truth_now = sc.truth.copy()
+            mask = np.zeros(sc.truth.shape, dtype=bool)
             for j, box in boxes.items():
                 if j == k or box is None:
                     continue
                 r0, r1, c0, c1 = box
-                sc.truth_now[r0:r1, c0:c1] = True
+                mask[r0:r1, c0:c1] = True
+            sc.peer_occ = mask
 
     def _demote_peers(self, half_m: float = 4.0) -> None:
         """A peer the sensor just saw belongs in the DECAYING layer.

@@ -142,6 +142,8 @@ class FogScenario:
         # which under route tracking is a sub-goal ~lookahead metres ahead —
         # inside reach_tol by construction, i.e. true almost always.
         self.done = False
+        # Set by Squad._stamp_peers; None for a single-agent scenario.
+        self.peer_occ = None
 
         # The global spine: A* over BELIEF, replanned whenever belief
         # changes. The reactive navigator alone is a local law -- a fresh wall
@@ -225,6 +227,10 @@ class FogScenario:
         """Rebuild ``truth_now`` for this tick: the static world plus every
         mover's current footprint."""
         self.truth_now = self.truth.copy()
+        # Peers are stamped by the Squad BEFORE this runs, so they have to be
+        # re-applied after the reset or they vanish (see Squad._stamp_peers).
+        if self.peer_occ is not None:
+            np.logical_or(self.truth_now, self.peer_occ, out=self.truth_now)
         if not self.movers:
             return
         t = self._t()

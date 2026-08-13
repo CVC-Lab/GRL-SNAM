@@ -62,9 +62,19 @@ def test_agents_are_real_to_each_other():
     sq = Squad(_small(), _agents())
     sq._stamp_peers()
     a, b = sq.scenarios["a"], sq.scenarios["b"]
+
+    # Check this THROUGH the step that used to erase it. The previous version of
+    # this test read truth_now straight after _stamp_peers and passed for
+    # months, while FogScenario._stamp_movers -- whose first line is
+    # `truth_now = truth.copy()` -- wiped every peer microseconds later, on
+    # every tick. Asserting the write rather than its survival is what let the
+    # squad be mutually invisible under a green suite.
+    a._stamp_movers()
+    b._stamp_movers()
+
     # b's body appears in a's world...
     added_to_a = a.truth_now & ~a.truth
-    assert added_to_a.any(), "peers are not in the sensed world"
+    assert added_to_a.any(), "peers did not survive the per-tick truth reset"
     assert (b.truth_now & ~b.truth).any()
 
     # ...and nothing was added at a's OWN position. (Asserting the cell is
@@ -133,3 +143,26 @@ def test_the_story_start_is_overridden_per_agent():
     for a in _agents():
         x, y = sq.scenarios[a.key].nav.pos_world()
         assert (x, y) == pytest.approx(a.start, abs=2.0)
+
+
+def test_a_peer_in_sensor_range_is_actually_discovered():
+    """Surviving the truth reset is necessary; being SEEN is the point.
+
+    Separate from the stamping test because that one's agents start 120 m apart
+    with a ~38 m sensor and cross late -- a fine fixture for stamping, useless
+    for discovery. Here they start within range of each other, so a ray really
+    does land on a peer and it lands in the decaying layer (never the static
+    map, or a moving agent would leave a permanent wall behind it).
+    """
+    sq = Squad(
+        _small(),
+        [
+            AgentSpec("a", (-70.0, -8.0), (70.0, 0.0), (0.3, 0.7, 1.0)),
+            AgentSpec("b", (-70.0, 8.0), (70.0, 8.0), (1.0, 0.5, 0.2)),
+        ],
+    )
+    for _ in range(40):
+        sq.step()
+    assert any(
+        s.dyn.occupancy(s._t()).any() for s in sq.scenarios.values()
+    ), "no peer was ever sensed, so peers are still not real to each other"
