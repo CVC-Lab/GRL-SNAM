@@ -484,6 +484,7 @@ def capture_finale(
                         1.0,
                     ]
                 )
+            ren.GetActiveCamera().ParallelProjectionOff()  # main shot stays perspective
             main.setCamera(*eye, *focal, 0.0, 0.0, 1.0, FOV_DEG, 1.0, 20000.0)
             main.writePNG(str(frames / "main" / f"f_{f:05d}.png"))
 
@@ -494,7 +495,20 @@ def capture_finale(
                 actor.SetVisibility(False)
             _show(scene, keys, "mark_", True)
             _show(scene, keys, "beacon_", False)
+            # ORTHOGRAPHIC for the inset. Under perspective, the heading
+            # arrows -- which are held above the skyline so no roof can hide
+            # them -- are nearer the lens than the ground, so each one projects
+            # outward from the image centre by an amount that grows with its
+            # distance from centre. The result is an arrow visibly offset from
+            # the vehicle it belongs to, which reads as a bug because it is one.
+            # A parallel projection has no parallax: altitude cannot displace
+            # anything, so the arrow lands exactly on its vehicle. It also makes
+            # the inset a true map rather than a perspective view of one, which
+            # is what a minimap should be.
             main.setCamera(*map_eye, *map_focal, 0.0, 1.0, 0.0, 45.0, 1.0, 30000.0)
+            vcam = ren.GetActiveCamera()
+            vcam.ParallelProjectionOn()
+            vcam.SetParallelScale((mxy - mny) * 0.5 * 1.04)
             main.writePNG(str(frames / "pip" / f"f_{f:05d}.png"))
             for actor in hud.values():
                 actor.SetVisibility(True)

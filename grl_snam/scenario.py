@@ -400,6 +400,9 @@ class FogScenario:
             self._replan_route(force=True)
         elif wp_reached:
             self.done = True
+            # Terminal: brake and hold heading. Without this the vehicle
+            # keeps chasing a goal it is sitting on and pirouettes.
+            self.nav.park()
 
         pen = self._truth_hit((m.x, m.y))
         return StepRecord(

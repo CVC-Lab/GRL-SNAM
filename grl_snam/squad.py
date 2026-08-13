@@ -42,6 +42,11 @@ class AgentSpec:
     goal: tuple[float, float]
     color: tuple[float, float, float] = (0.97, 0.97, 0.97)
     moving_goal: object | None = None
+    #: Per-agent top speed override. Story.vmax is one number for the whole
+    #: world, which is fine until the point of the scene is that one vehicle is
+    #: quicker than another -- a chase where quarry and hunter move at the same
+    #: speed never resolves either way.
+    vmax: float | None = None
 
 
 @dataclass
@@ -117,6 +122,7 @@ class Squad:
                 start=a.start,
                 waypoints=(a.goal,),
                 moving_goal=a.moving_goal if a.moving_goal is not None else story.moving_goal,
+                **({} if a.vmax is None else {"vmax": float(a.vmax)}),
             )
             self.scenarios[a.key] = build_scenario(
                 s, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ

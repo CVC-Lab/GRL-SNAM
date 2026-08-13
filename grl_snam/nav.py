@@ -70,6 +70,7 @@ class SdfNavigator:
         self._gn = np.zeros(2, np.float32)
         self.step_i = 0
         self.goal_index = 0
+        self._parked = False
         self._reset_goal_state(1e9)
 
     # ── world <-> normalized ────────────────────────────────────────────────
@@ -126,7 +127,21 @@ class SdfNavigator:
         self._tracking = True
         self.reached = False
 
+    def park(self, parked: bool = True) -> None:
+        """Brake to a stop and hold heading.
+
+        Commanded by the caller, never inferred from the goal distance.
+        Inferring it does not work: under a route spine the navigator's goal is
+        the lookahead sub-goal, snapped to a free cell by _nearest_free, so
+        "I am close to my goal" is true constantly while travelling and again a
+        few metres short of the real waypoint. Braking on that parks the
+        vehicle before it arrives -- measured: stopped 2.74 m out and the run
+        never completed. Only the scenario knows an objective is terminal.
+        """
+        self._parked = bool(parked)
+
     def _reset_goal_state(self, dist0):
+        self._parked = False  # a new objective un-parks
         self._best = dist0
         self._init = max(dist0, 1e-6)
         self._stall = 0
@@ -225,6 +240,20 @@ class SdfNavigator:
                 self._stall = 0
         else:
             carrot = (p + gdir * min(1.8, dg)).astype(np.float32)
+
+        # ── parked: stop, do not pirouette ──────────────────────────────
+        # Sitting on the goal, gdir = (goal - p) / (dg + 1e-6) is dominated by
+        # noise, so the carrot whirls around the vehicle and the steering
+        # chases it -- it spins on the spot instead of stopping. Brake, then aim
+        # the carrot straight down the CURRENT heading so the steering error is
+        # zero. The carrot is placed proportional to the remaining speed, so it
+        # collapses onto the vehicle as it slows and the controller's own
+        # stopping-distance limit converges it to a halt rather than a creep.
+        if self._parked and self._dyn == "bicycle":
+            self.sp = torch.clamp(self.sp - float(self._veh["a_max"]) * self.dt, min=0.0)
+            th = float(self.th[0])
+            ahead = np.array([math.cos(th), math.sin(th)], np.float32)
+            carrot = (p + ahead * max(1e-3, float(self.sp[0]) * 2.0)).astype(np.float32)
 
         gt = torch.from_numpy(carrot).unsqueeze(0)
         al, be, ga = self.model(sdf_nav.coef_feats(self.field, self.o, gt))
