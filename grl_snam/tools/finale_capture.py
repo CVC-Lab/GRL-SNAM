@@ -233,6 +233,7 @@ def capture_finale(
     world_bounds=None,
     elevation_deg: float = 26.0,
     frame_goals: bool = False,
+    fog: bool = True,
     camera_in: CameraState | None = None,
     u_range: tuple[float, float] = (0.0, 1.0),
     progress=None,
@@ -255,6 +256,11 @@ def capture_finale(
     sampler = build_world(lab, bundle_dir)
     poses = add_vehicles(lab, spec, sampler)
     scene = lab._scene
+    fog_node = fog_live = None
+    if fog and traces[keys[0]].has_fov():
+        fog_node, fog_live = add_fog_decal(
+            lab, scene, sampler, traces[keys[0]].bounds, traces[keys[0]].shape
+        )
     _hide_chrome(scene, lab)
 
     main = pycvc_gl.SceneRenderer(scene, size[0], size[1], True)
@@ -361,6 +367,15 @@ def capture_finale(
                 if g is not None:
                     ox, oy = _goal_offset(keys.index(k), len(keys))
                     goals_now[k] = (g[0] + ox, g[1] + oy, float(sampler(g[0] + ox, g[1] + oy)))
+            if fog_live is not None:
+                np.take(
+                    FOG_LUT,
+                    fog_tiers(traces, keys, t, traces[keys[0]].shape),
+                    axis=0,
+                    out=fog_live,
+                )
+                fog_node.texture_modified()
+
             hud["_title"].SetInput(
                 f"AUSTIN · {len(keys)} vehicles · nav: {nav_label} · t = {clock.t():6.1f} s"
             )
@@ -584,6 +599,95 @@ def _add_sun(ren):
     fill.SetIntensity(0.35)
     fill.SetColor(0.75, 0.83, 1.0)
     ren.AddLight(fill)
+
+
+def add_fog_decal(lab, scene, sampler, bounds, shape, *, n: int = 129, lift_m: float = 1.5):
+    """A terrain-draped surface carrying the recorded field of view as a texture.
+
+    The 2-D clips show three-tier fog -- never seen, remembered, visible now --
+    and the 3-D ones showed none of it. This paints the SAME measured grid onto
+    the ground.
+
+    A texture, not geometry, because at finale playback (0.25 world s per frame
+    against a 0.24 s sensor cadence) the visible set changes EVERY frame, so the
+    2-D renderer's "re-mesh only when it changed" trick buys nothing here.
+    Re-meshing the lit cells costs ~172 ms/frame; re-writing the texture through
+    libcvc's zero-copy path costs a few. The decal's own resolution is
+    independent of the fog's -- all the detail lives in the texels.
+
+    Lab.add_mesh cannot carry UVs, so the geometry is built directly.
+    """
+    import pycvc
+
+    mnx, mny, mxx, mxy = (float(b) for b in bounds)
+    gx = np.linspace(mnx, mxx, n)
+    gy = np.linspace(mny, mxy, n)
+    X, Y = np.meshgrid(gx, gy)
+    # The bundle's terrain sampler is scalar-only, so this is a loop -- but it
+    # runs ONCE at setup (129^2 = 16,641 lookups), never per frame.
+    Z = (
+        np.array(
+            [sampler(float(x), float(y)) for x, y in zip(X.ravel(), Y.ravel())], np.float64
+        ).reshape(n, n)
+        + lift_m
+    )
+
+    verts = np.stack([X.ravel(), Y.ravel(), Z.ravel()], 1).ravel().tolist()
+    idx = np.arange(n * n).reshape(n, n)
+    a, b_, c, d = idx[:-1, :-1], idx[:-1, 1:], idx[1:, 1:], idx[1:, :-1]
+    tris = np.concatenate(
+        [np.stack([a, b_, c], -1).reshape(-1, 3), np.stack([a, c, d], -1).reshape(-1, 3)]
+    ).ravel().tolist()  # fmt: skip
+    uvs = np.stack([(X.ravel() - mnx) / (mxx - mnx), (Y.ravel() - mny) / (mxy - mny)], 1)
+
+    g = pycvc.geometry(lab._app)
+    g.add_vertices(verts)
+    g.add_triangles(tris)
+    g.set_uvs(uvs.ravel().tolist())
+    scene.addGraphics("fogdecal", g)
+    node = scene.getGraphics("fogdecal")
+
+    ny, nx = int(shape[0]), int(shape[1])
+    buf = np.zeros((ny, nx, 4), np.uint8)
+    img = pycvc.image.from_numpy(buf)
+    node.set_texture(img)
+    node.setOpacity(0.999)  # forces the actor into VTK's translucent pass
+    for f in ("setShowBBox", "setShowExtentLabels", "setShowLabel"):
+        getattr(node, f)(False)
+    return node, img.numpy()
+
+
+#: never seen / remembered / visible-now, as RGBA. Mirrors the 2-D clips' three
+#: tiers: unseen ground is hidden outright, memory is dim, live sensing is lit.
+FOG_LUT = np.array(
+    [
+        [6, 7, 10, 235],
+        [40, 47, 60, 175],
+        [120, 190, 225, 95],
+    ],
+    np.uint8,
+)
+
+
+def fog_tiers(traces, keys, t, shape):
+    """Union the squad's recorded FOV into one three-tier code array.
+
+    Coverage is shared, knowledge is not -- so the UNION of ``ever_seen`` is a
+    real measured quantity ("somebody has looked here"), while a union of the
+    agents' private occupancy beliefs would be a map no agent holds. This uses
+    only the former.
+    """
+    ny, nx = int(shape[0]), int(shape[1])
+    seen = np.zeros((ny, nx), bool)
+    vis = np.zeros((ny, nx), bool)
+    for k in keys:
+        got = traces[k].fov_at(t)
+        if got is None:
+            continue
+        v, s = got
+        np.logical_or(seen, s, out=seen)
+        np.logical_or(vis, v, out=vis)
+    return (seen.astype(np.uint8) + vis.astype(np.uint8)).clip(0, 2)
 
 
 def _open_raw_encoder(out_mp4: Path, *, fps: int, size):
