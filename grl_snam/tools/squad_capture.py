@@ -167,6 +167,7 @@ def capture_squad(
     size: tuple[int, int] = (960, 540),
     render_size: tuple[int, int] = (1280, 720),
     captions: bool = True,
+    hold_s: float = 2.5,
 ) -> Path:
     from pycvc_gl.lab import Lab
 
@@ -181,7 +182,25 @@ def capture_squad(
 
     any_trace = next(iter(traces.values()))
     clock = WorldClock(fixed_dt=any_trace.fixed_dt, mode="replay")
-    n_frames = max(1, int(any_trace.duration_s / max(speed, 1e-9) * fps))
+
+    # End shortly after the last arrival instead of at the end of the
+    # recording. An agent that cannot close its final stretch holds the run
+    # open, and the clip then finishes with a long stretch of nothing moving.
+    # Trim at RENDER time rather than by stopping the sim early: cutting the
+    # simulation short on a stall also cut off agents that were only
+    # temporarily jammed and would have arrived.
+    end_s = any_trace.duration_s
+    arrivals = []
+    for tr in traces.values():
+        gd = tr.rows.get("goal_dist_m")
+        if gd is None or not len(gd):
+            continue
+        close = np.nonzero(np.asarray(gd) <= float(np.min(gd)) + 1.0)[0]
+        if len(close):
+            arrivals.append(float(close[0]) * tr.fixed_dt)
+    if arrivals:
+        end_s = min(end_s, max(arrivals) + hold_s)
+    n_frames = max(1, int(end_s / max(speed, 1e-9) * fps))
     caps = any_trace.scaled_captions(speed) if captions else None
 
     first = renderer.frameRGB()

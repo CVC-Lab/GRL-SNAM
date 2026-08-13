@@ -78,6 +78,9 @@ class Story:
     captions: tuple[tuple[float, float, str], ...] = ()
     cam: str = "map"
 
+    # A path from an earlier full-knowledge run, drawn underneath for
+    # comparison. Not part of the simulation -- presentation only.
+    reference_xy: object | None = None
     # Full knowledge: render lit, with no fog tiers. The baseline variant.
     no_fog: bool = False
     # Route inflation in METRES (cells are not a fixed size across rasters).

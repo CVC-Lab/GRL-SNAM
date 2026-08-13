@@ -27,6 +27,7 @@ def record_squad(
     model=None,
     seed: int = 0,
     max_steps: int | None = None,
+    stall_ticks: int = 0,
     progress=None,
 ) -> Path:
     out = Path(out_dir)
@@ -53,8 +54,16 @@ def record_squad(
         snapshot(key, sc, 0)
 
     limit = max_steps or story.max_steps
+    best = {a.key: float("inf") for a in agents}
+    since = 0
     for _ in range(limit):
         recs = squad.step()
+        improved = False
+        for _k, _r in recs.items():
+            if _r.goal_dist_m < best[_k] - 0.5:
+                best[_k] = _r.goal_dist_m
+                improved = True
+        since = 0 if improved else since + 1
         clock.step_once()
         tick = clock.tick()
         import torch
@@ -92,6 +101,8 @@ def record_squad(
         if progress and tick % 50 == 0:
             progress(tick, limit)
         if squad.done:
+            break
+        if stall_ticks and since >= stall_ticks:
             break
 
     for a in agents:

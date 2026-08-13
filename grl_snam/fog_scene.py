@@ -40,6 +40,9 @@ WALL = (0.85, 0.25, 0.22)  # confirmed obstacle (red)
 UNIT = (0.90, 0.35, 0.75)  # transient dynamic mark (magenta)
 ROUTE = (0.35, 0.65, 1.00)  # planned spine (blue)
 TRACK = (0.98, 0.85, 0.30)  # driven path (yellow)
+# The full-knowledge path, drawn under a fog run as the thing to compare
+# against. Deliberately dim: it is a reference, not a second vehicle.
+REFERENCE = (0.30, 0.42, 0.52)
 CAR = (0.97, 0.97, 0.97)
 GOAL = (1.00, 0.45, 0.20)
 START = (0.35, 0.85, 0.45)
@@ -263,6 +266,15 @@ def build(lab, story, trace) -> dict:
     if trace.sensor_range_m > 0:
         lab.add_path("fov", ring_points(sx, sy, trace.sensor_range_m, 1.6), FOV)
         _style(scene, "fov", mode="lines", line_width=2)
+
+    # An optional reference path: what the SAME drive looked like with a
+    # complete map. Drawn once, underneath everything, so a viewer can see
+    # exactly where ignorance cost distance.
+    ref = getattr(story, "reference_xy", None)
+    if ref is not None and len(ref) >= 2:
+        step = max(1, len(ref) // 400)
+        lab.add_path("reference", [(float(x), float(y), 1.05) for x, y in ref[::step]], REFERENCE)
+        _style(scene, "reference", mode="lines", line_width=3)
 
     _hide_chrome(lab)
     return {

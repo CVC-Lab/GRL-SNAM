@@ -124,17 +124,40 @@ class Squad:
     def done(self) -> bool:
         return all(sc.done for sc in self.scenarios.values())
 
-    def run(self, max_steps: int = 4000, *, stop_when_done: bool = True) -> SquadResult:
+    def run(
+        self,
+        max_steps: int = 4000,
+        *,
+        stop_when_done: bool = True,
+        stall_ticks: int = 0,
+    ) -> SquadResult:
+        """Step until everyone arrives, or until nobody is making progress.
+
+        ``stall_ticks`` ends the run when no agent has improved on its best
+        distance-to-goal for that many ticks. Without it a single agent that
+        cannot close the last stretch holds the whole run open to max_steps,
+        and the recording ends with a long stretch of nothing moving -- dead
+        air in the clip, and minutes of wasted render.
+        """
         res = SquadResult()
         tracks = {k: [] for k in self.scenarios}
         pen = {k: 0 for k in self.scenarios}
+        best = {k: float("inf") for k in self.scenarios}
+        since = 0
         for _ in range(max_steps):
             recs = self.step()
+            improved = False
             for k, r in recs.items():
                 tracks[k].append((r.x, r.y))
                 pen[k] += int(r.truth_penetration)
+                if r.goal_dist_m < best[k] - 0.5:
+                    best[k] = r.goal_dist_m
+                    improved = True
+            since = 0 if improved else since + 1
             res.ticks += 1
             if stop_when_done and self.done:
+                break
+            if stall_ticks and since >= stall_ticks:
                 break
         res.tracks = {k: np.asarray(v, np.float32) for k, v in tracks.items()}
         res.penetration = pen
