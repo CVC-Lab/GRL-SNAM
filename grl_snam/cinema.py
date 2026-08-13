@@ -297,6 +297,29 @@ def _hidden_count(eye, pts, height, bounds, *, tail_m: float = 8.0, samples: int
     return int(np.count_nonzero(np.any(p[:, :, 2] < h + 1.0, axis=1)))
 
 
+def contain(eye, focal, points, *, fov_deg, fill=0.92, min_radius=60.0):
+    """Push the eye back until every point is inside the frame. Actually.
+
+    ``frame_group`` computes a distance that would contain the group -- but the
+    camera that ends up being used is the DAMPED one, whose focal point has
+    lagged and whose distance is whatever the damping has reached. Containment
+    has to be enforced against the camera actually rendering the frame, not
+    against the ideal one it is heading toward, or the guarantee is vacuous
+    exactly when the group is moving fastest.
+
+    Only the distance changes; bearing and elevation are the caller's.
+    """
+    p = np.asarray(points, np.float64).reshape(-1, 3)
+    eye = np.asarray(eye, np.float64)
+    focal = np.asarray(focal, np.float64)
+    radius = max(float(np.linalg.norm(p - focal, axis=1).max()), min_radius)
+    need = radius / max(np.tan(np.radians(fov_deg * 0.5)) * fill, 1e-6)
+    d = float(np.linalg.norm(eye - focal))
+    if d >= need or d < 1e-6:
+        return eye
+    return focal + (eye - focal) * (need / d)
+
+
 def shot_angles(u: float, *, low_deg: float = 16.0, high_deg: float = 34.0, drift_deg: float = 9.0):
     """Elevation and azimuth for normalised clip progress ``u`` in [0, 1].
 
@@ -342,9 +365,16 @@ class SmoothCamera:
     that lags reads as weight.
     """
 
-    def __init__(self, eye_tau: float = 1.1, focal_tau: float = 0.55):
+    def __init__(self, eye_tau: float = 1.1, focal_tau: float = 0.55, widen_tau: float = 0.35):
         self.eye_tau = float(eye_tau)
         self.focal_tau = float(focal_tau)
+        # Asymmetric on purpose. Damping is what stops the shot feeling nervous,
+        # but applied symmetrically it also delays PULLING BACK -- so the moment
+        # the group spreads, the camera spends seconds too tight and the
+        # stragglers are simply outside the frame. Widening is an emergency and
+        # gets a short time constant; tightening is a luxury and keeps the long
+        # one.
+        self.widen_tau = float(widen_tau)
         self._eye = None
         self._focal = None
 
@@ -366,7 +396,9 @@ class SmoothCamera:
         if self._eye is None:
             self._eye, self._focal = eye.copy(), focal.copy()
             return self._eye, self._focal
-        ke = 1.0 - np.exp(-max(dt, 1e-6) / max(self.eye_tau, 1e-6))
+        widening = np.linalg.norm(eye - focal) > np.linalg.norm(self._eye - self._focal)
+        tau_e = self.widen_tau if widening else self.eye_tau
+        ke = 1.0 - np.exp(-max(dt, 1e-6) / max(tau_e, 1e-6))
         kf = 1.0 - np.exp(-max(dt, 1e-6) / max(self.focal_tau, 1e-6))
         self._eye += (eye - self._eye) * ke
         self._focal += (focal - self._focal) * kf

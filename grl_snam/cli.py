@@ -10,6 +10,7 @@ One entry point for every workflow, from the world model to a running demo:
   grl-snam capture drive|multigoal ...   drive the policy -> mp4 (offscreen, HUD)
   grl-snam pipeline    BUNDLE            world model -> SDF -> train -> video (all)
   grl-snam fog list|record|capture|play|all   fog-of-war demo: record -> replay
+  grl-snam finale     BUNDLE            8 vehicles on real city geometry, in 3-D
   grl-snam demo        NAME              run a demo live inside VolRover3
   grl-snam lab-demo    [PNG]             standalone lab visualization
   grl-snam eval        [args...]         CoefEnergyNet visual eval (legacy trainer)

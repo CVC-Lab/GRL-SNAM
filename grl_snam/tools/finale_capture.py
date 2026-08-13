@@ -39,6 +39,7 @@ from grl_snam.cinema import (
     building_height_grid,
     clear_eye,
     clear_shot,
+    contain,
     frame_group,
     shot_angles,
 )
@@ -59,9 +60,35 @@ EYE_CEILING_M = 210.0
 # decide a 120-degree swing is optimal for visibility; taken in one frame that
 # reads as a cut, and repeatedly it reads as tumbling.
 MAX_BEARING_RATE_DEG_S = 11.0
+#: Degrees off the group's own heading to sit. Dead astern of the objective is a
+#: head-on shot with no depth; a shoulder gives a three-quarter view where the
+#: street grid still reads.
+SHOULDER_DEG = 34.0
 # Ceiling on the corrective climb, separately from the framing ceiling. Without
 # it a single building beside the subject can demand a kilometre of altitude.
 MAX_LIFT_M = 85.0
+
+
+def leader_arrival_s(
+    bundle, *, key: str | None = None, tol_m: float = 4.0, hold_s: float = 4.5
+) -> float | None:
+    """World time at which the lead agent reaches its goal, plus a short hold.
+
+    A convoy has nothing left to show once the leader parks: the followers
+    close on a stationary target, jostle for the standoff beside it and mill
+    about. Measured on the recorded convoy, the leader arrives at 67.3 s of a
+    192 s run, so 35% of the clip was that milling.
+    """
+    bundle = Path(bundle)
+    spec = json.loads((bundle / "squad.json").read_text())
+    k = key or spec["agents"][0]["key"]
+    tr = Trace.load(bundle / k)
+    r = tr.rows
+    d = np.hypot(r["x"] - r["goal_x"], r["y"] - r["goal_y"])
+    hit = np.nonzero(d < tol_m)[0]
+    if not hit.size:
+        return None
+    return float(hit[0] * tr.fixed_dt + hold_s)
 
 
 def act_duration_s(bundle) -> float:
@@ -235,6 +262,8 @@ def capture_finale(
     elevation_deg: float = 26.0,
     frame_goals: bool = False,
     fog: bool = True,
+    end_world_s: float | None = None,
+    on_frame=None,
     camera_in: CameraState | None = None,
     u_range: tuple[float, float] = (0.0, 1.0),
     progress=None,
@@ -312,13 +341,16 @@ def capture_finale(
     clock = WorldClock(fixed_dt=any_tr.fixed_dt, mode="replay")
     # Long taus: the framing target jumps every frame as the bounding sphere
     # shrinks, and that jitter is what makes the move feel nervous.
-    cam = SmoothCamera(eye_tau=3.2, focal_tau=1.6)
+    cam = SmoothCamera(eye_tau=3.2, focal_tau=1.6, widen_tau=0.35)
     if camera_in is not None and camera_in.eye is not None:
         # Pick up exactly where the previous act put the camera, so the two are
         # one move rather than two shots. The damper does the rest: whatever the
         # new act wants to frame, it is approached over ~3 s instead of cut to.
         cam.prime(camera_in.eye, camera_in.focal)
-    n_frames = max(1, int(any_tr.duration_s / max(speed, 1e-9) * fps))
+    span_s = (
+        any_tr.duration_s if end_world_s is None else min(any_tr.duration_s, float(end_world_s))
+    )
+    n_frames = max(1, int(span_s / max(speed, 1e-9) * fps))
     dt_frame = 1.0 / fps
 
     # Pre-drape every driven path once. Route spines are draped per frame from
@@ -429,9 +461,12 @@ def capture_finale(
             i_tick, _f = traces[keys[0]]._tick_index(t)
             segs, cols = [], []
             for k in keys:
-                pts = track_pts[k][: max(2, i_tick + 1) : 4]
-                if len(pts) >= 2:
-                    segs.append(pts)
+                # NOT `pts` -- that name holds the vehicle positions the camera
+                # frames itself on, and rebinding it here silently pointed the
+                # whole shot at the last agent's TRAIL instead of at the squad.
+                trail = track_pts[k][: max(2, i_tick + 1) : 4]
+                if len(trail) >= 2:
+                    segs.append(trail)
                     cols.append(agent_col[k])
             set_lines(node_track, lab._app, segs, cols)
 
@@ -463,7 +498,13 @@ def capture_finale(
                 # it. Preferring the scheduled bearing outright would snap the
                 # camera back the instant an obstruction cleared; this way a
                 # detour around a stadium is kept and drifted onward from.
-                az_pref[0] += azim - az_prev[0]
+                # Where the camera WANTS to be: on the objective's side, off
+                # the shoulder, plus whatever slow drift the schedule has
+                # accumulated. Falls back to pure drift when the objective is
+                # too close to give a bearing.
+                gb = goal_bearing_deg(traces, keys, t, pts)
+                drift = azim - shot_angles(u0, low_deg=elevation_deg)[1]
+                want = az_pref[0] + (azim - az_prev[0]) if gb is None else gb + SHOULDER_DEG + drift
                 # The beacon height the renderer will use for this frame. dist
                 # depends only on the group's radius and the lens, not on the
                 # bearing, so it is the same for every candidate and can be
@@ -477,7 +518,7 @@ def capture_finale(
                     height_grid,
                     world_bounds,
                     elevation_deg=elev,
-                    azimuth_deg=az_pref[0],
+                    azimuth_deg=want,
                     fill=0.80,
                     margin_m=25.0,
                     fov_deg=FOV_DEG,
@@ -523,17 +564,34 @@ def capture_finale(
                 )
             az_prev[0] = azim
             eye, focal = cam.update(eye, focal, dt_frame)
+            # Guarantee containment on the camera that actually renders. The
+            # framing distance above was computed for the UNDAMPED target; once
+            # the damper has had its say the group can easily no longer fit.
+            eye = contain(eye, focal, pts, fov_deg=FOV_DEG)
+            if height_grid is not None:
+                eye = clear_eye(
+                    eye, focal, height_grid, world_bounds,
+                    margin_m=25.0, tail_m=30.0, max_lift_m=MAX_LIFT_M,
+                )  # fmt: skip
+            if on_frame is not None:
+                on_frame(f, eye, focal, pts)
 
             # Size the beacons off the FINAL camera distance, so they stay a
             # constant fraction of the frame. A fixed 90 m pole is a useful
             # pointer when the shot spans a kilometre and an absurd tower when
             # the group has converged and the camera is 80 m away.
             dist = float(np.linalg.norm(eye - focal))
-            bw = float(np.clip(dist * 0.006, 0.8, 9.0))
+            # Sized for legibility at the distance the shot actually sits at.
+            # Framing eight agents spread across a kilometre puts the camera a
+            # measured 706 m out on average, where a 14 m vehicle is ~17 px and
+            # a thin beacon is a couple of pixels wide -- in frame, and still
+            # invisible. Containment guarantees they are IN shot; this is what
+            # makes them findable once they are.
+            bw = float(np.clip(dist * 0.011, 1.6, 17.0))
             # Capped well under the 130 m the first render used: against a city
             # whose roofs are 10-30 m, that read as eight columns rather than
             # eight markers.
-            bh = float(np.clip(dist * 0.065, 6.0, 95.0))
+            bh = float(np.clip(dist * 0.078, 9.0, 125.0))
             for k in keys:
                 x, y, z = seats[k]
                 scene.getGraphics(f"beacon_{k}").setTransform(
@@ -734,6 +792,31 @@ FOG_LUT = np.array(
     ],
     np.uint8,
 )
+
+
+def goal_bearing_deg(traces, keys, t, pts, *, min_range_m: float = 40.0):
+    """Bearing from the group to whatever it is heading for.
+
+    The camera used to hold a bearing fixed by the shot schedule, which is
+    unrelated to where anyone is going -- so as the group crossed the map the
+    camera could end up parked over the destination looking back at an empty
+    street, or square behind the squad watching it recede. Placing it on the
+    objective's side means the vehicles drive TOWARD the lens and the street
+    they are about to take is the street you are looking down.
+
+    Returns None when the objective is too close to define a direction, so the
+    caller can hold its current bearing instead of spinning about a degenerate
+    one.
+    """
+    gs = [g for g in (traces[k].goal_at(t) for k in keys) if g is not None]
+    if not gs:
+        return None
+    g = np.asarray(gs, np.float64).mean(axis=0)
+    c = np.asarray(pts, np.float64)[:, :2].mean(axis=0)
+    d = g - c
+    if float(np.hypot(*d)) < min_range_m:
+        return None
+    return float(np.degrees(np.arctan2(d[1], d[0])))
 
 
 def fog_tiers(traces, keys, t, shape):
