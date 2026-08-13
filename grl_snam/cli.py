@@ -280,11 +280,25 @@ def finale(bundle, out_dir, fps, speed, width, record) -> None:
     # on screen. The rendezvous does not: its goals are a kilometre away at the
     # start, and framing them would hold the whole map -- and eight specks --
     # for the entire clip. The minimap already answers "where are they going".
-    for act, frame_goals in (("finale_rendezvous", False), ("finale_pursuit", True)):
-        mp4 = finale_capture.capture_finale(
+    acts = (("finale_rendezvous", False), ("finale_pursuit", True))
+
+    # One camera move across both acts. The elevation/bearing schedule is split
+    # in proportion to each act's LENGTH, so it runs continuously in time rather
+    # than restarting -- and the camera state is handed from one act to the next
+    # so the second picks up exactly where the first left off.
+    durs = [finale_capture.act_duration_s(out / "traces" / a) for a, _g in acts]
+    total = sum(durs) or 1.0
+    edges, acc = [], 0.0
+    for d in durs:
+        edges.append((acc / total, (acc + d) / total))
+        acc += d
+
+    cam_state = None
+    for (act, frame_goals), u_range in zip(acts, edges):
+        mp4, cam_state = finale_capture.capture_finale(
             out / "traces" / act, bundle, out / f"{act}.mp4",
             fps=fps, speed=speed, size=size, occ=occ, world_bounds=bounds,
-            frame_goals=frame_goals,
+            frame_goals=frame_goals, camera_in=cam_state, u_range=u_range,
             progress=lambda f, n, a=act: click.echo(f"  {a} {f}/{n}") if f % 100 == 0 else None,
         )  # fmt: skip
         click.echo(f"  {act} -> {mp4}")

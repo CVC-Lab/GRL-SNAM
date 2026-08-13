@@ -255,3 +255,59 @@ def test_shot_opens_high_and_settles_low():
     assert lo == pytest.approx(26.0, abs=0.1)
     assert mid < 0.5 * (hi + lo), "the descent front-loads, it is not linear"
     assert az_end > shot_angles(0.0)[1], "bearing drifts monotonically"
+
+
+# ── handing the camera from one act to the next ─────────────────────────────
+
+
+def test_a_primed_camera_starts_where_the_last_shot_left_it():
+    """Without priming, a second act re-centres on its own first target — a cut.
+
+    An unprimed SmoothCamera snaps to whatever it is first handed, because it
+    has no history to lag behind. Primed, it lags from the previous act's
+    position instead, which is what turns the join into a move.
+    """
+    left_eye = np.array([100.0, 50.0, 200.0])
+    left_focal = np.array([0.0, 0.0, 0.0])
+    new_eye = np.array([-400.0, -400.0, 90.0])
+    new_focal = np.array([-300.0, -300.0, 0.0])
+
+    fresh = SmoothCamera(eye_tau=3.2, focal_tau=1.6)
+    e_fresh, _f = fresh.update(new_eye, new_focal, 1 / 24)
+    assert np.allclose(e_fresh, new_eye), "an unprimed camera snaps — that is the cut"
+
+    primed = SmoothCamera(eye_tau=3.2, focal_tau=1.6)
+    primed.prime(left_eye, left_focal)
+    e_primed, _f2 = primed.update(new_eye, new_focal, 1 / 24)
+    # It has moved off the handover point, but nowhere near the new target.
+    moved = float(np.linalg.norm(e_primed - left_eye))
+    remaining = float(np.linalg.norm(e_primed - new_eye))
+    assert 0.0 < moved < remaining, "a primed camera should ease across, not jump"
+    assert moved < 0.05 * float(np.linalg.norm(new_eye - left_eye))
+
+
+def test_the_handover_state_round_trips():
+    cam = SmoothCamera()
+    cam.update(np.array([1.0, 2.0, 3.0]), np.array([0.0, 0.0, 0.0]), 1 / 24)
+    st = cam.state(azimuth_deg=241.0)
+    nxt = SmoothCamera()
+    nxt.prime(st.eye, st.focal)
+    assert st.azimuth_deg == pytest.approx(241.0)
+    assert np.allclose(nxt.update(st.eye, st.focal, 1 / 24)[0], st.eye)
+
+
+def test_a_split_schedule_is_continuous_at_the_seam():
+    """Act one ending at u and act two starting at u must agree exactly.
+
+    Each act renders a sub-range of ONE schedule. If the second restarted at
+    u=0 the elevation would snap back to its opening establishing angle at the
+    join, which is the most visible kind of cut.
+    """
+    seam = 0.654
+    end_of_act_one = shot_angles(seam)
+    start_of_act_two = shot_angles(seam)
+    assert end_of_act_one == start_of_act_two
+    # ...and the schedule is still going somewhere: the second act keeps
+    # descending and drifting rather than repeating the first act's opening.
+    assert shot_angles(1.0)[0] < shot_angles(seam)[0] + 1e-9
+    assert shot_angles(1.0)[1] > shot_angles(seam)[1]

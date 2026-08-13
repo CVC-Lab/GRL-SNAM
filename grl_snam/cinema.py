@@ -21,6 +21,8 @@ grid answers both.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 # Never let the eye sit exactly on a roof or the terrain: a shot that grazes
@@ -315,6 +317,21 @@ def shot_angles(u: float, *, low_deg: float = 16.0, high_deg: float = 34.0, drif
     return elevation, 215.0 + drift_deg * u
 
 
+@dataclass
+class CameraState:
+    """Where a shot left the camera, so the next one can pick it up.
+
+    A cut between two acts of one sequence is a cut whether or not the geometry
+    is continuous: restarting the damper re-centres the eye, and restarting the
+    schedule snaps the elevation back to its opening angle. Carrying this across
+    makes the two acts a single move.
+    """
+
+    eye: np.ndarray
+    focal: np.ndarray
+    azimuth_deg: float
+
+
 class SmoothCamera:
     """Critically-damped follow for an eye/focal stream.
 
@@ -330,6 +347,18 @@ class SmoothCamera:
         self.focal_tau = float(focal_tau)
         self._eye = None
         self._focal = None
+
+    def prime(self, eye, focal) -> None:
+        """Start already moving, from where another shot finished."""
+        self._eye = np.asarray(eye, np.float64).copy()
+        self._focal = np.asarray(focal, np.float64).copy()
+
+    def state(self, azimuth_deg: float) -> CameraState:
+        return CameraState(
+            eye=None if self._eye is None else self._eye.copy(),
+            focal=None if self._focal is None else self._focal.copy(),
+            azimuth_deg=float(azimuth_deg),
+        )
 
     def update(self, eye, focal, dt: float):
         eye = np.asarray(eye, np.float64)

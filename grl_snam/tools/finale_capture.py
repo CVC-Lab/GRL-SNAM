@@ -34,6 +34,7 @@ from pathlib import Path
 import numpy as np
 
 from grl_snam.cinema import (
+    CameraState,
     SmoothCamera,
     building_height_grid,
     clear_eye,
@@ -60,6 +61,13 @@ MAX_BEARING_RATE_DEG_S = 11.0
 # Ceiling on the corrective climb, separately from the framing ceiling. Without
 # it a single building beside the subject can demand a kilometre of altitude.
 MAX_LIFT_M = 85.0
+
+
+def act_duration_s(bundle) -> float:
+    """World seconds in a recorded act, without loading the whole trace set."""
+    bundle = Path(bundle)
+    spec = json.loads((bundle / "squad.json").read_text())
+    return Trace.load(bundle / spec["agents"][0]["key"]).duration_s
 
 
 def _load(bundle: Path):
@@ -225,8 +233,10 @@ def capture_finale(
     world_bounds=None,
     elevation_deg: float = 26.0,
     frame_goals: bool = False,
+    camera_in: CameraState | None = None,
+    u_range: tuple[float, float] = (0.0, 1.0),
     progress=None,
-) -> Path:
+) -> tuple[Path, CameraState]:
     import pycvc_gl
     from pycvc_gl.lab import Lab
 
@@ -288,12 +298,18 @@ def capture_finale(
     # Long taus: the framing target jumps every frame as the bounding sphere
     # shrinks, and that jitter is what makes the move feel nervous.
     cam = SmoothCamera(eye_tau=3.2, focal_tau=1.6)
+    if camera_in is not None and camera_in.eye is not None:
+        # Pick up exactly where the previous act put the camera, so the two are
+        # one move rather than two shots. The damper does the rest: whatever the
+        # new act wants to frame, it is approached over ~3 s instead of cut to.
+        cam.prime(camera_in.eye, camera_in.focal)
     n_frames = max(1, int(any_tr.duration_s / max(speed, 1e-9) * fps))
     dt_frame = 1.0 / fps
 
     seats: dict[str, tuple[float, float, float]] = {}
-    az_pref = [shot_angles(0.0, low_deg=elevation_deg)[1]]
-    az_prev = [az_pref[0]]
+    u0, u1 = (float(u_range[0]), float(u_range[1]))
+    az_prev = [shot_angles(u0, low_deg=elevation_deg)[1]]
+    az_pref = [az_prev[0] if camera_in is None else float(camera_in.azimuth_deg)]
     frames = out.parent / f"_finale_{out.stem}"
     shutil.rmtree(frames, ignore_errors=True)
     (frames / "main").mkdir(parents=True, exist_ok=True)
@@ -345,7 +361,8 @@ def capture_finale(
                     pts.append(gp)
 
             _show(scene, keys, "mark_", False)
-            elev, azim = shot_angles(f / max(n_frames - 1, 1), low_deg=elevation_deg)
+            u = u0 + (u1 - u0) * (f / max(n_frames - 1, 1))
+            elev, azim = shot_angles(u, low_deg=elevation_deg)
             if height_grid is not None:
                 # Carry the bearing forward and add only the schedule's DRIFT to
                 # it. Preferring the scheduled bearing outright would snap the
@@ -483,7 +500,7 @@ def capture_finale(
 
     _compose(frames, out, fps=fps, size=size, pip=(pip_w, pip_h), crop_w=crop_w)
     shutil.rmtree(frames, ignore_errors=True)
-    return out
+    return out, cam.state(az_pref[0])
 
 
 def _show(scene, keys, prefix, visible):
