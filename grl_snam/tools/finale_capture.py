@@ -36,6 +36,7 @@ import numpy as np
 from grl_snam.cinema import (
     SmoothCamera,
     building_height_grid,
+    clear_eye,
     clear_shot,
     frame_group,
     shot_angles,
@@ -45,6 +46,20 @@ from grl_snam.fog_trace import Trace
 
 PIP_FRAC = 0.22  # overhead inset, as a fraction of frame width
 MARK_Z = 350.0  # overhead-marker altitude: above every roof in the bundle
+
+# A wide lens is what lets the camera stand IN the city rather than above it: a
+# group is framed from 4.67 radii at 30 degrees and 2.40 at 55.
+FOV_DEG = 55.0
+# Hard ceiling on the eye. Austin's roofs here are 10-30 m, so a camera at 900 m
+# is looking at a map, not a city.
+EYE_CEILING_M = 210.0
+# Degrees of bearing change per CLIP second. The bearing search is free to
+# decide a 120-degree swing is optimal for visibility; taken in one frame that
+# reads as a cut, and repeatedly it reads as tumbling.
+MAX_BEARING_RATE_DEG_S = 11.0
+# Ceiling on the corrective climb, separately from the framing ceiling. Without
+# it a single building beside the subject can demand a kilometre of altitude.
+MAX_LIFT_M = 85.0
 
 
 def _load(bundle: Path):
@@ -95,7 +110,7 @@ def add_vehicles(lab, spec, sampler, *, length=14.0, width=6.5, height=4.5):
         # moves, and a chase whose quarry is not drawn is just eight vehicles
         # driving oddly -- the same failure as a target marker pinned to the
         # opening waypoint, which is what the last review caught.
-        gv, gt = _box(1.0, 1.0, 1.0)
+        gv, gt = _pyramid()
         lab.add_mesh(f"goal_{k}", gv, gt, col)
         poses[k] = VehiclePose(sampler, lift=1.2)
     return poses
@@ -110,6 +125,25 @@ def _goal_offset(i: int, n: int, radius_m: float = 5.0):
     """
     a = 2.0 * np.pi * i / max(n, 1)
     return radius_m * float(np.cos(a)), radius_m * float(np.sin(a))
+
+
+def _pyramid():
+    """A unit pyramid with its APEX AT THE ORIGIN, pointing down (+Z is up).
+
+    Vehicles stand up; goals hang above and point down at the spot they mark.
+    Two colours of vertical pole are indistinguishable at any useful zoom --
+    which is what the first render looked like -- so hunter and quarry need
+    different silhouettes, not just different positions.
+    """
+    v = [
+        0.0, 0.0, 0.0,
+        -0.5, -0.5, 1.0,  0.5, -0.5, 1.0,  0.5, 0.5, 1.0,  -0.5, 0.5, 1.0,
+    ]  # fmt: skip
+    t = [
+        0, 2, 1, 0, 3, 2, 0, 4, 3, 0, 1, 4,   # four faces down to the apex
+        1, 2, 3, 1, 3, 4,                      # the top
+    ]  # fmt: skip
+    return v, t
 
 
 def _arrow(size):
@@ -251,7 +285,9 @@ def capture_finale(
 
     any_tr = traces[keys[0]]
     clock = WorldClock(fixed_dt=any_tr.fixed_dt, mode="replay")
-    cam = SmoothCamera(eye_tau=1.3, focal_tau=0.6)
+    # Long taus: the framing target jumps every frame as the bounding sphere
+    # shrinks, and that jitter is what makes the move feel nervous.
+    cam = SmoothCamera(eye_tau=3.2, focal_tau=1.6)
     n_frames = max(1, int(any_tr.duration_s / max(speed, 1e-9) * fps))
     dt_frame = 1.0 / fps
 
@@ -316,6 +352,14 @@ def capture_finale(
                 # camera back the instant an obstruction cleared; this way a
                 # detour around a stadium is kept and drifted onward from.
                 az_pref[0] += azim - az_prev[0]
+                # The beacon height the renderer will use for this frame. dist
+                # depends only on the group's radius and the lens, not on the
+                # bearing, so it is the same for every candidate and can be
+                # computed once.
+                _p = np.asarray(pts, np.float64).reshape(-1, 3)
+                _rad = max(float(np.linalg.norm(_p - _p.mean(axis=0), axis=1).max()), 60.0)
+                _dist = _rad / (np.tan(np.radians(FOV_DEG * 0.5)) * 0.80)
+                _rise = 0.8 * float(np.clip(_dist * 0.065, 6.0, 95.0))
                 eye, focal, _r, used = clear_shot(
                     pts,
                     height_grid,
@@ -324,10 +368,47 @@ def capture_finale(
                     azimuth_deg=az_pref[0],
                     fill=0.80,
                     margin_m=25.0,
+                    fov_deg=FOV_DEG,
+                    max_height_m=EYE_CEILING_M,
+                    max_lift_m=MAX_LIFT_M,
+                    subject_rise_m=_rise,
                 )
-                az_pref[0] = used
+                # Walk toward the chosen bearing at a bounded rate instead of
+                # snapping to it. The search re-runs every frame, so a bearing
+                # it cannot reach this frame it simply chooses again next frame
+                # -- the camera pans there over about a second rather than
+                # cutting there in one.
+                step_cap = MAX_BEARING_RATE_DEG_S / fps
+                delta = (used - az_pref[0] + 180.0) % 360.0 - 180.0
+                step = float(np.clip(delta, -step_cap, step_cap))
+                az_pref[0] += step
+                if abs(step) < abs(delta):
+                    eye, focal, _r = frame_group(
+                        pts,
+                        elevation_deg=elev,
+                        azimuth_deg=az_pref[0],
+                        fill=0.80,
+                        fov_deg=FOV_DEG,
+                        max_height_m=EYE_CEILING_M,
+                    )
+                    eye = clear_eye(
+                        eye,
+                        focal,
+                        height_grid,
+                        world_bounds,
+                        margin_m=25.0,
+                        tail_m=30.0,
+                        max_lift_m=MAX_LIFT_M,
+                    )
             else:
-                eye, focal, _r = frame_group(pts, elevation_deg=elev, azimuth_deg=azim, fill=0.80)
+                eye, focal, _r = frame_group(
+                    pts,
+                    elevation_deg=elev,
+                    azimuth_deg=azim,
+                    fill=0.80,
+                    fov_deg=FOV_DEG,
+                    max_height_m=EYE_CEILING_M,
+                )
             az_prev[0] = azim
             eye, focal = cam.update(eye, focal, dt_frame)
 
@@ -337,7 +418,10 @@ def capture_finale(
             # the group has converged and the camera is 80 m away.
             dist = float(np.linalg.norm(eye - focal))
             bw = float(np.clip(dist * 0.006, 0.8, 9.0))
-            bh = float(np.clip(dist * 0.075, 6.0, 130.0))
+            # Capped well under the 130 m the first render used: against a city
+            # whose roofs are 10-30 m, that read as eight columns rather than
+            # eight markers.
+            bh = float(np.clip(dist * 0.065, 6.0, 95.0))
             for k in keys:
                 x, y, z = seats[k]
                 scene.getGraphics(f"beacon_{k}").setTransform(
@@ -352,11 +436,31 @@ def capture_finale(
                 # is a place, not a protagonist, and it must not be mistaken
                 # for a ninth vehicle.
                 gx, gy, gz = gp
-                gw, gh = bw * 0.55, bh * 0.62
+                # Hovers with its point on the target, clear of the rooftops so
+                # it is not swallowed by whatever the target is driving past.
+                gw = max(bw * 2.2, 5.0)
+                gh = max(bh * 0.40, 9.0)
                 g_node.setTransform(
-                    [gw, 0.0, 0.0, gx, 0.0, gw, 0.0, gy, 0.0, 0.0, gh, gz, 0.0, 0.0, 0.0, 1.0]
+                    [
+                        gw,
+                        0.0,
+                        0.0,
+                        gx,
+                        0.0,
+                        gw,
+                        0.0,
+                        gy,
+                        0.0,
+                        0.0,
+                        gh,
+                        gz + gh * 0.55,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0,
+                    ]
                 )
-            main.setCamera(*eye, *focal, 0.0, 0.0, 1.0, 30.0, 1.0, 20000.0)
+            main.setCamera(*eye, *focal, 0.0, 0.0, 1.0, FOV_DEG, 1.0, 20000.0)
             main.writePNG(str(frames / "main" / f"f_{f:05d}.png"))
 
             # Re-aim the SAME renderer straight down for the inset, then put it
