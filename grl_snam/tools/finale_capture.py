@@ -39,6 +39,7 @@ from grl_snam.cinema import (
     building_height_grid,
     clear_eye,
     clear_shot,
+    contain,
     frame_group,
     shot_angles,
 )
@@ -262,6 +263,7 @@ def capture_finale(
     frame_goals: bool = False,
     fog: bool = True,
     end_world_s: float | None = None,
+    on_frame=None,
     camera_in: CameraState | None = None,
     u_range: tuple[float, float] = (0.0, 1.0),
     progress=None,
@@ -339,7 +341,7 @@ def capture_finale(
     clock = WorldClock(fixed_dt=any_tr.fixed_dt, mode="replay")
     # Long taus: the framing target jumps every frame as the bounding sphere
     # shrinks, and that jitter is what makes the move feel nervous.
-    cam = SmoothCamera(eye_tau=3.2, focal_tau=1.6)
+    cam = SmoothCamera(eye_tau=3.2, focal_tau=1.6, widen_tau=0.35)
     if camera_in is not None and camera_in.eye is not None:
         # Pick up exactly where the previous act put the camera, so the two are
         # one move rather than two shots. The damper does the rest: whatever the
@@ -459,9 +461,12 @@ def capture_finale(
             i_tick, _f = traces[keys[0]]._tick_index(t)
             segs, cols = [], []
             for k in keys:
-                pts = track_pts[k][: max(2, i_tick + 1) : 4]
-                if len(pts) >= 2:
-                    segs.append(pts)
+                # NOT `pts` -- that name holds the vehicle positions the camera
+                # frames itself on, and rebinding it here silently pointed the
+                # whole shot at the last agent's TRAIL instead of at the squad.
+                trail = track_pts[k][: max(2, i_tick + 1) : 4]
+                if len(trail) >= 2:
+                    segs.append(trail)
                     cols.append(agent_col[k])
             set_lines(node_track, lab._app, segs, cols)
 
@@ -559,17 +564,34 @@ def capture_finale(
                 )
             az_prev[0] = azim
             eye, focal = cam.update(eye, focal, dt_frame)
+            # Guarantee containment on the camera that actually renders. The
+            # framing distance above was computed for the UNDAMPED target; once
+            # the damper has had its say the group can easily no longer fit.
+            eye = contain(eye, focal, pts, fov_deg=FOV_DEG)
+            if height_grid is not None:
+                eye = clear_eye(
+                    eye, focal, height_grid, world_bounds,
+                    margin_m=25.0, tail_m=30.0, max_lift_m=MAX_LIFT_M,
+                )  # fmt: skip
+            if on_frame is not None:
+                on_frame(f, eye, focal, pts)
 
             # Size the beacons off the FINAL camera distance, so they stay a
             # constant fraction of the frame. A fixed 90 m pole is a useful
             # pointer when the shot spans a kilometre and an absurd tower when
             # the group has converged and the camera is 80 m away.
             dist = float(np.linalg.norm(eye - focal))
-            bw = float(np.clip(dist * 0.006, 0.8, 9.0))
+            # Sized for legibility at the distance the shot actually sits at.
+            # Framing eight agents spread across a kilometre puts the camera a
+            # measured 706 m out on average, where a 14 m vehicle is ~17 px and
+            # a thin beacon is a couple of pixels wide -- in frame, and still
+            # invisible. Containment guarantees they are IN shot; this is what
+            # makes them findable once they are.
+            bw = float(np.clip(dist * 0.011, 1.6, 17.0))
             # Capped well under the 130 m the first render used: against a city
             # whose roofs are 10-30 m, that read as eight columns rather than
             # eight markers.
-            bh = float(np.clip(dist * 0.065, 6.0, 95.0))
+            bh = float(np.clip(dist * 0.078, 9.0, 125.0))
             for k in keys:
                 x, y, z = seats[k]
                 scene.getGraphics(f"beacon_{k}").setTransform(
