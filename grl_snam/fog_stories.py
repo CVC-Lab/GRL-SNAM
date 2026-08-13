@@ -78,6 +78,8 @@ class Story:
     captions: tuple[tuple[float, float, str], ...] = ()
     cam: str = "map"
 
+    # Route inflation in METRES (cells are not a fixed size across rasters).
+    inflate_m: float = 6.0
     # Vehicles that physically exist in truth and move (see Mover).
     movers: tuple = ()
     # A target that moves. When set, it overrides the final waypoint.
@@ -400,6 +402,7 @@ def build_scenario(story: Story, model=None, *, seed: int = 0):
         dynamics=story.dynamics,
         unit_ttl_s=story.unit_ttl_s,
         reach_tol=story.reach_tol,
+        inflate_m=story.inflate_m,
         movers=story.movers,
         moving_goal=story.moving_goal,
     ).start(story.start)

@@ -101,6 +101,7 @@ class FogScenario:
         reach_tol: float = 0.8,
         use_planner: bool = True,
         route_lookahead_m: float = 14.0,
+        inflate_m: float = 6.0,
         movers=(),
         moving_goal=None,
     ):
@@ -153,8 +154,19 @@ class FogScenario:
         # Inflation must clear the BARRIER's influence radius, not just the
         # vehicle body: a route hugging a 2 m boundary while the IPC barrier
         # reaches ~7 m leaves tracking and repulsion in a stalemate at every
-        # corner. 3 cells ~ 6 m here, the Austin pipeline's proportion.
-        self.planner = BeliefRoutePlanner(self.bounds, self.truth.shape, inflate_cells=3)
+        # corner.
+        #
+        # Specified in METRES, not cells. It was hard-coded at 3 cells, which
+        # is 6 m at the fog stories' 2.08 m/cell -- but cells are not a fixed
+        # size. On a 1200 m city raster at 256 the same 3 cells is 14 m, wide
+        # enough to close every street: measured there, inflate 1 routes in
+        # 1847 m, 2 in 2006 m, and 3 finds NO ROUTE AT ALL.
+        cell_m = (self.bounds[2] - self.bounds[0]) / (self.truth.shape[1] - 1)
+        self.cell_m = cell_m
+        self.inflate_cells = max(1, round(float(inflate_m) / cell_m))
+        self.planner = BeliefRoutePlanner(
+            self.bounds, self.truth.shape, inflate_cells=self.inflate_cells
+        )
         self.route: list | None = None
         self.no_route = False
 
