@@ -10,7 +10,13 @@ recipe:
   # without it), plus matplotlib + imageio, whose cvcpkg columns now
   # exist (libcvc-deps), closing the "pending cvcpkg recipes" note
   # this recipe shipped with.
-  cvc_revision: 2
+  # Bumped 2 -> 3: the v0.1.0 release asset was rebuilt from the current tree
+  # and the tag moved with it, so the pinned sha256 changed. This is also the
+  # first revision whose sdist declares [project.scripts] -- the published
+  # 0.1.0+cvc.1 shipped the importable package with NO `grl-snam` console
+  # script at all, which is why every "run it yourself" instruction that ended
+  # at `cvcpkg install` could not actually work.
+  cvc_revision: 3
   maintainer: "cvcpkg group"
   maintainer_email: "info@cvcpkg.org"
   maintainer_url: "https://cvcpkg.org"
@@ -33,7 +39,7 @@ source:
   # and verifies the sha256 before build.sh runs; the install is then offline.
   type: python_sdist
   url: https://github.com/CVC-Lab/GRL-SNAM/releases/download/v0.1.0/grl_snam-0.1.0.tar.gz
-  sha256: "208f21688e5634de128b5ab4ec77e9563e903a62888ecda81e2afa384bd01cd2"
+  sha256: "74d186c15296dd730ce919a12bd253d955f6634183efe0cd39268250139bb203"
   strip_components: 1
 
 python:

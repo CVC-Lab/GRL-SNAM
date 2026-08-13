@@ -73,12 +73,20 @@ if [ -z "${libdir}" ]; then
   echo "build.sh: no site-packages found under ${CVC_INSTALL_DIR}" >&2
   exit 1
 fi
-# Assert only what the PINNED v0.1.0 sdist actually ships: grl_snam +
-# grl_snam_lab (Lab/terrain_mesh).  The selftest module, the lab run_* entry
-# points and the grl-snam-selftest / grl-snam-lab-demo console scripts all
-# POSTDATE the v0.1.0 release (the sdist declares no [project.scripts] at
-# all) — asserting them here can never pass until the recipes pin a newer
-# release, at which point this smoke should grow back with it.
+# The v0.1.0 asset was rebuilt from the current tree, so the sdist now DOES
+# declare [project.scripts] — the reason this smoke was previously trimmed
+# ("asserting them here can never pass until the recipes pin a newer release,
+# at which point this smoke should grow back with it").  It has grown back:
+# assert the console script is installed, because a bundle that carries the
+# importable package but no `grl-snam` command is exactly what shipped as
+# 0.1.0+cvc.1 and exactly what made every documented install fail at the
+# first command.
+if [ ! -x "${CVC_INSTALL_DIR}/bin/grl-snam" ]; then
+  echo "build.sh: console script not installed: ${CVC_INSTALL_DIR}/bin/grl-snam" >&2
+  echo "  (does this sdist declare [project.scripts]?)" >&2
+  exit 1
+fi
+
 PYTHONPATH="${libdir}${PYTHONPATH:+:${PYTHONPATH}}" "${py}" -c "
 import grl_snam, grl_snam_lab
 for fn in ('Lab', 'terrain_mesh'):
