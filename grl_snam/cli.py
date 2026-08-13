@@ -9,6 +9,7 @@ One entry point for every workflow, from the world model to a running demo:
   grl-snam train       SDF.npz           self-supervised SDF-coefficient training
   grl-snam capture drive|multigoal ...   drive the policy -> mp4 (offscreen, HUD)
   grl-snam pipeline    BUNDLE            world model -> SDF -> train -> video (all)
+  grl-snam fog list|record|capture|play|all   fog-of-war demo: record -> replay
   grl-snam demo        NAME              run a demo live inside VolRover3
   grl-snam lab-demo    [PNG]             standalone lab visualization
   grl-snam eval        [args...]         CoefEnergyNet visual eval (legacy trainer)
@@ -24,6 +25,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from pathlib import Path
 
 import click
 
@@ -142,6 +144,108 @@ def capture_multigoal_cmd(bundle, checkpoint, sdf_npz, out, minutes, no_hud) -> 
     _cap.capture_multigoal(
         bundle, checkpoint, out, sdf_npz=sdf_npz, minutes=minutes, hud=not no_hud
     )
+
+
+# ── fog of war ───────────────────────────────────────────────────────────────
+@main.group()
+def fog() -> None:
+    """Fog-of-war demo: record a measured trace, then replay it live or to mp4.
+
+    The simulation runs exactly ONCE, in `record`. Everything after that replays
+    what was measured -- so the window, the video and the quoted numbers cannot
+    disagree with each other or with the run.
+    """
+
+
+@fog.command("list")
+def fog_list_cmd() -> None:
+    """The available stories, with the summary of any recorded trace."""
+    import json
+
+    from .fog_stories import STORIES
+
+    for key, story in STORIES.items():
+        line = f"{key:9s} {story.title} - {story.subtitle}"
+        manifest = Path("traces") / key / "trace.json"
+        if manifest.exists():
+            s = json.loads(manifest.read_text()).get("summary", {})
+            line += (
+                f"\n          recorded: {s.get('steps')} ticks, "
+                f"{s.get('world_seconds')} world s, {s.get('map_updates')} map updates, "
+                f"{s.get('penetration_steps')} collisions, "
+                f"{s.get('detour_peak_m')} m detour peak"
+            )
+        click.echo(line)
+
+
+@fog.command("record")
+@click.argument("story", type=click.Choice(["ghost", "blocker", "unit"]))
+@click.option("-o", "--out", "out_dir", default=None, help="trace dir (default traces/<story>)")
+@click.option("--seed", default=0, show_default=True)
+@click.option("--max-steps", default=None, type=int)
+def fog_record_cmd(story, out_dir, seed, max_steps) -> None:
+    """Run the scenario once and write the measured trace bundle."""
+    from .tools import fog_record
+
+    out = fog_record.record(story, out_dir, seed=seed, max_steps=max_steps)
+    click.echo(f"trace={out}")
+
+
+@fog.command("capture")
+@click.argument("story", type=click.Choice(["ghost", "blocker", "unit"]))
+@click.option("--trace", "trace_dir", default=None, help="trace dir (default traces/<story>)")
+@click.option("-o", "--out", default=None, help="mp4 (default fog_<story>.mp4)")
+@click.option("--fps", default=20, show_default=True)
+@click.option("--speed", default=0.5, show_default=True, help="world seconds per played second")
+@click.option("--no-captions", is_flag=True)
+@click.option("--keep-frames", is_flag=True, help="keep the PNG stills (uses the slower path)")
+def fog_capture_cmd(story, trace_dir, out, fps, speed, no_captions, keep_frames) -> None:
+    """Replay a recorded trace to an mp4 (offscreen; no window needed)."""
+    from .tools import fog_capture
+
+    path = fog_capture.capture(
+        story,
+        trace_dir,
+        out,
+        fps=fps,
+        speed=speed,
+        captions=not no_captions,
+        keep_frames=keep_frames,
+    )
+    click.echo(f"video={path}")
+
+
+@fog.command("play")
+@click.argument("story", type=click.Choice(["ghost", "blocker", "unit"]))
+@click.option("--trace", "trace_dir", default=None)
+@click.option("--speed", default=0.5, show_default=True)
+@click.option("--loop", is_flag=True)
+def fog_play_cmd(story, trace_dir, speed, loop) -> None:
+    """Play a recorded trace in a window, paced by the world clock."""
+    from .tools import fog_capture
+
+    n = fog_capture.play(story, trace_dir, speed=speed, loop=loop)
+    click.echo(f"frames={n}")
+
+
+@fog.command("all")
+@click.option("-o", "--out-dir", default="fog", show_default=True)
+@click.option("--fps", default=20, show_default=True)
+@click.option("--speed", default=0.5, show_default=True)
+def fog_all_cmd(out_dir, fps, speed) -> None:
+    """Record and capture all three stories, then concatenate the reel."""
+    from .fog_stories import STORIES
+    from .tools import fog_capture, fog_record
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    mp4s = []
+    for key in STORIES:
+        trace = fog_record.record(key, out / "traces" / key)
+        mp4s.append(fog_capture.capture(key, trace, out / f"fog_{key}.mp4", fps=fps, speed=speed))
+        click.echo(f"  {key} -> {mp4s[-1]}")
+    reel = fog_capture.concat(mp4s, out / "fog_demo.mp4")
+    click.echo(f"reel={reel}")
 
 
 # ── full pipeline ────────────────────────────────────────────────────────────

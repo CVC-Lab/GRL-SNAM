@@ -36,3 +36,6 @@ data/
 
 # Poetry
 poetry.lock.user
+
+# cvcpkg test prefix (created by the local test workflow)
+.testpfx/

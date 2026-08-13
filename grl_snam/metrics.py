@@ -39,6 +39,7 @@ class NavMetrics:
     goal_wall_align: float = 0.0  # goal-direction . wall-normal (>0 = wall between agent and goal)
     goal_index: int = 0  # which goal (multi-goal drives)
     reached: bool = False  # active goal reached this step
+    heading_rad: float = 0.0  # vehicle heading (bicycle dynamics; 0 in point mode)
 
     def as_dict(self) -> dict:
         return self.__dict__.copy()
