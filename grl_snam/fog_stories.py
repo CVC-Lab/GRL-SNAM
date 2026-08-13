@@ -83,6 +83,12 @@ class Story:
     reference_xy: object | None = None
     # Full knowledge: render lit, with no fog tiers. The baseline variant.
     no_fog: bool = False
+    # How far along the route the local controller aims. Too short and the
+    # carrot jitters every time the route is replanned, and the controller
+    # over-steers chasing it: measured on `traffic`, 14 m gave 3.2 full turns
+    # over a 353 m drive, 22 m gives 0.7 turns over 156 m -- essentially the
+    # straight-line distance -- with zero collisions either way.
+    route_lookahead_m: float = 14.0
     # Route inflation in METRES (cells are not a fixed size across rasters).
     inflate_m: float = 6.0
     # Vehicles that physically exist in truth and move (see Mover).
@@ -324,6 +330,9 @@ STORIES: dict[str, Story] = {
         ),
         sensor=dict(range_m=42.0, n_rays=240),
         sense_every=3,
+        # Moving obstacles mean a route that changes constantly; a short
+        # lookahead makes the controller chase a jittering carrot.
+        route_lookahead_m=22.0,
         start=(-76.0, 0.0),
         waypoints=((76.0, 6.0),),
         unit_ttl_s=1.5,
@@ -411,6 +420,7 @@ def build_scenario(story: Story, model=None, *, seed: int = 0, truth_occ=None, p
         dynamics=story.dynamics,
         unit_ttl_s=story.unit_ttl_s,
         reach_tol=story.reach_tol,
+        route_lookahead_m=story.route_lookahead_m,
         inflate_m=story.inflate_m,
         movers=story.movers,
         moving_goal=story.moving_goal,

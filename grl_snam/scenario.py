@@ -169,6 +169,7 @@ class FogScenario:
         )
         self.route: list | None = None
         self.no_route = False
+        self._last_dyn = None
 
         self.nav = SdfNavigator(
             self._build_field(),
@@ -343,9 +344,17 @@ class FogScenario:
                 **self.sensor,
             )
             # The dynamic layer changes the planning surface without touching
-            # belief.version, so rebuild whenever it holds anything fresh too.
+            # belief.version, so it has to be able to trigger a rebuild too --
+            # but only when it actually CHANGED. Rebuilding whenever it merely
+            # holds something meant a scene with moving vehicles replanned on
+            # every sense tick forever (measured: 177 replans in 739 ticks),
+            # and a route that keeps moving under the local controller is what
+            # made the vehicle loop.
             self._demote_movers_to_dynamic()
-            if self.belief.version != v0 or self.dyn.occupancy(self._t()).any():
+            dyn_now = self.dyn.occupancy(self._t())
+            dyn_changed = self._last_dyn is None or not np.array_equal(dyn_now, self._last_dyn)
+            if self.belief.version != v0 or dyn_changed:
+                self._last_dyn = dyn_now
                 self.nav.field = self._build_field()
                 self._replan_route()
                 rebuilt = True
