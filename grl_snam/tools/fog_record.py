@@ -230,6 +230,8 @@ def record(
         "captions": [list(c) for c in story.captions],
         "sensor_range_m": float(story.sensor.get("range_m", 0.0)),
         "sense_every": int(story.sense_every),
+        "use_planner": bool(story.use_planner),
+        "nav": "route+sdf" if story.use_planner else "sdf-only",
         "cam": story.cam,
         "seed": seed,
         "torch": torch_version,

@@ -52,6 +52,36 @@ class SquadResult:
     tracks: dict = field(default_factory=dict)
 
 
+class FollowGoal:
+    """A goal that is another agent, read live rather than replayed.
+
+    A :class:`~grl_snam.fog_stories.MovingGoal` walks a path fixed before the
+    run starts. A convoy cannot: the vehicle in front is reacting to a world it
+    is discovering, so where it will be is not knowable in advance. This
+    resolves to the leader's CURRENT position every time it is asked.
+
+    Order matters and is deliberate. ``Squad.step`` walks its agents in
+    insertion order, so a follower declared after its leader reads the
+    leader's position *after* the leader has moved this tick (zero lag); one
+    declared before reads last tick's (one-tick lag). Build a convoy front to
+    back and it behaves like a convoy.
+    """
+
+    def __init__(self, leader_key: str):
+        self.leader_key = str(leader_key)
+        self._squad = None
+
+    def bind(self, squad) -> None:
+        self._squad = squad
+
+    def position_at(self, t: float) -> tuple[float, float]:
+        if self._squad is None:
+            raise RuntimeError("FollowGoal was never bound to a Squad")
+        sc = self._squad.scenarios[self.leader_key]
+        x, y = sc.nav.pos_world()
+        return float(x), float(y)
+
+
 class Squad:
     """N independent agents over one shared world."""
 
@@ -70,6 +100,12 @@ class Squad:
         self.story = story
         self.agents = list(agents)
         self.scenarios = {}
+        # A FollowGoal is a goal that IS another agent, so it can only be
+        # resolved once every scenario exists. Bind them to this squad before
+        # the first step.
+        for a in self.agents:
+            if isinstance(a.moving_goal, FollowGoal):
+                a.moving_goal.bind(self)
         for a in self.agents:
             # Each agent gets its own scenario -- and therefore its own
             # BeliefGrid, its own route, its own SDF. Nothing is shared but

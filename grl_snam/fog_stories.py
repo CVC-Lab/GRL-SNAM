@@ -91,6 +91,12 @@ class Story:
     route_lookahead_m: float = 14.0
     # Route inflation in METRES (cells are not a fixed size across rasters).
     inflate_m: float = 6.0
+    #: Which navigator drives. True = an A* route spine over the agent's BELIEF
+    #: feeding a lookahead sub-goal to the SDF controller. False = the SDF
+    #: controller alone, steering on the distance field's gradient with
+    #: wall-follow escape -- reactive, no global plan. Both run the SAME local
+    #: controller; the route spine is the only difference between them.
+    use_planner: bool = True
     # Vehicles that physically exist in truth and move (see Mover).
     movers: tuple = ()
     # A target that moves. When set, it overrides the final waypoint.
@@ -424,6 +430,7 @@ def build_scenario(story: Story, model=None, *, seed: int = 0, truth_occ=None, p
         inflate_m=story.inflate_m,
         movers=story.movers,
         moving_goal=story.moving_goal,
+        use_planner=story.use_planner,
     ).start(story.start)
 
 
