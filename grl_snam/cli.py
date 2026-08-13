@@ -248,6 +248,43 @@ def fog_all_cmd(out_dir, fps, speed) -> None:
     click.echo(f"reel={reel}")
 
 
+# ── the finale ───────────────────────────────────────────────────────────────
+@main.command()
+@click.argument("bundle", type=click.Path(exists=True, file_okay=False))
+@click.option("-o", "--out-dir", default="finale", show_default=True)
+@click.option("--fps", default=24, show_default=True)
+@click.option("--speed", default=6.0, show_default=True, help="world seconds per clip second")
+@click.option("--width", default=1600, show_default=True)
+@click.option("--record/--no-record", default=True, help="re-record the traces first")
+def finale(bundle, out_dir, fps, speed, width, record) -> None:
+    """Eight vehicles across real city geometry: rendezvous, then pursuit.
+
+    BUNDLE is a scene bundle directory (terrain + buildings). There is no
+    default: the geometry lives outside this repository.
+    """
+    from .tools import finale_capture, finale_record
+    from .tools.austin import occupancy
+
+    out = Path(out_dir)
+    (out / "traces").mkdir(parents=True, exist_ok=True)
+    if record:
+        click.echo("recording (this is the slow part) ...")
+        finale_record.record_both(
+            bundle,
+            out / "traces",
+            progress=lambda k, n: click.echo(f"  tick {k}") if k % 400 == 0 else None,
+        )
+    occ, bounds = occupancy(bundle)
+    size = (int(width) // 2 * 2, int(width * 9 / 16) // 2 * 2)
+    for act in ("finale_rendezvous", "finale_pursuit"):
+        mp4 = finale_capture.capture_finale(
+            out / "traces" / act, bundle, out / f"{act}.mp4",
+            fps=fps, speed=speed, size=size, occ=occ, world_bounds=bounds,
+            progress=lambda f, n: click.echo(f"  {act} {f}/{n}") if f % 100 == 0 else None,
+        )  # fmt: skip
+        click.echo(f"  {act} -> {mp4}")
+
+
 # ── full pipeline ────────────────────────────────────────────────────────────
 @main.command()
 @click.argument("bundle", type=click.Path(exists=True, file_okay=False))
