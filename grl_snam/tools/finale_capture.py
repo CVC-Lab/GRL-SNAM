@@ -44,6 +44,7 @@ from grl_snam.cinema import (
 )
 from grl_snam.clock import WorldClock
 from grl_snam.fog_trace import Trace
+from grl_snam.tools import wall_vis
 
 PIP_FRAC = 0.22  # overhead inset, as a fraction of frame width
 MARK_Z = 350.0  # overhead-marker altitude: above every roof in the bundle
@@ -260,7 +261,10 @@ def capture_finale(
     if fog and traces[keys[0]].has_fov():
         tr0 = traces[keys[0]]
         fog_node, fog_live = add_fog_decal(lab, scene, sampler, tr0.bounds, tr0.shape)
-        wall = add_wall_mask(scene, tr0.bounds, tr0.shape)
+        # Prefer the true mesh cast when the post-pass has been run; the
+        # projected raster mask is the fallback.
+        faces = add_wall_faces(scene, wall_vis.load(bundle))
+        wall = None if faces is not None else add_wall_mask(scene, tr0.bounds, tr0.shape)
     _hide_chrome(scene, lab)
 
     main = pycvc_gl.SceneRenderer(scene, size[0], size[1], True)
@@ -378,10 +382,21 @@ def capture_finale(
                     ox, oy = _goal_offset(keys.index(k), len(keys))
                     goals_now[k] = (g[0] + ox, g[1] + oy, float(sampler(g[0] + ox, g[1] + oy)))
             if fog_live is not None:
+                i_tick_wall, _fw = traces[keys[0]]._tick_index(t)
                 tier = fog_tiers(traces, keys, t, traces[keys[0]].shape)
                 np.take(FOG_LUT, tier, axis=0, out=fog_live)
                 fog_node.texture_modified()
-                if wall is not None:
+                if faces is not None:
+                    order, cur, fs = faces["order"], faces["cursor"], faces["fs"]
+                    j = cur[0]
+                    while j < len(order) and fs[order[j]] <= i_tick_wall:
+                        j += 1
+                    if j != cur[0]:
+                        faces["rgb"][order[cur[0] : j]] = WALL_LUT[2, :3]
+                        cur[0] = j
+                        faces["arr"].Modified()
+                        faces["pd"].Modified()
+                elif wall is not None:
                     tex, wbuf, wimg, warr, pad = wall
                     # A ray stops at the first cell it hits, so only the near
                     # face rim of a block is ever marked seen and a big building
@@ -753,6 +768,49 @@ WALL_LUT = np.array(
     ],
     np.uint8,
 )
+
+
+def add_wall_faces(scene, first_seen):
+    """Colour the city PER FACE from a true mesh ray-cast.
+
+    This supersedes the projected 2-D mask, and the difference is the one that
+    was wrong before: the simulator's sensor is a 2-D cast over an occupancy
+    raster, so it knows a building CELL was seen and nothing about height --
+    a 90 m tower lit to its roof because somebody drove past its base. Here a
+    face is lit only if a ray actually reached that face, so the lower storeys
+    a vehicle could see light up and the upper ones do not, and a wall behind
+    another wall stays dark.
+
+    ``first_seen`` is per-face and monotone, so replay is a comparison: a face
+    is lit iff ``0 <= first_seen <= tick``.
+    """
+    import pycvc_gl
+    from vtkmodules.util.numpy_support import numpy_to_vtk
+
+    act = pycvc_gl.prop(scene, "buildings")
+    if act is None:
+        return None
+    pd = act.GetMapper().GetInput()
+    n = int(pd.GetNumberOfPolys())
+    if first_seen is None or len(first_seen) != n:
+        return None
+    rgb = np.empty((n, 3), np.uint8)
+    rgb[:] = WALL_LUT[0, :3]
+    arr = numpy_to_vtk(rgb, deep=0)
+    arr.SetName("wall_seen")
+    pd.GetCellData().SetScalars(arr)
+    m = act.GetMapper()
+    m.SetScalarModeToUseCellData()
+    m.SetColorModeToDirectScalars()
+    m.ScalarVisibilityOn()
+    # first_seen is monotone, so replay only ever ADDS faces. Walking a
+    # presorted order and advancing a cursor touches only the faces that light
+    # up this frame, instead of recolouring all 978,242 every time (measured:
+    # 385 -> 275 ms per frame-pair).
+    fs = np.asarray(first_seen)
+    order = np.argsort(np.where(fs < 0, np.iinfo(np.int32).max, fs), kind="stable")
+    n_lit = int((fs >= 0).sum())
+    return {"rgb": rgb, "arr": arr, "pd": pd, "fs": fs, "order": order[:n_lit], "cursor": [0]}
 
 
 def add_wall_mask(scene, bounds, shape, *, pad: int = 1):
