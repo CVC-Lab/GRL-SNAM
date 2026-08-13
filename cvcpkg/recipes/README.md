@@ -28,8 +28,20 @@ recipe set — which is reserved for the shared dependency ecosystem. See the
 cvcpkg roadmap's "Recipe ownership" note.
 
 ## Build / validate locally
+
+`--recipes-dir cvcpkg/recipes` alone does NOT validate: the runtime closure
+names `pycvc-gl-cp31X`, which libcvc owns, and `python311` / `torch-cp31X` /
+`poetry-core-cp31X`, which libcvc-deps owns. With only this repo's recipes
+resolvable the check fails on `unknown dependency 'pycvc-gl-cp311'`. Point it
+at all three sets:
+
 ```bash
-cvcpkg validate --recipes-dir cvcpkg/recipes cvcpkg/recipes/grl-snam-cp311
+cvcpkg validate \
+  --recipes-dir cvcpkg/recipes \
+  --recipes-dir /path/to/libcvc/cvcpkg/recipes \
+  --recipes-dir /path/to/libcvc-deps/recipes \
+  cvcpkg/recipes/grl-snam-cp311
+
 cvcpkg pack grl-snam-cp311 --recipes-dir cvcpkg/recipes --local --output-dir dist
 ```
 
@@ -41,7 +53,14 @@ for col in grl-snam-cp311 grl-snam-cp312 grl-snam-cp313; do
 done
 ```
 
-Follow-ups (see each recipe's `notes`): publish the `v0.1.0` GitHub release
-asset (or mirror the sdist) so `source.url` resolves; `matplotlib`/`imageio`
-wheel recipes and a `poetry-core` backend recipe to close the full research
-core's closure.
+The `v0.1.0` release asset is published and `source.url` resolves; the
+matplotlib/imageio/poetry-core columns exist, so the closure is complete.
+
+**Re-publishing after a code change.** The recipes pin a sha256 of the release
+asset, so a new revision means rebuilding the sdist, replacing the asset on the
+`v0.1.0` release, updating `sha256` in all three columns and bumping
+`cvc_revision`. Revision 3 is the first whose sdist declares
+`[project.scripts]`: 0.1.0+cvc.1 shipped the importable package with no
+`grl-snam` console script at all, so `cvcpkg install` gave you the library and
+no command. `build.sh` now asserts the script exists, so that cannot ship
+again unnoticed.
