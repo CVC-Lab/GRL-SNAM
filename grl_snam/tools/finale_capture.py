@@ -256,11 +256,11 @@ def capture_finale(
     sampler = build_world(lab, bundle_dir)
     poses = add_vehicles(lab, spec, sampler)
     scene = lab._scene
-    fog_node = fog_live = None
+    fog_node = fog_live = wall = None
     if fog and traces[keys[0]].has_fov():
-        fog_node, fog_live = add_fog_decal(
-            lab, scene, sampler, traces[keys[0]].bounds, traces[keys[0]].shape
-        )
+        tr0 = traces[keys[0]]
+        fog_node, fog_live = add_fog_decal(lab, scene, sampler, tr0.bounds, tr0.shape)
+        wall = add_wall_mask(scene, tr0.bounds, tr0.shape)
     _hide_chrome(scene, lab)
 
     main = pycvc_gl.SceneRenderer(scene, size[0], size[1], True)
@@ -317,6 +317,16 @@ def capture_finale(
     n_frames = max(1, int(any_tr.duration_s / max(speed, 1e-9) * fps))
     dt_frame = 1.0 / fps
 
+    # Pre-drape every driven path once. Route spines are draped per frame from
+    # the current polyline (they are 2-5 points, so it is cheap).
+    track_pts = {}
+    for i, k in enumerate(keys):
+        r = traces[k].rows
+        track_pts[k] = _drape(sampler, np.stack([r["x"], r["y"]], 1), 3.0 + i * 0.45)
+    node_track = add_line_node(scene, lab._app, "tracks", 4.0)
+    node_spine = add_line_node(scene, lab._app, "spines", 3.0)
+    agent_col = {a["key"]: tuple(a["color"]) for a in spec["agents"]}
+
     seats: dict[str, tuple[float, float, float]] = {}
     u0, u1 = (float(u_range[0]), float(u_range[1]))
     az_prev = [shot_angles(u0, low_deg=elevation_deg)[1]]
@@ -368,13 +378,22 @@ def capture_finale(
                     ox, oy = _goal_offset(keys.index(k), len(keys))
                     goals_now[k] = (g[0] + ox, g[1] + oy, float(sampler(g[0] + ox, g[1] + oy)))
             if fog_live is not None:
-                np.take(
-                    FOG_LUT,
-                    fog_tiers(traces, keys, t, traces[keys[0]].shape),
-                    axis=0,
-                    out=fog_live,
-                )
+                tier = fog_tiers(traces, keys, t, traces[keys[0]].shape)
+                np.take(FOG_LUT, tier, axis=0, out=fog_live)
                 fog_node.texture_modified()
+                if wall is not None:
+                    tex, wbuf, wimg, warr, pad = wall
+                    # A ray stops at the first cell it hits, so only the near
+                    # face rim of a block is ever marked seen and a big building
+                    # would stay dark with a lit edge. Widen by one cell for the
+                    # WALLS only; the ground decal keeps the exact measured set.
+                    wide = tier
+                    for sh, ax in ((1, 0), (-1, 0), (1, 1), (-1, 1)):
+                        wide = np.maximum(wide, np.roll(tier, sh, axis=ax))
+                    np.take(WALL_LUT, wide, axis=0, out=wbuf[pad:-pad, pad:-pad])
+                    warr.Modified()
+                    wimg.Modified()
+                    tex.Modified()
 
             hud["_title"].SetInput(
                 f"AUSTIN · {len(keys)} vehicles · nav: {nav_label} · t = {clock.t():6.1f} s"
@@ -389,6 +408,37 @@ def capture_finale(
                 scene.getGraphics(f"goal_{k}").setVisible(True)
                 if frame_goals:
                     pts.append(gp)
+
+            # Driven path so far, per-agent hue. Strided: 4 ticks is ~2.4 m at
+            # 10 m/s, far below a pixel at this camera distance.
+            i_tick, _f = traces[keys[0]]._tick_index(t)
+            segs, cols = [], []
+            for k in keys:
+                pts = track_pts[k][: max(2, i_tick + 1) : 4]
+                if len(pts) >= 2:
+                    segs.append(pts)
+                    cols.append(agent_col[k])
+            set_lines(node_track, lab._app, segs, cols)
+
+            # The BELIEF-space route spine. Inset only, deliberately: the
+            # recorded route is string-pulled in belief space, so early in a run
+            # it is a single straight segment over a kilometre long -- honest
+            # (the planner has not looked yet and believes it is clear) and
+            # correct in the 2-D map, but in the 3-D shot it is a line through
+            # the skyline that reads as a rendering bug.
+            sp_segs, sp_cols = [], []
+            for i, k in enumerate(keys):
+                r = traces[k].route_at(t) if hasattr(traces[k], "route_at") else None
+                if r is None:
+                    ki = traces[k].snapshot_index_at(t)
+                    r = traces[k].routes[ki] if 0 <= ki < len(traces[k].routes) else None
+                if r is None or len(r) < 2:
+                    continue
+                sp_segs.append(_drape(sampler, _resample(r), 6.0 + i * 0.45))
+                c = agent_col[k]
+                sp_cols.append(tuple(0.35 + 0.25 * v for v in c))  # dim
+            set_lines(node_spine, lab._app, sp_segs, sp_cols)
+            node_spine.setVisible(False)  # main shot: off
 
             _show(scene, keys, "mark_", False)
             u = u0 + (u1 - u0) * (f / max(n_frames - 1, 1))
@@ -518,6 +568,7 @@ def capture_finale(
                 actor.SetVisibility(False)
             _show(scene, keys, "mark_", True)
             _show(scene, keys, "beacon_", False)
+            node_spine.setVisible(True)
             # ORTHOGRAPHIC for the inset. Under perspective, the heading
             # arrows -- which are held above the skyline so no roof can hide
             # them -- are nearer the lens than the ground, so each one projects
@@ -536,6 +587,7 @@ def capture_finale(
             for actor in hud.values():
                 actor.SetVisibility(True)
             _show(scene, keys, "beacon_", True)
+            node_spine.setVisible(False)
 
             if progress and f % 25 == 0:
                 progress(f, n_frames)
@@ -688,6 +740,164 @@ def fog_tiers(traces, keys, t, shape):
         np.logical_or(seen, s, out=seen)
         np.logical_or(vis, v, out=vis)
     return (seen.astype(np.uint8) + vis.astype(np.uint8)).clip(0, 2)
+
+
+#: Building surface, by tier. Not an overlay -- a brightness the wall is drawn
+#: AT, so an unseen block recedes into the dark instead of standing lit above a
+#: black carpet, which is what a ground-only fog decal leaves behind.
+WALL_LUT = np.array(
+    [
+        [34, 38, 50, 255],
+        [122, 128, 142, 255],
+        [252, 248, 238, 255],
+    ],
+    np.uint8,
+)
+
+
+def add_wall_mask(scene, bounds, shape, *, pad: int = 1):
+    """Project the recorded coverage onto the city mesh as a texture.
+
+    A GLSL shader is reachable here (vtkOpenGLShaderProperty accepts fragment
+    replacements) and was tried; it buys nothing this does not, so this takes
+    the plain route: world-XY texture coordinates generated once over the 978k
+    -face mesh, and one small RGBA texture re-written per frame.
+
+    The texture domain is pushed out by half a cell plus a pad ring, and that
+    is not arbitrary. The belief grid is a grid of POINTS -- cell ``c`` is
+    centred at ``mn + c*cw`` -- while texels are AREAS, so sampling without the
+    half-cell shift lands the whole mask one cell off. The pad ring stays
+    "never seen" so the city outside the simulated box clamps to unseen rather
+    than smearing the border row outward across it.
+
+    Returns ``(texture, live_rgba_view)`` or ``None`` if there is no city mesh.
+    """
+    import pycvc_gl
+    from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
+    from vtkmodules.vtkCommonDataModel import vtkImageData
+    from vtkmodules.vtkRenderingCore import vtkTexture
+
+    act = pycvc_gl.prop(scene, "buildings")
+    if act is None:
+        return None
+    pd = act.GetMapper().GetInput()
+    pts = vtk_to_numpy(pd.GetPoints().GetData())
+
+    ny, nx = int(shape[0]), int(shape[1])
+    mnx, mny, mxx, mxy = (float(b) for b in bounds)
+    cw = (mxx - mnx) / (nx - 1)
+    tw, th = nx + 2 * pad, ny + 2 * pad
+    u0, v0 = mnx - cw * (0.5 + pad), mny - cw * (0.5 + pad)
+    tc = np.empty((pts.shape[0], 2), np.float32)
+    tc[:, 0] = (pts[:, 0] - u0) / (cw * tw)
+    tc[:, 1] = (pts[:, 1] - v0) / (cw * th)
+    np.clip(tc, 0.0, 1.0, out=tc)  # city outside the sim box clamps to unseen
+    pd.GetPointData().SetTCoords(numpy_to_vtk(tc, deep=1))
+    pd.Modified()
+
+    buf = np.zeros((th, tw, 4), np.uint8)
+    buf[:] = WALL_LUT[0]
+    arr = numpy_to_vtk(buf.reshape(-1, 4), deep=0)
+    arr.SetName("wall_mask")
+    img = vtkImageData()
+    img.SetDimensions(tw, th, 1)
+    img.GetPointData().SetScalars(arr)
+    tex = vtkTexture()
+    tex.SetInputData(img)
+    tex.InterpolateOn()
+    tex.EdgeClampOn()
+    act.GetProperty().SetTexture("wall_mask", tex)
+    act.GetProperty().SetColor(1.0, 1.0, 1.0)  # let the texture carry the value
+    return tex, buf, img, arr, pad
+
+
+def _drape(sampler, xy, lift):
+    """Put a 2-D polyline on the terrain. Scalar sampler, so this is a loop --
+    it runs at SETUP, never per frame."""
+    return np.array(
+        [(float(x), float(y), float(sampler(float(x), float(y))) + lift) for x, y in xy],
+        np.float64,
+    )
+
+
+def _resample(xy, step_m=14.0):
+    """Tessellate each straight segment so a draped line follows the ground.
+
+    NOT re-derivation: the recorded polyline's own vertices are left exactly
+    where they are, and the added points lie ON its segments. Without this a
+    two-point route drawn over a heightfield tunnels straight through hills.
+    """
+    xy = np.asarray(xy, np.float64).reshape(-1, 2)
+    if len(xy) < 2:
+        return xy
+    out = [xy[0]]
+    for a, b in zip(xy[:-1], xy[1:]):
+        d = float(np.hypot(*(b - a)))
+        k = max(1, int(d / step_m))
+        for i in range(1, k + 1):
+            out.append(a + (b - a) * (i / k))
+    return np.array(out)
+
+
+def add_line_node(scene, app, name, width):
+    """A long-lived node whose geometry is replaced in place each frame.
+
+    Deliberately NOT Lab.add_path: that goes through SceneGraph::addGraphics,
+    which removes and rebuilds the node every call (7-14 ms each, and it leaks
+    a boost::signals2 connection into m_boundsConns on every re-add). Sixteen
+    of those a frame would cost more than the render.
+    """
+    import pycvc
+
+    g = pycvc.geometry(app)
+    scene.addGraphics(name, g)
+    node = scene.getGraphics(name)
+    node.setLineWidth(float(width))
+    for f in ("setShowBBox", "setShowExtentLabels", "setShowLabel"):
+        getattr(node, f)(False)
+    return node
+
+
+def set_lines(node, app, segments, colors):
+    """Push merged polylines (list of (N,3) arrays) into an existing node."""
+    import pycvc
+
+    if not segments:
+        node.setVisible(False)
+        return
+    g = pycvc.geometry(app)
+    verts, lines, cols, base = [], [], [], 0
+    for pts, col in zip(segments, colors):
+        n = len(pts)
+        if n < 2:
+            continue
+        verts.append(pts)
+        seg = np.stack([np.arange(n - 1), np.arange(1, n)], 1) + base
+        lines.append(seg)
+        cols.append(np.tile(np.asarray(col, np.float64), (n, 1)))
+        base += n
+    if not verts:
+        node.setVisible(False)
+        return
+    V = np.concatenate(verts)
+    C = np.concatenate(cols)
+    L = np.concatenate(lines)
+    g.add_vertices(V.ravel().tolist())
+    g.add_lines(L.ravel().astype(int).tolist())
+    g.set_colors(C.ravel().tolist())
+    node.setGeometry(g)
+    # setGeometry resets the render mode from the geometry's own auto-mode, and
+    # a lines-only cvc::geometry still reports SURFACE_TRI -- so without this it
+    # draws nothing at all.
+    node.setRenderMode(pycvc_gl_lines_mode())
+    node.setUseSingleColor(False)
+    node.setVisible(True)
+
+
+def pycvc_gl_lines_mode():
+    import pycvc_gl
+
+    return pycvc_gl.GeometryRenderMode_LINES
 
 
 def _open_raw_encoder(out_mp4: Path, *, fps: int, size):
