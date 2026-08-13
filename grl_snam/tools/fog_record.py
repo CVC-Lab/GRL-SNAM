@@ -66,6 +66,9 @@ def record(
     snap_occ: list[np.ndarray] = []
     snap_dyn: list[np.ndarray] = []
     routes: list[np.ndarray] = []
+    fov_ticks: list[int] = []
+    fov_vis: list[np.ndarray] = []
+    fov_seen: list[np.ndarray] = []
 
     def snapshot(tick: int) -> None:
         occ = sc.belief.to_occupancy(unknown=story.unknown)
@@ -74,6 +77,15 @@ def record(
         snap_occ.append(np.packbits(occ.ravel()))
         snap_dyn.append(np.packbits(dyn.ravel()))
         routes.append(np.asarray(sc.route or [], np.float32).reshape(-1, 2))
+
+    def fov_snapshot(tick: int) -> None:
+        # Recorded on every SENSE, not only when belief changes: the field of
+        # view sweeps with the vehicle even on ticks where it learns nothing,
+        # and a fog overlay that only moved on discoveries would look broken.
+        # 1152 bytes per 96x96 snapshot before compression -- cheap.
+        fov_ticks.append(tick)
+        fov_vis.append(np.packbits(sc.belief.last_visible.ravel()))
+        fov_seen.append(np.packbits(sc.belief.ever_seen.ravel()))
 
     snapshot(0)  # the prior map, before a single ray is cast
 
@@ -106,6 +118,8 @@ def record(
 
         if rec.rebuilt:
             snapshot(clock.tick())
+        if rows["sensed"][-1]:
+            fov_snapshot(clock.tick())
         if progress and clock.tick() % 50 == 0:
             progress(clock.tick(), limit)
         if sc.done:
@@ -143,6 +157,13 @@ def record(
     npz["snap_occ"] = np.stack(snap_occ)
     npz["snap_dyn"] = np.stack(snap_dyn)
     offsets = np.cumsum([0] + [len(r) for r in routes])
+    npz["fov_tick"] = np.asarray(fov_ticks, np.int64)
+    npz["fov_vis"] = (
+        np.stack(fov_vis) if fov_vis else np.zeros((0, (story.n * story.n + 7) // 8), np.uint8)
+    )
+    npz["fov_seen"] = (
+        np.stack(fov_seen) if fov_seen else np.zeros((0, (story.n * story.n + 7) // 8), np.uint8)
+    )
     npz["route_offsets"] = offsets.astype(np.int64)
     npz["route_points"] = (
         np.concatenate(routes) if any(len(r) for r in routes) else np.empty((0, 2), np.float32)
@@ -171,6 +192,8 @@ def record(
         "truth_rects": [list(r) for r in story.truth_rects],
         "prior_rects": [list(r) for r in story.prior_rects],
         "captions": [list(c) for c in story.captions],
+        "sensor_range_m": float(story.sensor.get("range_m", 0.0)),
+        "sense_every": int(story.sense_every),
         "cam": story.cam,
         "seed": seed,
         "torch": torch_version,
