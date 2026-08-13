@@ -101,8 +101,16 @@ class FogScenario:
         reach_tol: float = 0.8,
         use_planner: bool = True,
         route_lookahead_m: float = 14.0,
+        movers=(),
+        moving_goal=None,
     ):
+        # `truth` is the STATIC world. Movers are stamped on top of it each
+        # tick into `truth_now`, which is what the sensor and the collision
+        # check both use -- a moving vehicle has to be seen to be known.
         self.truth = truth_occ.astype(bool).copy()
+        self.movers = tuple(movers or ())
+        self.moving_goal = moving_goal
+        self.truth_now = self.truth.copy()
         self.bounds = tuple(float(b) for b in bounds)
         self.scale = float(scale)
         self.meta = meta
@@ -200,9 +208,51 @@ class FogScenario:
                 raise ValueError(f"unknown event kind {ev.kind!r}")
         return touched_truth
 
+    def _stamp_movers(self) -> None:
+        """Rebuild ``truth_now`` for this tick: the static world plus every
+        mover's current footprint."""
+        self.truth_now = self.truth.copy()
+        if not self.movers:
+            return
+        t = self._t()
+        for m in self.movers:
+            x, y = m.position_at(t)
+            r, c = self.belief.world_to_cell(x, y)
+            cw = (self.bounds[2] - self.bounds[0]) / (self.truth.shape[1] - 1)
+            rad = max(1, int(round(m.half_m / cw)))
+            r0, r1 = max(0, r - rad), min(self.truth.shape[0], r + rad + 1)
+            c0, c1 = max(0, c - rad), min(self.truth.shape[1], c + rad + 1)
+            self.truth_now[r0:r1, c0:c1] = True
+
+    def _demote_movers_to_dynamic(self) -> None:
+        """A mover the sensor just saw belongs in the DECAYING layer, not in
+        the static map.
+
+        Without this a moving vehicle smears a permanent wall along its path:
+        every sweep bakes its current cells into log-odds and nothing ever
+        removes them. Marking the cells dynamic (they expire) and clearing the
+        static belief there is what makes a moving obstacle behave like one.
+        """
+        if not self.movers:
+            return
+        t = self._t()
+        cw = (self.bounds[2] - self.bounds[0]) / (self.truth.shape[1] - 1)
+        for m in self.movers:
+            x, y = m.position_at(t)
+            r, c = self.belief.world_to_cell(x, y)
+            if not self.belief.in_bounds(r, c):
+                continue
+            rad = max(1, int(round(m.half_m / cw)))
+            r0, r1 = max(0, r - rad), min(self.truth.shape[0], r + rad + 1)
+            c0, c1 = max(0, c - rad), min(self.truth.shape[1], c + rad + 1)
+            if not self.belief.last_visible[r0:r1, c0:c1].any():
+                continue  # not seen this sweep: the agent still does not know
+            self.belief.logodds[r0:r1, c0:c1] = np.minimum(self.belief.logodds[r0:r1, c0:c1], 0.0)
+            self.dyn.mark(r, c, t, radius_cells=rad)
+
     def _truth_hit(self, pos_world) -> bool:
         r, c = self.belief.world_to_cell(pos_world[0], pos_world[1])
-        return bool(self.belief.in_bounds(r, c) and self.truth[r, c])
+        return bool(self.belief.in_bounds(r, c) and self.truth_now[r, c])
 
     def _replan_route(self, *, force: bool = False):
         """Re-plan the belief-space route from HERE to the active waypoint.
@@ -269,22 +319,33 @@ class FogScenario:
 
     def step(self) -> StepRecord:
         self._apply_due_events()
+        self._stamp_movers()
 
         rebuilt = False
         if self.step_i % self.sense_every == 0:
             v0 = self.belief.version
             self.belief.sense(
-                self.truth,
+                self.truth_now,
                 self.nav.pos_world(),
                 heading_rad=float(self.nav.th[0]),
                 **self.sensor,
             )
             # The dynamic layer changes the planning surface without touching
             # belief.version, so rebuild whenever it holds anything fresh too.
+            self._demote_movers_to_dynamic()
             if self.belief.version != v0 or self.dyn.occupancy(self._t()).any():
                 self.nav.field = self._build_field()
                 self._replan_route()
                 rebuilt = True
+
+        if self.moving_goal is not None:
+            # The goal moves, so the waypoint the planner routes to has to move
+            # with it. track_goal (not set_goal) further down keeps the local
+            # controller's escape state across the retarget.
+            gx, gy = self.moving_goal.position_at(self._t())
+            self.waypoints[self.wp_i] = np.asarray((gx, gy), np.float32)
+            if self.step_i % self.sense_every == 0:
+                self._replan_route(force=True)
 
         if self.use_planner and self.route:
             # The route is the moving target; track_goal (not set_goal) so the

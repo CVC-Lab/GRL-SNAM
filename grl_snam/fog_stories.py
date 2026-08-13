@@ -78,6 +78,11 @@ class Story:
     captions: tuple[tuple[float, float, str], ...] = ()
     cam: str = "map"
 
+    # Vehicles that physically exist in truth and move (see Mover).
+    movers: tuple = ()
+    # A target that moves. When set, it overrides the final waypoint.
+    moving_goal: object | None = None
+
     def cell_to_world(self, r: float, c: float) -> tuple[float, float]:
         mnx, mny, mxx, mxy = self.bounds
         x = mnx + c / (self.n - 1) * (mxx - mnx)
@@ -120,6 +125,78 @@ def _grid(n: int, rects: Sequence[Rect]) -> np.ndarray:
     return g
 
 
+@dataclass(frozen=True)
+class Mover:
+    """A vehicle that physically exists and moves — not a scripted mark.
+
+    A `unit_at` Event stamps the *belief* layer directly, which is fine for
+    "something was reported here" but cheats: the agent is told. A Mover is
+    part of TRUTH. It occludes, the sensor has to actually see it, and until
+    it does the agent routes straight at it. That is the honest version, and
+    it is what makes a second vehicle interesting rather than decorative.
+
+    ``path`` is a world-coordinate polyline walked at ``speed_mps``; with
+    ``loop`` the mover ping-pongs along it forever.
+    """
+
+    key: str
+    path: tuple[tuple[float, float], ...]
+    speed_mps: float = 6.0
+    half_m: float = 4.0  # half-extent of the square footprint
+    start_s: float = 0.0
+    loop: bool = True
+
+    def position_at(self, t: float) -> tuple[float, float]:
+        """Where it is at world time ``t`` — constant speed along the path."""
+        pts = np.asarray(self.path, np.float64)
+        if len(pts) == 1:
+            return float(pts[0][0]), float(pts[0][1])
+        seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        total = float(seg.sum())
+        if total <= 0.0:
+            return float(pts[0][0]), float(pts[0][1])
+        d = max(0.0, t - self.start_s) * self.speed_mps
+        if self.loop:
+            # ping-pong: out and back, so a mover stays in frame
+            d = d % (2.0 * total)
+            if d > total:
+                d = 2.0 * total - d
+        else:
+            d = min(d, total)
+        for i, s in enumerate(seg):
+            if d <= s or i == len(seg) - 1:
+                f = 0.0 if s <= 0 else min(d / s, 1.0)
+                a, b = pts[i], pts[i + 1]
+                q = a + f * (b - a)
+                return float(q[0]), float(q[1])
+            d -= s
+        return float(pts[-1][0]), float(pts[-1][1])
+
+
+@dataclass(frozen=True)
+class MovingGoal:
+    """A target that does not wait to be reached.
+
+    Chasing a moving goal is a different control problem from reaching a fixed
+    one — the navigator's ``track_goal`` retargets in place, so the route spine
+    is replanned toward a point that has moved rather than restarted.
+    """
+
+    path: tuple[tuple[float, float], ...]
+    speed_mps: float = 4.0
+    start_s: float = 0.0
+    loop: bool = True
+
+    def position_at(self, t: float) -> tuple[float, float]:
+        return Mover(
+            key="goal",
+            path=self.path,
+            speed_mps=self.speed_mps,
+            start_s=self.start_s,
+            loop=self.loop,
+        ).position_at(t)
+
+
 def unit_track(
     *, step0: int, every: int, count: int, r0: int, c0: int, r1: int, c1: int
 ) -> tuple[Event, ...]:
@@ -134,6 +211,35 @@ def unit_track(
         c = int(round(c0 + f * (c1 - c0)))
         out.append(Event(step=step0 + i * every, kind="unit_at", args=(r, c)))
     return tuple(out)
+
+
+def city_blocks(n: int, *, rows: int = 3, cols: int = 3, gap: int = 8, margin: int = 12):
+    """A grid of rectangular blocks with streets between them.
+
+    The escalation from "one wall across the route" to a scene with topology:
+    there are several ways through, so the route choice becomes a decision
+    rather than a detour, and a stale map costs a wrong TURN rather than a
+    wrong metre.
+    """
+    out = []
+    span = n - 2 * margin
+    pitch = span // max(rows, 1)
+    block = max(2, pitch - gap)
+    for i in range(rows):
+        for j in range(cols):
+            r0 = margin + i * pitch
+            c0 = margin + j * (span // max(cols, 1))
+            out.append((r0, min(r0 + block, n), c0, min(c0 + block, n)))
+    return tuple(out)
+
+
+def corridor(n: int, *, row: int, gap_col: int, gap_width: int = 6, thickness: int = 3):
+    """A wall across the map with a single doorway — the cheapest way to make
+    topology matter: miss the gap and there is no way through at all."""
+    return (
+        (row, row + thickness, 0, max(0, gap_col - gap_width // 2)),
+        (row, row + thickness, min(n, gap_col + gap_width // 2), n),
+    )
 
 
 STORIES: dict[str, Story] = {
@@ -165,6 +271,77 @@ STORIES: dict[str, Story] = {
             (3.0, 6.5, "A blocker appears - the map does not know yet."),
             (6.5, 10.0, "Discovered on approach. Replan, and turn within the radius."),
             (10.0, 99.0, "Scored against TRUTH: zero steps inside the wall."),
+        ),
+    ),
+    "city": Story(
+        key="city",
+        title="City blocks",
+        subtitle="topology, not just a detour",
+        truth_rects=city_blocks(96, rows=3, cols=3, gap=9, margin=14),
+        # The map knows the city -- but one block has been demolished and
+        # another has appeared, so the shortest believed route is wrong twice.
+        prior_rects=city_blocks(96, rows=3, cols=3, gap=9, margin=14)[:-1] + ((30, 42, 62, 74),),
+        sensor=dict(range_m=38.0, n_rays=240),
+        sense_every=3,
+        start=(-78.0, -60.0),
+        waypoints=((78.0, 62.0),),
+        max_steps=3000,
+        captions=(
+            (0.0, 4.0, "A city block grid - several ways through."),
+            (4.0, 9.0, "The map is out of date in two places."),
+            (9.0, 16.0, "Each discovery changes the TURN, not just the lane."),
+            (16.0, 999.0, "Re-routing through streets it can actually see."),
+        ),
+    ),
+    "traffic": Story(
+        key="traffic",
+        title="Moving vehicles",
+        subtitle="obstacles that have to be seen to be known",
+        truth_rects=city_blocks(96, rows=2, cols=3, gap=10, margin=18),
+        prior_rects=city_blocks(96, rows=2, cols=3, gap=10, margin=18),
+        movers=(
+            Mover(key="v1", path=((6.0, -78.0), (6.0, 78.0)), speed_mps=9.0, half_m=5.0),
+            Mover(
+                key="v2",
+                path=((-30.0, 66.0), (62.0, -34.0)),
+                speed_mps=7.0,
+                half_m=5.0,
+                start_s=2.0,
+            ),
+        ),
+        sensor=dict(range_m=42.0, n_rays=240),
+        sense_every=3,
+        start=(-76.0, 0.0),
+        waypoints=((76.0, 6.0),),
+        unit_ttl_s=1.5,
+        max_steps=3000,
+        captions=(
+            (0.0, 4.0, "The map is correct. The traffic is not on it."),
+            (4.0, 10.0, "Two vehicles, discovered only when they are SEEN."),
+            (10.0, 18.0, "Tracked in a layer that expires - no permanent smear."),
+            (18.0, 999.0, "Zero contact, against a world that keeps moving."),
+        ),
+    ),
+    "pursuit": Story(
+        key="pursuit",
+        title="Moving target",
+        subtitle="the goal does not wait",
+        truth_rects=city_blocks(96, rows=2, cols=2, gap=12, margin=22),
+        prior_rects=city_blocks(96, rows=2, cols=2, gap=12, margin=22),
+        moving_goal=MovingGoal(
+            path=((70.0, 0.0), (70.0, 66.0), (0.0, 76.0), (-56.0, 40.0)),
+            speed_mps=5.5,
+            loop=False,
+        ),
+        sensor=dict(range_m=40.0, n_rays=240),
+        sense_every=3,
+        start=(-76.0, -30.0),
+        waypoints=((70.0, 0.0),),
+        max_steps=3000,
+        captions=(
+            (0.0, 4.0, "The target is moving."),
+            (4.0, 11.0, "Retargeted in place - the route follows, it does not restart."),
+            (11.0, 999.0, "Closing on a goal that keeps running."),
         ),
     ),
     "unit": Story(
@@ -217,6 +394,8 @@ def build_scenario(story: Story, model=None, *, seed: int = 0):
         dynamics=story.dynamics,
         unit_ttl_s=story.unit_ttl_s,
         reach_tol=story.reach_tol,
+        movers=story.movers,
+        moving_goal=story.moving_goal,
     ).start(story.start)
 
 

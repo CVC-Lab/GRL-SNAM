@@ -206,12 +206,13 @@ def build(lab, story, trace) -> dict:
     v, t = quad(-PLATE_HALF_X, -PLATE_HALF_Y, PLATE_HALF_X, PLATE_HALF_Y, 0.0)
     lab.add_mesh("ground", v, t, GROUND)
 
-    # Truth obstacles that exist from the start (none in these three stories,
-    # but a story with a pre-existing wall renders it for free).
-    for i, rect in enumerate(story.truth_rects):
-        x0, y0, x1, y1 = story.rect_world(rect)
-        v, t = quad(x0, y0, x1, y1, 0.6)
-        lab.add_mesh(f"truth{i}", v, t, WALL)
+    # Ground truth is NOT drawn directly. It reaches the frame only through
+    # what the agent believes (red), what it believes wrongly (amber), and
+    # what it has not found (outline) -- see apply(). Drawing truth_rects here
+    # painted every real building as known the moment the scene loaded, which
+    # silently revealed the answer and made the fog decorative. The three
+    # original stories had no truth_rects, so the bug stayed invisible until a
+    # scene with real geometry was added.
 
     sx, sy = story.start
     gx, gy = story.waypoints[-1]
@@ -265,7 +266,8 @@ def apply(lab, story, trace, t, state):
 
     # Belief is a step function: re-mesh only when the sensor changed its mind.
     snap = trace.snapshot_index_at(t)
-    if snap != state["snap"]:
+    fov_k = trace.fov_index_at(t)
+    if snap != state["snap"] or fov_k != state["fov_snap"]:
         state["snap"] = snap
         occ, dyn, _ = trace.belief_at(t)
 
@@ -296,7 +298,6 @@ def apply(lab, story, trace, t, state):
     # ── fog of war: three tiers + the undiscovered silhouette ────────────────
     # Re-meshed only when the sensor sweep actually changed (every sense tick,
     # not every frame): at 0.5x playback that is roughly one frame in six.
-    fov_k = trace.fov_index_at(t)
     if fov_k != state["fov_snap"]:
         state["fov_snap"] = fov_k
         fov = trace.fov_at(t)

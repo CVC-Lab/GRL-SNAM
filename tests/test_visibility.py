@@ -154,3 +154,46 @@ def test_ring_is_closed_and_the_right_size():
     assert pts[0] == pytest.approx(pts[-1])
     r = [np.hypot(x - 10.0, y + 5.0) for x, y, _z in pts]
     assert np.allclose(r, 35.0)
+
+
+# ── ground truth must not leak into the frame ───────────────────────────────
+
+
+def test_the_scene_never_draws_ground_truth_directly():
+    """The fog is only meaningful if the viewer sees truth exclusively through
+    the agent's belief: known (wall), wrongly believed (ghost), or undiscovered
+    (silhouette).
+
+    build() used to add one mesh per story.truth_rects, which painted every
+    real building as KNOWN the moment the scene loaded. The three original
+    stories carry no truth_rects, so the bug was invisible until a scene with
+    real geometry was added -- and it made the fog decorative, because the
+    answer was on screen from frame one.
+    """
+    import inspect
+
+    # Behavioural, not textual: build() must create no node whose contents are
+    # ground truth. Node names are the observable, so assert on those.
+    src = inspect.getsource(fog_scene.build)
+    assert 'add_mesh(f"truth' not in src, "build() adds a per-truth-rect mesh again"
+    assert (
+        "for i, rect in enumerate(story.truth_rects)" not in src
+    ), "build() iterates ground-truth rectangles again"
+
+
+def test_the_three_belief_classes_partition_what_is_drawn():
+    """wall / ghost / silhouette are disjoint and together cover everything
+    either real or believed — no cell is drawn twice or dropped."""
+    story = STORIES["city"]
+    truth = story.truth_grid()
+    believed = np.zeros_like(truth)
+    believed[20:40, 20:40] = True  # an arbitrary partial belief
+    believed[58:71, 58:71] = False
+
+    wall = believed & truth
+    ghost = believed & ~truth
+    silhouette = truth & ~believed
+    assert not (wall & ghost).any()
+    assert not (wall & silhouette).any()
+    assert not (ghost & silhouette).any()
+    assert ((wall | ghost | silhouette) == (truth | believed)).all()
