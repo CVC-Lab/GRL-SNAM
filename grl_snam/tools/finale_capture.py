@@ -91,8 +91,25 @@ def add_vehicles(lab, spec, sampler, *, length=14.0, width=6.5, height=4.5):
         # would read as a UFO.
         av, at = _arrow(80.0)
         lab.add_mesh(f"mark_{k}", av, at, col)
+        # Where this agent is trying to GET to. In the pursuit act that point
+        # moves, and a chase whose quarry is not drawn is just eight vehicles
+        # driving oddly -- the same failure as a target marker pinned to the
+        # opening waypoint, which is what the last review caught.
+        gv, gt = _box(1.0, 1.0, 1.0)
+        lab.add_mesh(f"goal_{k}", gv, gt, col)
         poses[k] = VehiclePose(sampler, lift=1.2)
     return poses
+
+
+def _goal_offset(i: int, n: int, radius_m: float = 5.0):
+    """A small per-agent nudge off the exact goal point.
+
+    Two vehicles share one target in the pursuit act, so their goal markers
+    land on the same cell and z-fight into a flickering mess. Spreading them
+    around a tiny circle keeps both readable and still reads as one target.
+    """
+    a = 2.0 * np.pi * i / max(n, 1)
+    return radius_m * float(np.cos(a)), radius_m * float(np.sin(a))
 
 
 def _arrow(size):
@@ -173,6 +190,7 @@ def capture_finale(
     occ: np.ndarray | None = None,
     world_bounds=None,
     elevation_deg: float = 26.0,
+    frame_goals: bool = False,
     progress=None,
 ) -> Path:
     import pycvc_gl
@@ -250,6 +268,7 @@ def capture_finale(
             t = f / fps * speed
             clock.seek_time(t)
             pts = []
+            goals_now: dict[str, tuple[float, float, float]] = {}
             for k in keys:
                 pose = traces[k].pose_at(t)
                 m = poses[k].update(pose.x, pose.y, dt_frame * speed)
@@ -274,7 +293,20 @@ def capture_finale(
                     else float(tr.rows["goal_dist_m"][i])
                 )
                 hud[k].SetInput(f"{k}  {tr.rows['speed_mps'][i]:5.1f} m/s   goal {dist:6.0f} m")
+                if g is not None:
+                    ox, oy = _goal_offset(keys.index(k), len(keys))
+                    goals_now[k] = (g[0] + ox, g[1] + oy, float(sampler(g[0] + ox, g[1] + oy)))
             hud["_title"].SetInput(f"AUSTIN  ·  {len(keys)} vehicles  ·  t = {clock.t():6.1f} s")
+
+            # Size and seat the goal posts, and (for a chase) frame them with
+            # the vehicles so the closing gap is visible rather than implied.
+            for k in keys:
+                gp = goals_now.get(k)
+                if gp is None:
+                    continue
+                scene.getGraphics(f"goal_{k}").setVisible(True)
+                if frame_goals:
+                    pts.append(gp)
 
             _show(scene, keys, "mark_", False)
             elev, azim = shot_angles(f / max(n_frames - 1, 1), low_deg=elevation_deg)
@@ -310,6 +342,19 @@ def capture_finale(
                 x, y, z = seats[k]
                 scene.getGraphics(f"beacon_{k}").setTransform(
                     [bw, 0.0, 0.0, x, 0.0, bw, 0.0, y, 0.0, 0.0, bh, z, 0.0, 0.0, 0.0, 1.0]
+                )
+                gp = goals_now.get(k)
+                g_node = scene.getGraphics(f"goal_{k}")
+                if gp is None:
+                    g_node.setVisible(False)
+                    continue
+                # Thinner and shorter than a vehicle beacon on purpose: a goal
+                # is a place, not a protagonist, and it must not be mistaken
+                # for a ninth vehicle.
+                gx, gy, gz = gp
+                gw, gh = bw * 0.55, bh * 0.62
+                g_node.setTransform(
+                    [gw, 0.0, 0.0, gx, 0.0, gw, 0.0, gy, 0.0, 0.0, gh, gz, 0.0, 0.0, 0.0, 1.0]
                 )
             main.setCamera(*eye, *focal, 0.0, 0.0, 1.0, 30.0, 1.0, 20000.0)
             main.writePNG(str(frames / "main" / f"f_{f:05d}.png"))

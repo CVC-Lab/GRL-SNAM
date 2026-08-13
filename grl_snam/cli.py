@@ -276,11 +276,16 @@ def finale(bundle, out_dir, fps, speed, width, record) -> None:
         )
     occ, bounds = occupancy(bundle)
     size = (int(width) // 2 * 2, int(width * 9 / 16) // 2 * 2)
-    for act in ("finale_rendezvous", "finale_pursuit"):
+    # The pursuit frames its targets with the vehicles, so the closing gap is
+    # on screen. The rendezvous does not: its goals are a kilometre away at the
+    # start, and framing them would hold the whole map -- and eight specks --
+    # for the entire clip. The minimap already answers "where are they going".
+    for act, frame_goals in (("finale_rendezvous", False), ("finale_pursuit", True)):
         mp4 = finale_capture.capture_finale(
             out / "traces" / act, bundle, out / f"{act}.mp4",
             fps=fps, speed=speed, size=size, occ=occ, world_bounds=bounds,
-            progress=lambda f, n: click.echo(f"  {act} {f}/{n}") if f % 100 == 0 else None,
+            frame_goals=frame_goals,
+            progress=lambda f, n, a=act: click.echo(f"  {a} {f}/{n}") if f % 100 == 0 else None,
         )  # fmt: skip
         click.echo(f"  {act} -> {mp4}")
 
