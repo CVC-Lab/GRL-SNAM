@@ -29,6 +29,12 @@ _ROW_FIELDS = (
     "clearance_m",
     "goal_dist_m",
     "goal_index",
+    # The goal MOVES in a pursuit scenario. Recording only goal_dist_m meant
+    # the renderer had no way to place the marker, so it drew the story's
+    # initial waypoint forever and the target appeared to stand still while
+    # the vehicle chased something invisible.
+    "goal_x",
+    "goal_y",
     "belief_version",
     "rebuilt",
     "sensed",
@@ -125,6 +131,9 @@ def record(
         rows["clearance_m"].append(clearance)
         rows["goal_dist_m"].append(rec.goal_dist_m)
         rows["goal_index"].append(rec.goal_index)
+        gx, gy = sc.waypoints[sc.wp_i]
+        rows["goal_x"].append(float(gx))
+        rows["goal_y"].append(float(gy))
         rows["belief_version"].append(rec.belief_version)
         rows["rebuilt"].append(bool(rec.rebuilt))
         rows["sensed"].append(sc.step_i % story.sense_every == 0)

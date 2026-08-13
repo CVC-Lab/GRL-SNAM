@@ -157,6 +157,26 @@ class Trace:
             f,
         )
 
+    def goal_at(self, t: float) -> tuple[float, float] | None:
+        """Where the target is at world time ``t``.
+
+        Interpolated between ticks for the same reason the pose is: a marker
+        that steps once per world tick judders visibly at playback rates.
+        Returns None for traces recorded before the goal was captured, and the
+        caller falls back to the story's static waypoint.
+        """
+        if "goal_x" not in self.rows:
+            return None
+        i, f = self._tick_index(t)
+        gx, gy = self.rows["goal_x"], self.rows["goal_y"]
+        if f == 0.0 or i + 1 >= self.n_ticks:
+            return float(gx[i]), float(gy[i])
+        j = i + 1
+        return (
+            float(gx[i] + (gx[j] - gx[i]) * f),
+            float(gy[i] + (gy[j] - gy[i]) * f),
+        )
+
     def snapshot_index_at(self, t: float) -> int:
         """Which belief snapshot is current at ``t``. Belief is a step
         function: it changes only when the sensor changed its mind."""

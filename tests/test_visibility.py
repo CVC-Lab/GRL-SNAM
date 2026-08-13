@@ -197,3 +197,80 @@ def test_the_three_belief_classes_partition_what_is_drawn():
     assert not (wall & silhouette).any()
     assert not (ghost & silhouette).any()
     assert ((wall | ghost | silhouette) == (truth | believed)).all()
+
+
+# ── a moving target ─────────────────────────────────────────────────────────
+
+
+def test_a_moving_target_is_recorded_so_the_renderer_can_follow_it(tmp_path):
+    """The marker was drawn once at the story's opening waypoint and never
+    moved, so a pursuit looked like a vehicle chasing something invisible. The
+    trace carried goal_dist_m but not the goal's POSITION, so the renderer had
+    nothing to move it with."""
+    from grl_snam.fog_stories import STORIES, shrunk
+    from grl_snam.fog_trace import Trace
+    from grl_snam.tools.fog_record import record
+
+    story = shrunk(STORIES["pursuit"], n=48, max_steps=150)
+    tr = Trace.load(record(story.key, tmp_path, story=story))
+
+    assert "goal_x" in tr.rows and "goal_y" in tr.rows
+    start = tr.goal_at(0.0)
+    end = tr.goal_at(tr.duration_s)
+    assert start is not None and end is not None
+    moved = np.hypot(end[0] - start[0], end[1] - start[1])
+    assert moved > 5.0, f"the target barely moved ({moved:.1f} m) — is it actually a pursuit?"
+
+
+def test_the_goal_interpolates_between_ticks():
+    """A marker that steps once per world tick judders at playback rates, for
+    the same reason the vehicle pose is interpolated."""
+    from grl_snam.fog_trace import Trace
+
+    tr = Trace(
+        rows={
+            "tick": np.arange(1, 4),
+            "x": np.zeros(3),
+            "y": np.zeros(3),
+            "heading_rad": np.zeros(3),
+            "speed_mps": np.zeros(3),
+            "goal_x": np.array([0.0, 10.0, 20.0]),
+            "goal_y": np.array([0.0, 0.0, 0.0]),
+        },
+        snaps={"tick": np.array([]), "occ": np.array([]), "dyn": np.array([])},
+        routes=[],
+        manifest={
+            "fixed_dt": 1.0,
+            "story": "t",
+            "shape": [4, 4],
+            "bounds": [0, 0, 1, 1],
+        },
+    )
+    assert tr.goal_at(0.0) == (0.0, 0.0)
+    assert tr.goal_at(1.0) == (10.0, 0.0)
+    mid = tr.goal_at(0.5)
+    assert 0.0 < mid[0] < 10.0, f"no interpolation between ticks: {mid}"
+
+
+def test_a_static_goal_still_reports_a_position():
+    """Every story has to work, not just the pursuit — a fixed waypoint must
+    still be reported so the renderer takes one code path."""
+    from grl_snam.fog_trace import Trace
+
+    STATIC = np.array([7.0, 7.0, 7.0])
+    t = Trace(
+        rows={
+            "tick": np.arange(1, 4),
+            "x": np.zeros(3),
+            "y": np.zeros(3),
+            "heading_rad": np.zeros(3),
+            "speed_mps": np.zeros(3),
+            "goal_x": STATIC,
+            "goal_y": STATIC,
+        },
+        snaps={"tick": np.array([]), "occ": np.array([]), "dyn": np.array([])},
+        routes=[],
+        manifest={"fixed_dt": 1.0, "story": "t", "shape": [4, 4], "bounds": [0, 0, 1, 1]},
+    )
+    assert t.goal_at(0.0) == (7.0, 7.0)
+    assert t.goal_at(t.duration_s) == (7.0, 7.0)

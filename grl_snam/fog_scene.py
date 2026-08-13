@@ -220,6 +220,11 @@ def build(lab, story, trace) -> dict:
     lab.add_markers("goal", [(gx, gy, 1.2)], GOAL)
     _style(scene, "start", mode="points", point_size=16)
     _style(scene, "goal", mode="points", point_size=22)
+    # A moving target leaves its own trail, so the chase is legible as a chase
+    # rather than as a vehicle wandering toward a mark that keeps jumping.
+    lab.add_path("goal_track", [(gx, gy, 1.15), (gx + 0.1, gy, 1.15)], GOAL)
+    _style(scene, "goal_track", mode="lines", line_width=2)
+    scene.geometry_node("goal_track").setVisible(False)
 
     # Placeholders so every node exists before the first frame; a node created
     # mid-playback in a live host is the least-exercised path there is.
@@ -248,6 +253,7 @@ def build(lab, story, trace) -> dict:
         "track_every": 3,
         "frame": 0,
         "fov_origin": (sx, sy),
+        "goal_origin": (gx, gy),
     }
 
 
@@ -336,6 +342,23 @@ def apply(lab, story, trace, t, state):
                 _style(scene, "silhouette", color=SILHOUETTE, mode="lines", line_width=2)
                 scene.geometry_node("silhouette").setVisible(True)
                 state["belief_nodes"].add("silhouette")
+
+    # The target may be moving: translate its marker to where the trace says it
+    # is, and trail it, rather than leaving it at the story's opening waypoint.
+    goal = trace.goal_at(t)
+    if goal is not None:
+        ogx, ogy = state["goal_origin"]
+        dx, dy = goal[0] - ogx, goal[1] - ogy
+        scene.geometry_node("goal").setTransform([1, 0, 0, dx, 0, 1, 0, dy, 0, 0, 1, 0, 0, 0, 0, 1])
+        if state["frame"] % state["track_every"] == 0 and (abs(dx) > 1e-6 or abs(dy) > 1e-6):
+            i, _ = trace._tick_index(t)
+            gx_a, gy_a = trace.rows["goal_x"][: i + 1], trace.rows["goal_y"][: i + 1]
+            if len(gx_a) >= 2:
+                step = max(1, len(gx_a) // 300)
+                pts = [(float(a), float(b), 1.15) for a, b in zip(gx_a[::step], gy_a[::step])]
+                lab.add_path("goal_track", pts, GOAL)
+                _style(scene, "goal_track", color=GOAL, mode="lines", line_width=2)
+                scene.geometry_node("goal_track").setVisible(True)
 
     # The FOV ring rides along with the vehicle rather than being rebuilt.
     if trace.sensor_range_m > 0 and scene.hasGraphics("fov"):
