@@ -243,6 +243,11 @@ def capture_finale(
     bundle = Path(bundle)
     spec, traces = _load(bundle)
     keys = [a["key"] for a in spec["agents"]]
+    # Which navigator produced this trace. Read from the manifest rather than
+    # inferred: the two look identical in a still frame and differ enormously in
+    # what they can do -- on real Austin the route spine arrives and the
+    # reactive controller alone never does.
+    nav_label = traces[keys[0]].manifest.get("nav", "route+sdf")
     out = Path(out)
 
     # ── main 3-D view ───────────────────────────────────────────────────────
@@ -348,7 +353,9 @@ def capture_finale(
                 if g is not None:
                     ox, oy = _goal_offset(keys.index(k), len(keys))
                     goals_now[k] = (g[0] + ox, g[1] + oy, float(sampler(g[0] + ox, g[1] + oy)))
-            hud["_title"].SetInput(f"AUSTIN  ·  {len(keys)} vehicles  ·  t = {clock.t():6.1f} s")
+            hud["_title"].SetInput(
+                f"AUSTIN · {len(keys)} vehicles · nav: {nav_label} · t = {clock.t():6.1f} s"
+            )
 
             # Size and seat the goal posts, and (for a chase) frame them with
             # the vehicles so the closing gap is visible rather than implied.
