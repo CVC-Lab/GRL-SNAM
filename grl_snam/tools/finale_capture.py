@@ -136,17 +136,27 @@ def make_hud(ren, spec, width, height):
         prop.SetBackgroundOpacity(0.62)
         prop.SetFontFamilyToCourier()
 
+    # Every size here is a FRACTION of frame height. vtkTextActor font sizes are
+    # absolute pixels, so a HUD tuned at 720p quietly shrinks to three-quarters
+    # of its intended size when the same code renders at 900p — legible in the
+    # test render, small in the deliverable. The ratios below are the 720p
+    # design (30 px title, 18 px rows, 26 px leading) expressed against height.
+    title_px = max(12, round(height * 0.0417))
+    row_px = max(9, round(height * 0.0250))
+    lead_px = max(12, round(height * 0.0361))
+    left_px = round(height * 0.0333)
+
     actors = {}
     title = vtkTextActor()
-    _panel(title.GetTextProperty(), 30, (0.92, 0.94, 1.0))
-    title.SetPosition(24, height - 48)
+    _panel(title.GetTextProperty(), title_px, (0.92, 0.94, 1.0))
+    title.SetPosition(left_px, height - round(height * 0.0667))
     ren.AddViewProp(title)
     actors["_title"] = title
 
     for i, a in enumerate(spec["agents"]):
         tx = vtkTextActor()
-        _panel(tx.GetTextProperty(), 18, a["color"])
-        tx.SetPosition(24, height - 96 - i * 26)
+        _panel(tx.GetTextProperty(), row_px, a["color"])
+        tx.SetPosition(left_px, height - round(height * 0.1333) - i * lead_px)
         ren.AddViewProp(tx)
         actors[a["key"]] = tx
     return actors
