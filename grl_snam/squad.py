@@ -30,12 +30,18 @@ from .fog_stories import Story, build_scenario
 
 @dataclass
 class AgentSpec:
-    """One agent's start, goal and colour."""
+    """One agent's start, goal and colour.
+
+    ``moving_goal`` makes the target a path rather than a point -- each agent
+    can chase its own, which is the difference between a rendezvous and a
+    pursuit.
+    """
 
     key: str
     start: tuple[float, float]
     goal: tuple[float, float]
     color: tuple[float, float, float] = (0.97, 0.97, 0.97)
+    moving_goal: object | None = None
 
 
 @dataclass
@@ -49,7 +55,16 @@ class SquadResult:
 class Squad:
     """N independent agents over one shared world."""
 
-    def __init__(self, story: Story, agents: list[AgentSpec], model=None, *, seed: int = 0):
+    def __init__(
+        self,
+        story: Story,
+        agents: list[AgentSpec],
+        model=None,
+        *,
+        seed: int = 0,
+        truth_occ=None,
+        prior_occ=None,
+    ):
         if not agents:
             raise ValueError("a squad needs at least one agent")
         self.story = story
@@ -61,8 +76,15 @@ class Squad:
             # ground truth.
             import dataclasses
 
-            s = dataclasses.replace(story, start=a.start, waypoints=(a.goal,))
-            self.scenarios[a.key] = build_scenario(s, model, seed=seed)
+            s = dataclasses.replace(
+                story,
+                start=a.start,
+                waypoints=(a.goal,),
+                moving_goal=a.moving_goal if a.moving_goal is not None else story.moving_goal,
+            )
+            self.scenarios[a.key] = build_scenario(
+                s, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ
+            )
         self.step_i = 0
 
     # ── the shared world ────────────────────────────────────────────────────

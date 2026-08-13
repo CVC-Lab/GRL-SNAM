@@ -29,11 +29,13 @@ def record_squad(
     max_steps: int | None = None,
     stall_ticks: int = 0,
     progress=None,
+    truth_occ=None,
+    prior_occ=None,
 ) -> Path:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    squad = Squad(story, agents, model, seed=seed)
+    squad = Squad(story, agents, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ)
     clock = WorldClock(fixed_dt=story.dt, mode="replay")
 
     rows = {a.key: {k: [] for k in _ROW_FIELDS} for a in agents}
@@ -120,7 +122,9 @@ def record_squad(
         # Static truth for a squad run: peers are drawn from their own traces,
         # not baked into truth, so every agent shares this one grid.
         npz["truth_tick"] = np.asarray([0], np.int64)
-        npz["truth_snap"] = np.stack([np.packbits(story.truth_grid().ravel())])
+        npz["truth_snap"] = np.stack(
+            [np.packbits((story.truth_grid() if truth_occ is None else truth_occ).ravel())]
+        )
         offs = np.cumsum([0] + [len(r) for r in routes[k]])
         npz["route_offsets"] = offs.astype(np.int64)
         npz["route_points"] = (
