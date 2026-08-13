@@ -315,10 +315,18 @@ def capture_finale(
     u0, u1 = (float(u_range[0]), float(u_range[1]))
     az_prev = [shot_angles(u0, low_deg=elevation_deg)[1]]
     az_pref = [az_prev[0] if camera_in is None else float(camera_in.azimuth_deg)]
+    # Raw RGB straight into two ffmpeg processes. writePNG was 95% of the
+    # frame cost -- measured 333 ms for the two 1600x900 encodes against 33 ms
+    # of actual GL render -- and it also left thousands of files on disk per
+    # clip. frameRGB() is the same pixels without the PNG round trip; the
+    # precedent is fog_capture.open_encoder, which already does exactly this.
     frames = out.parent / f"_finale_{out.stem}"
     shutil.rmtree(frames, ignore_errors=True)
-    (frames / "main").mkdir(parents=True, exist_ok=True)
-    (frames / "pip").mkdir(parents=True, exist_ok=True)
+    frames.mkdir(parents=True, exist_ok=True)
+    raw_main = frames / "main.mp4"
+    raw_pip = frames / "pip.mp4"
+    enc_main = _open_raw_encoder(raw_main, fps=fps, size=size)
+    enc_pip = _open_raw_encoder(raw_pip, fps=fps, size=size)
 
     try:
         for f in range(n_frames):
@@ -486,7 +494,7 @@ def capture_finale(
                 )
             ren.GetActiveCamera().ParallelProjectionOff()  # main shot stays perspective
             main.setCamera(*eye, *focal, 0.0, 0.0, 1.0, FOV_DEG, 1.0, 20000.0)
-            main.writePNG(str(frames / "main" / f"f_{f:05d}.png"))
+            enc_main.stdin.write(main.frameRGB())
 
             # Re-aim the SAME renderer straight down for the inset, then put it
             # back. The HUD actors are 2-D and would show up in the inset too,
@@ -509,7 +517,7 @@ def capture_finale(
             vcam = ren.GetActiveCamera()
             vcam.ParallelProjectionOn()
             vcam.SetParallelScale((mxy - mny) * 0.5 * 1.04)
-            main.writePNG(str(frames / "pip" / f"f_{f:05d}.png"))
+            enc_pip.stdin.write(main.frameRGB())
             for actor in hud.values():
                 actor.SetVisibility(True)
             _show(scene, keys, "beacon_", True)
@@ -517,9 +525,15 @@ def capture_finale(
             if progress and f % 25 == 0:
                 progress(f, n_frames)
     finally:
+        for e in (enc_main, enc_pip):
+            try:
+                e.stdin.close()
+                e.wait(timeout=600)
+            except Exception:
+                e.kill()
         main.close()
 
-    _compose(frames, out, fps=fps, size=size, pip=(pip_w, pip_h), crop_w=crop_w)
+    _compose(raw_main, raw_pip, out, fps=fps, size=size, pip=(pip_w, pip_h), crop_w=crop_w)
     shutil.rmtree(frames, ignore_errors=True)
     return out, cam.state(az_pref[0])
 
@@ -572,7 +586,19 @@ def _add_sun(ren):
     ren.AddLight(fill)
 
 
-def _compose(frames: Path, out: Path, *, fps: int, size, pip, crop_w: int | None = None) -> None:
+def _open_raw_encoder(out_mp4: Path, *, fps: int, size):
+    """ffmpeg taking raw bottom-up RGB on stdin (what frameRGB hands back)."""
+    return subprocess.Popen(
+        ["ffmpeg", "-y", "-loglevel", "error",
+         "-f", "rawvideo", "-pix_fmt", "rgb24",
+         "-s", f"{size[0]}x{size[1]}", "-framerate", str(fps), "-i", "-",
+         "-vf", "vflip", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
+         str(out_mp4)],
+        stdin=subprocess.PIPE,
+    )  # fmt: skip
+
+
+def _compose(main_mp4: Path, pip_mp4: Path, out: Path, *, fps: int, size, pip, crop_w=None) -> None:
     """Overlay the overhead inset on the main view, bottom-right."""
     pw, ph = pip
     x, y = size[0] - pw - 26, size[1] - ph - 26
@@ -585,13 +611,10 @@ def _compose(frames: Path, out: Path, *, fps: int, size, pip, crop_w: int | None
         f"[0:v][pipv]overlay={x}:{y}"
     )
     subprocess.run(
-        [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-framerate", str(fps), "-i", str(frames / "main" / "f_%05d.png"),
-            "-framerate", str(fps), "-i", str(frames / "pip" / "f_%05d.png"),
-            "-filter_complex", filt,
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "19",
-            str(out),
-        ],
+        ["ffmpeg", "-y", "-loglevel", "error",
+         "-i", str(main_mp4), "-i", str(pip_mp4),
+         "-filter_complex", filt,
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "19",
+         str(out)],
         check=True,
     )  # fmt: skip
