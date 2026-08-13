@@ -223,13 +223,19 @@ def city_blocks(n: int, *, rows: int = 3, cols: int = 3, gap: int = 8, margin: i
     """
     out = []
     span = n - 2 * margin
-    pitch = span // max(rows, 1)
-    block = max(2, pitch - gap)
+    # Both axes need their own pitch AND their own gap. Deriving the block size
+    # from the row pitch only made the columns abut, so a 2x3 grid rendered as
+    # two solid slabs with no street between them -- and a scene about choosing
+    # a route through streets has to have streets.
+    rp = span // max(rows, 1)
+    cp = span // max(cols, 1)
+    rb = max(2, rp - gap)
+    cb = max(2, cp - gap)
     for i in range(rows):
         for j in range(cols):
-            r0 = margin + i * pitch
-            c0 = margin + j * (span // max(cols, 1))
-            out.append((r0, min(r0 + block, n), c0, min(c0 + block, n)))
+            r0 = margin + i * rp
+            c0 = margin + j * cp
+            out.append((r0, min(r0 + rb, n), c0, min(c0 + cb, n)))
     return tuple(out)
 
 

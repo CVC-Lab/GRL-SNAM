@@ -270,14 +270,17 @@ def apply(lab, story, trace, t, state):
     if snap != state["snap"] or fov_k != state["fov_snap"]:
         state["snap"] = snap
         occ, dyn, _ = trace.belief_at(t)
+        truth_now = trace.truth_at(t)
+        if truth_now is None:  # traces recorded before truth was captured
+            truth_now = story.truth_grid()
 
         # Believed-occupied cells that reality does NOT have are ghosts; ones
         # it does have are confirmed. Colouring them differently is the entire
         # point of story 1 and it is a measurement, not a renderer heuristic.
         truth = story.truth_grid()
         for key, mask, color, z in (
-            ("ghost", occ & ~truth, GHOST, 0.5),
-            ("wall", occ & truth, WALL, 0.6),
+            ("ghost", occ & ~truth_now, GHOST, 0.5),
+            ("wall", occ & truth_now, WALL, 0.6),
             ("unit", dyn, UNIT, 0.7),
         ):
             v, tri = cells_mesh(mask, story, z)
@@ -303,7 +306,9 @@ def apply(lab, story, trace, t, state):
         fov = trace.fov_at(t)
         if fov is not None:
             visible, seen = fov
-            truth = story.truth_grid()
+            truth = trace.truth_at(t)
+            if truth is None:
+                truth = story.truth_grid()
             for key, mask, color, z in (
                 ("fog_seen", seen & ~visible, FOG_REMEMBERED, 0.28),
                 ("fog_now", visible, FOG_VISIBLE, 0.30),

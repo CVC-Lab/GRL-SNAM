@@ -53,13 +53,20 @@ class Trace:
     """Reader for a recorded fog-of-war run."""
 
     def __init__(
-        self, rows: dict, snaps: dict, routes: list, manifest: dict, fov: dict | None = None
+        self,
+        rows: dict,
+        snaps: dict,
+        routes: list,
+        manifest: dict,
+        fov: dict | None = None,
+        truth: dict | None = None,
     ):
         self.rows = rows
         self.snaps = snaps
         self.routes = routes
         self.manifest = manifest
         self.fov = fov
+        self.truth = truth
         self.sensor_range_m = float(manifest.get("sensor_range_m", 0.0))
 
         self.fixed_dt = float(manifest["fixed_dt"])
@@ -91,7 +98,10 @@ class Trace:
         fov = None
         if "fov_tick" in z.files:
             fov = {"tick": z["fov_tick"], "vis": z["fov_vis"], "seen": z["fov_seen"]}
-        return cls(rows, snaps, routes, manifest, fov)
+        truth = None
+        if "truth_tick" in z.files:
+            truth = {"tick": z["truth_tick"], "snap": z["truth_snap"]}
+        return cls(rows, snaps, routes, manifest, fov, truth)
 
     # ── queries ─────────────────────────────────────────────────────────────
     @property
@@ -196,6 +206,20 @@ class Trace:
             return -1
         i, _ = self._tick_index(t)
         return max(0, int(np.searchsorted(self.fov["tick"], i, side="right") - 1))
+
+    def truth_at(self, t: float) -> np.ndarray | None:
+        """Ground truth as it stood at world time ``t``.
+
+        Not the story's initial truth: events raise walls and movers drive, so
+        'is this believed cell actually real?' is a question about the world
+        at that moment.
+        """
+        if self.truth is None or not len(self.truth["tick"]):
+            return None
+        i, _ = self._tick_index(t)
+        k = max(0, int(np.searchsorted(self.truth["tick"], i, side="right") - 1))
+        ny, nx = self.shape
+        return np.unpackbits(self.truth["snap"][k], count=ny * nx).astype(bool).reshape(ny, nx)
 
     def route_at(self, t: float) -> np.ndarray:
         k = self.snapshot_index_at(t)

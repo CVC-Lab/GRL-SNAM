@@ -66,6 +66,8 @@ def record(
     snap_occ: list[np.ndarray] = []
     snap_dyn: list[np.ndarray] = []
     routes: list[np.ndarray] = []
+    truth_ticks: list[int] = []
+    truth_snaps: list[np.ndarray] = []
     fov_ticks: list[int] = []
     fov_vis: list[np.ndarray] = []
     fov_seen: list[np.ndarray] = []
@@ -78,6 +80,16 @@ def record(
         snap_dyn.append(np.packbits(dyn.ravel()))
         routes.append(np.asarray(sc.route or [], np.float32).reshape(-1, 2))
 
+    def truth_snapshot(tick: int) -> None:
+        # Ground truth CHANGES: events raise and demolish walls, movers drive
+        # around. Colour classification (known wall vs believed-but-absent
+        # ghost vs undiscovered silhouette) is a comparison against truth AT
+        # THAT MOMENT, so the trace has to carry it. Using the story's initial
+        # truth painted every discovered blocker as a ghost -- inverted, and
+        # shipped that way.
+        truth_ticks.append(tick)
+        truth_snaps.append(np.packbits(sc.truth_now.ravel()))
+
     def fov_snapshot(tick: int) -> None:
         # Recorded on every SENSE, not only when belief changes: the field of
         # view sweeps with the vehicle even on ticks where it learns nothing,
@@ -88,6 +100,8 @@ def record(
         fov_seen.append(np.packbits(sc.belief.ever_seen.ravel()))
 
     snapshot(0)  # the prior map, before a single ray is cast
+    sc._stamp_movers()
+    truth_snapshot(0)
 
     limit = max_steps or story.max_steps
     for _ in range(limit):
@@ -120,6 +134,7 @@ def record(
             snapshot(clock.tick())
         if rows["sensed"][-1]:
             fov_snapshot(clock.tick())
+            truth_snapshot(clock.tick())
         if progress and clock.tick() % 50 == 0:
             progress(clock.tick(), limit)
         if sc.done:
@@ -157,6 +172,12 @@ def record(
     npz["snap_occ"] = np.stack(snap_occ)
     npz["snap_dyn"] = np.stack(snap_dyn)
     offsets = np.cumsum([0] + [len(r) for r in routes])
+    npz["truth_tick"] = np.asarray(truth_ticks, np.int64)
+    npz["truth_snap"] = (
+        np.stack(truth_snaps)
+        if truth_snaps
+        else np.zeros((0, (story.n * story.n + 7) // 8), np.uint8)
+    )
     npz["fov_tick"] = np.asarray(fov_ticks, np.int64)
     npz["fov_vis"] = (
         np.stack(fov_vis) if fov_vis else np.zeros((0, (story.n * story.n + 7) // 8), np.uint8)
