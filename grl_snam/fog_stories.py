@@ -78,6 +78,8 @@ class Story:
     captions: tuple[tuple[float, float, str], ...] = ()
     cam: str = "map"
 
+    # Full knowledge: render lit, with no fog tiers. The baseline variant.
+    no_fog: bool = False
     # Route inflation in METRES (cells are not a fixed size across rasters).
     inflate_m: float = 6.0
     # Vehicles that physically exist in truth and move (see Mover).
@@ -369,7 +371,7 @@ STORIES: dict[str, Story] = {
 }
 
 
-def build_scenario(story: Story, model=None, *, seed: int = 0):
+def build_scenario(story: Story, model=None, *, seed: int = 0, truth_occ=None, prior_occ=None):
     """Turn a :class:`Story` into a runnable :class:`~grl_snam.scenario.FogScenario`.
 
     The one place a story becomes a simulation. ``model`` defaults to a
@@ -387,14 +389,18 @@ def build_scenario(story: Story, model=None, *, seed: int = 0):
         model = sdf_nav.CoefMLP()
         model.eval()
 
+    # truth_occ/prior_occ let a caller supply a rasterized world (e.g. a real
+    # city) instead of the story's declarative rectangles. Kept OUT of Story
+    # itself: it is frozen and content-hashed for staleness, and a megabyte of
+    # occupancy does not belong in a spec hash.
     return FogScenario(
-        story.truth_grid(),
+        story.truth_grid() if truth_occ is None else truth_occ.astype(bool),
         story.bounds,
         story.scale,
         model,
         story.meta(),
         waypoints=[tuple(w) for w in story.waypoints],
-        prior_occ=story.prior_grid(),
+        prior_occ=story.prior_grid() if prior_occ is None else prior_occ,
         events=list(story.events),
         unknown=story.unknown,
         sense_every=story.sense_every,

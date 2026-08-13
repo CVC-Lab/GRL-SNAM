@@ -57,13 +57,19 @@ def record(
     max_steps: int | None = None,
     story: Story | None = None,
     progress=None,
+    truth_occ=None,
+    prior_occ=None,
 ) -> Path:
-    """Run ``story_key`` once and write ``trace.npz`` + ``trace.json``."""
+    """Run ``story_key`` once and write ``trace.npz`` + ``trace.json``.
+
+    ``truth_occ``/``prior_occ`` let a caller supply a rasterized world (a real
+    city) in place of the story's declarative rectangles.
+    """
     story = story or STORIES[story_key]
     out = Path(out_dir) if out_dir else Path("traces") / story.key
     out.mkdir(parents=True, exist_ok=True)
 
-    sc = build_scenario(story, model, seed=seed)
+    sc = build_scenario(story, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ)
     # replay mode: the recorder owns the tick, wall time is irrelevant here.
     clock = WorldClock(fixed_dt=story.dt, mode="replay")
 

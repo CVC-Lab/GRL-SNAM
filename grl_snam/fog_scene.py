@@ -61,9 +61,24 @@ FOV = (0.30, 0.72, 0.95)
 CAR_L, CAR_W = 12.0, 6.0
 
 # A 16:9 ground plate keeps ResetCamera's framing stable across stories and
-# gives the capture a fixed rectangle to calibrate its crop against.
+# gives the capture a fixed rectangle to calibrate its crop against. Sized
+# from the STORY's bounds -- these were constants tuned for the +-100 m fog
+# stories, and on a 1200 m city the plate ended up smaller than the world, so
+# the crop calibrated onto a patch in the middle and the clip showed a
+# fraction of the map.
 PLATE_HALF_Y = 100.0
 PLATE_HALF_X = PLATE_HALF_Y * 16.0 / 9.0
+
+
+def plate_half(story) -> tuple[float, float]:
+    """Half-extents of a 16:9 plate that covers the story's world."""
+    mnx, mny, mxx, mxy = story.bounds
+    hx, hy = max(abs(mnx), abs(mxx)), max(abs(mny), abs(mxy))
+    if hx / hy < 16.0 / 9.0:
+        hx = hy * 16.0 / 9.0
+    else:
+        hy = hx * 9.0 / 16.0
+    return hx, hy
 
 
 def quad(x0, y0, x1, y1, z):
@@ -203,8 +218,12 @@ def build(lab, story, trace) -> dict:
     """Create every node once. Returns the mutable render state."""
     scene = lab._scene
 
-    v, t = quad(-PLATE_HALF_X, -PLATE_HALF_Y, PLATE_HALF_X, PLATE_HALF_Y, 0.0)
-    lab.add_mesh("ground", v, t, GROUND)
+    hx, hy = plate_half(story)
+    v, t = quad(-hx, -hy, hx, hy, 0.0)
+    # With a complete map there is nothing hidden, so the ground is LIT rather
+    # than dark: the no-fog variant is the baseline the fog run is compared
+    # against, and drawing fog over a map the agent fully knows would be a lie.
+    lab.add_mesh("ground", v, t, FOG_REMEMBERED if getattr(story, "no_fog", False) else GROUND)
 
     # Ground truth is NOT drawn directly. It reaches the frame only through
     # what the agent believes (red), what it believes wrongly (amber), and
@@ -310,6 +329,8 @@ def apply(lab, story, trace, t, state):
     if fov_k != state["fov_snap"]:
         state["fov_snap"] = fov_k
         fov = trace.fov_at(t)
+        if getattr(story, "no_fog", False):
+            fov = None
         if fov is not None:
             visible, seen = fov
             truth = trace.truth_at(t)
