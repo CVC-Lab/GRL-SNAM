@@ -79,14 +79,28 @@ def _nearest_free(occ: np.ndarray, r: int, c: int, max_radius: int = 12):
     return None
 
 
-def astar(occ: np.ndarray, start, goal):
+def astar(occ: np.ndarray, start, goal, cost: np.ndarray | None = None):
     """8-connected A* over free cells; diagonal moves must not cut corners.
-    Returns a list of (r, c) or None when unreachable."""
+    Returns a list of (r, c) or None when unreachable.
+
+    ``cost`` is an optional per-cell surcharge in units of grid steps, added to
+    each move's length as it ENTERS a cell. ``None`` (the default) is the plain
+    shortest path and is bit-for-bit what this function returned before the
+    parameter existed — the golden traces stay valid.
+
+    The surcharge is domain-agnostic on purpose: it is "this cell is expensive",
+    not "this cell is dangerous/jammed/steep". Whoever builds the raster owns
+    the meaning. Keep values modest — a surcharge much larger than the map's
+    diameter makes the heuristic wildly inadmissible and A* degenerates toward
+    Dijkstra, exploring the whole grid for a route it was always going to take.
+    """
     ny, nx = occ.shape
     start = _nearest_free(occ, *start)
     goal = _nearest_free(occ, *goal)
     if start is None or goal is None:
         return None
+    if cost is not None and cost.shape != occ.shape:
+        raise ValueError(f"cost shape {cost.shape} != occupancy shape {occ.shape}")
 
     def h(n):
         return math.hypot(n[0] - goal[0], n[1] - goal[1])
@@ -115,6 +129,8 @@ def astar(occ: np.ndarray, start, goal):
                 if dr and dc and (occ[r + dr, c] or occ[r, c + dc]):
                     continue  # no corner cutting
                 ng = g + (SQRT2 if dr and dc else 1.0)
+                if cost is not None:
+                    ng += float(cost[nr, nc])
                 nxt = (nr, nc)
                 if ng < g_best.get(nxt, float("inf")):
                     g_best[nxt] = ng
@@ -175,16 +191,29 @@ class BeliefRoutePlanner:
                 return False
         return True
 
-    def plan(self, occ: np.ndarray, start_world, goal_world):
+    def plan(self, occ: np.ndarray, start_world, goal_world, cost: np.ndarray | None = None):
         """World route [start..goal] over the (belief) occupancy, or None if
         the goal is unreachable *in belief* — which the caller should surface,
         not paper over (an unroutable click deserves a 'no route', not a
-        silently discontinuous path)."""
+        silently discontinuous path).
+
+        ``cost`` is the optional per-cell surcharge described on :func:`astar`.
+        Note it biases the route but never forbids anything: a detour is taken
+        only while it is cheaper than paying the surcharge, so a cost field
+        covering every corridor degrades to the shortest path rather than
+        stranding the agent. That is the intended failure mode — an expensive
+        route beats no route.
+        """
         grid = inflate(occ, self.inflate_cells)
-        cells = astar(grid, self._w2c(*start_world), self._w2c(*goal_world))
+        cells = astar(grid, self._w2c(*start_world), self._w2c(*goal_world), cost=cost)
         if cells is None:
             return None
-        cells = simplify(grid, cells)
+        # String-pulling is line-of-sight only: it knows about walls, not about
+        # cost, so it would happily straighten a detour back through the
+        # expensive region the search just paid to avoid. Skip it when a cost
+        # field is in play and keep the route the search actually chose.
+        if cost is None:
+            cells = simplify(grid, cells)
         return [self._c2w(r, c) for r, c in cells]
 
 

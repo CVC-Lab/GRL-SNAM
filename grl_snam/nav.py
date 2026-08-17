@@ -68,6 +68,9 @@ class SdfNavigator:
         self.o = torch.zeros(1, 2)
         self.v = torch.zeros(1, 2)
         self._gn = np.zeros(2, np.float32)
+        # Optional ``(x_world, y_world) -> (dx, dy)`` in world metres, applied
+        # to the steering carrot each step. See :meth:`step`.
+        self.carrot_bias_fn = None
         self.step_i = 0
         self.goal_index = 0
         self._parked = False
@@ -254,6 +257,22 @@ class SdfNavigator:
             th = float(self.th[0])
             ahead = np.array([math.cos(th), math.sin(th)], np.float32)
             carrot = (p + ahead * max(1e-3, float(self.sp[0]) * 2.0)).astype(np.float32)
+
+        # External steering influence, in WORLD metres. The carrot is this
+        # controller's only actuator -- everything else (route, wall-follow,
+        # parking) expresses itself by placing it -- so biasing the carrot is
+        # how an outside force enters without threading a term through the
+        # rollout and breaking parity with the upstream integrator.
+        #
+        # Domain-agnostic by construction: base GRL-SNAM neither sets this nor
+        # knows what a caller means by it. Unset (the default) leaves every
+        # trajectory bit-for-bit what it was.
+        if self.carrot_bias_fn is not None:
+            here_w = self.n2w(p)
+            bias_w = self.carrot_bias_fn(float(here_w[0]), float(here_w[1]))
+            if bias_w is not None and (bias_w[0] or bias_w[1]):
+                cw = self.n2w(carrot)
+                carrot = self.w2n((cw[0] + bias_w[0], cw[1] + bias_w[1])).astype(np.float32)
 
         gt = torch.from_numpy(carrot).unsqueeze(0)
         al, be, ga = self.model(sdf_nav.coef_feats(self.field, self.o, gt))
