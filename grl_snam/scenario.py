@@ -122,6 +122,9 @@ class FogScenario:
         self.sense_every = max(1, int(sense_every))
         self.sensor = dict(range_m=60.0, n_rays=240)
         self.sensor.update(sensor or {})
+        # Set by a caller to return a (ny, nx) float raster of per-cell route
+        # surcharges, or None. Called once per re-plan, not per tick.
+        self.route_cost_fn = None
 
         self._world_dt = float(meta["dt"])  # world seconds per step (fixed quantum)
         self.step_i = 0
@@ -286,7 +289,12 @@ class FogScenario:
         occ = composite_occupancy(self.belief, self.dyn, self._t(), unknown=self.unknown)
         here = tuple(self.nav.pos_world())
         goal = tuple(self.waypoints[self.wp_i])
-        fresh = self.planner.plan(occ, here, goal)
+        # Optional per-cell route surcharge, supplied by whoever owns the
+        # meaning. Base GRL-SNAM never sets this and never interprets it: it is
+        # the seam a downstream package (e.g. an RF-aware planner) plugs a cost
+        # surface into without this module growing a dependency on the domain.
+        cost = self.route_cost_fn() if self.route_cost_fn is not None else None
+        fresh = self.planner.plan(occ, here, goal, cost=cost)
         if fresh is None:
             self.no_route = True
             self.route = None

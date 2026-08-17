@@ -47,6 +47,13 @@ class AgentSpec:
     #: quicker than another -- a chase where quarry and hunter move at the same
     #: speed never resolves either way.
     vmax: float | None = None
+    #: Per-agent sensor override, merged over ``Story.sensor``. Same keys
+    #: :meth:`grl_snam.belief.BeliefGrid.sense` takes -- ``range_m``,
+    #: ``n_rays``, ``fov_rad`` -- so a scout with a long thin cone and a
+    #: vehicle with a short 360 sweep can share one scene. ``heading_rad`` is
+    #: NOT settable here: the scenario supplies it live from the agent's own
+    #: pose every tick, which is what makes a cone point where the agent looks.
+    sensor: dict | None = None
 
 
 @dataclass
@@ -123,6 +130,9 @@ class Squad:
                 waypoints=(a.goal,),
                 moving_goal=a.moving_goal if a.moving_goal is not None else story.moving_goal,
                 **({} if a.vmax is None else {"vmax": float(a.vmax)}),
+                # Merged, not replaced: an agent that overrides only fov_rad
+                # keeps the story's range_m and n_rays.
+                **({} if a.sensor is None else {"sensor": {**story.sensor, **a.sensor}}),
             )
             self.scenarios[a.key] = build_scenario(
                 s, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ
