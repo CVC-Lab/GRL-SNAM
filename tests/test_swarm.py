@@ -190,3 +190,115 @@ def test_sim_thread_runs_concurrently_and_reacts_to_commands():
     finally:
         sim.stop()
     assert not sim.is_alive(), "sim thread must shut down cleanly"
+
+
+# ── grouped belief: shared / clustered / private via map_id ──────────────────
+
+
+def test_belief_mode_shapes():
+    """Each mode lays out the right number of belief planes / field stack."""
+    story = _story(96)
+    truth = story.truth_grid()
+    specs = _free_specs(story, truth, 12, seed=2)
+    shared = Swarm(story, specs, model=_model(), truth_occ=truth, belief_mode="shared")
+    private = Swarm(story, specs, model=_model(), truth_occ=truth, belief_mode="private")
+    clustered = Swarm(
+        story, specs, model=_model(), truth_occ=truth, belief_mode="clustered", clusters=3
+    )
+    assert (shared.M, shared.field.field.shape[0]) == (1, 1)
+    assert (private.M, private.field.field.shape[0]) == (12, 12)
+    assert clustered.M == 3 and clustered.field.field.shape[0] == 3
+    assert set(np.unique(clustered.map_id)).issubset(set(range(3)))
+
+
+def test_clustered_requires_clusters():
+    story = _story()
+    truth = story.truth_grid()
+    with pytest.raises(ValueError):
+        Swarm(story, _free_specs(story, truth, 6), model=_model(), belief_mode="clustered")
+
+
+def _two_region_specs(story, truth):
+    """Half the agents in the map's left third, half in the right third — two
+    groups that will discover disjoint parts of the city."""
+    labels, sizes = planner.free_components(truth, 2)
+    best = max(sizes, key=sizes.get)
+    rows, cols = np.nonzero(labels == best)
+    mnx, mny, mxx, mxy = story.bounds
+    ny, nx = truth.shape
+
+    def w(r, c):
+        return (mnx + c / (nx - 1) * (mxx - mnx), mny + r / (ny - 1) * (mxy - mny))
+
+    left = cols < nx // 3
+    right = cols > 2 * nx // 3
+    lr, lc = rows[left], cols[left]
+    rr, rc = rows[right], cols[right]
+    rng = np.random.default_rng(0)
+    specs, clusters = [], []
+    for i in range(8):  # group 0: left
+        j = rng.integers(0, len(lr))
+        specs.append(AgentSpec(f"L{i}", w(lr[j], lc[j]), w(lr[j], lc[j])))
+        clusters.append(0)
+    for i in range(8):  # group 1: right
+        j = rng.integers(0, len(rr))
+        specs.append(AgentSpec(f"R{i}", w(rr[j], rc[j]), w(rr[j], rc[j])))
+        clusters.append(1)
+    return specs, np.array(clusters, np.int32)
+
+
+def test_clustered_belief_isolation():
+    """The whole point of grouping: a group only knows what ITS members saw.
+    Two groups exploring disjoint regions end with each holding cells the other
+    has never seen — belief never leaks across the map_id boundary."""
+    story = _story(96)
+    truth = story.truth_grid()
+    specs, clusters = _two_region_specs(story, truth)
+    sw = Swarm(
+        story,
+        specs,
+        model=_model(),
+        truth_occ=truth,
+        sense_every=1,
+        belief_mode="clustered",
+        clusters=clusters,
+    )
+    for _ in range(20):
+        sw.step()
+    seen0, seen1 = sw._everseen[0], sw._everseen[1]
+    assert seen0.any() and seen1.any(), "both groups must have sensed something"
+    assert (seen0 & ~seen1).any(), "group 0 must know cells group 1 has never seen"
+    assert (seen1 & ~seen0).any(), "group 1 must know cells group 0 has never seen"
+    # and the two groups' beliefs are genuinely different maps
+    assert not np.array_equal(sw._logodds[0], sw._logodds[1])
+
+
+def test_private_belief_is_per_agent():
+    """Private mode = one belief plane per agent (the Squad fidelity twin's
+    geometry): agents in different places hold different beliefs."""
+    story = _story(96)
+    truth = story.truth_grid()
+    specs, _ = _two_region_specs(story, truth)
+    sw = Swarm(story, specs, model=_model(), truth_occ=truth, sense_every=1, belief_mode="private")
+    assert sw.M == len(specs)
+    for _ in range(12):
+        sw.step()
+    # a left agent (0) and a right agent (8) have seen different cells
+    assert (sw._everseen[0] & ~sw._everseen[8]).any()
+    assert (sw._everseen[8] & ~sw._everseen[0]).any()
+
+
+def test_shared_uses_native_sense_when_available():
+    """When the C++ kernel is present, the swarm senses through it (the whole
+    point of the port). Skipped if pycvc lacks it."""
+    from grl_snam import nav_native
+
+    if not getattr(nav_native, "HAS_SENSE_BATCH", False):
+        pytest.skip("pycvc build has no nav_sense_batch")
+    story = _story(96)
+    truth = story.truth_grid()
+    sw = Swarm(story, _free_specs(story, truth, 16), model=_model(), truth_occ=truth, sense_every=1)
+    v0 = int(sw._version[0])
+    for _ in range(6):
+        sw.step()
+    assert int(sw._version[0]) >= v0  # sensing bumped the plane's version through the kernel

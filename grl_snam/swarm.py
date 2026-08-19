@@ -42,6 +42,7 @@ import torch
 
 import sdf_nav
 
+from . import nav_native as _native
 from .belief import BeliefGrid, DynamicLayer, composite_occupancy
 from .fog_stories import Story, build_scenario
 
@@ -70,9 +71,10 @@ class Snapshot:
     goal: np.ndarray  # f32[N,2] world
     active: np.ndarray  # bool[N]
     reached: np.ndarray  # bool[N]
+    map_id: np.ndarray  # i32[N]  which belief plane each agent senses/samples
     field_ver: int
-    field_ref: object  # the shared [1,3,H,W] SDF texture, by REFERENCE
-    occ_ref: object  # the shared occupancy raster (bool[H,W]), by reference
+    field_ref: object  # the [M,3,H,W] SDF texture stack, by REFERENCE
+    occ_ref: object  # list of per-plane occupancy rasters (bool[H,W]), by reference
 
 
 class Swarm:
@@ -100,14 +102,19 @@ class Swarm:
         sense_every: int = 4,
         reach_tol: float = 0.8,
         device: str = "cpu",
+        belief_mode: str = "shared",
+        clusters=None,
     ):
         if not specs:
             raise ValueError("a swarm needs at least one agent")
+        if belief_mode not in ("shared", "clustered", "private"):
+            raise ValueError(f"belief_mode must be shared/clustered/private, got {belief_mode!r}")
         self.story = story
         self.specs = list(specs)
         self.dev = torch.device(device)
         self.sense_every = max(1, int(sense_every))
         self.reach_tol = float(reach_tol)
+        self.belief_mode = belief_mode
 
         # One template FogScenario gives us the whole shared world — meta,
         # bounds/scale, the truth raster, and (the objects we actually share) a
@@ -123,15 +130,9 @@ class Swarm:
         self.bounds = tpl.bounds
         self.scale = float(tpl.scale)
         self.truth = tpl.truth
-        self.belief: BeliefGrid = tpl.belief  # SHARED across all agents
-        self.dyn: DynamicLayer = tpl.dyn
         self.sensor = dict(tpl.sensor)
         self.unknown = tpl.unknown
         self.cell_m = float(tpl.cell_m)
-
-        # The shared field + its world<->normalized constants (one texture that
-        # every agent's position samples against).
-        self.field: sdf_nav.SDFField = tpl.nav.field
         self.S = float(self.meta["scale"])
         self.cx, self.cy = (float(c) for c in self.meta["center"])
 
@@ -145,11 +146,31 @@ class Swarm:
 
         self._build_soa()
 
+        # The map_id seam: shared -> 1 plane, private -> N planes, clustered -> K.
+        self.map_id, self.M = self._resolve_maps(belief_mode, clusters)
+        self._map_id_t = torch.as_tensor(self.map_id, dtype=torch.int64, device=self.dev)
+        self._groups = (
+            None
+            if self.M == 1 or belief_mode == "private"
+            else [
+                torch.from_numpy(np.nonzero(self.map_id == g)[0]).to(self.dev)
+                for g in range(self.M)
+            ]
+        )
+        # M belief planes as VIEWS into one contiguous (M,H,W) block, so the C++
+        # sense_batch kernel writes belief in place. Every plane starts from the
+        # template's prior (identical), then diverges per group as it senses.
+        self._build_maps(tpl)
+        self.belief: BeliefGrid = self.beliefs[0]  # aliases (back-compat, M==1)
+        self.dyn: DynamicLayer = self.dyns[0]
+
         self.gstep = 0
         self.field_ver = 0
         self._gen = 0
-        self._last_belief_ver = self.belief.version
-        self._occ = self._tpl._compose_occ()  # current planning raster (shared)
+        self._last_ver = [int(v) for v in self._version]
+        self._occ = [None] * self.M
+        self.fields = self._build_all_fields()  # list[SDFField], one per plane
+        self.field = self._make_field()  # SDFField (M==1) | BatchedSDFField
 
     # ── construction ─────────────────────────────────────────────────────────
     def _build_soa(self) -> None:
@@ -186,6 +207,98 @@ class Swarm:
         self.reached = torch.zeros(N, dtype=torch.bool, device=dev)
         self.active = torch.ones(N, dtype=torch.bool, device=dev)
         self._arange = torch.arange(N, device=dev)
+
+    # ── belief grouping (the map_id seam) ─────────────────────────────────────
+    def _resolve_maps(self, mode, clusters):
+        """``map_id[N]`` (int32) + plane count ``M``. shared -> all 0; private ->
+        arange; clustered -> densified group labels (so ``map_id`` is always a
+        gapless ``[0,M)`` — an agent never indexes a plane that does not exist)."""
+        N = self.N
+        if mode == "shared":
+            return np.zeros(N, np.int32), 1
+        if mode == "private":
+            return np.arange(N, dtype=np.int32), N
+        labels = self._cluster_labels(clusters)
+        _, dense = np.unique(labels, return_inverse=True)  # gapless 0..K-1
+        return dense.astype(np.int32), int(dense.max()) + 1
+
+    def _cluster_labels(self, clusters):
+        """Resolve the ``clusters`` argument to an ``[N]`` integer label array:
+        an explicit array/list, a ``callable(specs)->labels``, or an ``int`` K
+        (k-means-lite on start positions — a spatial partition of the swarm)."""
+        N = self.N
+        if clusters is None:
+            raise ValueError("belief_mode='clustered' needs `clusters` (int K, array, or callable)")
+        if callable(clusters):
+            return np.asarray(clusters(self.specs), np.int64).reshape(N)
+        arr = np.asarray(clusters)
+        if arr.ndim >= 1 and arr.size == N:
+            return arr.astype(np.int64).reshape(N)
+        k = int(clusters)
+        if k <= 1:
+            return np.zeros(N, np.int64)
+        pts = np.stack([self._w2n_np(s.start) for s in self.specs]).astype(np.float64)
+        rng = np.random.default_rng(0)
+        cen = pts[rng.choice(N, size=min(k, N), replace=False)]
+        for _ in range(15):  # a few Lloyd iterations — deterministic, seed-fixed
+            lab = np.argmin(((pts[:, None] - cen[None]) ** 2).sum(-1), axis=1)
+            for j in range(len(cen)):
+                m = lab == j
+                if m.any():
+                    cen[j] = pts[m].mean(0)
+        return lab
+
+    def _build_maps(self, tpl) -> None:
+        """Allocate the ``(M,H,W)`` belief block and wrap M ``BeliefGrid`` views
+        over it (so the in-place ``sense_batch`` kernel writes belief directly),
+        each seeded from the template's prior. M ``DynamicLayer``s alongside."""
+        H, W = tpl.belief.ny, tpl.belief.nx
+        M = self.M
+        self._logodds = np.repeat(tpl.belief.logodds[None], M, axis=0).astype(np.float32)
+        self._lastvis = np.repeat(tpl.belief.last_visible[None], M, axis=0).copy()
+        self._everseen = np.repeat(tpl.belief.ever_seen[None], M, axis=0).copy()
+        self._version = np.zeros(M, np.int32)
+        self.beliefs, self.dyns = [], []
+        for g in range(M):
+            b = BeliefGrid((H, W), self.bounds)
+            b.logodds = self._logodds[g]  # views: np.clip(out=)/|= write through
+            b.last_visible = self._lastvis[g]  # (rebound by the Python fallback)
+            b.ever_seen = self._everseen[g]
+            self.beliefs.append(b)
+            self.dyns.append(DynamicLayer((H, W), ttl_s=tpl.dyn.ttl_s))
+
+    def _build_all_fields(self):
+        """One :class:`sdf_nav.SDFField` per plane, from that plane's composite
+        occupancy — batched over planes when the C++ kernel is present."""
+        t = self._tpl._t()
+        occs = [
+            composite_occupancy(self.beliefs[g], self.dyns[g], t, unknown=self.unknown)
+            for g in range(self.M)
+        ]
+        self._occ = occs
+        if self.M > 1 and _native.enabled() and hasattr(_native, "build_sdf_batch"):
+            tris = _native.build_sdf_batch(np.stack(occs), self.bounds, self.scale)
+            return [self._tpl._finalize_field(*tri) for tri in tris]
+        return [self._tpl._build_field(occ) for occ in occs]
+
+    def _make_field(self):
+        """The sampler the drive calls every substep: an ``SDFField`` for the one
+        shared plane, else a map_id-gathering ``BatchedSDFField`` over the stack."""
+        f0 = self.fields[0]
+        if self.M == 1:
+            return f0
+        self._field_stack = torch.cat([f.field for f in self.fields], 0)  # [M,3,H,W]
+        return sdf_nav.BatchedSDFField(
+            self._field_stack,
+            f0.mnx,
+            f0.mny,
+            f0.mxx,
+            f0.mxy,
+            f0.cx,
+            f0.cy,
+            f0.S,
+            groups=self._groups,
+        )
 
     # ── world <-> normalized (vectorized) ────────────────────────────────────
     def _w2n_np(self, p):
@@ -251,33 +364,88 @@ class Swarm:
         self._gen += 1
 
     def _sense_shared(self) -> None:
-        """All active agents ray-cast into the shared belief, then rebuild the
-        one shared SDF field iff the planning surface moved.
+        """Sense every active agent into its belief plane (``map_id``), then
+        rebuild the fields of the planes whose planning surface actually moved.
 
-        O(N) in the ray-casts (the per-plane C++ ``sense_batch`` kernel is the
-        planned replacement — it collapses this to one GIL-released call), but
-        gated to every ``sense_every`` ticks and dwarfed by the fact that the
-        rebuild is a SINGLE EDT, not N of them.
-        """
+        Prefers the C++ ``sense_batch`` kernel — one GIL-released call, threaded
+        across planes, bit-identical to N serial :meth:`BeliefGrid.sense` — and
+        falls back to a pure-Python per-plane loop. Named ``_sense_shared`` for
+        the shared-belief history; it now serves every belief mode. The rebuild
+        is a single EDT per changed plane (O(1) in N for shared)."""
         world = self.n2w(self.o).cpu().numpy()
         th = self.th.cpu().numpy()
         active = self.active.cpu().numpy()
-        for i in range(self.N):
-            if active[i]:
-                self.belief.sense(
+        m = np.nonzero(active)[0].astype(np.int64)
+        if m.size == 0:
+            return
+        if _native.enabled() and getattr(_native, "HAS_SENSE_BATCH", False):
+            _native.sense_batch(
+                self.truth,
+                world[m],
+                th[m],
+                self._logodds,
+                self._lastvis,
+                self._everseen,
+                self._version,
+                agent_map=self.map_id[m],
+                range_m=self.sensor["range_m"],
+                n_rays=self.sensor.get("n_rays", 240),
+                fov_rad=self.sensor.get("fov_rad", 2.0 * np.pi),
+                bounds=self.bounds,
+                peer_boxes=None,  # shared/clustered: peers decay in the dyn layer,
+                mover_boxes=None,  # never smeared into the static belief (no self-lock)
+            )
+            for g in range(self.M):
+                self.beliefs[g].version = int(self._version[g])
+                self.beliefs[g].last_visible = self._lastvis[g]  # re-view (kernel wrote the block)
+        else:
+            for i in m:  # ascending index == the serial reference order
+                g = int(self.map_id[i])
+                self.beliefs[g].sense(
                     self.truth,
                     (float(world[i, 0]), float(world[i, 1])),
                     heading_rad=float(th[i]),
                     **self.sensor,
                 )
+            for g in range(self.M):  # resync the block (last_visible rebinds; version is a py int)
+                self._version[g] = self.beliefs[g].version
+                self._lastvis[g] = self.beliefs[g].last_visible
+                self.beliefs[g].last_visible = self._lastvis[g]
         self._tpl.step_i = self.gstep  # so dyn TTL uses the right world time
-        occ = composite_occupancy(self.belief, self.dyn, self._tpl._t(), unknown=self.unknown)
-        changed = self.belief.version != self._last_belief_ver or not np.array_equal(occ, self._occ)
-        if changed:
-            self._occ = occ
-            self.field = self._tpl._build_field(occ)
-            self._last_belief_ver = self.belief.version
-            self.field_ver += 1
+        self._rebuild_changed_planes()
+
+    def _rebuild_changed_planes(self) -> None:
+        """Rebuild the SDF field of any plane whose belief version bumped or whose
+        dynamic layer changed — one ``build_sdf_batch`` over just those planes."""
+        t = self._tpl._t()
+        occs, reb = [], []
+        for g in range(self.M):
+            occ_g = composite_occupancy(self.beliefs[g], self.dyns[g], t, unknown=self.unknown)
+            if int(self._version[g]) != self._last_ver[g] or not np.array_equal(
+                occ_g, self._occ[g]
+            ):
+                self._occ[g] = occ_g
+                occs.append(occ_g)
+                reb.append(g)
+                self._last_ver[g] = int(self._version[g])
+        if not reb:
+            return
+        if len(reb) > 1 and _native.enabled() and hasattr(_native, "build_sdf_batch"):
+            tris = _native.build_sdf_batch(np.stack(occs), self.bounds, self.scale)
+            new = [self._tpl._finalize_field(*tri) for tri in tris]
+        else:
+            new = [self._tpl._build_field(o) for o in occs]
+        for g, f in zip(reb, new):
+            self.fields[g] = f
+        if self.M == 1:
+            self.field = self.fields[0]  # swap a fresh SDFField (immutable for readers)
+        else:
+            # overwrite only the changed planes of the shared stack (in place; a
+            # live-rebuild-under-threading path would double-buffer this — the
+            # pipeline_edt follow-up). BatchedSDFField holds the stack by ref.
+            for g, f in zip(reb, new):
+                self._field_stack[g].copy_(f.field[0])
+        self.field_ver += 1
 
     @torch.no_grad()
     def _plan_carrot(self, phi: torch.Tensor, nrm: torch.Tensor) -> torch.Tensor:
@@ -380,15 +548,17 @@ class Swarm:
         self.parked[i] = False
 
     def add_obstacle(self, x0, y0, x1, y1) -> None:
-        """Stamp a live rectangular blocker into the shared dynamic layer; it is
-        sensed and routed-around on the next sense tick and expires by TTL."""
-        r0, c0 = self.belief.world_to_cell(x0, y0)
-        r1, c1 = self.belief.world_to_cell(x1, y1)
+        """Stamp a live rectangular blocker into every plane's dynamic layer (a
+        real wall all groups should route around); it is sensed and routed-around
+        on the next sense tick and expires by TTL. The occupancy diff in
+        :meth:`_rebuild_changed_planes` picks it up even with belief unchanged."""
+        r0, c0 = self.beliefs[0].world_to_cell(x0, y0)
+        r1, c1 = self.beliefs[0].world_to_cell(x1, y1)
         rr, cc = (r0 + r1) // 2, (c0 + c1) // 2
         rad = max(1, abs(r1 - r0) // 2, abs(c1 - c0) // 2)
-        self.dyn.mark(rr, cc, self._tpl._t(), radius_cells=rad)
-        # Force a rebuild next sense tick even if belief.version is unchanged.
-        self._occ = None if self._occ is None else self._occ  # occ diff will catch it
+        t = self._tpl._t()
+        for d in self.dyns:
+            d.mark(rr, cc, t, radius_cells=rad)
 
     # ── the immutable frame ──────────────────────────────────────────────────
     @torch.no_grad()
@@ -414,6 +584,7 @@ class Swarm:
             goal=gworld,
             active=self.active.detach().cpu().numpy().copy(),
             reached=self.reached.detach().cpu().numpy().copy(),
+            map_id=self.map_id.copy(),
             field_ver=self.field_ver,
             field_ref=self.field.field,
             occ_ref=self._occ,

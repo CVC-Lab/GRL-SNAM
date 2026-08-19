@@ -128,3 +128,92 @@ def neighbors(positions, radius):
     N-body query (peers within sensor range), robust to clustering."""
     pos = np.ascontiguousarray(positions, np.float64)
     return _pycvc.nav_neighbors(pos, float(radius))
+
+
+HAS_SENSE_BATCH = AVAILABLE and hasattr(_pycvc, "nav_sense_batch")
+
+
+def sense_batch(
+    truth,
+    positions,
+    headings,
+    logodds,
+    last_visible,
+    ever_seen,
+    version,
+    agent_map,
+    *,
+    range_m,
+    n_rays=240,
+    fov_rad=2.0 * np.pi,
+    bounds,
+    peer_boxes=None,
+    mover_boxes=None,
+    l_occ=2.2,
+    l_free=-1.4,
+    l_clamp=8.0,
+    num_threads=0,
+):
+    """Batched, in-place belief sense — a bit-identical port of
+    :meth:`grl_snam.belief.BeliefGrid.sense` over N agents into M belief planes.
+
+    ``logodds`` (M,H,W float32), ``last_visible``/``ever_seen`` (M,H,W bool) and
+    ``version`` (M,) int32 are **mutated in place** — they are validated and
+    written through, NEVER copied or coerced (a silent copy would swallow every
+    update). ``agent_map`` (N,) int32 selects each agent's plane:
+    ``arange(N)`` = private (fully parallel), ``zeros(N)`` = shared (one plane,
+    folded serially in ascending index), arbitrary labels = clustered. Agents
+    that share a plane are folded sequentially in ascending index, exactly as N
+    serial ``sense`` calls would; distinct planes run on separate threads.
+
+    ``peer_boxes`` (N,Kmax,4) and ``mover_boxes`` (Mv,4) are optional HALF-OPEN
+    ``(r0,r1,c0,c1)`` cell rects that, when given, occlude rays AND deposit
+    ``+l_occ`` AND enter the field of view — the reference ``truth_now``
+    composition. Pass ``None`` (the shared/clustered swarm's choice) to keep
+    peers out of the log-odds and route them through the decaying dynamic layer
+    instead. Returns ``flips`` (N,) int32."""
+    N = int(positions.shape[0])
+    for nm, a, dt, nd in (
+        ("logodds", logodds, np.float32, 3),
+        ("last_visible", last_visible, np.bool_, 3),
+        ("ever_seen", ever_seen, np.bool_, 3),
+        ("version", version, np.int32, 1),
+    ):
+        if a.dtype != dt or a.ndim != nd or not a.flags["C_CONTIGUOUS"] or not a.flags["WRITEABLE"]:
+            raise ValueError(
+                f"sense_batch: {nm} must be a writable C-contiguous {dt.__name__} array of "
+                f"ndim {nd} — it is mutated in place, never copied"
+            )
+    tr = np.ascontiguousarray(truth, np.uint8)  # read-only inputs: coerce freely
+    pos = np.ascontiguousarray(positions, np.float64)
+    hd = np.ascontiguousarray(headings, np.float64)
+    am = np.ascontiguousarray(agent_map, np.int32)
+    rng = np.ascontiguousarray(np.broadcast_to(range_m, N), np.float64)  # scalar OR (N,)
+    nry = np.ascontiguousarray(np.broadcast_to(n_rays, N), np.int32)
+    fov = np.ascontiguousarray(np.broadcast_to(fov_rad, N), np.float64)
+    pb = None if peer_boxes is None else np.ascontiguousarray(peer_boxes, np.int32)
+    mb = None if mover_boxes is None else np.ascontiguousarray(mover_boxes, np.int32)
+    mnx, mny, mxx, mxy = (float(b) for b in bounds)
+    return _pycvc.nav_sense_batch(
+        tr,
+        pos,
+        hd,
+        rng,
+        nry,
+        fov,
+        logodds,
+        last_visible,
+        ever_seen,
+        version,
+        am,
+        pb,
+        mb,
+        mnx,
+        mny,
+        mxx,
+        mxy,
+        float(l_occ),
+        float(l_free),
+        float(l_clamp),
+        int(num_threads),
+    )
