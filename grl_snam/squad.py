@@ -162,6 +162,7 @@ class Squad:
         # enabled only when the caller wants the throughput and accepts a
         # trajectory that matches the serial one to float32 precision, not bit.
         self.batched_drive = bool(batched_drive)
+        self._drive_fields = None  # persistent (N,3,H,W) stack for _batched_drive
         first = next(iter(self.scenarios.values()))
         self._bounds = first.bounds
         self._scale = first.scale
@@ -235,6 +236,11 @@ class Squad:
         """The SDF build can be batched across agents (needs the native kernels)."""
         return self.batched_planning and _native.enabled() and hasattr(_native, "build_sdf_batch")
 
+    def _can_batch_astar(self) -> bool:
+        """The sense-tick A* replans can be batched across agents. Bit-identical
+        (C++ A*), so it rides the same switch as the SDF batch."""
+        return self._batch_enabled() and hasattr(_native, "astar_batch")
+
     def _can_batch_drive(self) -> bool:
         """Whether this tick will batch the vehicle rollout across agents (one
         torch call on [N] tensors — PERFORMANCE.md stage 2). Requires the opt-in
@@ -276,7 +282,21 @@ class Squad:
         o = torch.cat([nav.o for nav in navs])  # [N,2]
         th = torch.cat([nav.th for nav in navs])  # [N]
         sp = torch.cat([nav.sp for nav in navs])  # [N]
-        bfield = sdf_nav.BatchedSDFField.stack([nav.field for nav in navs])
+        # Persistent (N,3,H,W) field: cat once, then overwrite only the planes of
+        # the agents that rebuilt this tick (M of N with stagger) rather than
+        # re-cat'ing all N every tick (~113MB/tick at 384^2). Same values as the
+        # cat, so grid_sample is unchanged. A field only changes on a rebuild
+        # (_rebuilt), so the un-copied planes stay in sync by construction.
+        if self._drive_fields is None or self._drive_fields.shape[0] != len(navs):
+            self._drive_fields = torch.cat([nav.field.field for nav in navs])
+        else:
+            for i, (_, sc) in enumerate(items):
+                if sc._rebuilt:
+                    self._drive_fields[i].copy_(navs[i].field.field[0])
+        f0 = n0.field  # bounds/center/scale live on the SDFField, shared by all
+        bfield = sdf_nav.BatchedSDFField(
+            self._drive_fields, f0.mnx, f0.mny, f0.mxx, f0.mxy, f0.cx, f0.cy, f0.S
+        )
         al, be, ga = n0.model(sdf_nav.coef_feats(bfield, o, gts))
         no, nth, nsp, _ = sdf_nav.bicycle_rollout(
             bfield, o, th, sp, gts, al, be, ga, 1, nsub=n0.nsub, **n0.kw, **n0._veh
@@ -308,6 +328,24 @@ class Squad:
                 fields = _native.build_sdf_batch(occs, self._bounds, self._scale)
                 for (_, sc), (phi, nx_g, ny_g) in zip(pending, fields):
                     sc._pending_field = sc._finalize_field(phi, nx_g, ny_g)
+            # Phase 2.5 — batch every rebuilding agent's sense-tick A* replan into
+            # one threaded astar_batch. Bit-identical to the per-agent plan(): the
+            # C++ A* is the same, and _replan_commit is the same hysteresis tail.
+            # Only the plain (cost-free) case batches; a route_cost_fn falls back
+            # to the per-agent replan in _act_pre_drive.
+            if self._can_batch_astar() and all(
+                sc.route_cost_fn is None for sc in self.scenarios.values()
+            ):
+                reb = [sc for sc in self.scenarios.values() if sc._sense_rebuild and sc.use_planner]
+                if reb:
+                    inp = [sc._replan_inputs() for sc in reb]
+                    grids = np.stack([g for g, _, _, _ in inp])
+                    starts = np.array([s for _, s, _, _ in inp], np.int32)
+                    goals = np.array([gc for _, _, gc, _ in inp], np.int32)
+                    routes = _native.astar_batch(grids, starts, goals, None)
+                    for sc, cells in zip(reb, routes):
+                        sc._replan_commit(cells)
+                        sc._sense_replanned = True
             if drive_batch:
                 # Phases 3-5 — pre-drive all (no FollowGoal, so nobody reads a
                 # peer's live pose), roll the whole squad forward in one batched

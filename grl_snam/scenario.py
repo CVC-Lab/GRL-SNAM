@@ -331,6 +331,40 @@ class FogScenario:
         if self.planner.route_length(fresh) < 0.8 * keep_len:
             self.route = fresh
 
+    def _replan_inputs(self):
+        """The batchable half of the sense-tick replan: inflate `_pending_occ`
+        once and return this agent's A* inputs (grid, start cell, goal cell,
+        cost) so a Squad can run one `astar_batch` across all rebuilding agents.
+        Stashes what `_replan_commit` needs. Returns None if not planning."""
+        if not self.use_planner:
+            return None
+        here = tuple(self.nav.pos_world())
+        goal = tuple(self.waypoints[self.wp_i])
+        cost = self.route_cost_fn() if self.route_cost_fn is not None else None
+        grid = inflate(self._pending_occ, self.planner.inflate_cells)
+        self._replan_grid = grid
+        self._replan_here = here
+        self._replan_cost = cost
+        return grid, self.planner._w2c(*here), self.planner._w2c(*goal), cost
+
+    def _replan_commit(self, cells):
+        """Finish the sense-tick replan from the batched A* cell path (or None).
+        Byte-for-byte the force=False tail of `_replan_route`."""
+        grid = self._replan_grid
+        fresh = self.planner.route_from_cells(grid, cells, self._replan_cost)
+        if fresh is None:
+            self.no_route = True
+            self.route = None
+            return
+        self.no_route = False
+        here = self._replan_here
+        if not self.planner.route_valid(self._pending_occ, self.route, inflated=grid):
+            self.route = [here] + fresh[1:] if len(fresh) > 1 else fresh
+            return
+        keep_len = self.planner.route_length([here] + self.route[1:])
+        if self.planner.route_length(fresh) < 0.8 * keep_len:
+            self.route = fresh
+
     def _route_subgoal(self):
         """The point on the route the local controller should chase: project
         the vehicle onto the polyline, then walk the lookahead distance ahead
@@ -379,6 +413,7 @@ class FogScenario:
         self._pending_occ = None
         self._sense_rebuild = False
         self._pending_field = None
+        self._sense_replanned = False  # set by a Squad that batched this tick's A*
 
         if (self.step_i + self.sense_phase) % self.sense_every == 0:
             v0 = self.belief.version
@@ -419,7 +454,8 @@ class FogScenario:
                 self.nav.field = self._pending_field  # batched by the Squad
             else:
                 self.nav.field = self._build_field(self._pending_occ)
-            self._replan_route(occ=self._pending_occ)
+            if not self._sense_replanned:  # else a Squad already batched the A*
+                self._replan_route(occ=self._pending_occ)
             self._rebuilt = True
         self._pending_occ = None
         self._pending_field = None

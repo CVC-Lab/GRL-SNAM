@@ -233,6 +233,13 @@ class BeliefRoutePlanner:
         """
         grid = inflate(occ, self.inflate_cells) if inflated is None else inflated
         cells = astar(grid, self._w2c(*start_world), self._w2c(*goal_world), cost=cost)
+        return self.route_from_cells(grid, cells, cost)
+
+    def route_from_cells(self, grid: np.ndarray, cells, cost: np.ndarray | None):
+        """The tail of :meth:`plan` after the A* search: string-pull (unless a
+        cost field is in play) and convert cell coordinates to world. Split out
+        so a Squad can run one batched A* across agents and then finish each
+        route — the result is identical to calling :meth:`plan` per agent."""
         if cells is None:
             return None
         # String-pulling is line-of-sight only: it knows about walls, not about
