@@ -105,3 +105,32 @@ def test_dispatch_routes_public_api_through_cpp(monkeypatch):
     assert np.array_equal(inflated_native, inflated_py)
     assert route_native == route_py
     assert np.array_equal(phi_native, phi_py)
+
+
+@pytest.mark.skipif(
+    not hasattr(pycvc, "nav_astar_batch"), reason="pycvc lacks the batch kernels"
+)
+def test_batch_matches_per_agent(monkeypatch):
+    """The threaded batch kernels (stage 4) return exactly what N per-agent
+    calls return."""
+    monkeypatch.setenv("GRL_SNAM_NAV_BACKEND", "python")
+    rng = np.random.default_rng(0xBA7C4)
+    N, H, W = 24, 40, 40
+    # bool, so the Python reference's ~occ is a logical (not bitwise) complement
+    occ = np.stack([rng.random((H, W)) < rng.uniform(0.08, 0.35) for _ in range(N)])
+    occ[:, 0, 0] = True  # a building
+    occ[:, -1, -1] = False  # a free cell
+    starts = rng.integers(0, H, size=(N, 2)).astype(np.int32)
+    goals = rng.integers(0, H, size=(N, 2)).astype(np.int32)
+    bounds = (0.0, 0.0, float(W - 1), float(H - 1))
+
+    routes = nav_native.astar_batch(occ, starts, goals)
+    fields = nav_native.build_sdf_batch(occ, bounds, 0.1)
+    assert len(routes) == N and len(fields) == N
+    for i in range(N):
+        ref = planner.astar(occ[i], tuple(starts[i]), tuple(goals[i]))  # python
+        assert routes[i] == ref, f"batch route {i}"
+        pr, nxr, nyr = sdf_nav.build_sdf(occ[i], bounds, 0.1)  # python
+        assert np.array_equal(fields[i][0], pr), f"batch phi {i}"
+        assert np.array_equal(fields[i][1], nxr), f"batch nx {i}"
+        assert np.array_equal(fields[i][2], nyr), f"batch ny {i}"
