@@ -317,3 +317,51 @@ def bicycle_rollout(
         int(bool(P["allow_reverse"])),
         int(num_threads),
     )
+
+
+def drive_step(
+    field,
+    o,
+    th,
+    sp,
+    carrot,
+    weights_path,
+    *,
+    bounds,
+    center,
+    scale,
+    params,
+    map_id=None,
+    num_threads=0,
+):
+    """The fused per-agent drive tick (sample -> coef_feats -> coef_mlp -> bicycle),
+    float-equivalent to the torch Swarm drive. ``weights_path`` is a ``.cvcnav``
+    policy (see :mod:`grl_snam.tools.coef_export`); ``params`` as
+    :func:`bicycle_rollout`. Returns fresh ``(o, th, sp, minclr)`` f32."""
+    f = np.ascontiguousarray(field, np.float32)
+    P = params
+    return _pycvc.nav_drive_step(
+        f,
+        np.ascontiguousarray(o, np.float32),
+        np.ascontiguousarray(th, np.float32),
+        np.ascontiguousarray(sp, np.float32),
+        np.ascontiguousarray(carrot, np.float32),
+        str(weights_path),
+        None if map_id is None else np.ascontiguousarray(map_id, np.int32),
+        *(float(b) for b in bounds),
+        float(center[0]),
+        float(center[1]),
+        float(scale),
+        float(P["rr"]),
+        float(P["d_hat"]),
+        float(P["dt"]),
+        float(P["vmax"]),
+        float(P["L"]),
+        float(P["delta_max"]),
+        float(P["a_max"]),
+        float(P["a_lat_max"]),
+        float(P["k_steer"]),
+        int(P["nsub"]),
+        int(bool(P["allow_reverse"])),
+        int(num_threads),
+    )
