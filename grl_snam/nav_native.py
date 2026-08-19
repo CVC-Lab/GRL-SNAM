@@ -217,3 +217,25 @@ def sense_batch(
         float(l_clamp),
         int(num_threads),
     )
+
+
+HAS_SDF_SAMPLE = AVAILABLE and hasattr(_pycvc, "nav_sdf_sample")
+
+
+def sdf_sample(field, on, *, bounds, center, scale, map_id=None, num_threads=0):
+    """Torch-free bilinear SDF sample (the drive's field read). ``field`` is an
+    ``(M,3,H,W)`` float32 stack (channel 0 phi, 1 normal_x, 2 normal_y); ``on`` is
+    ``(N,2)`` float32 normalized (centered) positions; ``map_id`` is ``(N,)`` int32
+    or None (=> plane 0 for all). ``bounds``/``center``/``scale`` are the SDFField's
+    world<->grid constants. Returns ``(phi (N,), normal (N,2))`` float32,
+    float-equivalent to :meth:`sdf_nav.SDFField.sample` /
+    :meth:`sdf_nav.BatchedSDFField.sample` (torch grid_sample, align_corners=True,
+    border) — the first piece of the torch-free C++ drive port."""
+    f = np.ascontiguousarray(field, np.float32)
+    o = np.ascontiguousarray(on, np.float32)
+    mid = None if map_id is None else np.ascontiguousarray(map_id, np.int32)
+    mnx, mny, mxx, mxy = (float(b) for b in bounds)
+    cx, cy = float(center[0]), float(center[1])
+    return _pycvc.nav_sdf_sample(
+        f, o, mid, mnx, mny, mxx, mxy, cx, cy, float(scale), int(num_threads)
+    )
