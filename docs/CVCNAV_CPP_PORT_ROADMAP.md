@@ -482,3 +482,50 @@ throughput-vs-substep-accuracy trade), so a host raises it only where thin-wall 
 ## 12. CUDA — see the separate assessment
 
 A decision-ready, code-verified CUDA assessment lives in [CVCNAV_CUDA_ASSESSMENT.md](CVCNAV_CUDA_ASSESSMENT.md). Bottom line: **not yet** — the one measured wall (single-threaded shared `sense_batch`) is a CPU decomposition artifact fixable bit-identically without a GPU (the raycast-parallelization); do that + the torch-free CPU drive first. A CUDA path is a conditional, device-resident, shared-belief, float-equivalent third twin that earns its keep only for a *named* deployment above the CPU ceiling measured on its **own** GPU. It found a real prerequisite bug: `--use_fast_math` is applied target-wide in `CMake/SetupCUDA.cmake`, which would silently break the float-equivalence contract for any future nav `.cu`.
+
+---
+
+## 13. Implementation status — the port is complete
+
+Every phase landed (each build → test → commit, Python green throughout). A pure-C++
+host runs the whole shared-belief swarm with **zero libtorch**, float-equivalent to torch.
+
+| phase | delivered | fidelity vs torch |
+|---|---|---|
+| P0 `detail/parallel.h` | ✓ | refactor, byte-green |
+| P1 `sdf_sample` | ✓ | **bit-exact** |
+| P2 `coef_mlp` + `.cvcnav` + exporter | ✓ | 9.5e-7 |
+| P3 `coef_feats` + `bicycle_rollout` | ✓ | ~1e-7 |
+| P4 fused `drive_step` | ✓ | float-exact end-to-end |
+| P5 `belief_occupancy` (BIT surface) | ✓ | **byte-identical** field |
+| P6 `sim_world` + carrot FSM | ✓ | behavioral: identical reach-set, sub-5cm/80 ticks |
+| P7 `sim_thread` | ✓ | concurrent, lock-free, no-GIL |
+| CUDA `drive.cu` (GTX 1650) | ✓ | float-equiv ~5e-7 |
+| pure-C++ ergonomics | ✓ | `default_biased`, `from_occupancy`, `default_weights_path`, example |
+
+**49 pytest + 30 gtest green.**
+
+### The pure-C++ path (dropping agents into a cvcGL scene / lsystem_forest)
+
+```cpp
+sim_world::config cfg = /* rows/cols, bounds, scale, vehicle params */;
+// zero setup: a default policy; or coef_mlp::load(coef_mlp::default_weights_path())
+sim_world world = sim_world::from_occupancy(cfg, scene_occupancy, coef_mlp::default_biased(), N);
+// per frame: step, then feed world poses into per-agent GeometryNodes
+world.step();
+world.snapshot(pos_world, heading, speed, mode, reached);
+// or run it off the render thread, lock-free:
+sim_thread sim(world, 60.0); sim.start();  auto frame = sim.read();  sim.retarget(i, gx, gy);
+```
+
+See `examples/nav_swarm_demo.cpp` (`-DCVC_BUILD_NAV_EXAMPLE=ON`), a compilable template.
+
+### Deferred (future / bench-box, non-blocking)
+
+- **Device-resident `sim_world.cu`** — keep the field + SoA columns on the GPU across ticks,
+  CUDA-Graph replay, pose-only D2H (or CUDA-GL interop). The decisive-win path at N≳10⁴; best
+  built + tuned on a bigger GPU box (the `drive.cu` launcher already proves the path + fidelity).
+- **P8 in-Swarm native dispatch** (`GRL_SNAM_NAV_DRIVE=native`) — the Python torch `Swarm`
+  optionally driving via the C++ path. A Python-side speedup; the default stays torch, the twin.
+- **A trained `coef_mlp.cvcnav` shipped/installed** (export a GRL-SNAM checkpoint via
+  `coef_export.py`; `default_biased()` covers zero-setup driving in the meantime).
