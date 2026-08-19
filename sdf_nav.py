@@ -36,6 +36,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    from grl_snam import nav_native as _native
+except Exception:  # pragma: no cover - accelerator is optional
+    _native = None
+
 
 # ── exact Euclidean distance transform (Felzenszwalb & Huttenlocher), no scipy ──
 _EDT_INF = 1e20
@@ -121,6 +126,8 @@ def _edt1d_rows(F: np.ndarray) -> np.ndarray:
 
 def _edt2(mask: np.ndarray) -> np.ndarray:
     """Squared Euclidean distance (grid units) from each cell to the nearest True."""
+    if _native is not None and _native.enabled():
+        return _native.edt2(mask)
     f = np.where(mask, 0.0, _EDT_INF)
     # columns, then rows -- the 2-D transform is separable.
     return _edt1d_rows(_edt1d_rows(f.T).T)
@@ -133,6 +140,8 @@ def build_sdf(occ: np.ndarray, bounds, scale: float):
     (world); ``scale`` maps world -> the normalized regime. Returns ``(phi, nx, ny)``
     float32 grids (``phi`` positive OUTSIDE buildings, 0 at walls; ``(nx,ny)`` the
     unit OUTWARD normal, i.e. the direction of increasing clearance)."""
+    if _native is not None and _native.enabled():
+        return _native.build_sdf(occ, bounds, scale)
     ny, nx = occ.shape
     mnx, mny, mxx, mxy = bounds
     cell_w = (mxx - mnx) / (nx - 1)

@@ -22,12 +22,16 @@ import math
 
 import numpy as np
 
+from . import nav_native as _native
+
 SQRT2 = math.sqrt(2.0)
 
 
 def inflate(occ: np.ndarray, cells: int) -> np.ndarray:
     """Binary dilation by ``cells`` 4-connected steps (matches the shipped
     planner's inflation; no scipy dependency)."""
+    if _native.enabled():
+        return _native.inflate(occ, cells)
     out = occ.astype(bool).copy()
     for _ in range(max(0, cells)):
         grown = out.copy()
@@ -41,6 +45,8 @@ def inflate(occ: np.ndarray, cells: int) -> np.ndarray:
 
 def _line_of_sight(occ: np.ndarray, a, b) -> bool:
     """Bresenham walk; True if no occupied cell between a and b."""
+    if _native.enabled():
+        return _native.line_of_sight(occ, a, b)
     r0, c0 = a
     r1, c1 = b
     dr, dc = abs(r1 - r0), abs(c1 - c0)
@@ -65,6 +71,8 @@ def _line_of_sight(occ: np.ndarray, a, b) -> bool:
 def _nearest_free(occ: np.ndarray, r: int, c: int, max_radius: int = 12):
     """Snap a cell to the nearest free cell (start/goal may sit inside an
     inflated boundary)."""
+    if _native.enabled():
+        return _native.nearest_free(occ, r, c, max_radius)
     ny, nx = occ.shape
     r = min(max(r, 0), ny - 1)
     c = min(max(c, 0), nx - 1)
@@ -94,6 +102,8 @@ def astar(occ: np.ndarray, start, goal, cost: np.ndarray | None = None):
     diameter makes the heuristic wildly inadmissible and A* degenerates toward
     Dijkstra, exploring the whole grid for a route it was always going to take.
     """
+    if _native.enabled():
+        return _native.astar(occ, start, goal, cost)
     ny, nx = occ.shape
     start = _nearest_free(occ, *start)
     goal = _nearest_free(occ, *goal)
@@ -140,6 +150,8 @@ def astar(occ: np.ndarray, start, goal, cost: np.ndarray | None = None):
 
 def simplify(occ: np.ndarray, path):
     """String-pull: keep only the corners needed to preserve line of sight."""
+    if _native.enabled():
+        return _native.simplify(occ, path)
     if not path or len(path) < 3:
         return path
     out = [path[0]]
