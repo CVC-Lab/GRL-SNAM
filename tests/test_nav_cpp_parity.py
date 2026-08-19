@@ -63,9 +63,7 @@ def test_planner_kernels_bit_identical(monkeypatch):
         ), "nearest_free"
 
         cost = (
-            rng.integers(0, 4, size=(rows, cols)).astype(np.float64)
-            if rng.integers(0, 2)
-            else None
+            rng.integers(0, 4, size=(rows, cols)).astype(np.float64) if rng.integers(0, 2) else None
         )
         assert nav_native.astar(inflated, (sr, sc), (gr, gc), cost) == planner.astar(
             inflated, (sr, sc), (gr, gc), cost=cost
@@ -107,9 +105,7 @@ def test_dispatch_routes_public_api_through_cpp(monkeypatch):
     assert np.array_equal(phi_native, phi_py)
 
 
-@pytest.mark.skipif(
-    not hasattr(pycvc, "nav_astar_batch"), reason="pycvc lacks the batch kernels"
-)
+@pytest.mark.skipif(not hasattr(pycvc, "nav_astar_batch"), reason="pycvc lacks the batch kernels")
 def test_batch_matches_per_agent(monkeypatch):
     """The threaded batch kernels (stage 4) return exactly what N per-agent
     calls return."""

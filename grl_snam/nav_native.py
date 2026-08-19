@@ -102,9 +102,7 @@ def astar_batch(occs, starts, goals, costs=None, num_threads=0):
     gl = np.ascontiguousarray(goals, np.int32)
     c = None if costs is None else np.ascontiguousarray(costs, np.float64)
     arrs = _pycvc.nav_astar_batch(occ, st, gl, c, int(num_threads))
-    return [
-        None if a.shape[0] == 0 else [(int(r), int(cc)) for r, cc in a] for a in arrs
-    ]
+    return [None if a.shape[0] == 0 else [(int(r), int(cc)) for r, cc in a] for a in arrs]
 
 
 def build_sdf_batch(occs, bounds, scale, num_threads=0):

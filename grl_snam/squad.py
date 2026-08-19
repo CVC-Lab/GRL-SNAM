@@ -219,9 +219,7 @@ class Squad:
 
     # ── the loop ────────────────────────────────────────────────────────────
     def _batch_enabled(self) -> bool:
-        return self.batched_planning and _native.enabled() and hasattr(
-            _native, "build_sdf_batch"
-        )
+        return self.batched_planning and _native.enabled() and hasattr(_native, "build_sdf_batch")
 
     def step(self) -> dict:
         self._stamp_peers()
