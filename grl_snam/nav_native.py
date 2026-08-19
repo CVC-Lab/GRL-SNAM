@@ -253,6 +253,43 @@ def coef_mlp_forward(path, feats, num_threads=0):
     return _pycvc.nav_coef_mlp_forward(str(path), f, int(num_threads))
 
 
+HAS_OCCUPANCY = AVAILABLE and hasattr(_pycvc, "nav_composite_occupancy")
+
+
+def to_occupancy(logodds, *, unknown="optimistic", p_thresh=0.5, band=0.15):
+    """Threshold a log-odds belief into a bool occupancy raster, bit-identical to
+    :meth:`grl_snam.belief.BeliefGrid.to_occupancy` (float32 sigmoid)."""
+    occ = _pycvc.nav_composite_occupancy(
+        np.ascontiguousarray(logodds, np.float32),
+        unknown,
+        float(p_thresh),
+        float(band),
+        None,
+        0.0,
+        4.0,
+    )
+    return occ.astype(bool)
+
+
+def composite_occupancy(
+    logodds, dyn_stamp, t_now, ttl_s, *, unknown="optimistic", p_thresh=0.5, band=0.15
+):
+    """to_occupancy OR the decaying dynamic layer, bit-identical to
+    :func:`grl_snam.belief.composite_occupancy`. ``dyn_stamp`` is the
+    :class:`~grl_snam.belief.DynamicLayer` ``_stamp`` raster (float64) or None."""
+    ds = None if dyn_stamp is None else np.ascontiguousarray(dyn_stamp, np.float64)
+    occ = _pycvc.nav_composite_occupancy(
+        np.ascontiguousarray(logodds, np.float32),
+        unknown,
+        float(p_thresh),
+        float(band),
+        ds,
+        float(t_now),
+        float(ttl_s),
+    )
+    return occ.astype(bool)
+
+
 HAS_DRIVE = AVAILABLE and hasattr(_pycvc, "nav_bicycle_rollout")
 
 
