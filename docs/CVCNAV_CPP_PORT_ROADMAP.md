@@ -353,3 +353,115 @@ def drive_enabled():
 - **Canonical `.cvcnav` home + provenance policy:** where the blessed weights live (libcvc test-data vs pycvc-published vs per-deployment bundle) (kept out of public repos where required); and whether the provenance trailer is required for an audit trail.
 
 Files to create are listed in §2; the two files to edit are `/home/joe/src/cvc/wt-libcvc-nav/src/cvc/CMakeLists.txt` (add headers ~L88, sources ~L171 next to `nav/grid_nav.cpp`) and `/home/joe/src/cvc/wt-libcvc-nav/bindings/pycvc/pycvc_nav.i` (append the marshalling), plus the new grl-snam `coef_export.py`, `nav_native.py` additions, and the parity tests under `/home/joe/src/cvc/wt-grl-snam-nav/tests/`.
+---
+
+## 10. Decisions on the §9 open questions
+
+### 10.1 Belief modes — ship all three, benchmark each
+
+`belief_mode` is a first-class knob with three values, each benchmarked (`bench_modes_nsub.py`):
+
+- **all-shared** (`M=1`) — one belief plane, the O(1)-map / thousands-of-agents path.
+- **clustered-shared** (`clusters=K`, `1<K<N`) — K groups each sharing a belief; isolation is structural.
+- **all-private** (`M=N`) — one belief per agent, the fog-of-war fidelity twin.
+
+The C++ `sim_world` carries the same `map_id[N]` seam, so all three are one data parameter in the port too;
+P6 sizes for whichever the deployment host actually needs (see the bench for the memory/parallelism trade).
+
+### 10.2 `nsub` — configurable, deployment default 1
+
+`nsub` (bicycle substeps per world dt) is now a `Swarm` constructor arg. `None` inherits the story's meta
+value (so the serial-navigator parity test, which reads the same meta, still holds); an explicit value
+overrides. **The deployment / C++-port default is `nsub=1`**; the goldens and gtests pin `nsub=1`, and the
+`bicycle_step` parity harness additionally exercises `nsub∈{2,4}` (the multi-substep transcendental
+accumulation) so a host that raises it stays covered. `nsub` scales only the drive (not the sense), so at
+the sense-bound steady state its effect is second-order; the drive-only sweep isolates it.
+
+### 10.3 Whole-drive validation — options beyond the behavioral gate
+
+The problem is chaos, not per-op error: the drive is float-equivalent (~1 ULP) to the torch reference, and
+the carrot FSM makes threshold decisions (`stall>70`, `moved<0.15`, `dg<best-1e-3`, `|p-wall_entry|>2.0`),
+so a sub-ULP sample difference can flip a decision on a *different* tick and separate the two trajectories
+without bound — while both remain perfectly valid drives. A single tight position tolerance over a long
+horizon is therefore the wrong test. Seven alternatives, and the recommended layering:
+
+| # | Option | What it validates | Tolerance reach | Cost |
+|---|---|---|---|---|
+| 1 | **Behavioral gate** (roadmap default) | outcome: reach-set, min-clearance no-regression, mode-flip rate < budget, every flip threshold-adjacent | loose, whole horizon | needs empirical budget calibration; a bug that doesn't change the outcome can slip |
+| 2 | **Reference-injection / lockstep** | feed C++ and torch the SAME upstream each tick (same carrot + same α,β,γ → test rollout alone; same phi/nrm → test MLP alone; same field+pos → test sampler alone) — re-sync every tick kills chaotic amplification | **tight** per-op (rtol 1e-4…1e-6), every tick | a lockstep harness; doesn't test the assembled long-horizon dynamics |
+| 3 | **FSM-decision replay** | record torch's discrete FSM transitions and force them into C++ → decisions can't diverge, so the CONTINUOUS math is comparable exactly | **tight**, full horizon | plumbing to inject FSM state; the FSM-on-drifted-phi decision still tested separately |
+| 4 | **Fixed-coefficient goldens** | bypass the MLP (constant α,β,γ) → rollout + FSM determinism without MLP variance | tight, per trajectory | doesn't test the MLP or the coupled MLP↔rollout loop |
+| 5 | **Threshold quantization** (opt-in, a *different* sim) | snap `phi/dg/moved` to a coarse grid before the threshold compares → both drives make identical decisions by construction | **bit-ish**, full horizon | changes behavior slightly (more robust/reproducible); goldens regenerate under it; could be the deploy default |
+| 6 | **Deterministic reference capture** (prereq) | pin torch nondeterminism (single-thread, TF32 off, deterministic algos, fixed BLAS) so "the reference" is itself reproducible | shrinks every budget | doesn't solve chaos; must document the capture env |
+| 7 | **Error-bound certification** | prove accumulated per-op error can't cross the nearest threshold within N ticks | a guarantee | heavy, brittle vs integer stall counters; overkill |
+| — | **Chase bit-identity** (match ATen reduction order) | — | — | infeasible for the MLP sgemm (BLAS/tile/thread-dependent); the 4-tap sampler *could* be bit-exact but buys nothing alone |
+
+**Recommendation — a layered gate, not one number:**
+- **L0** deterministic reference capture (6) — prerequisite.
+- **L1** per-op lockstep injection (2) — tight rtol on sampler / MLP / rollout individually.
+- **L2** FSM-decision replay (3) — tight, full-horizon check that the assembled *continuous* math tracks torch.
+- **L3** discrete-FSM test — given bit-identical inputs (which hold up to the sample), the FSM makes identical
+  decisions; a discrete-exact assertion.
+- **L4** behavioral gate (1) — the only *loose* layer, reserved for emergent whole-system behavior.
+- **Optional deploy lever:** threshold quantization (5) turns L4 tight and makes the drive
+  reproducible-by-construction, at the cost of being a slightly-different (more robust) simulator — offer it
+  as `fidelity="reproducible"`, never the silent default.
+
+This gives a tight, non-chaotic test for every numeric component *and* for the assembled continuous dynamics,
+and only leans on a loose gate for genuinely emergent behavior — which is where looseness is honest.
+
+### 10.4 Canonical `.cvcnav` weights location in the install prefix
+
+**`$PREFIX/share/cvc/nav/coef_mlp.cvcnav`** — following the cvcpkg payload convention (`$PREFIX/share/<pkg>/`,
+and libcvc's CMake package is `cvc`) and CMake's `CMAKE_INSTALL_DATADIR`. Install rule (P2):
+
+```cmake
+install(FILES ${CVC_NAV_WEIGHTS_FILE}
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/cvc/nav COMPONENT libcvc)
+```
+
+`coef_mlp::default_weights_path()` resolves in this order (first hit wins):
+1. an explicit path passed to `coef_mlp::load(path)` — tests, custom deployments;
+2. the `CVC_NAV_WEIGHTS` environment variable — redeploy without recompiling;
+3. `CVC_NAV_DATADIR "/coef_mlp.cvcnav"` — a constant baked into `inc/cvc/core/config.h.cmake` at configure
+   time as `${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/cvc/nav` (libcvc already generates `config.h`);
+4. a relocatable fallback resolved from the loaded libcvc `.so` via `dladdr` —
+   `<so_dir>/../share/cvc/nav/coef_mlp.cvcnav` — for prefix-relocated / cvcpkg installs where the baked
+   prefix moved.
+
+The exporter (`coef_export.py`, P2) writes the blessed weights into the build tree / test-data dir; the
+`libcvc` recipe packages `share/cvc/nav/`. This matches the cvcpkg prefix-payload layout (installed artifacts
+live in the prefix under `share/<pkg>/`, never the root).
+
+---
+
+## 11. Benchmarks — belief modes × nsub (measured)
+
+384² city, 32 cores, C++ `sense_batch` live, steady state (sense + rebuild every 4th tick, drive on the
+other 3), `nsub=1`. Reproduce with `python -m grl_snam.tools.belief_bench`.
+
+| N | all-shared (M=1) | clustered/8 | all-private (M=N) |
+|---|---|---|---|
+| 256 | 46 ms · 22 fps | **27 ms · 37 fps** | 203 ms · 5 fps |
+| 512 | 74 ms · 14 fps | **34 ms · 29 fps** | 435 ms · 2 fps |
+| 1024 | 144 ms · 7 fps | **53 ms · 19 fps** | 839 ms · 1 fps |
+| 2048 | 291 ms · 3 fps | **83 ms · 12 fps** | 1593 ms · 0.6 fps |
+| 4096 | 586 ms · 2 fps | **196 ms · 5 fps** | (memory) |
+
+**The drive is cheap; the sense raycast is the steady-state wall, and its parallelism = the plane count.**
+Breakdown at N=1024: sense `542 ms` (shared, single-threaded K=1) vs `101 ms` (clustered/8, 8-way) vs the
+drive `~17 ms` and one EDT `~11 ms`. So:
+- **shared (M=1)** — smallest footprint (one ~4 MB plane, one EDT), but the bit-identical sense *serializes*
+  (K=1 ⇒ one thread). Best when the map is largely known (drive-bound: thousands @ 60 Hz, `bench_swarm.py`).
+- **clustered/K** — the sweet spot: sense parallelizes K-way at K-EDT cost; **K ≈ cores** is optimal.
+- **private (M=N)** — sense fans out N-way but **N EDT rebuilds** dominate and memory is O(N); the fidelity
+  twin, best at the handful of agents it was designed for.
+
+`nsub` is **second-order at steady state** (sense dominates): shared N=4096 is 586/591/570 ms at nsub=1/2/4.
+In the **drive-only / known-map** regime `nsub` multiplies the drive roughly linearly (a direct
+throughput-vs-substep-accuracy trade), so a host raises it only where thin-wall tunnelling matters.
+
+**Top sense-side optimization (folds into the port):** the shared-mode raycast (the 542 ms) is *order-free*
+per agent — parallelize it across agents and keep only the cheap log-odds fold serial in ascending index →
+bit-identical, and shared-mode sense drops ~542 ms → ~40 ms at N=1024. Plus `pipeline_edt` (rebuild off the
+critical path) and staggered/subsampled sensing for shared belief.

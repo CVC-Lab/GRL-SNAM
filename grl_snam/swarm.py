@@ -104,6 +104,7 @@ class Swarm:
         device: str = "cpu",
         belief_mode: str = "shared",
         clusters=None,
+        nsub: int | None = None,
     ):
         if not specs:
             raise ValueError("a swarm needs at least one agent")
@@ -140,7 +141,12 @@ class Swarm:
         n = tpl.nav
         self.kw = dict(n.kw)
         self.veh = dict(n._veh)
-        self.nsub = int(n.nsub)
+        # Substeps per drive tick: how many times bicycle_rollout integrates the
+        # vehicle within one world dt (a thin wall can't be tunnelled at higher
+        # nsub). Configurable; None inherits the story's meta value (so the
+        # serial-navigator parity test, which reads the same meta, still holds).
+        # The deployment/C++-port default is 1 (see docs/CVCNAV_CPP_PORT_ROADMAP).
+        self.nsub = int(n.nsub) if nsub is None else max(1, int(nsub))
         self.dt = float(self.meta["dt"])
         self.a_max = float(self.veh["a_max"])
 
