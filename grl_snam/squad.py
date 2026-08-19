@@ -228,17 +228,31 @@ class Squad:
             sc.peer_occ = mask
 
     def _peer_neighbors(self, half_m: float):
-        """Footprint boxes for every agent + the in-range peer keys for each,
-        via a uniform spatial grid (bucket size = the query radius). A peer
-        farther than sensor_range + body is never sensed or hit, so omitting it
-        is bit-identical — and it cuts the all-pairs O(N^2) peer sweep to
-        ~O(N * local density)."""
-        boxes = {}
-        pos = {}
-        for k, sc in self.scenarios.items():
-            boxes[k] = self._footprint(sc, half_m)
-            pos[k] = sc.nav.pos_world()
+        """Footprint boxes for every agent + the in-range peer keys for each. A
+        peer farther than sensor_range + body is never sensed or hit, so
+        omitting it is bit-identical while cutting the all-pairs O(N^2) sweep to
+        ~O(N). The neighbour query itself is a CGAL Kd_tree fixed-radius search
+        (nav_native.neighbors) when the native kernels are present — a proper
+        spatial index, robust to clustering — with a pure-Python uniform spatial
+        hash as the fallback."""
+        items = list(self.scenarios.items())
+        keys = [k for k, _ in items]
+        navs = [sc.nav for _, sc in items]
+        boxes = {k: self._footprint(sc, half_m) for k, sc in items}
         r = self._peer_range + half_m
+
+        if _native.enabled() and hasattr(_native, "neighbors"):
+            # World positions in one vectorized pass, then the CGAL Kd_tree.
+            o = torch.cat([nav.o for nav in navs]).numpy()  # [N,2] normalized
+            n0 = navs[0]
+            positions = np.empty((len(navs), 2), np.float64)
+            positions[:, 0] = o[:, 0] / n0.S + n0.cx
+            positions[:, 1] = o[:, 1] / n0.S + n0.cy
+            idx = _native.neighbors(positions, r)
+            return boxes, {keys[i]: [keys[int(j)] for j in idx[i]] for i in range(len(keys))}
+
+        # Fallback: pure-Python uniform spatial hash (bucket = the query radius).
+        pos = {k: sc.nav.pos_world() for k, sc in items}
         inv = 1.0 / max(r, 1e-9)
         buckets: dict = {}
         for k, (x, y) in pos.items():

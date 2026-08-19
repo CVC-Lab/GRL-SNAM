@@ -119,3 +119,12 @@ def inflate_batch(occs, cells, num_threads=0):
     uint8 (0/1). Each plane is byte-identical to the serial :func:`inflate`."""
     occ = np.ascontiguousarray(occs, np.uint8)
     return _pycvc.nav_inflate_batch(occ, int(cells), int(num_threads))
+
+
+def neighbors(positions, radius):
+    """Fixed-radius neighbour query over ``positions`` (N,2) via a CGAL Kd_tree.
+    Returns a list of N index arrays: entry i holds the indices of every other
+    point within ``radius`` of point i. The specialized structure for the crowd
+    N-body query (peers within sensor range), robust to clustering."""
+    pos = np.ascontiguousarray(positions, np.float64)
+    return _pycvc.nav_neighbors(pos, float(radius))
