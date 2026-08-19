@@ -462,10 +462,16 @@ no longer caps sense parallelism. So:
 - **private (M=N)** — **N EDT rebuilds** dominate and memory is O(N); the fidelity twin, at a handful of
   agents. Unchanged by this optimization (EDT-bound, not raycast-bound).
 
-Scaling plateaus ~8 threads: the per-agent raycast stores + the full-grid gen-stamped scratch are
-memory-bandwidth-bound. **Next levers:** a window-local scratch (the FoV is a ~40×40 cell box, not the whole
-384² grid) + a flat CSR arena (drop the 3·N per-agent vector allocations); plus `pipeline_edt` (rebuild off
-the critical path) and staggered/subsampled sensing for shared belief.
+Scaling plateaus at ~4× (≈200 ms raycast @1024, num_threads 8→32 barely moves). **Measured cause: this box's
+memory subsystem, not the code.** The dev box is a dual-socket Xeon E5-2650 v2 — **16 physical cores + HT (32
+logical), 2 NUMA nodes, DDR3** — so a memory-touching parallel loop caps near ~4× (HT gives ~nothing on
+memory-bound work; cross-socket NUMA access on the per-agent stores throttles bandwidth). A **window-local
+scratch** (index the gen-stamped counts by FoV offset instead of the full grid) was implemented and measured:
+**no change** — the full-grid scratch was already cache-resident (a 40×40 window touches only ~40 strided
+cache lines), so it was reverted rather than ship complexity for nothing. The remaining lever on this hardware
+is **NUMA-aware allocation** (a flat per-socket arena for the Phase-A stores, first-touch on the owning
+socket); on a modern single-socket many-core box the current code should scale much further as-is. Independent
+of scaling: `pipeline_edt` (rebuild off the critical path) and staggered/subsampled sensing for shared belief.
 
 `nsub` is **second-order at steady state** (sense dominates): shared N=4096 is 586/591/570 ms at nsub=1/2/4.
 In the **drive-only / known-map** regime `nsub` multiplies the drive roughly linearly (a direct
