@@ -239,3 +239,15 @@ def sdf_sample(field, on, *, bounds, center, scale, map_id=None, num_threads=0):
     return _pycvc.nav_sdf_sample(
         f, o, mid, mnx, mny, mxx, mxy, cx, cy, float(scale), int(num_threads)
     )
+
+
+HAS_COEF_MLP = AVAILABLE and hasattr(_pycvc, "nav_coef_mlp_forward")
+
+
+def coef_mlp_forward(path, feats, num_threads=0):
+    """Forward ``feats`` ``(N,in)`` float32 through the torch-free C++ policy in
+    the ``.cvcnav`` file at ``path``; returns ``(N,out)`` float32 (alpha, beta,
+    gamma). Float-equivalent to :meth:`sdf_nav.CoefMLP.forward`. Export the file
+    with :func:`grl_snam.tools.coef_export.write_coef_mlp`."""
+    f = np.ascontiguousarray(feats, np.float32)
+    return _pycvc.nav_coef_mlp_forward(str(path), f, int(num_threads))
