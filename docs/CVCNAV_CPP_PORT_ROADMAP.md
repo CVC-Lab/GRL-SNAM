@@ -465,3 +465,9 @@ throughput-vs-substep-accuracy trade), so a host raises it only where thin-wall 
 per agent — parallelize it across agents and keep only the cheap log-odds fold serial in ascending index →
 bit-identical, and shared-mode sense drops ~542 ms → ~40 ms at N=1024. Plus `pipeline_edt` (rebuild off the
 critical path) and staggered/subsampled sensing for shared belief.
+
+---
+
+## 12. CUDA — see the separate assessment
+
+A decision-ready, code-verified CUDA assessment lives in [CVCNAV_CUDA_ASSESSMENT.md](CVCNAV_CUDA_ASSESSMENT.md). Bottom line: **not yet** — the one measured wall (single-threaded shared `sense_batch`) is a CPU decomposition artifact fixable bit-identically without a GPU (the raycast-parallelization); do that + the torch-free CPU drive first. A CUDA path is a conditional, device-resident, shared-belief, float-equivalent third twin that earns its keep only for a *named* deployment above the CPU ceiling measured on its **own** GPU. It found a real prerequisite bug: `--use_fast_math` is applied target-wide in `CMake/SetupCUDA.cmake`, which would silently break the float-equivalence contract for any future nav `.cu`.
