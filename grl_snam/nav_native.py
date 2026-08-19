@@ -251,3 +251,69 @@ def coef_mlp_forward(path, feats, num_threads=0):
     with :func:`grl_snam.tools.coef_export.write_coef_mlp`."""
     f = np.ascontiguousarray(feats, np.float32)
     return _pycvc.nav_coef_mlp_forward(str(path), f, int(num_threads))
+
+
+HAS_DRIVE = AVAILABLE and hasattr(_pycvc, "nav_bicycle_rollout")
+
+
+def coef_feats(field, on, goal, *, bounds, center, scale, map_id=None, num_threads=0):
+    """Coefficient-net features ``[phi, |goal-o|, gdir_x, gdir_y, gdir.normal]``,
+    float-equivalent to :func:`sdf_nav.coef_feats`. ``field`` ``(M,3,H,W)`` f32,
+    ``on``/``goal`` ``(N,2)`` f32 normalized, ``map_id`` ``(N,)`` int32 or None."""
+    f = np.ascontiguousarray(field, np.float32)
+    o = np.ascontiguousarray(on, np.float32)
+    g = np.ascontiguousarray(goal, np.float32)
+    mid = None if map_id is None else np.ascontiguousarray(map_id, np.int32)
+    mnx, mny, mxx, mxy = (float(b) for b in bounds)
+    return _pycvc.nav_coef_feats(
+        f,
+        o,
+        g,
+        mid,
+        mnx,
+        mny,
+        mxx,
+        mxy,
+        float(center[0]),
+        float(center[1]),
+        float(scale),
+        int(num_threads),
+    )
+
+
+def bicycle_rollout(
+    field, o, th, sp, goal, al, be, ga, *, bounds, center, scale, params, map_id=None, num_threads=0
+):
+    """One torch-free bicycle drive tick (``params['nsub']`` substeps), float-
+    equivalent to :func:`sdf_nav.bicycle_rollout` (steps=1). ``params`` carries
+    ``rr,d_hat,dt,vmax,L,delta_max,a_max,a_lat_max,k_steer,nsub,allow_reverse``.
+    Returns fresh ``(o, th, sp, minclr)`` f32; inputs are not mutated."""
+    f = np.ascontiguousarray(field, np.float32)
+    P = params
+    return _pycvc.nav_bicycle_rollout(
+        f,
+        np.ascontiguousarray(o, np.float32),
+        np.ascontiguousarray(th, np.float32),
+        np.ascontiguousarray(sp, np.float32),
+        np.ascontiguousarray(goal, np.float32),
+        np.ascontiguousarray(al, np.float32),
+        np.ascontiguousarray(be, np.float32),
+        np.ascontiguousarray(ga, np.float32),
+        None if map_id is None else np.ascontiguousarray(map_id, np.int32),
+        *(float(b) for b in bounds),
+        float(center[0]),
+        float(center[1]),
+        float(scale),
+        float(P["rr"]),
+        float(P["d_hat"]),
+        float(P["dt"]),
+        float(P["vmax"]),
+        float(P["L"]),
+        float(P["delta_max"]),
+        float(P["a_max"]),
+        float(P["a_lat_max"]),
+        float(P["k_steer"]),
+        int(P["nsub"]),
+        int(bool(P["allow_reverse"])),
+        int(num_threads),
+    )
