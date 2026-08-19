@@ -402,3 +402,83 @@ def drive_step(
         int(bool(P["allow_reverse"])),
         int(num_threads),
     )
+
+
+HAS_SIM_WORLD = AVAILABLE and hasattr(_pycvc, "nav_sim_world_create")
+
+
+class NativeSimWorld:
+    """A thin handle over the pure-C++ ``cvc::nav::sim_world`` — the torch-free
+    reactive swarm runtime. Build one with :func:`sim_world_from_swarm`, then
+    ``step()`` and read ``snapshot()`` (pos world, heading, speed, mode,
+    reached). This is what a C++ host embeds; the Python handle is for tests and
+    orchestration."""
+
+    def __init__(self, handle, n):
+        self._h = handle
+        self.n = int(n)
+
+    def step(self, num_threads=0):
+        _pycvc.nav_sim_world_step(self._h, int(num_threads))
+
+    def snapshot(self):
+        """(pos (N,2) world f32, heading f32, speed f32, mode i32, reached bool)."""
+        return _pycvc.nav_sim_world_snapshot(self._h)
+
+    def retarget(self, i, gx_n, gy_n):
+        _pycvc.nav_sim_world_retarget(self._h, int(i), float(gx_n), float(gy_n))
+
+
+def sim_world_from_swarm(sw, weights_path, *, truth, freeze_sense=False, sense_every=4):
+    """Build a :class:`NativeSimWorld` mirroring a shared-belief :class:`Swarm`'s
+    init (same poses, goals, colors, field prior, sensor / vehicle params and the
+    same ``.cvcnav`` policy) — the pure-C++ counterpart of the torch swarm."""
+    o = np.ascontiguousarray(sw.o.detach().cpu().numpy(), np.float32)
+    goal = np.ascontiguousarray(sw.goal.detach().cpu().numpy(), np.float32)
+    color = np.ascontiguousarray(sw.color.detach().cpu().numpy(), np.float32)
+    tr = np.ascontiguousarray(truth, np.uint8)
+    H, W = tr.shape
+    v, k = sw.veh, sw.kw
+    mnx, mny, mxx, mxy = sw.bounds
+    h = _pycvc.nav_sim_world_create(
+        tr,
+        tr,
+        str(weights_path),
+        o,
+        goal,
+        color,
+        H,
+        W,
+        mnx,
+        mny,
+        mxx,
+        mxy,
+        sw.cx,
+        sw.cy,
+        sw.scale,
+        sw.sensor.get("range_m", 60.0),
+        int(sw.sensor.get("n_rays", 240)),
+        float(sw.sensor.get("fov_rad", 2 * np.pi)),
+        k["rr"],
+        k["d_hat"],
+        k["dt"],
+        k["vmax"],
+        v["L"],
+        v["delta_max"],
+        v["a_max"],
+        v["a_lat_max"],
+        v["k_steer"],
+        int(sw.nsub),
+        int(bool(v["allow_reverse"])),
+        float(sw.reach_tol),
+        int(sense_every),
+        int(bool(freeze_sense)),
+        2.2,
+        -1.4,
+        8.0,
+        1,
+        0.5,
+        0.15,
+        4.0,
+    )
+    return NativeSimWorld(h, sw.N)
