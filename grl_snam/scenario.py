@@ -403,19 +403,20 @@ class FogScenario:
                 self._sense_rebuild = True
         return self._pending_occ
 
-    def _step_act(self) -> StepRecord:
-        """Post-plan half of a tick: build the field (unless a Squad already
-        batched it into self._pending_field) and replan, then drive the vehicle
-        and advance waypoints. Identical in effect to the rest of the old
-        step()."""
-        rebuilt = False
+    def _act_pre_drive(self) -> None:
+        """The part of the act half BEFORE the vehicle rollout: build the field
+        (unless a Squad batched it into self._pending_field) and replan, retarget
+        a moving goal, and aim the local controller at the route sub-goal. Leaves
+        self.nav ready to drive; a Squad rolls every agent forward in one batched
+        rollout between _act_pre_drive and _act_post_drive."""
+        self._rebuilt = False
         if self._sense_rebuild:
             if self._pending_field is not None:
                 self.nav.field = self._pending_field  # batched by the Squad
             else:
                 self.nav.field = self._build_field(self._pending_occ)
             self._replan_route(occ=self._pending_occ)
-            rebuilt = True
+            self._rebuilt = True
         self._pending_occ = None
         self._pending_field = None
         self._sense_rebuild = False
@@ -434,7 +435,9 @@ class FogScenario:
             # wall-follow escape machinery survives per-step retargeting.
             self.nav.track_goal(self._route_subgoal(), goal_index=self.wp_i)
 
-        m = self.nav.step()
+    def _act_post_drive(self, m) -> StepRecord:
+        """The part of the act half AFTER the vehicle rollout: waypoint
+        bookkeeping and the StepRecord, from the metrics `m` the drive produced."""
         self.step_i += 1
 
         # "Reached" means the USER waypoint, not the route sub-goal the
@@ -469,11 +472,18 @@ class FogScenario:
             reached_wp=reached_wp,
             goal_index=self.wp_i,
             mode=m.mode,
-            rebuilt=rebuilt,
+            rebuilt=self._rebuilt,
             truth_penetration=pen,
             belief_version=self.belief.version,
             goal_dist_m=m.goal_dist_m,
         )
+
+    def _step_act(self) -> StepRecord:
+        """Act half of a tick, run serially (pre-drive, drive, post-drive). A
+        Squad calls the three parts separately so it can batch the drive."""
+        self._act_pre_drive()
+        m = self.nav.step()
+        return self._act_post_drive(m)
 
     def step(self) -> StepRecord:
         """One tick. The two halves run back-to-back here (behaviour identical

@@ -240,6 +240,55 @@ class SDFField:
         return out[:, 0], nrm / (nrm.norm(dim=-1, keepdim=True) + 1e-6)
 
 
+class BatchedSDFField:
+    """N per-agent ``SDFField``s over one shared world, sampled in a single
+    ``grid_sample`` — batch element ``i`` samples field ``i``.
+
+    A squad's agents each have their own belief and therefore their own field,
+    but share the world (one ``Story`` => one bounds/center/scale). Stacking the
+    fields lets the coefficient net and the bicycle rollout run ONCE on ``[N]``
+    tensors instead of N calls on 1-element tensors — torch costs ~2,900x the
+    arithmetic on 1-element tensors, so this is the stage-2 win in
+    PERFORMANCE.md. ``sample`` is bit-identical to calling each field's own
+    :meth:`SDFField.sample`, so the drop-in stays a bit-identical twin."""
+
+    def __init__(self, field, mnx, mny, mxx, mxy, cx, cy, S):
+        self.field = field  # [N, 3, H, W]
+        self.mnx, self.mny, self.mxx, self.mxy = mnx, mny, mxx, mxy
+        self.cx, self.cy = cx, cy
+        self.S = S
+
+    @classmethod
+    def stack(cls, fields):
+        """Stack a list of :class:`SDFField` (all sharing bounds/center/scale)."""
+        f0 = fields[0]
+        return cls(
+            torch.cat([f.field for f in fields], 0),
+            f0.mnx,
+            f0.mny,
+            f0.mxx,
+            f0.mxy,
+            f0.cx,
+            f0.cy,
+            f0.S,
+        )
+
+    def sample(self, on: torch.Tensor):
+        """on: ``[N,2]`` -> ``(phi[N], unit_normal[N,2])``; row ``i`` samples field ``i``."""
+        wx = on[:, 0] / self.S + self.cx
+        wy = on[:, 1] / self.S + self.cy
+        gx = 2 * (wx - self.mnx) / (self.mxx - self.mnx) - 1
+        gy = 2 * (wy - self.mny) / (self.mxy - self.mny) - 1
+        grid = torch.stack([gx, gy], -1)[:, None, None]  # [N,1,1,2]
+        out = F.grid_sample(
+            self.field, grid, mode="bilinear", align_corners=True, padding_mode="border"
+        )[
+            :, :, 0, 0
+        ]  # [N,3]
+        nrm = out[:, 1:3]
+        return out[:, 0], nrm / (nrm.norm(dim=-1, keepdim=True) + 1e-6)
+
+
 def _ipc_dbdd(d: torch.Tensor, d_hat: float) -> torch.Tensor:
     """IPC barrier derivative (matches surrogate_robust's piecewise form)."""
     d = d.clamp_min(1e-6)

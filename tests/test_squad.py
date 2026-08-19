@@ -221,3 +221,72 @@ def test_stagger_assigns_distinct_phases():
     phases = [sc.sense_phase for sc in sq.scenarios.values()]
     assert len(set(phases)) > 1, "stagger did not spread the sense schedule"
     sq.run(max_steps=40, stop_when_done=False)  # runs clean
+
+
+# ── stage-2: batched vehicle rollout (bit-identical to serial) ───────────────
+
+import sdf_nav  # noqa: E402
+
+
+def _shared_model():
+    torch.manual_seed(0)
+    m = sdf_nav.CoefMLP()
+    m.eval()
+    return m
+
+
+def _tracks_model(agents, model, *, batched_drive):
+    sq = Squad(_small(), agents, model=model, batched_drive=batched_drive)
+    return sq.run(max_steps=90, stop_when_done=False).tracks, sq
+
+
+def test_batched_drive_matches_serial_to_float32():
+    """Rolling every agent forward in one batched bicycle_rollout matches the
+    serial path to float32 precision. It is NOT guaranteed byte-identical the way
+    the SDF/A* kernels are: torch's batched grid_sample/matmul can round
+    differently by up to ~1 float32 ULP for some inputs (bit-identical for the
+    first ~60 chained steps here, drifting to ~5e-7 by 120). So it is opt-in
+    (batched_drive=True) and asserted equal to within a tight float32 tolerance,
+    never gross divergence — a real indexing bug would diverge by metres.
+    Needs a SHARED model instance (a fresh per-agent CoefMLP would make the
+    agents non-interchangeable in the batch)."""
+    agents = [
+        AgentSpec("a", (-70.0, -60.0), (70.0, 60.0)),
+        AgentSpec("b", (-70.0, 60.0), (70.0, -60.0)),
+        AgentSpec("c", (0.0, -70.0), (0.0, 70.0)),
+    ]
+    model = _shared_model()
+    serial, _ = _tracks_model(agents, model, batched_drive=False)
+    batched, sq_b = _tracks_model(agents, model, batched_drive=True)
+    assert sq_b._can_batch_drive(), "drive batching did not engage for a shared-model squad"
+    for k in serial:
+        assert np.allclose(serial[k], batched[k], atol=1e-4, rtol=0.0), f"agent {k} diverged"
+
+
+def test_convoy_disables_drive_batch_and_stays_bit_identical():
+    """A FollowGoal reads its leader's pose mid-tick, so the drive is NOT
+    batched even with batched_drive=True (that would feed a stale pose); the
+    serial-drive fallback is bit-identical to the fully serial path."""
+    agents = [
+        AgentSpec("lead", (-70.0, -60.0), (70.0, 60.0)),
+        AgentSpec("follow", (-72.0, -62.0), (0.0, 0.0), moving_goal=FollowGoal("lead")),
+    ]
+    model = _shared_model()
+    serial, _ = _tracks_model(agents, model, batched_drive=False)
+    batched, sq_b = _tracks_model(agents, model, batched_drive=True)
+    assert not sq_b._can_batch_drive(), "a FollowGoal convoy must fall back to the serial drive"
+    for k in serial:
+        assert np.array_equal(serial[k], batched[k]), f"agent {k} diverged"
+
+
+def test_drive_batch_off_by_default_and_guarded():
+    """Off by default (twin stays byte-exact); on, it still needs one shared
+    model — model=None gives each agent its own CoefMLP, so they are not
+    interchangeable in one batched call."""
+    agents = [
+        AgentSpec("a", (-70.0, -60.0), (70.0, 60.0)),
+        AgentSpec("b", (-70.0, 60.0), (70.0, -60.0)),
+    ]
+    assert not Squad(_small(), agents, model=_shared_model())._can_batch_drive()  # default off
+    # opt-in but model=None -> fresh per-agent models -> still off
+    assert not Squad(_small(), agents, batched_drive=True)._can_batch_drive()

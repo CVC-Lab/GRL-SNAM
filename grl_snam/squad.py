@@ -24,6 +24,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+import torch
+
+import sdf_nav
 
 from . import nav_native as _native
 from .fog_stories import Story, build_scenario
@@ -108,6 +111,7 @@ class Squad:
         truth_occ=None,
         prior_occ=None,
         batched_planning: bool = True,
+        batched_drive: bool = False,
         stagger_sense: bool = False,
     ):
         if not agents:
@@ -149,6 +153,15 @@ class Squad:
         # insertion-ordered acting, both preserved — so it stays on whenever the
         # native kernels are present. All agents share the world's bounds/scale.
         self.batched_planning = bool(batched_planning)
+        # Batching the vehicle rollout across agents (one torch call on [N]
+        # tensors) is a separate, OPT-IN switch. Unlike the SDF/A* kernels — which
+        # are integer/float64-exact and stay bit-identical — torch's batched
+        # grid_sample/matmul can round differently from the serial path by up to
+        # ~1 float32 ULP for some inputs, which a chaotic navigator amplifies over
+        # a long episode. So it defaults OFF (the twin stays byte-exact) and is
+        # enabled only when the caller wants the throughput and accepts a
+        # trajectory that matches the serial one to float32 precision, not bit.
+        self.batched_drive = bool(batched_drive)
         first = next(iter(self.scenarios.values()))
         self._bounds = first.bounds
         self._scale = first.scale
@@ -219,26 +232,97 @@ class Squad:
 
     # ── the loop ────────────────────────────────────────────────────────────
     def _batch_enabled(self) -> bool:
+        """The SDF build can be batched across agents (needs the native kernels)."""
         return self.batched_planning and _native.enabled() and hasattr(_native, "build_sdf_batch")
+
+    def _can_batch_drive(self) -> bool:
+        """Whether this tick will batch the vehicle rollout across agents (one
+        torch call on [N] tensors — PERFORMANCE.md stage 2). Requires the opt-in
+        ``batched_drive`` flag (it matches the serial path to float32 precision,
+        not bit — see __init__) AND that the agents are interchangeable in that
+        call: all in bicycle mode, sharing ONE model instance and identical
+        vehicle/integration params, and none reading a peer's LIVE pose. A
+        FollowGoal reads its leader mid-tick, which the all-pre-drive-then-drive
+        order would feed a stale pose — so a convoy falls back to the serial
+        act."""
+        if not self.batched_drive:
+            return False
+        if any(isinstance(a.moving_goal, FollowGoal) for a in self.agents):
+            return False
+        navs = [sc.nav for sc in self.scenarios.values()]
+        n0 = navs[0]
+        if n0._dyn != "bicycle":
+            return False
+        return all(
+            nav._dyn == "bicycle"
+            and nav.model is n0.model
+            and nav._veh == n0._veh
+            and nav.kw == n0.kw
+            and nav.nsub == n0.nsub
+            for nav in navs
+        )
+
+    @torch.no_grad()
+    def _batched_drive(self) -> dict:
+        """Roll every agent forward one step in a single batched rollout and
+        distribute the new pose + metrics. Bit-identical to N serial
+        ``SdfNavigator.step`` calls: the coefficient net and ``bicycle_rollout``
+        are elementwise across the batch, and each agent's ``BatchedSDFField``
+        plane is exactly its own field."""
+        items = list(self.scenarios.items())
+        navs = [sc.nav for _, sc in items]
+        n0 = navs[0]
+        gts = torch.cat([nav._plan_carrot() for nav in navs])  # [N,2]
+        o = torch.cat([nav.o for nav in navs])  # [N,2]
+        th = torch.cat([nav.th for nav in navs])  # [N]
+        sp = torch.cat([nav.sp for nav in navs])  # [N]
+        bfield = sdf_nav.BatchedSDFField.stack([nav.field for nav in navs])
+        al, be, ga = n0.model(sdf_nav.coef_feats(bfield, o, gts))
+        no, nth, nsp, _ = sdf_nav.bicycle_rollout(
+            bfield, o, th, sp, gts, al, be, ga, 1, nsub=n0.nsub, **n0.kw, **n0._veh
+        )
+        metrics = {}
+        for i, (k, sc) in enumerate(items):
+            nav = sc.nav
+            nav.o = no[i : i + 1]
+            nav.th = nth[i : i + 1]
+            nav.sp = nsp[i : i + 1]
+            head = torch.stack([torch.cos(nav.th), torch.sin(nav.th)], -1)
+            nav.v = nav.sp.unsqueeze(-1) * head
+            nav.step_i += 1
+            metrics[k] = nav._metrics(al[i : i + 1], be[i : i + 1], ga[i : i + 1])
+        return metrics
 
     def step(self) -> dict:
         self._stamp_peers()
         out = {}
-        if self._batch_enabled():
+        sdf_batch = self._batch_enabled()
+        drive_batch = self._can_batch_drive()
+        if sdf_batch or drive_batch:
             # Phase 1 — sense every agent; _step_sense returns the composited
             # occupancy for those that must rebuild their SDF (else None).
             pending = [(k, sc) for k, sc in self.scenarios.items() if sc._step_sense() is not None]
-            # Phase 2 — build all pending SDFs in one threaded call, and hand
-            # each finished field back to its agent.
-            if pending:
+            # Phase 2 — build all pending SDFs in one threaded call (native only).
+            if sdf_batch and pending:
                 occs = np.stack([sc._pending_occ for _, sc in pending])
                 fields = _native.build_sdf_batch(occs, self._bounds, self._scale)
                 for (_, sc), (phi, nx_g, ny_g) in zip(pending, fields):
                     sc._pending_field = sc._finalize_field(phi, nx_g, ny_g)
-            # Phase 3 — act, in insertion order (so a FollowGoal convoy reads its
-            # leader's post-step pose exactly as in the serial path).
-            for k, sc in self.scenarios.items():
-                out[k] = sc._step_act()
+            if drive_batch:
+                # Phases 3-5 — pre-drive all (no FollowGoal, so nobody reads a
+                # peer's live pose), roll the whole squad forward in one batched
+                # rollout, then post-drive all.
+                for _, sc in self.scenarios.items():
+                    sc._act_pre_drive()
+                metrics = self._batched_drive()
+                for k, sc in self.scenarios.items():
+                    out[k] = sc._act_post_drive(metrics[k])
+            else:
+                # Per-agent act, in insertion order (so a FollowGoal convoy reads
+                # its leader's post-step pose exactly as in the serial path); each
+                # agent's SDF build was already batched into _pending_field.
+                for k, sc in self.scenarios.items():
+                    out[k] = sc._step_act()
         else:
             for k, sc in self.scenarios.items():
                 out[k] = sc.step()
