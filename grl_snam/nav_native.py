@@ -112,3 +112,10 @@ def build_sdf_batch(occs, bounds, scale, num_threads=0):
     mnx, mny, mxx, mxy = (float(b) for b in bounds)
     s = _pycvc.nav_build_sdf_batch(occ, mnx, mny, mxx, mxy, float(scale), int(num_threads))
     return [(s[i, 0], s[i, 1], s[i, 2]) for i in range(s.shape[0])]
+
+
+def inflate_batch(occs, cells, num_threads=0):
+    """Batched 4-connected dilation over ``occs`` (N,H,W). Returns (N,H,W)
+    uint8 (0/1). Each plane is byte-identical to the serial :func:`inflate`."""
+    occ = np.ascontiguousarray(occs, np.uint8)
+    return _pycvc.nav_inflate_batch(occ, int(cells), int(num_threads))

@@ -338,8 +338,11 @@ class Squad:
             ):
                 reb = [sc for sc in self.scenarios.values() if sc._sense_rebuild and sc.use_planner]
                 if reb:
-                    inp = [sc._replan_inputs() for sc in reb]
-                    grids = np.stack([g for g, _, _, _ in inp])
+                    # Batch the dilation too (all agents share inflate_cells),
+                    # then hand each its inflated grid into _replan_inputs.
+                    occs = np.stack([sc._pending_occ for sc in reb])
+                    grids = _native.inflate_batch(occs, reb[0].planner.inflate_cells)
+                    inp = [sc._replan_inputs(grids[i]) for i, sc in enumerate(reb)]
                     starts = np.array([s for _, s, _, _ in inp], np.int32)
                     goals = np.array([gc for _, _, gc, _ in inp], np.int32)
                     routes = _native.astar_batch(grids, starts, goals, None)

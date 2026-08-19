@@ -331,17 +331,20 @@ class FogScenario:
         if self.planner.route_length(fresh) < 0.8 * keep_len:
             self.route = fresh
 
-    def _replan_inputs(self):
-        """The batchable half of the sense-tick replan: inflate `_pending_occ`
-        once and return this agent's A* inputs (grid, start cell, goal cell,
-        cost) so a Squad can run one `astar_batch` across all rebuilding agents.
-        Stashes what `_replan_commit` needs. Returns None if not planning."""
+    def _replan_inputs(self, grid=None):
+        """The batchable half of the sense-tick replan: return this agent's A*
+        inputs (grid, start cell, goal cell, cost) so a Squad can run one
+        `astar_batch` across all rebuilding agents. `grid` may be a
+        pre-inflated grid (from a batched `inflate_batch`); otherwise this
+        inflates `_pending_occ`. Stashes what `_replan_commit` needs; returns
+        None if not planning."""
         if not self.use_planner:
             return None
         here = tuple(self.nav.pos_world())
         goal = tuple(self.waypoints[self.wp_i])
         cost = self.route_cost_fn() if self.route_cost_fn is not None else None
-        grid = inflate(self._pending_occ, self.planner.inflate_cells)
+        if grid is None:
+            grid = inflate(self._pending_occ, self.planner.inflate_cells)
         self._replan_grid = grid
         self._replan_here = here
         self._replan_cost = cost
