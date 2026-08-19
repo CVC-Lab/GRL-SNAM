@@ -58,8 +58,20 @@ def test_knowledge_diverges_between_agents():
 def test_agents_are_real_to_each_other():
     """A peer is stamped into the OTHER agents' truth, so it occludes and has
     to be discovered — never into its own, or it would map itself as an
-    obstacle and refuse to move."""
-    sq = Squad(_small(), _agents())
+    obstacle and refuse to move.
+
+    The two agents start WITHIN sensor range of each other: peer stamping only
+    covers peers an agent could actually sense (the spatial-hash prune that
+    keeps the squad ~O(N) instead of O(N^2)), so a peer 120 m away with a 38 m
+    sensor is deliberately NOT stamped — it could never be seen anyway.
+    """
+    sq = Squad(
+        _small(),
+        [
+            AgentSpec("a", (-70.0, -8.0), (70.0, 0.0)),
+            AgentSpec("b", (-70.0, 8.0), (70.0, 8.0)),
+        ],
+    )
     sq._stamp_peers()
     a, b = sq.scenarios["a"], sq.scenarios["b"]
 
@@ -290,3 +302,33 @@ def test_drive_batch_off_by_default_and_guarded():
     assert not Squad(_small(), agents, model=_shared_model())._can_batch_drive()  # default off
     # opt-in but model=None -> fresh per-agent models -> still off
     assert not Squad(_small(), agents, batched_drive=True)._can_batch_drive()
+
+
+def test_peer_spatial_hash_prunes_far_and_matches_all_pairs():
+    """The spatial-hash peer prune is bit-identical to the O(N^2) all-pairs
+    sweep: a peer beyond sensor range is never sensed or hit, so skipping its
+    stamp changes no trajectory. Forcing the query radius to infinity recovers
+    the all-pairs behaviour; the two must agree exactly."""
+    agents = [
+        AgentSpec(f"a{i}", (-60.0 + (i % 6) * 3.0, -60.0 + (i // 6) * 3.0), (60.0, 60.0))
+        for i in range(18)
+    ]
+    hashed = Squad(_small(), agents).run(max_steps=60, stop_when_done=False).tracks
+    allpairs = Squad(_small(), agents)
+    allpairs._peer_range = 1e18  # every peer is a "neighbour" -> all-pairs
+    allpairs = allpairs.run(max_steps=60, stop_when_done=False).tracks
+    for k in hashed:
+        assert np.array_equal(hashed[k], allpairs[k]), f"agent {k} diverged from all-pairs"
+
+    # a far peer (120 m, past the 38 m sensor) is pruned; a near one is not
+    sq = Squad(
+        _small(),
+        [
+            AgentSpec("near", (0.0, 0.0), (60.0, 0.0)),
+            AgentSpec("far", (0.0, 90.0), (60.0, 90.0)),
+            AgentSpec("x", (2.0, 0.0), (60.0, 2.0)),
+        ],
+    )
+    _, neigh = sq._peer_neighbors(4.0)
+    assert "x" in neigh["near"] and "far" not in neigh["near"]
+    assert neigh["far"] == []

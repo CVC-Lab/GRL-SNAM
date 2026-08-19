@@ -166,6 +166,16 @@ class Squad:
         first = next(iter(self.scenarios.values()))
         self._bounds = first.bounds
         self._scale = first.scale
+        # A peer only matters to an agent within its SENSOR range — beyond that
+        # it is neither sensed nor collided with. So peer stamping / demotion
+        # only ever needs nearby peers, found with a uniform spatial hash: that
+        # turns the O(N^2) all-pairs sweep (the scaling wall past ~100 agents)
+        # into ~O(N), bit-identically. This is the max world distance at which a
+        # peer's body edge can still fall inside some agent's sensor cone.
+        self._peer_range = (
+            max((sc.sensor.get("range_m", 60.0) for sc in self.scenarios.values()), default=60.0)
+            + 2.0 * first.cell_m
+        )
         # Stagger the sense/rebuild/replan schedule so the agents do not all pay
         # the sense tick on the same frame (the worst frame, not the mean, is
         # what a 30 Hz loop must fit). Off by default: it shifts each agent's
@@ -202,15 +212,49 @@ class Squad:
         scored against. A mask the scenario ORs in is order-independent and
         cannot be clobbered.
         """
-        boxes = {k: self._footprint(sc, half_m) for k, sc in self.scenarios.items()}
+        boxes, neigh = self._peer_neighbors(half_m)
         for k, sc in self.scenarios.items():
+            near = neigh[k]
+            if not near:
+                sc.peer_occ = None  # no peer in range: nothing to sense or hit
+                continue
             mask = np.zeros(sc.truth.shape, dtype=bool)
-            for j, box in boxes.items():
-                if j == k or box is None:
+            for j in near:
+                box = boxes[j]
+                if box is None:
                     continue
                 r0, r1, c0, c1 = box
                 mask[r0:r1, c0:c1] = True
             sc.peer_occ = mask
+
+    def _peer_neighbors(self, half_m: float):
+        """Footprint boxes for every agent + the in-range peer keys for each,
+        via a uniform spatial grid (bucket size = the query radius). A peer
+        farther than sensor_range + body is never sensed or hit, so omitting it
+        is bit-identical — and it cuts the all-pairs O(N^2) peer sweep to
+        ~O(N * local density)."""
+        boxes = {}
+        pos = {}
+        for k, sc in self.scenarios.items():
+            boxes[k] = self._footprint(sc, half_m)
+            pos[k] = sc.nav.pos_world()
+        r = self._peer_range + half_m
+        inv = 1.0 / max(r, 1e-9)
+        buckets: dict = {}
+        for k, (x, y) in pos.items():
+            buckets.setdefault((int(np.floor(x * inv)), int(np.floor(y * inv))), []).append(k)
+        r2 = r * r
+        neigh: dict = {}
+        for k, (x, y) in pos.items():
+            bx, by = int(np.floor(x * inv)), int(np.floor(y * inv))
+            near = []
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for j in buckets.get((bx + dx, by + dy), ()):
+                        if j != k and (pos[j][0] - x) ** 2 + (pos[j][1] - y) ** 2 <= r2:
+                            near.append(j)
+            neigh[k] = near
+        return boxes, neigh
 
     def _demote_peers(self, half_m: float = 4.0) -> None:
         """A peer the sensor just saw belongs in the DECAYING layer.
@@ -219,11 +263,12 @@ class Squad:
         leaves a permanent wall along its path and every later route detours
         around a corridor nobody is in.
         """
-        boxes = {k: self._footprint(sc, half_m) for k, sc in self.scenarios.items()}
+        boxes, neigh = self._peer_neighbors(half_m)
         for k, sc in self.scenarios.items():
             t = sc._t()
-            for j, box in boxes.items():
-                if j == k or box is None:
+            for j in neigh[k]:
+                box = boxes[j]
+                if box is None:
                     continue
                 r0, r1, c0, c1 = box
                 if not sc.belief.last_visible[r0:r1, c0:c1].any():
