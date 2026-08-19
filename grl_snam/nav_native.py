@@ -482,3 +482,45 @@ def sim_world_from_swarm(sw, weights_path, *, truth, freeze_sense=False, sense_e
         4.0,
     )
     return NativeSimWorld(h, sw.N)
+
+
+HAS_SIM_THREAD = AVAILABLE and hasattr(_pycvc, "nav_sim_thread_create")
+
+
+class NativeSimThread:
+    """Run a :class:`NativeSimWorld` off the render thread — the C++
+    ``cvc::nav::sim_thread``. The worker is a real thread that never touches the
+    GIL (it runs only cvc::nav kernels), so it advances genuinely concurrently
+    with Python; ``read()`` is a lock-free snapshot the renderer never blocks
+    the sim to take."""
+
+    def __init__(self, sim_world, hz=60.0):
+        self._sw = sim_world  # keep the NativeSimWorld (and its capsule) alive
+        self._h = _pycvc.nav_sim_thread_create(sim_world._h, float(hz))
+
+    def start(self):
+        _pycvc.nav_sim_thread_start(self._h)
+
+    def stop(self):
+        _pycvc.nav_sim_thread_stop(self._h)
+
+    def read(self):
+        """(pos (N,2) world, heading, speed, mode, reached, tick) or None."""
+        return _pycvc.nav_sim_thread_read(self._h)
+
+    def retarget(self, i, gx_n, gy_n):
+        _pycvc.nav_sim_thread_retarget(self._h, int(i), float(gx_n), float(gy_n))
+
+    def set_paused(self, paused):
+        _pycvc.nav_sim_thread_set_paused(self._h, int(bool(paused)))
+
+    def set_rate(self, hz):
+        _pycvc.nav_sim_thread_set_rate(self._h, float(hz))
+
+    @property
+    def ticks(self):
+        return _pycvc.nav_sim_thread_ticks(self._h)
+
+    @property
+    def behind(self):
+        return _pycvc.nav_sim_thread_behind(self._h)
