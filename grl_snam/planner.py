@@ -188,13 +188,17 @@ class BeliefRoutePlanner:
         pts = np.asarray(route, np.float64)
         return float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum())
 
-    def route_valid(self, occ: np.ndarray, route) -> bool:
+    def route_valid(self, occ: np.ndarray, route, *, inflated: np.ndarray | None = None) -> bool:
         """Is an existing route still collision-free under NEW (inflated)
         occupancy? The hysteresis test: a route is only abandoned when belief
-        actually invalidates it, or a decisively better one exists."""
+        actually invalidates it, or a decisively better one exists.
+
+        ``inflated`` lets a caller that already inflated this same ``occ`` (e.g.
+        for a :meth:`plan` in the same tick) pass the grid in and skip the second
+        dilation — the single biggest per-tick cost at scale."""
         if not route or len(route) < 2:
             return False
-        grid = inflate(occ, self.inflate_cells)
+        grid = inflate(occ, self.inflate_cells) if inflated is None else inflated
         cells = [self._w2c(x, y) for x, y in route]
         for a, b in zip(cells, cells[1:]):
             if not (0 <= a[0] < self.ny and 0 <= a[1] < self.nx):
@@ -203,7 +207,15 @@ class BeliefRoutePlanner:
                 return False
         return True
 
-    def plan(self, occ: np.ndarray, start_world, goal_world, cost: np.ndarray | None = None):
+    def plan(
+        self,
+        occ: np.ndarray,
+        start_world,
+        goal_world,
+        cost: np.ndarray | None = None,
+        *,
+        inflated: np.ndarray | None = None,
+    ):
         """World route [start..goal] over the (belief) occupancy, or None if
         the goal is unreachable *in belief* — which the caller should surface,
         not paper over (an unroutable click deserves a 'no route', not a
@@ -215,8 +227,11 @@ class BeliefRoutePlanner:
         covering every corridor degrades to the shortest path rather than
         stranding the agent. That is the intended failure mode — an expensive
         route beats no route.
+
+        ``inflated`` is the same optimization as :meth:`route_valid`'s: pass a
+        grid already inflated from this ``occ`` to skip the dilation.
         """
-        grid = inflate(occ, self.inflate_cells)
+        grid = inflate(occ, self.inflate_cells) if inflated is None else inflated
         cells = astar(grid, self._w2c(*start_world), self._w2c(*goal_world), cost=cost)
         if cells is None:
             return None

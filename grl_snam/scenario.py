@@ -36,7 +36,7 @@ import sdf_nav
 
 from .belief import BeliefGrid, DynamicLayer, composite_occupancy
 from .nav import SdfNavigator
-from .planner import BeliefRoutePlanner
+from .planner import BeliefRoutePlanner, inflate
 
 
 @dataclass
@@ -314,13 +314,17 @@ class FogScenario:
         # the seam a downstream package (e.g. an RF-aware planner) plugs a cost
         # surface into without this module growing a dependency on the domain.
         cost = self.route_cost_fn() if self.route_cost_fn is not None else None
-        fresh = self.planner.plan(occ, here, goal, cost=cost)
+        # Inflate ONCE and reuse for both plan() and route_valid() — the
+        # dilation is the single biggest per-tick cost at scale, and both would
+        # otherwise recompute it from the same occ. Same grid => bit-identical.
+        grid = inflate(occ, self.planner.inflate_cells)
+        fresh = self.planner.plan(occ, here, goal, cost=cost, inflated=grid)
         if fresh is None:
             self.no_route = True
             self.route = None
             return
         self.no_route = False
-        if force or not self.planner.route_valid(occ, self.route):
+        if force or not self.planner.route_valid(occ, self.route, inflated=grid):
             self.route = [here] + fresh[1:] if len(fresh) > 1 else fresh
             return
         keep_len = self.planner.route_length([here] + self.route[1:])
