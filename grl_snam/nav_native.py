@@ -524,3 +524,37 @@ class NativeSimThread:
     @property
     def behind(self):
         return _pycvc.nav_sim_thread_behind(self._h)
+
+
+HAS_CUDA_DRIVE = AVAILABLE and hasattr(_pycvc, "nav_drive_step_cuda")
+
+
+def drive_step_cuda(field, o, th, sp, carrot, weights_path, *, bounds, center, scale, params):
+    """The GPU fused drive tick (nav/drive.cu), float-equivalent to
+    :func:`drive_step` / the torch drive. Shared field (plane 0). Raises if this
+    pycvc was built without CUDA or no CUDA device is available."""
+    f = np.ascontiguousarray(field, np.float32)
+    P = params
+    return _pycvc.nav_drive_step_cuda(
+        f,
+        np.ascontiguousarray(o, np.float32),
+        np.ascontiguousarray(th, np.float32),
+        np.ascontiguousarray(sp, np.float32),
+        np.ascontiguousarray(carrot, np.float32),
+        str(weights_path),
+        *(float(b) for b in bounds),
+        float(center[0]),
+        float(center[1]),
+        float(scale),
+        float(P["rr"]),
+        float(P["d_hat"]),
+        float(P["dt"]),
+        float(P["vmax"]),
+        float(P["L"]),
+        float(P["delta_max"]),
+        float(P["a_max"]),
+        float(P["a_lat_max"]),
+        float(P["k_steer"]),
+        int(P["nsub"]),
+        int(bool(P["allow_reverse"])),
+    )
