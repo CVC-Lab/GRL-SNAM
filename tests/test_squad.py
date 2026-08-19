@@ -166,3 +166,58 @@ def test_a_peer_in_sensor_range_is_actually_discovered():
     assert any(
         s.dyn.occupancy(s._t()).any() for s in sq.scenarios.values()
     ), "no peer was ever sensed, so peers are still not real to each other"
+
+
+# ── stage-4: batched planning (bit-identical to serial) ──────────────────────
+
+from grl_snam import nav_native  # noqa: E402
+from grl_snam.squad import FollowGoal  # noqa: E402
+
+_HAVE_BATCH = nav_native.enabled() and hasattr(nav_native, "build_sdf_batch")
+
+
+def _tracks(agents, *, batched):
+    sq = Squad(_small(), agents, batched_planning=batched)
+    return sq.run(max_steps=120, stop_when_done=False).tracks
+
+
+@pytest.mark.skipif(not _HAVE_BATCH, reason="pycvc batch kernels unavailable")
+@pytest.mark.parametrize(
+    "agents",
+    [
+        [  # independent agents
+            AgentSpec("a", (-70.0, -60.0), (70.0, 60.0)),
+            AgentSpec("b", (-70.0, 60.0), (70.0, -60.0)),
+            AgentSpec("c", (0.0, -70.0), (0.0, 70.0)),
+        ],
+        [  # a FollowGoal convoy — the order-sensitive case
+            AgentSpec("lead", (-70.0, -60.0), (70.0, 60.0)),
+            AgentSpec("follow", (-72.0, -62.0), (0.0, 0.0), moving_goal=FollowGoal("lead")),
+        ],
+    ],
+    ids=["independent", "convoy"],
+)
+def test_batched_planning_is_bit_identical_to_serial(agents):
+    """Batching the SDF build across agents is an optimization, not a behaviour
+    change: agents couple only through the tick-start peer stamp and
+    insertion-ordered acting, both preserved by the sense/act split."""
+    serial = _tracks(agents, batched=False)
+    batched = _tracks(agents, batched=True)
+    assert set(serial) == set(batched)
+    for k in serial:
+        assert np.array_equal(serial[k], batched[k]), f"agent {k} diverged"
+
+
+def test_stagger_assigns_distinct_phases():
+    sq = Squad(
+        _small(),
+        [
+            AgentSpec("a", (-70.0, -60.0), (70.0, 60.0)),
+            AgentSpec("b", (-70.0, 60.0), (70.0, -60.0)),
+            AgentSpec("c", (0.0, -70.0), (0.0, 70.0)),
+        ],
+        stagger_sense=True,
+    )
+    phases = [sc.sense_phase for sc in sq.scenarios.values()]
+    assert len(set(phases)) > 1, "stagger did not spread the sense schedule"
+    sq.run(max_steps=40, stop_when_done=False)  # runs clean

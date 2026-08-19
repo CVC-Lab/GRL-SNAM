@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from . import nav_native as _native
 from .fog_stories import Story, build_scenario
 
 
@@ -106,6 +107,8 @@ class Squad:
         seed: int = 0,
         truth_occ=None,
         prior_occ=None,
+        batched_planning: bool = True,
+        stagger_sense: bool = False,
     ):
         if not agents:
             raise ValueError("a squad needs at least one agent")
@@ -138,6 +141,24 @@ class Squad:
                 s, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ
             )
         self.step_i = 0
+
+        # Stage-4 batching (PERFORMANCE.md): build every agent's SDF in one
+        # threaded, GIL-releasing call between the sense and act halves of a
+        # tick, instead of N serial builds. The result is bit-identical to the
+        # serial path — agents couple only through the tick-start peer stamp and
+        # insertion-ordered acting, both preserved — so it stays on whenever the
+        # native kernels are present. All agents share the world's bounds/scale.
+        self.batched_planning = bool(batched_planning)
+        first = next(iter(self.scenarios.values()))
+        self._bounds = first.bounds
+        self._scale = first.scale
+        # Stagger the sense/rebuild/replan schedule so the agents do not all pay
+        # the sense tick on the same frame (the worst frame, not the mean, is
+        # what a 30 Hz loop must fit). Off by default: it shifts each agent's
+        # schedule, so it changes trajectories and existing golden traces.
+        if stagger_sense:
+            for i, sc in enumerate(self.scenarios.values()):
+                sc.sense_phase = i % sc.sense_every
 
     # ── the shared world ────────────────────────────────────────────────────
     def _footprint(self, sc, half_m: float) -> tuple[int, int, int, int] | None:
@@ -197,11 +218,32 @@ class Squad:
                 sc.dyn.mark((r0 + r1) // 2, (c0 + c1) // 2, t, radius_cells=(r1 - r0) // 2 or 1)
 
     # ── the loop ────────────────────────────────────────────────────────────
+    def _batch_enabled(self) -> bool:
+        return self.batched_planning and _native.enabled() and hasattr(
+            _native, "build_sdf_batch"
+        )
+
     def step(self) -> dict:
         self._stamp_peers()
         out = {}
-        for k, sc in self.scenarios.items():
-            out[k] = sc.step()
+        if self._batch_enabled():
+            # Phase 1 — sense every agent; _step_sense returns the composited
+            # occupancy for those that must rebuild their SDF (else None).
+            pending = [(k, sc) for k, sc in self.scenarios.items() if sc._step_sense() is not None]
+            # Phase 2 — build all pending SDFs in one threaded call, and hand
+            # each finished field back to its agent.
+            if pending:
+                occs = np.stack([sc._pending_occ for _, sc in pending])
+                fields = _native.build_sdf_batch(occs, self._bounds, self._scale)
+                for (_, sc), (phi, nx_g, ny_g) in zip(pending, fields):
+                    sc._pending_field = sc._finalize_field(phi, nx_g, ny_g)
+            # Phase 3 — act, in insertion order (so a FollowGoal convoy reads its
+            # leader's post-step pose exactly as in the serial path).
+            for k, sc in self.scenarios.items():
+                out[k] = sc._step_act()
+        else:
+            for k, sc in self.scenarios.items():
+                out[k] = sc.step()
         self._demote_peers()
         self.step_i += 1
         return out

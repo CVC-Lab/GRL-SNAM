@@ -94,6 +94,7 @@ class FogScenario:
         events: list[Event] | None = None,
         unknown: str = "optimistic",
         sense_every: int = 5,
+        sense_phase: int = 0,
         sensor: dict | None = None,
         dynamics: str = "bicycle",
         vehicle: dict | None = None,
@@ -120,6 +121,12 @@ class FogScenario:
         self._next_event = 0
         self.unknown = unknown
         self.sense_every = max(1, int(sense_every))
+        # Phase offset for the sense/rebuild/replan schedule. A Squad staggers
+        # agents (agent i by i mod sense_every) so they do not all carry the
+        # whole sense-tick cost on the same frame — a real-time correctness
+        # requirement (PERFORMANCE.md), even though it saves nothing on average.
+        # 0 (the default) is the original synchronized schedule.
+        self.sense_phase = int(sense_phase)
         self.sensor = dict(range_m=60.0, n_rays=240)
         self.sensor.update(sensor or {})
         # Set by a caller to return a (ny, nx) float raster of per-cell route
@@ -175,6 +182,11 @@ class FogScenario:
         self.route: list | None = None
         self.no_route = False
         self._last_dyn = None
+        # Carried between the two halves of a tick (_step_sense -> _step_act) so
+        # a Squad can batch every agent's SDF build in one threaded call.
+        self._pending_occ = None
+        self._sense_rebuild = False
+        self._pending_field = None
 
         self.nav = SdfNavigator(
             self._build_field(),
@@ -190,9 +202,10 @@ class FogScenario:
         """World time — derived from the step count, never accumulated."""
         return self.step_i * self._world_dt
 
-    def _build_field(self) -> sdf_nav.SDFField:
-        occ = composite_occupancy(self.belief, self.dyn, self._t(), unknown=self.unknown)
-        phi, nx_g, ny_g = sdf_nav.build_sdf(occ, self.bounds, self.scale)
+    def _compose_occ(self) -> np.ndarray:
+        return composite_occupancy(self.belief, self.dyn, self._t(), unknown=self.unknown)
+
+    def _finalize_field(self, phi, nx_g, ny_g) -> sdf_nav.SDFField:
         # An occupancy grid with few/no walls yields astronomically large
         # distances (an EMPTY one gives ~1e9): far outside the +-region regime
         # CoefMLP was trained on, its features saturate the net and the
@@ -202,6 +215,12 @@ class FogScenario:
         np.clip(phi, -2.0 * region_n, 2.0 * region_n, out=phi)
         center = self.meta["center"]
         return sdf_nav.SDFField(phi, nx_g, ny_g, self.bounds, center, self.scale)
+
+    def _build_field(self, occ: np.ndarray | None = None) -> sdf_nav.SDFField:
+        if occ is None:
+            occ = self._compose_occ()
+        phi, nx_g, ny_g = sdf_nav.build_sdf(occ, self.bounds, self.scale)
+        return self._finalize_field(phi, nx_g, ny_g)
 
     def _apply_due_events(self) -> bool:
         touched_truth = False
@@ -276,7 +295,7 @@ class FogScenario:
         r, c = self.belief.world_to_cell(pos_world[0], pos_world[1])
         return bool(self.belief.in_bounds(r, c) and self.truth_now[r, c])
 
-    def _replan_route(self, *, force: bool = False):
+    def _replan_route(self, *, force: bool = False, occ: np.ndarray | None = None):
         """Re-plan the belief-space route from HERE to the active waypoint.
 
         With HYSTERESIS: when two detours cost nearly the same (a blocker
@@ -286,7 +305,8 @@ class FogScenario:
         it or the fresh plan is decisively (>20%) shorter."""
         if not self.use_planner:
             return
-        occ = composite_occupancy(self.belief, self.dyn, self._t(), unknown=self.unknown)
+        if occ is None:
+            occ = self._compose_occ()
         here = tuple(self.nav.pos_world())
         goal = tuple(self.waypoints[self.wp_i])
         # Optional per-cell route surcharge, supplied by whoever owns the
@@ -344,12 +364,19 @@ class FogScenario:
         self._replan_route()
         return self
 
-    def step(self) -> StepRecord:
+    def _step_sense(self) -> np.ndarray | None:
+        """Pre-plan half of a tick: apply events, stamp movers, sense, and
+        decide whether the SDF must be rebuilt. Returns the composited
+        occupancy to build the field from when a rebuild is due (so a Squad can
+        batch every agent's SDF build in one threaded call between the halves),
+        else None. Identical in effect to the sense block of the old step()."""
         self._apply_due_events()
         self._stamp_movers()
+        self._pending_occ = None
+        self._sense_rebuild = False
+        self._pending_field = None
 
-        rebuilt = False
-        if self.step_i % self.sense_every == 0:
+        if (self.step_i + self.sense_phase) % self.sense_every == 0:
             v0 = self.belief.version
             self.belief.sense(
                 self.truth_now,
@@ -369,9 +396,29 @@ class FogScenario:
             dyn_changed = self._last_dyn is None or not np.array_equal(dyn_now, self._last_dyn)
             if self.belief.version != v0 or dyn_changed:
                 self._last_dyn = dyn_now
-                self.nav.field = self._build_field()
-                self._replan_route()
-                rebuilt = True
+                # Composited once here and reused for BOTH the field build and
+                # the replan below (they are the same occupancy), which also
+                # dedupes the array the old code built twice.
+                self._pending_occ = self._compose_occ()
+                self._sense_rebuild = True
+        return self._pending_occ
+
+    def _step_act(self) -> StepRecord:
+        """Post-plan half of a tick: build the field (unless a Squad already
+        batched it into self._pending_field) and replan, then drive the vehicle
+        and advance waypoints. Identical in effect to the rest of the old
+        step()."""
+        rebuilt = False
+        if self._sense_rebuild:
+            if self._pending_field is not None:
+                self.nav.field = self._pending_field  # batched by the Squad
+            else:
+                self.nav.field = self._build_field(self._pending_occ)
+            self._replan_route(occ=self._pending_occ)
+            rebuilt = True
+        self._pending_occ = None
+        self._pending_field = None
+        self._sense_rebuild = False
 
         if self.moving_goal is not None:
             # The goal moves, so the waypoint the planner routes to has to move
@@ -379,7 +426,7 @@ class FogScenario:
             # controller's escape state across the retarget.
             gx, gy = self.moving_goal.position_at(self._t())
             self.waypoints[self.wp_i] = np.asarray((gx, gy), np.float32)
-            if self.step_i % self.sense_every == 0:
+            if (self.step_i + self.sense_phase) % self.sense_every == 0:
                 self._replan_route(force=True)
 
         if self.use_planner and self.route:
@@ -427,6 +474,13 @@ class FogScenario:
             belief_version=self.belief.version,
             goal_dist_m=m.goal_dist_m,
         )
+
+    def step(self) -> StepRecord:
+        """One tick. The two halves run back-to-back here (behaviour identical
+        to the pre-split loop); a Squad calls them separately so it can batch
+        the SDF build across agents in between."""
+        self._step_sense()
+        return self._step_act()
 
     def run(self, max_steps: int = 4000, *, stop_when_done: bool = True) -> ScenarioResult:
         res = ScenarioResult()
