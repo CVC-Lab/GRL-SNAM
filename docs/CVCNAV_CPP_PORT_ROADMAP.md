@@ -500,10 +500,11 @@ host runs the whole shared-belief swarm with **zero libtorch**, float-equivalent
 | P5 `belief_occupancy` (BIT surface) | ✓ | **byte-identical** field |
 | P6 `sim_world` + carrot FSM | ✓ | behavioral: identical reach-set, sub-5cm/80 ticks |
 | P7 `sim_thread` | ✓ | concurrent, lock-free, no-GIL |
+| P8 in-`Swarm` native dispatch (`GRL_SNAM_NAV_DRIVE=native`) | ✓ | float-equiv: 1.5e-5/120 ticks, identical reach-set |
 | CUDA `drive.cu` (GTX 1650) | ✓ | float-equiv ~5e-7 |
 | pure-C++ ergonomics | ✓ | `default_biased`, `from_occupancy`, `default_weights_path`, example |
 
-**49 pytest + 30 gtest green.**
+**52 pytest + 30 gtest green.**
 
 ### The pure-C++ path (dropping agents into a cvcGL scene / lsystem_forest)
 

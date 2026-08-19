@@ -35,6 +35,7 @@ lock-free to a renderer; see that module for the concurrency model.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import numpy as np
@@ -177,6 +178,31 @@ class Swarm:
         self._occ = [None] * self.M
         self.fields = self._build_all_fields()  # list[SDFField], one per plane
         self.field = self._make_field()  # SDFField (M==1) | BatchedSDFField
+
+        # Opt-in: drive via the torch-free C++ path (cvc::nav) instead of torch.
+        # Off by default — torch stays the reference/twin (GRL_SNAM_NAV_DRIVE, a
+        # separate flag from the bit-kernel GRL_SNAM_NAV_BACKEND). The C++ drive
+        # is float-equivalent to torch (docs/CVCNAV_CPP_PORT_ROADMAP.md P8).
+        self._native_drive = False
+        self._native_weights_path = None
+        if os.environ.get("GRL_SNAM_NAV_DRIVE", "torch").lower() == "native" and _native.HAS_DRIVE:
+            import tempfile
+
+            from .tools.coef_export import write_coef_mlp
+
+            fd, path = tempfile.mkstemp(suffix=".cvcnav")
+            os.close(fd)
+            write_coef_mlp(self.model, path)
+            self._native_weights_path = path
+            self._native_drive = True
+
+    def __del__(self):
+        p = getattr(self, "_native_weights_path", None)
+        if p:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
     # ── construction ─────────────────────────────────────────────────────────
     def _build_soa(self) -> None:
@@ -342,23 +368,28 @@ class Swarm:
         carrot = self._plan_carrot(phi, nrm)  # [N,2]  (may mutate self.sp: parked)
 
         # 4. DRIVE — coefficient net on the reused sample, then ONE batched
-        #    bicycle rollout over the shared field.
-        feat = self._coef_feats(phi, nrm, carrot)
-        al, be, ga = self.model(feat)
-        self.o, self.th, self.sp, _ = sdf_nav.bicycle_rollout(
-            self.field,
-            self.o,
-            self.th,
-            self.sp,
-            carrot,
-            al,
-            be,
-            ga,
-            1,
-            nsub=self.nsub,
-            **self.kw,
-            **self.veh,
-        )
+        #    bicycle rollout over the shared field. Optionally via the torch-free
+        #    C++ drive (float-equivalent; sample->coef_feats->coef_mlp->bicycle in
+        #    one GIL-released call). The carrot FSM (step 3) stays in Python.
+        if self._native_drive:
+            self._native_drive_step(carrot)
+        else:
+            feat = self._coef_feats(phi, nrm, carrot)
+            al, be, ga = self.model(feat)
+            self.o, self.th, self.sp, _ = sdf_nav.bicycle_rollout(
+                self.field,
+                self.o,
+                self.th,
+                self.sp,
+                carrot,
+                al,
+                be,
+                ga,
+                1,
+                nsub=self.nsub,
+                **self.kw,
+                **self.veh,
+            )
 
         # 5. METRICS + WAYPOINT — a reached agent parks (single-goal swarm).
         dg_new = (self.goal - self.o).norm(dim=1)
@@ -368,6 +399,32 @@ class Swarm:
 
         self.gstep += 1
         self._gen += 1
+
+    def _native_drive_step(self, carrot: torch.Tensor) -> None:
+        """Drive one tick through the torch-free C++ path (:func:`nav_native.drive_step`)
+        instead of the torch coef-net + rollout, updating ``self.o/th/sp`` in place.
+        Float-equivalent to the torch drive; used only when ``GRL_SNAM_NAV_DRIVE=native``.
+        The field stack, poses and carrot cross to numpy (f32) and the fresh poses come
+        back to the Swarm's device. ``map_id`` selects each agent's belief plane
+        (``None`` for shared M==1)."""
+        field_np = self.field.field.detach().cpu().numpy()  # (M,3,H,W) f32
+        mid = None if self.M == 1 else self.map_id
+        o2, th2, sp2, _ = _native.drive_step(
+            field_np,
+            self.o.detach().cpu().numpy(),
+            self.th.detach().cpu().numpy(),
+            self.sp.detach().cpu().numpy(),
+            carrot.detach().cpu().numpy(),
+            self._native_weights_path,
+            bounds=self.bounds,
+            center=(self.cx, self.cy),
+            scale=self.S,
+            params={**self.kw, **self.veh, "nsub": self.nsub},
+            map_id=mid,
+        )
+        self.o = torch.from_numpy(o2).to(self.dev)
+        self.th = torch.from_numpy(th2).to(self.dev)
+        self.sp = torch.from_numpy(sp2).to(self.dev)
 
     def _sense_shared(self) -> None:
         """Sense every active agent into its belief plane (``map_id``), then
