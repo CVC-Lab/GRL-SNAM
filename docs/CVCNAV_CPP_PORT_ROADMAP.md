@@ -440,31 +440,36 @@ live in the prefix under `share/<pkg>/`, never the root).
 384² city, 32 cores, C++ `sense_batch` live, steady state (sense + rebuild every 4th tick, drive on the
 other 3), `nsub=1`. Reproduce with `python -m grl_snam.tools.belief_bench`.
 
-| N | all-shared (M=1) | clustered/8 | all-private (M=N) |
-|---|---|---|---|
-| 256 | 46 ms · 22 fps | **27 ms · 37 fps** | 203 ms · 5 fps |
-| 512 | 74 ms · 14 fps | **34 ms · 29 fps** | 435 ms · 2 fps |
-| 1024 | 144 ms · 7 fps | **53 ms · 19 fps** | 839 ms · 1 fps |
-| 2048 | 291 ms · 3 fps | **83 ms · 12 fps** | 1593 ms · 0.6 fps |
-| 4096 | 586 ms · 2 fps | **196 ms · 5 fps** | (memory) |
+Steady-state mean tick, **after** the raycast-parallelization (libcvc `abfb87d`); the "was" column is the
+pre-optimization number (plane-parallel sense, shared single-threaded at K=1):
 
-**The drive is cheap; the sense raycast is the steady-state wall, and its parallelism = the plane count.**
-Breakdown at N=1024: sense `542 ms` (shared, single-threaded K=1) vs `101 ms` (clustered/8, 8-way) vs the
-drive `~17 ms` and one EDT `~11 ms`. So:
-- **shared (M=1)** — smallest footprint (one ~4 MB plane, one EDT), but the bit-identical sense *serializes*
-  (K=1 ⇒ one thread). Best when the map is largely known (drive-bound: thousands @ 60 Hz, `bench_swarm.py`).
-- **clustered/K** — the sweet spot: sense parallelizes K-way at K-EDT cost; **K ≈ cores** is optimal.
-- **private (M=N)** — sense fans out N-way but **N EDT rebuilds** dominate and memory is O(N); the fidelity
-  twin, best at the handful of agents it was designed for.
+| N | all-shared (M=1) was → now | clustered/8 | all-private (M=N) |
+|---|---|---|---|
+| 256 | 46 → **~20 ms** | ~25 ms | 203 ms · 5 fps |
+| 512 | 74 → **25 ms · 40 fps** | **31 ms · 32 fps** | 374 ms · 3 fps |
+| 1024 | 144 → **44 ms · 23 fps** | **42 ms · 24 fps** | 768 ms · 1 fps |
+| 2048 | 291 → **88 ms · 11 fps** | **68 ms · 15 fps** | 1593 ms · 0.6 fps |
+| 4096 | 586 → **~200 ms** | **196 ms · 5 fps** | (memory) |
+
+**The drive is cheap; the sense raycast was the steady-state wall — now parallelized across agents,
+bit-identically.** The raycast reads only `truth` + the agent's boxes, so it is order-free and fans out over
+all N agents; only the cheap log-odds fold stays serial per plane in ascending index (the order N serial
+`BeliefGrid.sense` calls fold in). Result: **shared-mode ~3.3× faster** (144 → 44 ms @1024), the plane-count
+no longer caps sense parallelism. So:
+- **shared (M=1)** — smallest footprint (one ~4 MB plane, one EDT); sense now scales across cores. Best when
+  the map is largely known (drive-bound: thousands @ 60 Hz, `bench_swarm.py`).
+- **clustered/K** — still the balanced choice (K-EDT cost, K ≈ cores); now the raycast is N-way regardless.
+- **private (M=N)** — **N EDT rebuilds** dominate and memory is O(N); the fidelity twin, at a handful of
+  agents. Unchanged by this optimization (EDT-bound, not raycast-bound).
+
+Scaling plateaus ~8 threads: the per-agent raycast stores + the full-grid gen-stamped scratch are
+memory-bandwidth-bound. **Next levers:** a window-local scratch (the FoV is a ~40×40 cell box, not the whole
+384² grid) + a flat CSR arena (drop the 3·N per-agent vector allocations); plus `pipeline_edt` (rebuild off
+the critical path) and staggered/subsampled sensing for shared belief.
 
 `nsub` is **second-order at steady state** (sense dominates): shared N=4096 is 586/591/570 ms at nsub=1/2/4.
 In the **drive-only / known-map** regime `nsub` multiplies the drive roughly linearly (a direct
 throughput-vs-substep-accuracy trade), so a host raises it only where thin-wall tunnelling matters.
-
-**Top sense-side optimization (folds into the port):** the shared-mode raycast (the 542 ms) is *order-free*
-per agent — parallelize it across agents and keep only the cheap log-odds fold serial in ascending index →
-bit-identical, and shared-mode sense drops ~542 ms → ~40 ms at N=1024. Plus `pipeline_edt` (rebuild off the
-critical path) and staggered/subsampled sensing for shared belief.
 
 ---
 
