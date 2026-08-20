@@ -1,5 +1,16 @@
 # cvc::nav — torch-free C++ port roadmap
 
+> **STATUS: COMPLETE (2026-08-19).** The port shipped end-to-end — all phases P0–P8,
+> the CUDA twins (drive, device-resident `sim_world_cuda`, the trainer), and the
+> torch-free self-supervised **trainer** (which was *beyond* the original P0–P8
+> plan). Every item once listed under "Deferred" is done. This document is kept as
+> the **design record** — the fidelity contract (§1), the resolved decisions (§0,
+> §10), and the `.cvcnav` format (§4) still define the shipped behavior — not as an
+> active plan. The one honest gap is that the *installed default* weights are the
+> untrained biased seed (~57% reach), not yet a trained checkpoint. For USING the
+> C++ layer from GRL-SNAM see `docs/NATIVE_CVC_NAV.md`; for the trainer API see
+> libcvc `docs/NAV_TRAINING.md`.
+
 _Design synthesis (multi-agent). Plan for bringing the grl-snam nav simulator into cvc::nav for pure-C++ hosts while the Python API stays the reference twin and CI stays green._
 
 I have read all the load-bearing files (both worktrees, the FSM, the sampler, the binding conventions, the CMake gtest wiring, the parity-test patterns, and the `parallel_for`). Here is the unified roadmap.
@@ -542,17 +553,6 @@ GPU==CPU **to the bit**, the median agent stays bit-tight over a 250-tick roll, 
 the reach count matches — the tail past that horizon is the documented FSM mode-flip
 chaos, not drift. Bench on a bigger GPU box next.
 
-The device-resident GPU twin (`sim_world_cuda`) keeps the field, `.cvcnav` weights
-and **every** SoA agent column (pose + full carrot-FSM state) on the GPU across
-ticks: `step()` launches sample → carrot FSM → fused drive → reached/park with no
-host round-trip, and `snapshot()` copies only the pose-sized columns a renderer
-needs. Static-map shared-belief (the thousands-of-agents deployment path); it is a
-per-agent transcription of `carrot_step` sharing `drive.cu`'s device math, gated
-against the CPU `sim_world` (`NavSimWorldCuda.TracesCpuSimWorld`): after one tick
-GPU==CPU **to the bit**, the median agent stays bit-tight over a 250-tick roll, and
-the reach count matches — the tail past that horizon is the documented FSM mode-flip
-chaos, not drift. Bench on a bigger GPU box next.
-
 ### The pure-C++ path (dropping agents into a cvcGL scene / lsystem_forest)
 
 ```cpp
@@ -568,12 +568,25 @@ sim_thread sim(world, 60.0); sim.start();  auto frame = sim.read();  sim.retarge
 
 See `examples/nav_swarm_demo.cpp` (`-DCVC_BUILD_NAV_EXAMPLE=ON`), a compilable template.
 
-### Deferred (future / bench-box, non-blocking)
+### Was deferred — now DONE
 
-- **Device-resident `sim_world.cu`** — keep the field + SoA columns on the GPU across ticks,
-  CUDA-Graph replay, pose-only D2H (or CUDA-GL interop). The decisive-win path at N≳10⁴; best
-  built + tuned on a bigger GPU box (the `drive.cu` launcher already proves the path + fidelity).
-- **P8 in-Swarm native dispatch** (`GRL_SNAM_NAV_DRIVE=native`) — the Python torch `Swarm`
-  optionally driving via the C++ path. A Python-side speedup; the default stays torch, the twin.
-- **A trained `coef_mlp.cvcnav` shipped/installed** (export a GRL-SNAM checkpoint via
-  `coef_export.py`; `default_biased()` covers zero-setup driving in the meantime).
+- **Device-resident `sim_world_cuda`** ✓ — field + `.cvcnav` weights + full SoA agent
+  columns (pose *and* carrot-FSM state) stay GPU-resident across ticks; fused
+  sample→carrot→drive→park; pose-only D2H. Validated bit-exact/step, p50 bit-tight
+  over 250 ticks vs the CPU `sim_world` on a GTX 1650 (`NavSimWorldCuda.TracesCpuSimWorld`).
+  (CUDA-Graph replay / CUDA-GL interop remain a throughput follow-up for a bigger box.)
+- **P8 in-Swarm native dispatch** (`GRL_SNAM_NAV_DRIVE=native`) ✓ — the torch `Swarm`
+  drives via the C++ path when opted in; float-equiv 1.5e-5/120 ticks, default stays torch.
+- **The torch-free TRAINER** ✓ (beyond the original plan) — `cvc::nav::coef_train`
+  (CPU + device-resident CUDA), surrogate *and* bicycle rollouts, gradcheck-validated,
+  exposed to Python behind `GRL_SNAM_TRAIN_BACKEND=native`. See libcvc `docs/NAV_TRAINING.md`.
+
+### Remaining (non-blocking)
+
+- **Ship an actually-trained default** — the installed `share/cvc/nav/coef_mlp.cvcnav` is
+  the untrained biased seed (~57% reach; zero-config driving works). Run `coef_train` (native
+  or torch) to the ~65% target and install that as the default.
+- **The live-demo path** (next round) — wire `sim_world`/`sim_thread` snapshot poses into
+  per-agent cvcGL `GeometryNode`s in the `lsystem_forest` scene, rasterize the procedural
+  island to an occupancy grid, and add a `swarm_live` demo entry point. See the readiness
+  audit in the session notes.
