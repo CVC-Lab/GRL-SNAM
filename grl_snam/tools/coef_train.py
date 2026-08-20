@@ -125,7 +125,44 @@ def reach_rate(model, grid=96, n=400, ticks=200, seed=123):
     return float(sw.reached.float().mean())
 
 
+def train_native(out, *, grid=96, steps=400, rollout="surrogate", use_cuda=False, lr=None, seed=0):
+    """Train via the pure-C++ ``cvc::nav`` trainer (NO torch) on the SAME city scene
+    the torch path uses, writing the ``.cvcnav`` to ``out``. This is what
+    ``GRL_SNAM_TRAIN_BACKEND=native`` (or ``--backend native``) dispatches to; the
+    torch :func:`train` stays canonical. ``rollout`` is ``"surrogate"`` (default) or
+    ``"bicycle"`` (the deployment integrator; auto-uses a lower lr). Needs a pycvc
+    built with ``cvc::nav::coef_train``."""
+    from grl_snam import nav_native
+
+    if not nav_native.HAS_TRAIN:
+        raise SystemExit(
+            "native trainer needs a pycvc built with cvc::nav::coef_train; "
+            "use --backend torch or install a newer pycvc"
+        )
+    story = shrunk(STORIES["city"], n=grid, max_steps=100)
+    meta = story.meta()
+    if lr is None:
+        lr = 1e-5 if str(rollout).lower() == "bicycle" else 2e-4
+    return nav_native.train_coef_mlp(
+        story.truth_grid().astype(np.uint8),
+        out,
+        bounds=story.bounds,
+        scale=meta["scale"],
+        rr=meta["rr"],
+        d_hat=meta["d_hat"],
+        dt=meta["dt"],
+        vmax=meta["vmax"],
+        steps=steps,
+        lr=lr,
+        seed=seed,
+        rollout=rollout,
+        use_cuda=use_cuda,
+    )
+
+
 def main(argv=None):
+    import os
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--steps", type=int, default=400)
     ap.add_argument("--horizon", type=int, default=28)
@@ -133,7 +170,32 @@ def main(argv=None):
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=str, default="coef_mlp.cvcnav")
+    # Feature flag: which trainer runs. `torch` (canonical) or `native` (the
+    # torch-free libcvc cvc::nav trainer, via pycvc). Env default lets a whole
+    # pipeline opt in without changing call sites.
+    ap.add_argument(
+        "--backend",
+        choices=["torch", "native"],
+        default=os.environ.get("GRL_SNAM_TRAIN_BACKEND", "torch"),
+    )
+    ap.add_argument("--rollout", choices=["surrogate", "bicycle"], default="surrogate")
+    ap.add_argument("--cuda", action="store_true", help="native backend: use the GPU trainer")
     args = ap.parse_args(argv)
+
+    if args.backend == "native":
+        lr = args.lr if args.lr != 1e-3 else None  # 1e-3 is the torch default; let native pick
+        print(f"training natively ({args.rollout}, {args.steps} steps, cuda={args.cuda})...")
+        train_native(
+            args.out,
+            steps=args.steps,
+            rollout=args.rollout,
+            use_cuda=args.cuda,
+            lr=lr,
+            seed=args.seed,
+        )
+        print(f"wrote {args.out} (native cvc::nav)")
+        return
+
     print(f"training ({args.steps} steps)...")
     model = train(args.steps, args.horizon, args.n, args.lr, args.seed)
     write_coef_mlp(model, args.out)

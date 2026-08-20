@@ -558,3 +558,64 @@ def drive_step_cuda(field, o, th, sp, carrot, weights_path, *, bounds, center, s
         int(P["nsub"]),
         int(bool(P["allow_reverse"])),
     )
+
+
+HAS_TRAIN = AVAILABLE and hasattr(_pycvc, "nav_train_coef_mlp")
+
+
+def train_coef_mlp(
+    occ,
+    out_path,
+    *,
+    bounds,
+    scale,
+    rr=0.15,
+    d_hat=0.35,
+    dt=0.06,
+    vmax=0.9,
+    steps=400,
+    horizon=28,
+    n=192,
+    window=7,
+    hidden=64,
+    lr=2e-4,
+    w_coll=6.0,
+    grad_clip=5.0,
+    seed=0,
+    rollout="surrogate",
+    use_cuda=False,
+):
+    """Self-supervised training of the CoefMLP policy in PURE C++ (cvc::nav::coef_train)
+    — NO torch — writing the versioned ``.cvcnav`` to ``out_path``. ``occ`` is a (H,W)
+    free(0)/obstacle occupancy; ``rollout`` is ``"surrogate"`` (default, smooth point-mass)
+    or ``"bicycle"`` (the deployment integrator — needs a much lower ``lr``, ~1e-5);
+    ``use_cuda`` picks the device-resident GPU trainer when this pycvc has CUDA + a device.
+    This is the native trainer behind ``GRL_SNAM_TRAIN_BACKEND=native``; torch
+    :mod:`grl_snam.tools.coef_train` stays canonical. Returns ``out_path``."""
+    mnx, mny, mxx, mxy = (float(b) for b in bounds)
+    rk = 1 if str(rollout).lower() == "bicycle" else 0
+    _pycvc.nav_train_coef_mlp(
+        np.ascontiguousarray(occ, np.uint8),
+        mnx,
+        mny,
+        mxx,
+        mxy,
+        float(scale),
+        float(rr),
+        float(d_hat),
+        float(dt),
+        float(vmax),
+        int(steps),
+        int(horizon),
+        int(n),
+        int(window),
+        int(hidden),
+        float(lr),
+        float(w_coll),
+        float(grad_clip),
+        int(seed),
+        int(rk),
+        int(bool(use_cuda)),
+        str(out_path),
+    )
+    return out_path
