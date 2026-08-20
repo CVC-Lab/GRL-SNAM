@@ -178,9 +178,15 @@ class SdfNavigator:
 
     # ── one drive step ──────────────────────────────────────────────────────
     @torch.no_grad()
-    def step(self) -> NavMetrics:
-        """Advance one navigation step; return the metrics snapshot after it."""
+    def _plan_carrot(self) -> torch.Tensor:
+        """Everything a step does BEFORE the coefficient net + rollout: advance
+        the stall/wall-follow escape state and place the steering carrot (this
+        controller's only actuator). Returns the carrot as a ``[1,2]`` tensor
+        and stashes the pre-step world position for the speed metric. Split out
+        so a Squad can stack every agent's carrot and roll the whole squad
+        forward in ONE batched ``bicycle_rollout`` (PERFORMANCE.md stage 2)."""
         prev_world = self.pos_world()
+        self._prev_world = prev_world
         p = self.o[0].numpy()
         dg = float(np.linalg.norm(self._gn - p))
         gdir = (self._gn - p) / (dg + 1e-6)
@@ -274,32 +280,13 @@ class SdfNavigator:
                 cw = self.n2w(carrot)
                 carrot = self.w2n((cw[0] + bias_w[0], cw[1] + bias_w[1])).astype(np.float32)
 
-        gt = torch.from_numpy(carrot).unsqueeze(0)
-        al, be, ga = self.model(sdf_nav.coef_feats(self.field, self.o, gt))
-        if self._dyn == "bicycle":
-            self.o, self.th, self.sp, _ = sdf_nav.bicycle_rollout(
-                self.field,
-                self.o,
-                self.th,
-                self.sp,
-                gt,
-                al,
-                be,
-                ga,
-                1,
-                nsub=self.nsub,
-                **self.kw,
-                **self._veh,
-            )
-            head = torch.stack([torch.cos(self.th), torch.sin(self.th)], -1)
-            self.v = self.sp.unsqueeze(-1) * head  # keep .v meaningful for callers
-        else:
-            self.o, self.v, _ = sdf_nav.sdf_rollout(
-                self.field, self.o, self.v, gt, al, be, ga, 1, nsub=self.nsub, **self.kw
-            )
-        self.step_i += 1
+        return torch.from_numpy(carrot).unsqueeze(0)
 
-        # metrics at the new position
+    @torch.no_grad()
+    def _metrics(self, al, be, ga) -> NavMetrics:
+        """Build the post-step metrics snapshot from the (already advanced) pose.
+        ``al/be/ga`` are the coefficients the rollout used, as ``[.]`` tensors."""
+        prev_world = self._prev_world
         onew = self.o[0].numpy()
         phi, nrm = self.field.sample(self.o)
         phi = float(phi[0])
@@ -335,6 +322,38 @@ class SdfNavigator:
                 else 0.0
             ),
         )
+
+    @torch.no_grad()
+    def step(self) -> NavMetrics:
+        """Advance one navigation step; return the metrics snapshot after it.
+        The two halves run back-to-back here (behaviour identical to the
+        pre-split loop); a Squad calls them separately so it can roll every
+        agent forward in one batched rollout in between."""
+        gt = self._plan_carrot()
+        al, be, ga = self.model(sdf_nav.coef_feats(self.field, self.o, gt))
+        if self._dyn == "bicycle":
+            self.o, self.th, self.sp, _ = sdf_nav.bicycle_rollout(
+                self.field,
+                self.o,
+                self.th,
+                self.sp,
+                gt,
+                al,
+                be,
+                ga,
+                1,
+                nsub=self.nsub,
+                **self.kw,
+                **self._veh,
+            )
+            head = torch.stack([torch.cos(self.th), torch.sin(self.th)], -1)
+            self.v = self.sp.unsqueeze(-1) * head  # keep .v meaningful for callers
+        else:
+            self.o, self.v, _ = sdf_nav.sdf_rollout(
+                self.field, self.o, self.v, gt, al, be, ga, 1, nsub=self.nsub, **self.kw
+            )
+        self.step_i += 1
+        return self._metrics(al, be, ga)
 
     def drive_to_goal(self, max_steps: int = 1300, *, stop_at_reach: bool = True):
         """Run steps toward the current goal until reached / stuck / ``max_steps``.

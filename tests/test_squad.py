@@ -58,8 +58,20 @@ def test_knowledge_diverges_between_agents():
 def test_agents_are_real_to_each_other():
     """A peer is stamped into the OTHER agents' truth, so it occludes and has
     to be discovered — never into its own, or it would map itself as an
-    obstacle and refuse to move."""
-    sq = Squad(_small(), _agents())
+    obstacle and refuse to move.
+
+    The two agents start WITHIN sensor range of each other: peer stamping only
+    covers peers an agent could actually sense (the spatial-hash prune that
+    keeps the squad ~O(N) instead of O(N^2)), so a peer 120 m away with a 38 m
+    sensor is deliberately NOT stamped — it could never be seen anyway.
+    """
+    sq = Squad(
+        _small(),
+        [
+            AgentSpec("a", (-70.0, -8.0), (70.0, 0.0)),
+            AgentSpec("b", (-70.0, 8.0), (70.0, 8.0)),
+        ],
+    )
     sq._stamp_peers()
     a, b = sq.scenarios["a"], sq.scenarios["b"]
 
@@ -166,3 +178,157 @@ def test_a_peer_in_sensor_range_is_actually_discovered():
     assert any(
         s.dyn.occupancy(s._t()).any() for s in sq.scenarios.values()
     ), "no peer was ever sensed, so peers are still not real to each other"
+
+
+# ── stage-4: batched planning (bit-identical to serial) ──────────────────────
+
+from grl_snam import nav_native  # noqa: E402
+from grl_snam.squad import FollowGoal  # noqa: E402
+
+_HAVE_BATCH = nav_native.enabled() and hasattr(nav_native, "build_sdf_batch")
+
+
+def _tracks(agents, *, batched):
+    sq = Squad(_small(), agents, batched_planning=batched)
+    return sq.run(max_steps=120, stop_when_done=False).tracks
+
+
+@pytest.mark.skipif(not _HAVE_BATCH, reason="pycvc batch kernels unavailable")
+@pytest.mark.parametrize(
+    "agents",
+    [
+        [  # independent agents
+            AgentSpec("a", (-70.0, -60.0), (70.0, 60.0)),
+            AgentSpec("b", (-70.0, 60.0), (70.0, -60.0)),
+            AgentSpec("c", (0.0, -70.0), (0.0, 70.0)),
+        ],
+        [  # a FollowGoal convoy — the order-sensitive case
+            AgentSpec("lead", (-70.0, -60.0), (70.0, 60.0)),
+            AgentSpec("follow", (-72.0, -62.0), (0.0, 0.0), moving_goal=FollowGoal("lead")),
+        ],
+    ],
+    ids=["independent", "convoy"],
+)
+def test_batched_planning_is_bit_identical_to_serial(agents):
+    """Batching the SDF build across agents is an optimization, not a behaviour
+    change: agents couple only through the tick-start peer stamp and
+    insertion-ordered acting, both preserved by the sense/act split."""
+    serial = _tracks(agents, batched=False)
+    batched = _tracks(agents, batched=True)
+    assert set(serial) == set(batched)
+    for k in serial:
+        assert np.array_equal(serial[k], batched[k]), f"agent {k} diverged"
+
+
+def test_stagger_assigns_distinct_phases():
+    sq = Squad(
+        _small(),
+        [
+            AgentSpec("a", (-70.0, -60.0), (70.0, 60.0)),
+            AgentSpec("b", (-70.0, 60.0), (70.0, -60.0)),
+            AgentSpec("c", (0.0, -70.0), (0.0, 70.0)),
+        ],
+        stagger_sense=True,
+    )
+    phases = [sc.sense_phase for sc in sq.scenarios.values()]
+    assert len(set(phases)) > 1, "stagger did not spread the sense schedule"
+    sq.run(max_steps=40, stop_when_done=False)  # runs clean
+
+
+# ── stage-2: batched vehicle rollout (bit-identical to serial) ───────────────
+
+import sdf_nav  # noqa: E402
+
+
+def _shared_model():
+    torch.manual_seed(0)
+    m = sdf_nav.CoefMLP()
+    m.eval()
+    return m
+
+
+def _tracks_model(agents, model, *, batched_drive):
+    sq = Squad(_small(), agents, model=model, batched_drive=batched_drive)
+    return sq.run(max_steps=90, stop_when_done=False).tracks, sq
+
+
+def test_batched_drive_matches_serial_to_float32():
+    """Rolling every agent forward in one batched bicycle_rollout matches the
+    serial path to float32 precision. It is NOT guaranteed byte-identical the way
+    the SDF/A* kernels are: torch's batched grid_sample/matmul can round
+    differently by up to ~1 float32 ULP for some inputs (bit-identical for the
+    first ~60 chained steps here, drifting to ~5e-7 by 120). So it is opt-in
+    (batched_drive=True) and asserted equal to within a tight float32 tolerance,
+    never gross divergence — a real indexing bug would diverge by metres.
+    Needs a SHARED model instance (a fresh per-agent CoefMLP would make the
+    agents non-interchangeable in the batch)."""
+    agents = [
+        AgentSpec("a", (-70.0, -60.0), (70.0, 60.0)),
+        AgentSpec("b", (-70.0, 60.0), (70.0, -60.0)),
+        AgentSpec("c", (0.0, -70.0), (0.0, 70.0)),
+    ]
+    model = _shared_model()
+    serial, _ = _tracks_model(agents, model, batched_drive=False)
+    batched, sq_b = _tracks_model(agents, model, batched_drive=True)
+    assert sq_b._can_batch_drive(), "drive batching did not engage for a shared-model squad"
+    for k in serial:
+        assert np.allclose(serial[k], batched[k], atol=1e-4, rtol=0.0), f"agent {k} diverged"
+
+
+def test_convoy_disables_drive_batch_and_stays_bit_identical():
+    """A FollowGoal reads its leader's pose mid-tick, so the drive is NOT
+    batched even with batched_drive=True (that would feed a stale pose); the
+    serial-drive fallback is bit-identical to the fully serial path."""
+    agents = [
+        AgentSpec("lead", (-70.0, -60.0), (70.0, 60.0)),
+        AgentSpec("follow", (-72.0, -62.0), (0.0, 0.0), moving_goal=FollowGoal("lead")),
+    ]
+    model = _shared_model()
+    serial, _ = _tracks_model(agents, model, batched_drive=False)
+    batched, sq_b = _tracks_model(agents, model, batched_drive=True)
+    assert not sq_b._can_batch_drive(), "a FollowGoal convoy must fall back to the serial drive"
+    for k in serial:
+        assert np.array_equal(serial[k], batched[k]), f"agent {k} diverged"
+
+
+def test_drive_batch_off_by_default_and_guarded():
+    """Off by default (twin stays byte-exact); on, it still needs one shared
+    model — model=None gives each agent its own CoefMLP, so they are not
+    interchangeable in one batched call."""
+    agents = [
+        AgentSpec("a", (-70.0, -60.0), (70.0, 60.0)),
+        AgentSpec("b", (-70.0, 60.0), (70.0, -60.0)),
+    ]
+    assert not Squad(_small(), agents, model=_shared_model())._can_batch_drive()  # default off
+    # opt-in but model=None -> fresh per-agent models -> still off
+    assert not Squad(_small(), agents, batched_drive=True)._can_batch_drive()
+
+
+def test_peer_spatial_hash_prunes_far_and_matches_all_pairs():
+    """The spatial-hash peer prune is bit-identical to the O(N^2) all-pairs
+    sweep: a peer beyond sensor range is never sensed or hit, so skipping its
+    stamp changes no trajectory. Forcing the query radius to infinity recovers
+    the all-pairs behaviour; the two must agree exactly."""
+    agents = [
+        AgentSpec(f"a{i}", (-60.0 + (i % 6) * 3.0, -60.0 + (i // 6) * 3.0), (60.0, 60.0))
+        for i in range(18)
+    ]
+    hashed = Squad(_small(), agents).run(max_steps=60, stop_when_done=False).tracks
+    allpairs = Squad(_small(), agents)
+    allpairs._peer_range = 1e18  # every peer is a "neighbour" -> all-pairs
+    allpairs = allpairs.run(max_steps=60, stop_when_done=False).tracks
+    for k in hashed:
+        assert np.array_equal(hashed[k], allpairs[k]), f"agent {k} diverged from all-pairs"
+
+    # a far peer (120 m, past the 38 m sensor) is pruned; a near one is not
+    sq = Squad(
+        _small(),
+        [
+            AgentSpec("near", (0.0, 0.0), (60.0, 0.0)),
+            AgentSpec("far", (0.0, 90.0), (60.0, 90.0)),
+            AgentSpec("x", (2.0, 0.0), (60.0, 2.0)),
+        ],
+    )
+    _, neigh = sq._peer_neighbors(4.0)
+    assert "x" in neigh["near"] and "far" not in neigh["near"]
+    assert neigh["far"] == []

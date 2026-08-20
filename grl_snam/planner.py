@@ -22,12 +22,16 @@ import math
 
 import numpy as np
 
+from . import nav_native as _native
+
 SQRT2 = math.sqrt(2.0)
 
 
 def inflate(occ: np.ndarray, cells: int) -> np.ndarray:
     """Binary dilation by ``cells`` 4-connected steps (matches the shipped
     planner's inflation; no scipy dependency)."""
+    if _native.enabled():
+        return _native.inflate(occ, cells)
     out = occ.astype(bool).copy()
     for _ in range(max(0, cells)):
         grown = out.copy()
@@ -41,6 +45,8 @@ def inflate(occ: np.ndarray, cells: int) -> np.ndarray:
 
 def _line_of_sight(occ: np.ndarray, a, b) -> bool:
     """Bresenham walk; True if no occupied cell between a and b."""
+    if _native.enabled():
+        return _native.line_of_sight(occ, a, b)
     r0, c0 = a
     r1, c1 = b
     dr, dc = abs(r1 - r0), abs(c1 - c0)
@@ -65,6 +71,8 @@ def _line_of_sight(occ: np.ndarray, a, b) -> bool:
 def _nearest_free(occ: np.ndarray, r: int, c: int, max_radius: int = 12):
     """Snap a cell to the nearest free cell (start/goal may sit inside an
     inflated boundary)."""
+    if _native.enabled():
+        return _native.nearest_free(occ, r, c, max_radius)
     ny, nx = occ.shape
     r = min(max(r, 0), ny - 1)
     c = min(max(c, 0), nx - 1)
@@ -94,6 +102,8 @@ def astar(occ: np.ndarray, start, goal, cost: np.ndarray | None = None):
     diameter makes the heuristic wildly inadmissible and A* degenerates toward
     Dijkstra, exploring the whole grid for a route it was always going to take.
     """
+    if _native.enabled():
+        return _native.astar(occ, start, goal, cost)
     ny, nx = occ.shape
     start = _nearest_free(occ, *start)
     goal = _nearest_free(occ, *goal)
@@ -140,6 +150,8 @@ def astar(occ: np.ndarray, start, goal, cost: np.ndarray | None = None):
 
 def simplify(occ: np.ndarray, path):
     """String-pull: keep only the corners needed to preserve line of sight."""
+    if _native.enabled():
+        return _native.simplify(occ, path)
     if not path or len(path) < 3:
         return path
     out = [path[0]]
@@ -176,13 +188,17 @@ class BeliefRoutePlanner:
         pts = np.asarray(route, np.float64)
         return float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum())
 
-    def route_valid(self, occ: np.ndarray, route) -> bool:
+    def route_valid(self, occ: np.ndarray, route, *, inflated: np.ndarray | None = None) -> bool:
         """Is an existing route still collision-free under NEW (inflated)
         occupancy? The hysteresis test: a route is only abandoned when belief
-        actually invalidates it, or a decisively better one exists."""
+        actually invalidates it, or a decisively better one exists.
+
+        ``inflated`` lets a caller that already inflated this same ``occ`` (e.g.
+        for a :meth:`plan` in the same tick) pass the grid in and skip the second
+        dilation — the single biggest per-tick cost at scale."""
         if not route or len(route) < 2:
             return False
-        grid = inflate(occ, self.inflate_cells)
+        grid = inflate(occ, self.inflate_cells) if inflated is None else inflated
         cells = [self._w2c(x, y) for x, y in route]
         for a, b in zip(cells, cells[1:]):
             if not (0 <= a[0] < self.ny and 0 <= a[1] < self.nx):
@@ -191,7 +207,15 @@ class BeliefRoutePlanner:
                 return False
         return True
 
-    def plan(self, occ: np.ndarray, start_world, goal_world, cost: np.ndarray | None = None):
+    def plan(
+        self,
+        occ: np.ndarray,
+        start_world,
+        goal_world,
+        cost: np.ndarray | None = None,
+        *,
+        inflated: np.ndarray | None = None,
+    ):
         """World route [start..goal] over the (belief) occupancy, or None if
         the goal is unreachable *in belief* — which the caller should surface,
         not paper over (an unroutable click deserves a 'no route', not a
@@ -203,9 +227,19 @@ class BeliefRoutePlanner:
         covering every corridor degrades to the shortest path rather than
         stranding the agent. That is the intended failure mode — an expensive
         route beats no route.
+
+        ``inflated`` is the same optimization as :meth:`route_valid`'s: pass a
+        grid already inflated from this ``occ`` to skip the dilation.
         """
-        grid = inflate(occ, self.inflate_cells)
+        grid = inflate(occ, self.inflate_cells) if inflated is None else inflated
         cells = astar(grid, self._w2c(*start_world), self._w2c(*goal_world), cost=cost)
+        return self.route_from_cells(grid, cells, cost)
+
+    def route_from_cells(self, grid: np.ndarray, cells, cost: np.ndarray | None):
+        """The tail of :meth:`plan` after the A* search: string-pull (unless a
+        cost field is in play) and convert cell coordinates to world. Split out
+        so a Squad can run one batched A* across agents and then finish each
+        route — the result is identical to calling :meth:`plan` per agent."""
         if cells is None:
             return None
         # String-pulling is line-of-sight only: it knows about walls, not about
