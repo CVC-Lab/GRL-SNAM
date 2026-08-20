@@ -503,9 +503,44 @@ host runs the whole shared-belief swarm with **zero libtorch**, float-equivalent
 | P8 in-`Swarm` native dispatch (`GRL_SNAM_NAV_DRIVE=native`) | ✓ | float-equiv: 1.5e-5/120 ticks, identical reach-set |
 | CUDA `drive.cu` (GTX 1650) | ✓ | float-equiv ~5e-7 |
 | device-resident `sim_world_cuda` (GTX 1650) | ✓ | bit-exact/step, p50 bit-tight/250 ticks, reach-set match |
-| pure-C++ ergonomics | ✓ | `default_biased`, `from_occupancy`, `default_weights_path`, example |
+| self-supervised trainer `coef_train` (CPU) | ✓ | finite-diff gradcheck: dir 2.2e-4, per-param 2.8e-3 |
+| CUDA trainer `coef_train.cu` (GTX 1650) | ✓ | loss+grad vs CPU 4.2e-7, cos 1.000000 |
+| pure-C++ ergonomics | ✓ | `default_biased`, `from_occupancy`, `default_weights_path`, examples |
 
-**52 pytest + 32 gtest green.**
+**52 pytest + 39 gtest green.**
+
+### Training is torch-free too (`coef_train`)
+
+The last torch dependency is gone: `coef_train.py` is ported into `cvc::nav` as pure
+C++ — no dataset, no labels, the gradient comes from a differentiable rollout over a
+scene's SDF straight into the coefficient net. It differentiates the *simple point-mass
+`sdf_rollout` surrogate* (not the branch-heavy bicycle), so the reverse pass is small
+hand-written adjoints (bilinear-sample position VJP, MLP backward, IPC-barrier
+derivative, rollout chain) with truncated BPTT. Correctness is **torch-independent**: a
+finite-difference gradcheck is the ground truth. The CUDA trainer (`coef_train.cu`) is a
+device transcription of the same adjoints (atomicAdd param grads, checkpoint/recompute)
+and reproduces the CPU loss+gradient to 4.2e-7. Scene source: `city_scene()` ports the
+Python `STORIES["city"]`, `occupancy_scene()` takes any rasterized map (train on the
+deployment terrain directly). Trained weights export to the same `.cvcnav`.
+
+Result — end to end, pure C++: a policy trained on the city scene (CPU or GPU) **drives
+the bicycle `sim_world` and improves reach ~62% → ~65%**, above the hand-tuned (1,3,4)
+basin. It is a *refinement* of that basin, not from-scratch learning (the surrogate has
+no turning limits, so the default lr is 2e-4; `coef_train.py`'s never-run 1e-3 over-fits
+the surrogate and collapses navigation). `nav_train_demo` retrains on the box and writes
+the `.cvcnav` with zero torch. Note: this validated the objective for the first time —
+the shipped 57% policy was the *untrained* seeded basin (torch training had segfaulted).
+
+The device-resident GPU twin (`sim_world_cuda`) keeps the field, `.cvcnav` weights
+and **every** SoA agent column (pose + full carrot-FSM state) on the GPU across
+ticks: `step()` launches sample → carrot FSM → fused drive → reached/park with no
+host round-trip, and `snapshot()` copies only the pose-sized columns a renderer
+needs. Static-map shared-belief (the thousands-of-agents deployment path); it is a
+per-agent transcription of `carrot_step` sharing `drive.cu`'s device math, gated
+against the CPU `sim_world` (`NavSimWorldCuda.TracesCpuSimWorld`): after one tick
+GPU==CPU **to the bit**, the median agent stays bit-tight over a 250-tick roll, and
+the reach count matches — the tail past that horizon is the documented FSM mode-flip
+chaos, not drift. Bench on a bigger GPU box next.
 
 The device-resident GPU twin (`sim_world_cuda`) keeps the field, `.cvcnav` weights
 and **every** SoA agent column (pose + full carrot-FSM state) on the GPU across
