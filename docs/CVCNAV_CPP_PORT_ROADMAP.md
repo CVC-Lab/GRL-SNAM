@@ -546,12 +546,20 @@ The device-resident GPU twin (`sim_world_cuda`) keeps the field, `.cvcnav` weigh
 and **every** SoA agent column (pose + full carrot-FSM state) on the GPU across
 ticks: `step()` launches sample → carrot FSM → fused drive → reached/park with no
 host round-trip, and `snapshot()` copies only the pose-sized columns a renderer
-needs. Static-map shared-belief (the thousands-of-agents deployment path); it is a
-per-agent transcription of `carrot_step` sharing `drive.cu`'s device math, gated
-against the CPU `sim_world` (`NavSimWorldCuda.TracesCpuSimWorld`): after one tick
-GPU==CPU **to the bit**, the median agent stays bit-tight over a 250-tick roll, and
-the reach count matches — the tail past that horizon is the documented FSM mode-flip
-chaos, not drift. Bench on a bigger GPU box next.
+needs. It is a per-agent transcription of `carrot_step` sharing `drive.cu`'s device
+math, gated against the CPU `sim_world` (`NavSimWorldCuda.TracesCpuSimWorld`): after
+one tick GPU==CPU **to the bit**, the median agent stays bit-tight over a 250-tick
+roll, and the reach count matches — the tail past that horizon is the documented FSM
+mode-flip chaos, not drift. Belief is now **M static planes via a per-agent
+`map_id`** (the same shared/grouped/private grouping the CPU twin has, mirrored on
+the device as an `[M,3,H,W]` field block): shared (M=1, the thousands-of-agents
+path) or grouped/private, where different groups can carry genuinely *different*
+known maps — the GPU analog of the CPU's grouped belief under `freeze_sense`, but
+capable of per-group intel. `GroupedIdenticalPlanesMatchShared` gates the
+plane-offset math bit-for-bit; `GroupedDifferentPlanesRouteApart` shows two agents
+with one start+goal but different `map_id` diverge onto their own maps. Still
+static-map (no on-device sensing — live fog-of-war stays on the CPU `sim_world`).
+Bench on a bigger GPU box next.
 
 ### The pure-C++ path (dropping agents into a cvcGL scene / lsystem_forest)
 
