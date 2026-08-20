@@ -220,7 +220,7 @@ class SDFField:
     def __init__(self, phi, nx_g, ny_g, bounds, center, scale, device="cpu"):
         self.dev = torch.device(device)
         self.field = torch.from_numpy(np.stack([phi, nx_g, ny_g], 0)[None]).float().to(self.dev)
-        self.mnx, self.mny, self.mxx, self.mxy = [float(b) for b in bounds]
+        self.mnx, self.mny, self.mxx, self.mxy = (float(b) for b in bounds)
         self.cx, self.cy = float(center[0]), float(center[1])
         self.S = float(scale)
 
@@ -252,11 +252,16 @@ class BatchedSDFField:
     PERFORMANCE.md. ``sample`` is bit-identical to calling each field's own
     :meth:`SDFField.sample`, so the drop-in stays a bit-identical twin."""
 
-    def __init__(self, field, mnx, mny, mxx, mxy, cx, cy, S):
-        self.field = field  # [N, 3, H, W]
+    def __init__(self, field, mnx, mny, mxx, mxy, cx, cy, S, groups=None):
+        self.field = field  # [M, 3, H, W]  (M planes; M==N for private belief)
         self.mnx, self.mny, self.mxx, self.mxy = mnx, mny, mxx, mxy
         self.cx, self.cy = cx, cy
         self.S = S
+        # Grouped (clustered) belief: ``groups[g]`` is the index tensor of the
+        # agents that sample plane ``g``. ``None`` means agent i samples plane i
+        # (private, one grid_sample) or, when there is a single plane, everyone
+        # samples it (shared). See :meth:`sample`.
+        self.groups = groups
 
     @classmethod
     def stack(cls, fields):
@@ -273,20 +278,56 @@ class BatchedSDFField:
             f0.S,
         )
 
+    @staticmethod
+    def _norm(out):
+        nrm = out[:, 1:3]
+        return out[:, 0], nrm / (nrm.norm(dim=-1, keepdim=True) + 1e-6)
+
     def sample(self, on: torch.Tensor):
-        """on: ``[N,2]`` -> ``(phi[N], unit_normal[N,2])``; row ``i`` samples field ``i``."""
+        """on: ``[N,2]`` -> ``(phi[N], unit_normal[N,2])``.
+
+        Three belief geometries share this one call, selected by the field
+        stack's plane count ``M`` and ``groups`` (the ``map_id`` seam):
+
+        * **shared** (``M == 1``): every agent samples the single plane — one
+          ``grid_sample`` over a broadcast view, memory O(1) in N.
+        * **private** (``M == N``, ``groups is None``): row ``i`` samples plane
+          ``i`` — one ``grid_sample``, bit-identical to N per-agent fields.
+        * **clustered** (``1 < M < N``, ``groups`` set): each group's agents
+          sample their plane — K ``grid_sample``s (K == M ≪ N), each over a
+          broadcast view of one plane (no N-plane gather).
+        """
         wx = on[:, 0] / self.S + self.cx
         wy = on[:, 1] / self.S + self.cy
         gx = 2 * (wx - self.mnx) / (self.mxx - self.mnx) - 1
         gy = 2 * (wy - self.mny) / (self.mxy - self.mny) - 1
         grid = torch.stack([gx, gy], -1)[:, None, None]  # [N,1,1,2]
-        out = F.grid_sample(
-            self.field, grid, mode="bilinear", align_corners=True, padding_mode="border"
-        )[
+        n = on.shape[0]
+        if self.field.shape[0] == 1:  # shared
+            inp = self.field.expand(n, -1, -1, -1)
+        elif self.groups is None:  # private: plane i <-> row i
+            inp = self.field
+        else:  # clustered: one plane per group
+            phi = torch.empty(n, device=on.device, dtype=self.field.dtype)
+            nrm = torch.empty(n, 2, device=on.device, dtype=self.field.dtype)
+            for g, idx in enumerate(self.groups):
+                if idx.numel() == 0:
+                    continue
+                og = F.grid_sample(
+                    self.field[g : g + 1].expand(idx.numel(), -1, -1, -1),
+                    grid[idx],
+                    mode="bilinear",
+                    align_corners=True,
+                    padding_mode="border",
+                )[:, :, 0, 0]
+                p_g, n_g = self._norm(og)
+                phi[idx] = p_g
+                nrm[idx] = n_g
+            return phi, nrm
+        out = F.grid_sample(inp, grid, mode="bilinear", align_corners=True, padding_mode="border")[
             :, :, 0, 0
-        ]  # [N,3]
-        nrm = out[:, 1:3]
-        return out[:, 0], nrm / (nrm.norm(dim=-1, keepdim=True) + 1e-6)
+        ]
+        return self._norm(out)
 
 
 def _ipc_dbdd(d: torch.Tensor, d_hat: float) -> torch.Tensor:
