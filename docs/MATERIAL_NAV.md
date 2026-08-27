@@ -99,6 +99,69 @@ cleanly), and `sim_world::set_material` for pure-C++ material-aware swarms.
 pycvc bindings: `nav_material_build`, `nav_witness_gate(_batch)`,
 `nav_material_sample`, `nav_bicycle_rollout_material`.
 
+## Using it
+
+### Attach a grid (this is the whole opt-in)
+
+```python
+import numpy as np
+from grl_snam.material import MaterialGrid, MaterialParams, GateParams
+from grl_snam.scenario import FogScenario
+
+risk = np.zeros((96, 96), np.float32)   # smoothed by the grid (sigma=1 cell)
+hard = np.zeros((96, 96), bool)         # lethal-but-not-geometry cells
+risk[38:58, 34:52] = 0.95               # a mud field
+hard[16:58, 60:64] = True               # a water strip
+
+grid = MaterialGrid(risk, hard, bounds, center, scale)
+sc = FogScenario(truth, bounds, scale, model, meta,
+                 waypoints=[goal], material=grid).start(start)
+sc.run()          # planner cost + forces + witness gate, all active
+```
+
+`Squad(..., material=grid)` and `Swarm(..., material=grid)` take the same
+object (one shared oracle plane for the whole squad/swarm). Not passing
+`material` — or passing an all-zero grid — leaves every trajectory exactly
+as before.
+
+### Tuning
+
+```python
+params = MaterialParams(
+    lam_soft=0.5,        # soft risk force (gated); 1.5 launches vehicles here
+    lam_hard=1.0,        # hazard barrier (never gated)
+    k_sharp=1.25,        # 1/m — keep k_sharp * d_hat_sdf_m ~= 15
+    d_hat_sdf_m=12.0,    # barrier reach; must span several grid cells
+    risk_weight=10.0,    # A* surcharge per unit risk
+    hard_penalty=25.0,   # A* surcharge on hard cells (finite: bias, not forbid)
+    gate=GateParams(horizon_m=25.0, material_trigger=0.45, improvement_margin=0.05),
+    gate_enabled=True,
+)
+grid = MaterialGrid(risk, hard, bounds, center, scale, params=params)
+```
+
+### Runtime events
+
+`grid.stamp_risk(r0, r1, c0, c1, value)` / `grid.stamp_hard(...)` mutate the
+raw rasters, re-derive the planes, and bump `grid.version` — an attached
+scenario forces a replan on the next tick (bypassing the route hysteresis),
+which is how a mud-onset event lands mid-run.
+
+### Reading it back
+
+`NavMetrics.material_risk` / `.material_gate` carry the per-step risk at the
+agent and the gate state (0/False without material); a scenario's
+`sc.material.last_gate` is the full `GateResult`; a swarm exposes
+`swarm.material_gate` per agent.
+
+### Demo
+
+`grl-snam material-demo` runs both stories (planner-backed FogScenario and
+the reactive Swarm) with and without material and writes side-by-side
+trajectory renders + stats to `material_demo/`. The pure-C++ twin of the
+swarm story is libcvc's `examples/nav_material_demo.cpp`
+(`-DCVC_BUILD_NAV_EXAMPLE=ON`).
+
 ## Backends and defaults
 
 | tier | env var | default |

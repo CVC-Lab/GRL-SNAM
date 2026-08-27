@@ -48,6 +48,17 @@ def selftest() -> None:
     raise SystemExit(_selftest())
 
 
+@main.command("material-demo")
+@click.option("--out-dir", default="material_demo", show_default=True, help="Output directory.")
+def material_demo(out_dir: str) -> None:
+    """Material-aware navigation demo (pure Python): two stories run with and
+    without a MaterialGrid, rendered as top-down trajectory PNGs + stats.
+    Set GRL_SNAM_MATERIAL_BACKEND=native to run through the C++ kernels."""
+    from grl_snam.tools.material_demo import main as run
+
+    raise SystemExit(run(out_dir))
+
+
 @main.command("lab-demo")
 @click.argument("png", required=False)
 def lab_demo(png: str | None) -> None:
