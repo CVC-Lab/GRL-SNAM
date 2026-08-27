@@ -49,6 +49,7 @@ packages = [
     { include = "eval_coef_energy.py" },
     { include = "surrogate_robust.py" },
     { include = "sdf_nav.py" },
+    { include = "material_nav.py" },
 ]
 
 [tool.poetry.group.dev.dependencies]
