@@ -113,6 +113,7 @@ class Squad:
         batched_planning: bool = True,
         batched_drive: bool = False,
         stagger_sense: bool = False,
+        material=None,
     ):
         if not agents:
             raise ValueError("a squad needs at least one agent")
@@ -141,8 +142,12 @@ class Squad:
                 # keeps the story's range_m and n_rays.
                 **({} if a.sensor is None else {"sensor": {**story.sensor, **a.sensor}}),
             )
+            # One shared MaterialGrid across the squad: material is world
+            # truth (the oracle setting), not per-agent belief; each
+            # scenario still gets its own MaterialRuntime (its gate surface
+            # composes with its own believed occupancy).
             self.scenarios[a.key] = build_scenario(
-                s, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ
+                s, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ, material=material
             )
         self.step_i = 0
 
@@ -318,6 +323,11 @@ class Squad:
         n0 = navs[0]
         if n0._dyn != "bicycle":
             return False
+        # Material-aware agents fall back to the serial act: the batched drive
+        # calls bicycle_rollout directly, bypassing SdfNavigator's per-tick
+        # gate + material force wiring (batched material is a follow-up).
+        if any(nav.material is not None for nav in navs):
+            return False
         return all(
             nav._dyn == "bicycle"
             and nav.model is n0.model
@@ -390,10 +400,11 @@ class Squad:
             # Phase 2.5 — batch every rebuilding agent's sense-tick A* replan into
             # one threaded astar_batch. Bit-identical to the per-agent plan(): the
             # C++ A* is the same, and _replan_commit is the same hysteresis tail.
-            # Only the plain (cost-free) case batches; a route_cost_fn falls back
+            # Only the plain (cost-free) case batches; a route_cost_fn OR an
+            # attached material grid (whose risk raster is a cost) falls back
             # to the per-agent replan in _act_pre_drive.
             if self._can_batch_astar() and all(
-                sc.route_cost_fn is None for sc in self.scenarios.values()
+                sc.route_cost_fn is None and sc.material is None for sc in self.scenarios.values()
             ):
                 reb = [sc for sc in self.scenarios.values() if sc._sense_rebuild and sc.use_planner]
                 if reb:

@@ -40,6 +40,8 @@ class NavMetrics:
     goal_index: int = 0  # which goal (multi-goal drives)
     reached: bool = False  # active goal reached this step
     heading_rad: float = 0.0  # vehicle heading (bicycle dynamics; 0 in point mode)
+    material_risk: float = 0.0  # smoothed material risk r~ at the agent (0 without material)
+    material_gate: bool = False  # witness gate active this step (False without material)
 
     def as_dict(self) -> dict:
         return self.__dict__.copy()

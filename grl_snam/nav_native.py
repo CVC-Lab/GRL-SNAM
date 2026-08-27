@@ -619,3 +619,134 @@ def train_coef_mlp(
         str(out_path),
     )
     return out_path
+
+
+# ── material-aware kernels (cvc::nav material) ──────────────────────────────
+# Unlike the geometry kernels above (default native when present), the material
+# fast path is OPT-IN: pure Python is the feature's default and the C++ side is
+# the accelerator. Set GRL_SNAM_MATERIAL_BACKEND=native to engage it. Keyed off
+# the NEW pycvc symbols (never a re-signatured existing one), so an older pycvc
+# simply leaves the flag False.
+
+HAS_MATERIAL = AVAILABLE and hasattr(_pycvc, "nav_witness_gate")
+HAS_MATERIAL_DRIVE = AVAILABLE and hasattr(_pycvc, "nav_drive_step_material")
+
+
+def material_enabled() -> bool:
+    """True when the material kernels should run in C++ (opt-in)."""
+    if not HAS_MATERIAL:
+        return False
+    return os.environ.get("GRL_SNAM_MATERIAL_BACKEND", "python").lower() == "native"
+
+
+def material_build(risk_raw, hard, cell_w, scale, sigma):
+    """Derived material planes in C++ (bit-identical to MaterialGrid._derive).
+    Returns ``(risk, phi_hard_m, grad_rx, grad_ry, grad_px, grad_py)`` — six
+    (H, W) float32 arrays."""
+    p = _pycvc.nav_material_build(
+        np.ascontiguousarray(risk_raw, np.float32),
+        np.ascontiguousarray(hard, np.uint8),
+        float(cell_w),
+        float(scale),
+        float(sigma),
+    )  # (6, H, W) float32
+    return p[0], p[1], p[2], p[3], p[4], p[5]
+
+
+def witness_gate(
+    risk,
+    gate_hard,
+    clear_m,
+    pos_rc,
+    goal_rc,
+    *,
+    horizon_cells,
+    hard_margin_m,
+    primitive_count=16,
+    improvement_margin=0.05,
+    material_trigger=0.45,
+    progress_slack_cells=0.5,
+):
+    """C++ witness gate — bit-identical to grl_snam.material.witness_gate.
+    Returns the same GateResult."""
+    from .material import GateResult
+
+    out = _pycvc.nav_witness_gate(
+        np.ascontiguousarray(risk, np.float32),
+        np.ascontiguousarray(gate_hard, np.uint8),
+        np.ascontiguousarray(clear_m, np.float32),
+        float(pos_rc[0]),
+        float(pos_rc[1]),
+        float(goal_rc[0]),
+        float(goal_rc[1]),
+        int(horizon_cells),
+        float(hard_margin_m),
+        int(primitive_count),
+        float(improvement_margin),
+        float(material_trigger),
+        float(progress_slack_cells),
+    )  # (10,) float64: active, nominal, best, count, dir_r, dir_c, end_r, end_c, clear, _pad
+    return GateResult(
+        active=bool(out[0]),
+        nominal_risk=float(out[1]),
+        best_risk=float(out[2]),
+        feasible_count=int(out[3]),
+        direction_rc=(float(out[4]), float(out[5])),
+        endpoint_rc=(float(out[6]), float(out[7])),
+        min_clearance_m=float(out[8]),
+    )
+
+
+def witness_gate_batch(
+    risk,
+    gate_hard,
+    clear_m,
+    pos_rc,
+    goal_rc,
+    *,
+    horizon_cells,
+    hard_margin_m,
+    primitive_count=16,
+    improvement_margin=0.05,
+    material_trigger=0.45,
+    progress_slack_cells=0.5,
+    num_threads=0,
+):
+    """Batched C++ witness gate over [N] agents. Returns
+    ``(active, nominal, best, feasible_count)`` arrays, byte-identical to the
+    Python batch reference."""
+    out = _pycvc.nav_witness_gate_batch(
+        np.ascontiguousarray(risk, np.float32),
+        np.ascontiguousarray(gate_hard, np.uint8),
+        np.ascontiguousarray(clear_m, np.float32),
+        np.ascontiguousarray(pos_rc, np.float64),
+        np.ascontiguousarray(goal_rc, np.float64),
+        int(horizon_cells),
+        float(hard_margin_m),
+        int(primitive_count),
+        float(improvement_margin),
+        float(material_trigger),
+        float(progress_slack_cells),
+        int(num_threads),
+    )  # (N, 4) float64
+    return out[:, 0].astype(bool), out[:, 1], out[:, 2], out[:, 3].astype(np.int64)
+
+
+def material_sample(field6, on, num_threads=0):
+    """C++ 6-channel bilinear material sample (mirrors nav_sdf_sample).
+    ``field6`` carries ``(stack [1,6,H,W] f32, bounds, center, scale)`` — pass a
+    grl_snam.material.MaterialField. Returns (risk, phi_m, grad_r, grad_phi)."""
+    f = field6
+    out = _pycvc.nav_material_sample(
+        np.ascontiguousarray(f.field.numpy(), np.float32),
+        float(f.mnx),
+        float(f.mny),
+        float(f.mxx),
+        float(f.mxy),
+        float(f.cx),
+        float(f.cy),
+        float(f.S),
+        np.ascontiguousarray(on, np.float32),
+        int(num_threads),
+    )  # (n, 6) float32
+    return out[:, 0], out[:, 1], out[:, 2:4], out[:, 4:6]

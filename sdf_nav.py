@@ -337,11 +337,54 @@ def _ipc_dbdd(d: torch.Tensor, d_hat: float) -> torch.Tensor:
     return torch.where(d < d_hat, val, torch.zeros_like(d))
 
 
-def sdf_rollout(field: SDFField, o, v, goal, al, be, ga, steps, *, rr, d_hat, dt, nsub=1, vmax=0.9):
+def _material_force(material, o, lam_soft, lam_hard, k_sharp, d_hat_m):
+    """The material-aware force at ``o`` (``[B,2]``), per the ported method:
+
+        F_soft = -lam_soft * grad r~            (gradient descent on risk)
+        db     = -sigmoid(k_sharp * (d_hat_m - phi_m))
+        F_hard = -lam_hard * db * grad phi      (push toward open space, fading
+                                                 sigmoidally past d_hat_m)
+
+    ``material`` is any sampler with ``sample(o) -> (risk, phi_m, grad_r,
+    grad_phi)`` (see grl_snam.material.MaterialField); ``phi_m`` is in world
+    METRES — the barrier constants are the source method's, unconverted.
+    ``lam_soft`` already carries the witness gate (lam_soft * gate_active)."""
+    _, phi_m, grad_r, grad_phi = material.sample(o)
+    db = -torch.sigmoid(k_sharp * (d_hat_m - phi_m))
+    f_soft = -lam_soft.unsqueeze(-1) * grad_r
+    f_hard = -lam_hard.unsqueeze(-1) * db.unsqueeze(-1) * grad_phi
+    return f_soft + f_hard
+
+
+def sdf_rollout(
+    field: SDFField,
+    o,
+    v,
+    goal,
+    al,
+    be,
+    ga,
+    steps,
+    *,
+    rr,
+    d_hat,
+    dt,
+    nsub=1,
+    vmax=0.9,
+    material=None,
+    lam_soft=None,
+    lam_hard=None,
+    mat_k_sharp=5.0,
+    mat_d_hat_m=3.0,
+):
     """Differentiable SDF surrogate rollout. ``al,be,ga`` are ``[B]`` coefficients.
     Returns ``(oT, vT, min_clearance[B])``. Substep (``nsub``>1) + ``vmax`` clamp at
     inference so a fast step can't tunnel a thin wall; ``nsub=1`` is fine for the
-    training gradient."""
+    training gradient.
+
+    ``material`` (with ``[B]`` ``lam_soft``/``lam_hard``) adds the material-aware
+    force term — see :func:`_material_force`. ``None`` (the default) is bit-for-bit
+    the pre-parameter behaviour; the golden traces stay valid."""
     hdt = dt / nsub
     minclr = torch.full((o.shape[0],), 9.9, device=o.device)
     for _ in range(steps):
@@ -351,7 +394,11 @@ def sdf_rollout(field: SDFField, o, v, goal, al, be, ga, steps, *, rr, d_hat, dt
             minclr = torch.minimum(minclr, d.detach())
             F_bar = -(al * _ipc_dbdd(d, d_hat)).unsqueeze(-1) * nrm  # push out along wall normal
             F_goal = -be.unsqueeze(-1) * (o - goal)
-            a = F_bar + F_goal - ga.unsqueeze(-1) * v
+            if material is not None:
+                F_mat = _material_force(material, o, lam_soft, lam_hard, mat_k_sharp, mat_d_hat_m)
+                a = F_bar + F_goal + F_mat - ga.unsqueeze(-1) * v
+            else:
+                a = F_bar + F_goal - ga.unsqueeze(-1) * v
             v = v + hdt * a
             sp = v.norm(dim=-1, keepdim=True)
             v = torch.where(sp > vmax, v * vmax / sp, v)
@@ -381,6 +428,11 @@ def bicycle_rollout(
     a_lat_max=1.0,
     k_steer=0.8,
     allow_reverse=False,
+    material=None,
+    lam_soft=None,
+    lam_hard=None,
+    mat_k_sharp=5.0,
+    mat_d_hat_m=3.0,
 ):
     """Differentiable *kinematic bicycle* rollout over the same SDF barrier.
 
@@ -413,6 +465,18 @@ def bicycle_rollout(
 
     Args are as :func:`sdf_rollout` except the state: ``th`` and ``sp`` are
     ``[B]`` heading (radians) and speed. Returns ``(o, th, sp, min_clearance)``.
+
+    ``material`` (+ ``[B]`` ``lam_soft``/``lam_hard``) adds the material-aware
+    force (:func:`_material_force`) to BOTH couplings a bicycle has: the
+    longitudinal projection (F . heading — a hazard dead ahead brakes) AND the
+    steering bias (F_mat joins F_rep in the tanh term — a lateral risk gradient
+    turns the wheel). The steering coupling is a deliberate adaptation of the
+    ported method to vehicle dynamics: the source integrates a point mass, so
+    its material force bends the trajectory directly; a bicycle discards the
+    lateral force component, and without the steer term the whole feature would
+    degenerate to speed modulation. No repulsive-only clamp is needed (unlike
+    the IPC bias): both material terms already point away from risk/hazard.
+    ``None`` (the default) is bit-for-bit the pre-parameter behaviour.
     """
     hdt = dt / nsub
     tan_dmax = math.tan(delta_max)
@@ -425,7 +489,11 @@ def bicycle_rollout(
 
             F_bar = -(al * _ipc_dbdd(d, d_hat)).unsqueeze(-1) * nrm
             F_goal = -be.unsqueeze(-1) * (o - goal)
-            F = F_bar + F_goal
+            if material is not None:
+                F_mat = _material_force(material, o, lam_soft, lam_hard, mat_k_sharp, mat_d_hat_m)
+                F = F_bar + F_goal + F_mat
+            else:
+                F = F_bar + F_goal
 
             head = torch.stack([torch.cos(th), torch.sin(th)], -1)  # [B,2]
             left = torch.stack([-torch.sin(th), torch.cos(th)], -1)  # [B,2]
@@ -464,7 +532,10 @@ def bicycle_rollout(
             # only what feeds the steering wheel is clamped repulsive-only,
             # which also removes the 0.6 rad steering slew at the d_hat shell.
             F_rep = -(al * _ipc_dbdd(d, d_hat).clamp(max=0.0)).unsqueeze(-1) * nrm
-            delta = delta + k_steer * torch.tanh((F_rep * left).sum(-1))
+            if material is not None:
+                delta = delta + k_steer * torch.tanh(((F_rep + F_mat) * left).sum(-1))
+            else:
+                delta = delta + k_steer * torch.tanh((F_rep * left).sum(-1))
             delta = delta.clamp(-delta_max, delta_max)
 
             # corner speed limit from the lateral-acceleration cap.

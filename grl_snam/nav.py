@@ -71,6 +71,11 @@ class SdfNavigator:
         # Optional ``(x_world, y_world) -> (dx, dy)`` in world metres, applied
         # to the steering carrot each step. See :meth:`step`.
         self.carrot_bias_fn = None
+        # Optional material-aware runtime (grl_snam.material.MaterialRuntime).
+        # When set, every step evaluates the witness gate against the current
+        # target and threads the material force into the rollout. Unset (the
+        # default) leaves every trajectory bit-for-bit what it was.
+        self.material = None
         self.step_i = 0
         self.goal_index = 0
         self._parked = False
@@ -321,6 +326,32 @@ class SdfNavigator:
                 if self._dyn == "bicycle"
                 else 0.0
             ),
+            material_risk=(
+                float(self.material.field.sample(self.o)[0][0])
+                if self.material is not None
+                else 0.0
+            ),
+            material_gate=(
+                bool(self.material.last_gate.active)
+                if self.material is not None and self.material.last_gate is not None
+                else False
+            ),
+        )
+
+    def _material_kw(self) -> dict:
+        """Per-step material rollout kwargs: evaluate the witness gate against
+        the CURRENT target (the same goal the drive is tracking) and hand the
+        rollout the effective lambdas. Empty when no material is attached."""
+        if self.material is None:
+            return {}
+        lam_s, lam_h = self.material.lambdas(tuple(self.pos_world()), tuple(self.n2w(self._gn)))
+        p = self.material.params
+        return dict(
+            material=self.material.field,
+            lam_soft=torch.tensor([lam_s], dtype=torch.float32),
+            lam_hard=torch.tensor([lam_h], dtype=torch.float32),
+            mat_k_sharp=float(p.k_sharp),
+            mat_d_hat_m=float(p.d_hat_sdf_m),
         )
 
     @torch.no_grad()
@@ -331,6 +362,7 @@ class SdfNavigator:
         agent forward in one batched rollout in between."""
         gt = self._plan_carrot()
         al, be, ga = self.model(sdf_nav.coef_feats(self.field, self.o, gt))
+        mat_kw = self._material_kw()
         if self._dyn == "bicycle":
             self.o, self.th, self.sp, _ = sdf_nav.bicycle_rollout(
                 self.field,
@@ -345,12 +377,13 @@ class SdfNavigator:
                 nsub=self.nsub,
                 **self.kw,
                 **self._veh,
+                **mat_kw,
             )
             head = torch.stack([torch.cos(self.th), torch.sin(self.th)], -1)
             self.v = self.sp.unsqueeze(-1) * head  # keep .v meaningful for callers
         else:
             self.o, self.v, _ = sdf_nav.sdf_rollout(
-                self.field, self.o, self.v, gt, al, be, ga, 1, nsub=self.nsub, **self.kw
+                self.field, self.o, self.v, gt, al, be, ga, 1, nsub=self.nsub, **self.kw, **mat_kw
             )
         self.step_i += 1
         return self._metrics(al, be, ga)

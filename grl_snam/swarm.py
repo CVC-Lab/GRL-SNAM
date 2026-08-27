@@ -106,6 +106,7 @@ class Swarm:
         belief_mode: str = "shared",
         clusters=None,
         nsub: int | None = None,
+        material=None,
     ):
         if not specs:
             raise ValueError("a swarm needs at least one agent")
@@ -183,8 +184,39 @@ class Swarm:
         # Off by default — torch stays the reference/twin (GRL_SNAM_NAV_DRIVE, a
         # separate flag from the bit-kernel GRL_SNAM_NAV_BACKEND). The C++ drive
         # is float-equivalent to torch (docs/CVCNAV_CPP_PORT_ROADMAP.md P8).
+        # Material-aware navigation (grl_snam.material.MaterialGrid): default
+        # ON when attached — one SHARED truth-material plane for the whole
+        # swarm (material is world state, not per-agent belief), the witness
+        # gate evaluated as one vectorized [N] call each tick, and the material
+        # force threaded into the batched rollout. None (the default) leaves
+        # every trajectory bit-for-bit unchanged.
+        # The gate's feasibility surface here is TRUTH occupancy: the Swarm has
+        # no planner (its material channel is forces + gate only) and material
+        # is oracle world state — matching the source method's oracle-maps
+        # setting. FogScenario, which routes over belief, gates against the
+        # belief surface its planner pays costs on instead.
+        self._material = None
+        if material is not None:
+            from .material import MaterialRuntime
+
+            self._material = MaterialRuntime(material)
+            self._material.update_occ(np.asarray(self.truth, bool))
+
         self._native_drive = False
         self._native_weights_path = None
+        if self._material is not None and (
+            os.environ.get("GRL_SNAM_NAV_DRIVE", "torch").lower() == "native"
+        ):
+            # The native fused drive bypasses the torch rollout entirely; until
+            # pycvc grows the material drive entry points, running it with a
+            # material attached would SILENTLY drop the material forces. Loud
+            # beats wrong.
+            if not getattr(_native, "HAS_MATERIAL_DRIVE", False):
+                raise ValueError(
+                    "GRL_SNAM_NAV_DRIVE=native with a material grid attached, but this "
+                    "pycvc has no nav_drive_step_material — unset the env var (torch "
+                    "drive honors material) or upgrade pycvc."
+                )
         if os.environ.get("GRL_SNAM_NAV_DRIVE", "torch").lower() == "native" and _native.HAS_DRIVE:
             import tempfile
 
@@ -389,6 +421,7 @@ class Swarm:
                 nsub=self.nsub,
                 **self.kw,
                 **self.veh,
+                **self._material_kw(),
             )
 
         # 5. METRICS + WAYPOINT — a reached agent parks (single-goal swarm).
@@ -399,6 +432,30 @@ class Swarm:
 
         self.gstep += 1
         self._gen += 1
+
+    def _material_kw(self) -> dict:
+        """Per-tick material kwargs for the batched rollout: one vectorized
+        witness-gate call over all N agents (against each agent's own goal),
+        yielding the effective lambda columns. Empty when no material."""
+        if self._material is None:
+            return {}
+        self._material.consume_version_change()
+        p = self._material.params
+        if p.gate_enabled:
+            pos_w = self.n2w(self.o).cpu().numpy().astype(np.float64)
+            goal_w = self.n2w(self.goal).cpu().numpy().astype(np.float64)
+            active = self._material.gate_batch(pos_w, goal_w)
+            mult = torch.from_numpy(active.astype(np.float32)).to(self.dev)
+        else:
+            mult = torch.ones(self.N, device=self.dev)
+        self.material_gate = mult.bool()  # exposed for renderers/metrics
+        return dict(
+            material=self._material.field,
+            lam_soft=p.lam_soft * mult,
+            lam_hard=torch.full((self.N,), float(p.lam_hard), device=self.dev),
+            mat_k_sharp=float(p.k_sharp),
+            mat_d_hat_m=float(p.d_hat_sdf_m),
+        )
 
     def _native_drive_step(self, carrot: torch.Tensor) -> None:
         """Drive one tick through the torch-free C++ path (:func:`nav_native.drive_step`)
