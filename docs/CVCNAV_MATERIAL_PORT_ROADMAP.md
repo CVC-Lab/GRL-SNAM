@@ -226,6 +226,111 @@ source (CLI restricts `--stage` to {1,2}); it's P6, not P5.
 
 ---
 
+## Remaining work & resumption guide (P5 is CPU-complete)
+
+Everything below is what is **left**; the CPU trainer + Python driver + CUDA
+rollout are all merged to `master`/`main` (see the P5 PR table under **Status**).
+This section is written so the work can resume cleanly on another machine.
+
+### Where it all lives (on libcvc `master`)
+
+- **CPU forward/backward/loss/optimizer:**
+  `inc/cvc/nav/{coef_energy_net.h, material.h, material_train.h, geom_rollout.h}`,
+  `inc/cvc/nav/detail/{material_rollout.h (CVC_HD primitives + VJPs), nn_ops.h (the
+  matched fwd+bwd op library: linear/relu/layernorm/mha/conv2d/adaptive_avg_pool)}`,
+  `src/cvc/nav/{coef_energy_net.cpp (forward), coef_energy_net_backward.cpp
+  (backward_one), coef_energy_net_io.cpp (.cvcnm serialize/save), material_rollout.cpp
+  (rollout fwd+vjp), material_train.cpp (loss + Adam + cosine), geom_rollout.cpp
+  (L_multi)}`.
+- **CUDA (done):** `src/cvc/nav/material_rollout.cu` (rollout fwd+vjp on device).
+- **Gradcheck / parity tests:** `src/cvc/tests/nav_{material_rollout_grad,
+  coef_energy_grad, material_train, material_optim, geom_rollout_grad,
+  material_rollout_cuda}_test.cpp` + the shared model builder
+  `src/cvc/tests/coef_energy_test_model.h`.
+- **Python:** `bindings/pycvc/pycvc_nav.i` (the `MaterialTrainer` handle:
+  `nav_material_trainer_{create,step,save}`), GRL-SNAM
+  `grl_snam/material_train_native.py` + `tests/test_material_train_native.py`.
+
+### P5-P5b — the model (transformer+CNN) on device (the one big item left)
+
+Only the rollout is on GPU. The **transformer+CNN dominates cost**, so a full-GPU
+trainer needs `coef_energy_net` forward **and** backward on device. Unlike the
+rollout, this is a genuine re-implementation, not a CVC_HD reuse: `detail/nn_ops.h`
+is host-only (the ops allocate `std::vector` internally, and `mha_bwd` caches the
+softmax matrix), so the kernels must be written fresh. Plan:
+
+1. **Batch across B, not thread-per-agent.** At `d=64` the per-agent GEMMs are
+   latency-bound; stack the `B` agents' tokens (`B·T × d`) and use batched GEMM.
+   Two routes: **(a) cuBLAS** (`cublasSgemmStridedBatched` for the Linear/attention
+   projections; custom kernels for masked softmax, LayerNorm, ReLU, Conv2d,
+   AdaptiveAvgPool, and the head activations) — link `CUDA::cublas`; or **(b)
+   hand-rolled** shared-memory batched kernels (no cuBLAS dep, more code). (a) is
+   recommended for the GEMMs; the conv/pool/softmax/LayerNorm are small custom
+   kernels either way.
+2. **Mirror the `material_rollout.cu` scaffold** — `CVC_ENABLE_CUDA` gate, a
+   `coef_energy_net_cuda_available()`, host wrappers that malloc + H2D the weights
+   once and the batch per step, and a **CPU-parity test** `nav_coef_energy_cuda_test`
+   (forward float-equivalent; backward `rel < 5e-3 / cos > 0.9999` vs the CPU
+   `backward_one`, seeded with the same output grads). Precise-math flags
+   (`-fmad=false --prec-div=true --prec-sqrt=true --ftz=false`) as the other nav
+   `.cu`. Note fused attention / accumulation order will NOT be bit-exact — the
+   parity tier is FLOAT/`rel`, and the CPU FD gradcheck remains the ground truth.
+3. **Device-resident training step** (`material_train` twin): keep weights +
+   Adam moments device-resident, run model→rollout→loss→backward→Adam on device
+   with **one grad-norm D2H per window**; the model forward+backward runs **once
+   per training step** (it produces the coefficients; the rollout then runs its H
+   steps — the rollout kernel from #248 is already there). Reuse `coef_train.cu`'s
+   `grad_sqnorm_kernel` / `adam_kernel` shapes for the device Adam.
+4. **Sizing first (recommended):** before investing, benchmark the CPU trainer's
+   steps/sec on a realistic (B, model, batch) — the model is ~10²k params and the
+   CPU path is OpenMP-parallel across agents, so measure whether GPU is needed for
+   the intended TACC campaign scale. Multi-GPU is **task-parallel** (one config per
+   GPU/rank, MPS to fill SMs, zero inter-rank comms) — see the CUDA/TACC note above.
+
+### Building & testing on a fresh machine
+
+- **Worktree per session:** `git worktree add -b feat/<x> wt-libcvc-<x> origin/master`
+  (never share a checkout; see the `worktree-per-session` convention).
+- **Deps:** reuse a sibling deps prefix via `-DCMAKE_PREFIX_PATH=<...>/deps` (the
+  libcvc-deps action pins these; a local full build reuses a sibling `deps/`).
+- **CPU config (fast iteration):** `cmake -S . -B build -G Ninja
+  -DCVC_ENABLE_CUDA=OFF -DCVC_BUILD_PYCVC=OFF -DCVC_BUILD_CLI=OFF
+  -DCVC_BUILD_TESTS=ON -DCMAKE_PREFIX_PATH=<deps>`; build a single test target;
+  run with `LD_LIBRARY_PATH=build/lib:<deps>/lib`.
+- **CUDA config:** add `-DCVC_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=<CC>`
+  (`75` on a GTX 1650; set to the box's GPU compute capability, `nvidia-smi`).
+  Register a new `.cu` in the `CVC_ENABLE_CUDA` `SOURCE_FILES` list **and** the
+  precise-math `set_source_files_properties(...)` line in `src/cvc/CMakeLists.txt`.
+- **pycvc build:** `-DCVC_BUILD_PYCVC=ON -DCVC_BUILD_PYCVC_GL=OFF`
+  (GL needs the `vtk-python` package) `-DPython3_EXECUTABLE=<py-with-numpy>`;
+  target `pycvc`; drive with `PYTHONPATH=build/bindings/pycvc`.
+- **Discipline:** the FD gradcheck is the oracle (directional `dir_rel < 2e-2`,
+  per-tensor spot `worst < 5e-2` restricted to large-`|g|` params where the central
+  FD is well-conditioned; per-test **local** RNG seed; freeze the detached CVaR
+  quantile in the FD). `clang-format` (v18) `.cpp`/`.h` — **never** `.i` (it mangles
+  the SWIG `%{` directives). Every test exe **must** be in `TEST_TARGETS`
+  (`src/cvc/tests/CMakeLists.txt` has a FATAL-error drift check).
+
+### Deployment follow-up
+
+The `pycvc-gl` cvcpkg recipe must be **rebuilt / `cvc_revision`-bumped** against the
+libcvc that carries #247, so the GRL-SNAM CI closure ships a pycvc with the
+`nav_material_trainer_*` binding. Until then `test_material_train_native` **skips**
+(the same pattern the material parity tests followed after #234). A recipe fix
+without a revision bump silently no-ops on the published catalog and the dev-server
+cache.
+
+### Not part of the stage-2 learned trainer (P6 / dropped)
+
+`mu_lat` (computed in the forward for checkpoint compat, unused by the loss),
+`selectivity_loss` (default `w_selectivity = 0`), Stage-1 geometry-freeze mode
+(warm-start via a `.cvcnm` load instead), Stage-3 belief patches (unimplemented
+upstream), `route_aware_stage2`, and the `v7` controller (failed its own efficacy
+gate — recommend not porting). The **dataset (DFC2018) and the epoch/validation
+loop stay in Python by design** — C++ exposes the per-step `MaterialTrainer.step`.
+
+---
+
 ## P6 — Scope completions
 
 - **route_aware_stage2** grid heuristic (the paper's dyn-table baseline) as a
