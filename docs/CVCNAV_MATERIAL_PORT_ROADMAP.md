@@ -1,0 +1,222 @@
+# cvc::nav material-aware port roadmap — end-to-end torch-free C++/CUDA
+
+Goal: run the **entire** material-aware GRL-SNAM stack — inference *and*
+training — with zero libtorch, like the base `cvc::nav` port
+([`docs/CVCNAV_CPP_PORT_ROADMAP.md`](CVCNAV_CPP_PORT_ROADMAP.md)), with CUDA
+paths where they pay off, so large training campaigns run on the TACC cluster
+as fast as possible. This is the organizing document for that campaign; each
+phase is a shippable PR pair (libcvc + GRL-SNAM) with a parity/gradcheck gate.
+
+The base material feature is already merged (GRL-SNAM #31, libcvc #230): the
+force field, witness gate, and material-coupled drive run torch-free in C++,
+consuming **fixed** `lam_soft`/`lam_hard`. What remains is (a) the last native
+plumbing, (b) CUDA, (c) the **learned** coefficient model `CoefEnergyNetMaterial`
+that *produces* those λ from context, and (d) its **training loop** — the
+performance-critical TACC target.
+
+## Status
+
+| Phase | Scope | State |
+|---|---|---|
+| **P1** | Native fused material inference drive (`nav_drive_step_material`) | **DONE** — libcvc #232, GRL-SNAM #34 |
+| **P2** | Deferred native plumbing: sim_world material binding, grouped M-planes, batched Squad drive | planned |
+| **P3** | CUDA material inference (`drive.cu` material twin, `sim_world_cuda` material) | planned |
+| **P4** | Torch-free `CoefEnergyNetMaterial` forward (transformer + CNN), CPU + CUDA | planned |
+| **P5** | Torch-free material **training** loop, CPU + CUDA — the TACC target | planned |
+| **P6** | Scope completions: route_aware baseline, μ_lat/TTC, Setting-3 belief, v7 decision | planned |
+
+Fidelity tiers (as the base port): **BIT** = `array_equal`/`tobytes`;
+**FLOAT** = float-equivalent (rtol 1e-4 / atol 1e-5), the realistic tier for
+anything through a GEMM/attention/bilinear; **GRADCHECK** = finite-difference
+gradient check is the ground-truth oracle for training (torch is a secondary
+cross-check, never the gate). Every new TU: no `-ffast-math`, explicit
+`-ffp-contract=off` on BIT surfaces; new `.cu` gets `-fmad=false --prec-div/sqrt
+--ftz=false` per the nav convention.
+
+---
+
+## P1 — Native fused material inference drive ✅
+
+`drive_step_material` (sample → coef_feats → coef_mlp → bicycle_material)
+existed in C++ but was unbound. Added the `nav_drive_step_material` pycvc
+binding and wired `Swarm._native_drive_step` to use it under
+`GRL_SNAM_NAV_DRIVE=native` + material, with the #33 torch fallback for older
+pycvc. Parity: null-material == plain drive_step (BIT gtest); drive_step_material
+vs torch material drive (FLOAT); native-material Swarm tracks torch. This closes
+the "drive material torch-free from Python" hole for the shared-belief swarm.
+
+---
+
+## P2 — Deferred native plumbing
+
+Three items; **grouped M-plane support is the root blocker** for the other two,
+so it lands first.
+
+### P2a — Grouped material planes (M>1) — do first
+Today the kernels are half M-aware and half shared-only:
+- M-aware already: `material_sample` (plane = `map_id[i]` when `M>1`),
+  `drive_step_material`/`bicycle_rollout_material` (per-agent plane from the
+  geometry `map_id`), and the `nav_bicycle_rollout_material` binding (`(Mm,6,H,W)`).
+- Shared-only, must extend: `witness_gate`/`witness_gate_batch` take one raster
+  and no `map_id`; `sim_world::set_material` builds exactly one plane and one
+  gate surface (`mat_stack_` is `[1,6,H,W]`, `material_view().M = 1`).
+
+Tasks: add optional `map_id` + stacked `[M,H,W]` rasters to
+`witness_gate_batch` (nullptr → plane 0, back-compat); a `material_build_batch`
+(or an M-loop in `set_material`) producing `[M,6,H,W]`; store sim_world material
+as M planes with per-plane gate surfaces. Parity: `bicycle_rollout_material`
+M=2 + map_id == two serial single-plane runs (BIT); map_id-aware
+`witness_gate_batch` == per-plane serial `witness_gate` (BIT).
+
+### P2b — sim_world material from Python (pure binding)
+`sim_world::set_material` is C++-only. Add `nav_sim_world_set_material`
+(+ `_clear_material`, `_material_gate_active`) bindings and extend the
+`nav_native.NativeSimWorld` wrapper + `sim_world_from_swarm` to attach a
+`MaterialRuntime`. Parity: material sim_world vs torch-material Swarm (the
+Python mirror of the existing `NavMaterialSimWorld` gtest); thread-count
+determinism.
+
+### P2c — Batched Squad material drive
+`Squad._can_batch_drive` punts to serial when material is attached, and the
+sense-tick `astar_batch` punts when a material cost raster is present. With P2a
+done, batch it: squad-level vectorized `witness_gate_batch` → λ columns (the
+`Swarm._material_kw` pattern), assemble the shared/`map_id` material stack, swap
+`bicycle_rollout` → `bicycle_rollout_material` in `_batched_drive`, and wire the
+risk cost into `astar_batch`. Parity: batched-material squad vs serial-material
+squad (FLOAT, the batched-drive tier).
+
+---
+
+## P3 — CUDA material inference
+
+Mirror `drive.cu`'s device path for the material drive: a `drive_step_material`
+CUDA twin (one thread/agent, reusing the device sampler + adding the 6-channel
+material sample + the two force terms + the steer coupling), and material planes
+in `sim_world_cuda` (device-resident, static-map deploy path). The material
+sample and witness gate can stay CPU where they're not hot; the fused per-agent
+drive is the kernel that matters for thousands of agents. Build precise
+(`-fmad=false`, no `--use_fast_math`). Parity: CUDA material drive vs CPU
+material drive (FLOAT, `rel<5e-3`), auto-skip without a device.
+
+---
+
+## P4 — Torch-free `CoefEnergyNetMaterial` forward (CPU + CUDA)
+
+The learned model that produces `(alpha,beta,gamma,lam_soft,lam_hard)` from
+obstacle features + goal + a risk patch. This replaces the fixed-λ option with
+learned, context-dependent λ in the torch-free sim — and is the inference half
+that P5's training produces. **First conv2d / multi-head-attention / LayerNorm
+/ softmax in libcvc.**
+
+Exact forward (source: `material_nav.py` / `train_material.py`): `d_tok=64`,
+`nhead=4`, `dim_feedforward=128`, `num_layers=2`, patch 2×32×32.
+- `obs_enc` Linear(6→128)→ReLU→Linear(128→64) per obstacle token; `goal_enc`
+  Linear(4→64)→ReLU→Linear(64→64) → the goal token.
+- `fuser` = 2× `TransformerEncoderLayer(d=64, nhead=4, ff=128)` over `1+N`
+  tokens with a key-padding mask. **POST-norm, ReLU FFN, no final encoder
+  norm** (torch defaults, not passed — hardcode them):
+  `x = norm1(x + MHA(x)); x = norm2(x + linear2(relu(linear1(x))))`.
+  MHA: packed `in_proj` → Q,K,V (4×16 heads), `scores = QKᵀ·0.25`, mask padded
+  keys to −∞, row-max-stable softmax, `·V`, merge heads, `out_proj`.
+- `alpha = softplus(head(z_all[:,1:]))` masked; `beta,gamma = softplus(head(ctx))`.
+- `RiskPatchEncoder`: Conv2d(2→16,k3,s1,p1)→ReLU→Conv2d(16→32,k3,s2,p1)→ReLU→
+  Conv2d(32→64,k3,s2,p1)→ReLU→AdaptiveAvgPool2d(4)→Flatten→Linear(1024→64)→ReLU.
+- `lam_soft = 5·σ(head([risk_ctx, ctx]))`, `lam_hard = 10·σ(...)`; `mu_lat`
+  (unused off-highway) may be omitted.
+
+Weight format: a **new** sibling to `.cvcnav` (magic e.g. `CVNM`) — `.cvcnav`
+is a Linear chain by construction and can't express the conv/attention/DAG
+topology. Reuse every convention (little-endian, f32 row-major, FNV-1a
+`arch_hash`, meta tail); a Python exporter mirrors `coef_export.py`. ~207k
+params ≈ 0.83 MB.
+
+**#1 parity hazard: torch's fused-attention fast path.** In eval/no-grad,
+`TransformerEncoder` may dispatch to BetterTransformer / flash / mem-efficient
+SDPA / NestedTensor (which *skips* padded tokens) — all round differently from
+naive math attention. Goldens MUST be generated with the math path forced
+(`enable_nested_tensor=False`, disable flash/mem-efficient SDPA, or on CPU).
+Never validate C++ against fast-path goldens. Tier: FLOAT (rtol 1e-4), not BIT.
+CUDA: one block per agent, `(1+N)×64` tokens in shared memory; the CNN is the
+heaviest component and should be cached when agents share a risk tile — at
+`d=64` everything is launch/memory-bound, so fuse aggressively.
+
+---
+
+## P5 — Torch-free material **training** loop (CPU + CUDA) — the TACC target
+
+The performance-critical piece. Differentiate the loss end-to-end without
+libtorch, validated by finite-difference gradcheck (the base `coef_train`
+discipline: delicate VJPs as `CVC_HD` in a shared `detail/` header so one
+gradcheck covers host + device).
+
+Loss assembly (stage 2, `train_material.py:step_batch`):
+`L = 0.3·w_traj·L_traj + 0.3·w_vel·L_vel + w_friction·L_fric + w_clear·L_clear
++ w_multi·L_multi + L_nav + w_lreg·L_lreg` where `L_nav = cvar_loss(J,
+α=0.95)`, `J = w_goal·‖oT−goal‖² + w_len·arc_len + w_risk·cum_risk +
+w_hard·hard_count`. `cvar_loss` uses a **detached** quantile → per-agent tail
+mask `1[J_i>η]/((1−α)B)`. Stage 1 drops L_nav/L_lreg and zeros material.
+Adam(lr=1e-4) + global-norm clip 5.0 + cosine LR. `mu_lat` unused → omit.
+
+Two new adjoint families beyond base `coef_train`:
+1. **Rollout forces** (small): the 6-channel patch bilinear VJP (`d/do`),
+   `_sdf_barrier_grad` adjoint (`∂/∂φ = k·σ(1−σ)`), the soft/hard force VJPs
+   (inject `d/d(lam_soft,lam_hard)`), the explicit-obstacle IPC sum with the
+   `[-200,200]`/`vp` branches, and the semi-implicit step (no vmax clamp, mass).
+2. **Backprop through `CoefEnergyNetMaterial`** (the real new surface) — ranked
+   by risk (all fail *silently*, so per-op FD gradcheck before the end-to-end
+   check): **MHA backward** (softmax-VJP `dS = P⊙(g−(g·P)1)`, four projection
+   matmuls, the `1/√d` scale, head reshape, the key-padding mask → exactly-zero
+   grad on padded keys, post-norm ordering) > **Conv2d backward** ×3 (stride-2
+   weight-grad indexing, AdaptiveAvgPool bins) > **LayerNorm backward** ×4
+   (normalized-Jacobian — a dropped mean term biases every gradient silently) >
+   Linear/ReLU/softplus/`max·σ`.
+
+Phased with a gradcheck per piece (`dir_rel<2e-2`, `worst_rel<5e-2` on the
+smooth surrogate, evaluated at interior points away from the CVaR kink and the
+`sdf<1` / `risk∈{0,1}` thresholds): P0 patch sampler + primitives; P1 rollout
+fwd+bwd (coefficients fixed); P2 model fwd + per-op adjoints; P3 full loss
+assembly end-to-end gradcheck (the release gate); P4 host Adam + `.cvcnm` IO;
+P5 CUDA transcription (CUDA-vs-CPU grad parity `rel<5e-3, cos>0.9999`); P6
+convergence + deployment-reach test.
+
+**CUDA / TACC.** Device-resident loop (field/patches/params/Adam-moments
+resident, in-place device Adam, one-float grad-norm D2H per window, no
+`--use_fast_math`). Unlike base `coef_train` (heavy shared field, tiny per-agent
+MLP), here the **per-item transformer+CNN dominates** — so **batch the model
+across the B scenes** (batched GEMM/conv + batched softmax), don't thread-per-item
+tiny GEMMs (latency-bound at `d=64`). Cache the model activations once per item
+(reused across the H rollout steps); checkpoint/recompute the rollout samples.
+**Multi-GPU is task-parallel, not data-parallel:** the model is ~10²k params, so
+one config saturates one GPU — run one full config per GPU/rank (MPS to fill
+SMs), many configs concurrently across nodes via the batch scheduler, zero
+inter-rank communication. Near-linear campaign scaling.
+
+Stage 3 (belief-patch perception) is documented but **unimplemented** in the
+source (CLI restricts `--stage` to {1,2}); it's P6, not P5.
+
+---
+
+## P6 — Scope completions
+
+- **route_aware_stage2** grid heuristic (the paper's dyn-table baseline) as a
+  C++ baseline for campaign comparison — grid A*/beam, no learned field.
+- **Highway μ_lat / TTC channels** — the μ_lat head already exists (kept for
+  checkpoint compat); wire the lateral + time-to-collision force channels for
+  highway-env-style campaigns if wanted.
+- **Setting-3 belief-patch training** — the source's stage-3 (train on inferred
+  belief patches + perception loss) is unimplemented upstream; a genuine
+  research extension, sequenced after P5.
+- **v7 controller** — the source's frozen "v7" repair controller failed its own
+  preregistered efficacy gate; **recommend NOT porting** as a deployment target.
+  Confirm with the user before spending effort (reproduce-only at most).
+
+---
+
+## Sequencing rationale
+
+P1 (done) unblocks torch-free material inference from Python. P2a (grouped
+planes) is the root blocker for P2b/P2c and for per-cluster material campaigns,
+so it precedes them. P3 (CUDA inference) and P4 (learned model) are independent
+and can run in parallel; P4 is the prerequisite for P5. **P5 is the TACC target**
+and the largest, riskiest phase — its correctness rides entirely on the FD
+gradcheck harness, so that harness is built first (P5-P0). P6 is opportunistic.

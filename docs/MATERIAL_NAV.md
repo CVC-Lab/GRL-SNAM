@@ -1,5 +1,11 @@
 # Material-aware navigation
 
+> **Campaign roadmap:** the full end-to-end torch-free C++/CUDA port (learned
+> model + training loop for TACC campaigns) is planned in
+> [CVCNAV_MATERIAL_PORT_ROADMAP.md](CVCNAV_MATERIAL_PORT_ROADMAP.md). This
+> document is the merged base feature.
+
+
 Port of the material-aware GRL-SNAM extension (published by the core
 researcher at `github.com/SetasAditya/material-aware-grl-snam`) into the main
 repo, plus its `cvc::nav` C++ twin in libcvc. This document is the design
