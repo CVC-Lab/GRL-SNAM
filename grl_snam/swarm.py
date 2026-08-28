@@ -204,20 +204,28 @@ class Swarm:
 
         self._native_drive = False
         self._native_weights_path = None
-        if self._material is not None and (
-            os.environ.get("GRL_SNAM_NAV_DRIVE", "torch").lower() == "native"
-        ):
-            # The native fused drive bypasses the torch rollout entirely; until
-            # pycvc grows the material drive entry points, running it with a
-            # material attached would SILENTLY drop the material forces. Loud
-            # beats wrong.
-            if not getattr(_native, "HAS_MATERIAL_DRIVE", False):
-                raise ValueError(
-                    "GRL_SNAM_NAV_DRIVE=native with a material grid attached, but this "
-                    "pycvc has no nav_drive_step_material — unset the env var (torch "
-                    "drive honors material) or upgrade pycvc."
-                )
-        if os.environ.get("GRL_SNAM_NAV_DRIVE", "torch").lower() == "native" and _native.HAS_DRIVE:
+        want_native_drive = os.environ.get("GRL_SNAM_NAV_DRIVE", "torch").lower() == "native"
+        if self._material is not None and want_native_drive:
+            # The torch-free fused drive (nav_drive_step) does not yet carry the
+            # material forces — that native material drive is a documented
+            # follow-up. Rather than silently drop the material (wrong) or hard
+            # fail (blocks a legitimate combination), fall back to the torch
+            # drive, which DOES honor material via _material_kw(); the geometry
+            # kernels + witness gate still run in C++ under
+            # GRL_SNAM_MATERIAL_BACKEND=native, and a pure torch-free material
+            # drive is available today through cvc::nav sim_world::set_material.
+            import warnings
+
+            warnings.warn(
+                "GRL_SNAM_NAV_DRIVE=native is not yet supported together with a "
+                "material grid; using the torch drive for this Swarm (material "
+                "forces are still applied). For a torch-free material drive use "
+                "the C++ cvc::nav sim_world::set_material path.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            want_native_drive = False
+        if want_native_drive and _native.HAS_DRIVE:
             import tempfile
 
             from .tools.coef_export import write_coef_mlp

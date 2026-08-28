@@ -629,7 +629,12 @@ def train_coef_mlp(
 # simply leaves the flag False.
 
 HAS_MATERIAL = AVAILABLE and hasattr(_pycvc, "nav_witness_gate")
-HAS_MATERIAL_DRIVE = AVAILABLE and hasattr(_pycvc, "nav_drive_step_material")
+# The material rollout binding that exists today (bit/float-tier tested):
+# nav_bicycle_rollout_material. A FUSED torch-free material drive
+# (nav_drive_step_material, the sample->coef_feats->coef_mlp->bicycle_material
+# unit the Swarm's native drive path would call) is a documented follow-up;
+# HAS_MATERIAL_ROLLOUT flags the rollout that is actually wired.
+HAS_MATERIAL_ROLLOUT = AVAILABLE and hasattr(_pycvc, "nav_bicycle_rollout_material")
 
 
 def material_enabled() -> bool:
