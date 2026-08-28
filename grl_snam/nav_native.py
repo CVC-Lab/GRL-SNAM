@@ -838,3 +838,60 @@ def matnet_forward(
         np.ascontiguousarray(risk_patch, np.float32),
         int(num_threads),
     )
+
+
+HAS_MATERIAL_ROLLOUT_INTEGRATOR = AVAILABLE and hasattr(_pycvc, "nav_integrate_surrogate_material")
+
+
+def integrate_surrogate_material(
+    o0,
+    v0,
+    goal,
+    C,
+    R,
+    mask,
+    alphas,
+    beta,
+    gamma,
+    lam_soft,
+    lam_hard,
+    rollout_patch,
+    rr,
+    d_hat,
+    dt,
+    H,
+    *,
+    margin_factor=0.5,
+    mass=1.0,
+    d_hat_sdf=3.0,
+    k_sharp=5.0,
+    num_threads=0,
+):
+    """Torch-free obstacle-list material surrogate rollout
+    (cvc::nav::integrate_surrogate_material) — the faithful C++ twin of
+    material_nav.integrate_surrogate_material. Batched over B agents with N
+    padded obstacles. Returns (oT (B,2), vT (B,2), min_clear (B,),
+    cum_risk (B,), hard_count (B,), arc_length (B,))."""
+    return _pycvc.nav_integrate_surrogate_material(
+        np.ascontiguousarray(o0, np.float32).reshape(-1, 2),
+        np.ascontiguousarray(v0, np.float32).reshape(-1, 2),
+        np.ascontiguousarray(goal, np.float32).reshape(-1, 2),
+        np.ascontiguousarray(C, np.float32).reshape(o0.shape[0], -1, 2),
+        np.ascontiguousarray(R, np.float32).reshape(o0.shape[0], -1),
+        np.ascontiguousarray(mask, np.uint8).reshape(o0.shape[0], -1),
+        np.ascontiguousarray(alphas, np.float32).reshape(o0.shape[0], -1),
+        np.ascontiguousarray(beta, np.float32).reshape(-1),
+        np.ascontiguousarray(gamma, np.float32).reshape(-1),
+        np.ascontiguousarray(lam_soft, np.float32).reshape(-1),
+        np.ascontiguousarray(lam_hard, np.float32).reshape(-1),
+        np.ascontiguousarray(rollout_patch, np.float32),
+        np.ascontiguousarray(rr, np.float32).reshape(-1),
+        np.ascontiguousarray(d_hat, np.float32).reshape(-1),
+        np.ascontiguousarray(dt, np.float32).reshape(-1),
+        np.ascontiguousarray(H, np.int32).reshape(-1),
+        float(margin_factor),
+        float(mass),
+        float(d_hat_sdf),
+        float(k_sharp),
+        int(num_threads),
+    )
