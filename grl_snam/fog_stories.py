@@ -389,7 +389,9 @@ STORIES: dict[str, Story] = {
 }
 
 
-def build_scenario(story: Story, model=None, *, seed: int = 0, truth_occ=None, prior_occ=None):
+def build_scenario(
+    story: Story, model=None, *, seed: int = 0, truth_occ=None, prior_occ=None, material=None
+):
     """Turn a :class:`Story` into a runnable :class:`~grl_snam.scenario.FogScenario`.
 
     The one place a story becomes a simulation. ``model`` defaults to a
@@ -431,6 +433,7 @@ def build_scenario(story: Story, model=None, *, seed: int = 0, truth_occ=None, p
         movers=story.movers,
         moving_goal=story.moving_goal,
         use_planner=story.use_planner,
+        material=material,
     ).start(story.start)
 
 

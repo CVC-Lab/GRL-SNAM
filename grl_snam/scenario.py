@@ -105,6 +105,7 @@ class FogScenario:
         inflate_m: float = 6.0,
         movers=(),
         moving_goal=None,
+        material=None,
     ):
         # `truth` is the STATIC world. Movers are stamped on top of it each
         # tick into `truth_now`, which is what the sensor and the collision
@@ -196,6 +197,24 @@ class FogScenario:
             dynamics=dynamics,
             vehicle=vehicle,
         )
+
+        # Material-aware navigation (grl_snam.material.MaterialGrid): default ON
+        # when attached — the planner pays a per-cell risk surcharge, the drive
+        # feels the material forces, and the witness gate modulates the soft
+        # channel each tick. ``None`` (the default) leaves every trajectory
+        # bit-for-bit unchanged.
+        self._material = None
+        if material is not None:
+            from .material import MaterialRuntime
+
+            self._material = MaterialRuntime(material)
+            self._material.update_occ(self._compose_occ())
+            self.nav.material = self._material
+
+    @property
+    def material(self):
+        """The MaterialRuntime when a MaterialGrid is attached, else None."""
+        return self._material
 
     # ── internals ────────────────────────────────────────────────────────────
     def _t(self) -> float:
@@ -295,6 +314,24 @@ class FogScenario:
         r, c = self.belief.world_to_cell(pos_world[0], pos_world[1])
         return bool(self.belief.in_bounds(r, c) and self.truth_now[r, c])
 
+    def _route_cost(self) -> np.ndarray | None:
+        """The per-cell A* surcharge for this replan: the user's route_cost_fn
+        (the documented downstream seam — never clobbered), composed additively
+        with the material cost raster when a MaterialGrid is attached.
+
+        route_cost_fn is the seam a downstream package (e.g. an RF-aware
+        planner) plugs a cost surface into; base GRL-SNAM never interprets it.
+        """
+        cost = self.route_cost_fn() if self.route_cost_fn is not None else None
+        if self._material is not None:
+            mat = self._material.cost_raster()
+            # An all-zero raster is NO cost: passing it anyway would flip the
+            # planner into gridded (no string-pull) mode and change routes —
+            # a zero MaterialGrid must leave trajectories exactly as before.
+            if mat.any():
+                cost = mat if cost is None else cost + mat
+        return cost
+
     def _replan_route(self, *, force: bool = False, occ: np.ndarray | None = None):
         """Re-plan the belief-space route from HERE to the active waypoint.
 
@@ -309,11 +346,7 @@ class FogScenario:
             occ = self._compose_occ()
         here = tuple(self.nav.pos_world())
         goal = tuple(self.waypoints[self.wp_i])
-        # Optional per-cell route surcharge, supplied by whoever owns the
-        # meaning. Base GRL-SNAM never sets this and never interprets it: it is
-        # the seam a downstream package (e.g. an RF-aware planner) plugs a cost
-        # surface into without this module growing a dependency on the domain.
-        cost = self.route_cost_fn() if self.route_cost_fn is not None else None
+        cost = self._route_cost()
         # Inflate ONCE and reuse for both plan() and route_valid() — the
         # dilation is the single biggest per-tick cost at scale, and both would
         # otherwise recompute it from the same occ. Same grid => bit-identical.
@@ -342,7 +375,7 @@ class FogScenario:
             return None
         here = tuple(self.nav.pos_world())
         goal = tuple(self.waypoints[self.wp_i])
-        cost = self.route_cost_fn() if self.route_cost_fn is not None else None
+        cost = self._route_cost()
         if grid is None:
             grid = inflate(self._pending_occ, self.planner.inflate_cells)
         self._replan_grid = grid
@@ -452,6 +485,10 @@ class FogScenario:
         self.nav ready to drive; a Squad rolls every agent forward in one batched
         rollout between _act_pre_drive and _act_post_drive."""
         self._rebuilt = False
+        if self._material is not None and self._sense_rebuild:
+            # The gate's feasibility surface is (material hard | occupancy);
+            # refresh it whenever the planning occupancy rebuilds.
+            self._material.update_occ(self._pending_occ)
         if self._sense_rebuild:
             if self._pending_field is not None:
                 self.nav.field = self._pending_field  # batched by the Squad
@@ -460,6 +497,13 @@ class FogScenario:
             if not self._sense_replanned:  # else a Squad already batched the A*
                 self._replan_route(occ=self._pending_occ)
             self._rebuilt = True
+        if self._material is not None and self._material.consume_version_change():
+            # A stamped material change (mud onset…) alters COST, not occupancy:
+            # the fresh cost-aware route is by construction longer, so the
+            # replan hysteresis would reject it. Force, as waypoint advance does.
+            # Deliberately NOT routed through _sense_rebuild — the occupancy did
+            # not change, so no SDF rebuild is due.
+            self._replan_route(force=True)
         self._pending_occ = None
         self._pending_field = None
         self._sense_rebuild = False
