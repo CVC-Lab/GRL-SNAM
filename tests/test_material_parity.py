@@ -312,3 +312,135 @@ def test_runtime_gate_dispatch_transparent(monkeypatch):
     monkeypatch.setenv("GRL_SNAM_MATERIAL_BACKEND", "native")
     b = run()
     assert a == b
+
+
+# ---------------------------------------------------------------------------
+# fused native material drive (nav_drive_step_material) — FLOAT
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not nav_native.HAS_MATERIAL_DRIVE, reason="pycvc lacks nav_drive_step_material")
+def test_drive_step_material_float_parity_vs_torch(tmp_path):
+    """The fused torch-free material drive (sample -> coef_feats -> coef_mlp ->
+    bicycle_material) matches the torch material drive at the drive tier."""
+    from grl_snam.tools import coef_export
+
+    rng = np.random.default_rng(71)
+    n_grid = 64
+    occ = np.zeros((n_grid, n_grid), bool)
+    occ[18:30, 30:34] = True
+    phi, nx_g, ny_g = sdf_nav.build_sdf(occ, BOUNDS, SCALE)
+    field = sdf_nav.SDFField(phi, nx_g, ny_g, BOUNDS, CENTER, SCALE)
+    g = _grid_with_features(rng, n_grid)
+    mf = g.field()
+    model = sdf_nav.CoefMLP()
+    model.eval()
+    wp = tmp_path / "coef.cvcnav"
+    coef_export.write_coef_mlp(model, str(wp))
+
+    N = 80
+    o = ((rng.random((N, 2)) * 8.0) - 4.0).astype(np.float32)
+    th = (rng.random(N).astype(np.float32) * 6.0) - 3.0
+    sp = rng.random(N).astype(np.float32) * 0.8
+    carrot = ((rng.random((N, 2)) * 8.0) - 4.0).astype(np.float32)
+    lam_s = rng.random(N).astype(np.float32) * 0.6
+    lam_h = rng.random(N).astype(np.float32) * 1.2
+    kw = dict(rr=0.15, d_hat=0.35, dt=0.06, vmax=0.9)
+    veh = dict(L=0.035, delta_max=0.6, a_max=1.5, a_lat_max=1.0, k_steer=0.8)
+    params = {**kw, **veh, "nsub": 1, "allow_reverse": True}
+
+    # torch reference: coef_feats -> CoefMLP -> bicycle_rollout(material=...)
+    with torch.no_grad():
+        feat = sdf_nav.coef_feats(field, torch.from_numpy(o), torch.from_numpy(carrot))
+        al, be, ga = model(feat)
+        to, tth, tsp, _ = sdf_nav.bicycle_rollout(
+            field,
+            torch.from_numpy(o.copy()),
+            torch.from_numpy(th.copy()),
+            torch.from_numpy(sp.copy()),
+            torch.from_numpy(carrot),
+            al,
+            be,
+            ga,
+            1,
+            nsub=1,
+            allow_reverse=True,
+            material=mf,
+            lam_soft=torch.from_numpy(lam_s),
+            lam_hard=torch.from_numpy(lam_h),
+            mat_k_sharp=1.25,
+            mat_d_hat_m=12.0,
+            **kw,
+        )
+    no, nth, nsp, _ = nav_native.drive_step_material(
+        field.field.numpy(),
+        o,
+        th,
+        sp,
+        carrot,
+        str(wp),
+        mf.field.numpy(),
+        lam_s,
+        lam_h,
+        mat_k_sharp=1.25,
+        mat_d_hat_m=12.0,
+        bounds=BOUNDS,
+        center=CENTER,
+        scale=SCALE,
+        params=params,
+    )
+    assert np.allclose(no, to.numpy(), rtol=1e-4, atol=1e-5)
+    assert np.allclose(nth, tth.numpy(), rtol=1e-4, atol=1e-5)
+    assert np.allclose(nsp, tsp.numpy(), rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.skipif(not nav_native.HAS_MATERIAL_DRIVE, reason="pycvc lacks nav_drive_step_material")
+def test_swarm_native_material_drive_tracks_torch(monkeypatch):
+    """GRL_SNAM_NAV_DRIVE=native + material now uses the fused C++ material
+    drive (no fallback warning) and tracks the torch material Swarm to the
+    drive tier over a short run."""
+    import warnings
+
+    from grl_snam.fog_stories import STORIES, shrunk
+    from grl_snam.material import MaterialGrid
+    from grl_snam.squad import AgentSpec
+    from grl_snam.swarm import Swarm
+
+    story = shrunk(STORIES["city"], n=64, max_steps=10_000_000)
+    specs = [
+        AgentSpec(f"a{i}", (-45.0, -20.0 + 10.0 * i), (45.0, -20.0 + 10.0 * i)) for i in range(4)
+    ]
+    rr, cc = np.mgrid[0:64, 0:64]
+    risk = np.where((rr - 30) ** 2 + (cc - 32) ** 2 <= 49, 0.9, 0.0).astype(np.float32)
+
+    def make_model():
+        torch.manual_seed(0)
+        m = sdf_nav.CoefMLP()
+        m.eval()
+        return m
+
+    def run(nav_drive):
+        monkeypatch.setenv("GRL_SNAM_NAV_DRIVE", nav_drive)
+        grid = MaterialGrid(risk, np.zeros((64, 64), bool), story.bounds, (0, 0), story.scale)
+        torch.manual_seed(0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # no fallback warning may fire
+            s = Swarm(
+                story,
+                specs,
+                make_model(),
+                seed=0,
+                truth_occ=np.zeros((64, 64), bool),
+                material=grid,
+            )
+        pos = []
+        for _ in range(60):
+            s.step()
+            pos.append(s.n2w(s.o).cpu().numpy().copy())
+        return np.stack(pos), s
+
+    torch_pos, _ = run("torch")
+    native_pos, s_native = run("native")
+    assert s_native._native_drive and s_native._native_drive_material
+    # drive-tier tracking (same float-equivalence budget as test_drive_step_parity)
+    assert np.abs(native_pos - torch_pos).max() < 0.05

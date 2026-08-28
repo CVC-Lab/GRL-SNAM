@@ -306,11 +306,18 @@ def test_swarm_material_run_is_deterministic():
     assert np.array_equal(a, b)
 
 
+@pytest.mark.skipif(
+    __import__("grl_snam.nav_native", fromlist=["HAS_MATERIAL_DRIVE"]).HAS_MATERIAL_DRIVE,
+    reason="this pycvc HAS the fused native material drive, so no fallback happens "
+    "(the native-drive path is covered by test_material_parity)",
+)
 def test_swarm_native_drive_with_material_falls_back_to_torch(monkeypatch):
-    """GRL_SNAM_NAV_DRIVE=native + a material grid must NOT crash and must NOT
-    silently drop the material: the torch-free fused drive does not yet carry
-    material, so the Swarm warns once and uses the torch drive (which honors
-    material). Regression for the phantom HAS_MATERIAL_DRIVE capability flag."""
+    """GRL_SNAM_NAV_DRIVE=native + a material grid, on a pycvc WITHOUT the fused
+    native material drive: the Swarm must NOT crash and must NOT silently drop
+    the material — it warns once and uses the torch drive (which honors
+    material). Regression for the phantom HAS_MATERIAL_DRIVE capability flag.
+    When the pycvc HAS nav_drive_step_material this path uses it instead (no
+    fallback), covered by test_material_parity.test_swarm_native_material_drive_tracks_torch."""
     from grl_snam.fog_stories import STORIES, shrunk
     from grl_snam.squad import AgentSpec
     from grl_snam.swarm import Swarm
@@ -322,7 +329,7 @@ def test_swarm_native_drive_with_material_falls_back_to_torch(monkeypatch):
     grid = MaterialGrid(risk, np.zeros((64, 64), bool), story.bounds, (0, 0), story.scale)
 
     monkeypatch.setenv("GRL_SNAM_NAV_DRIVE", "native")
-    with pytest.warns(RuntimeWarning, match="not yet supported together with a material grid"):
+    with pytest.warns(RuntimeWarning, match="no nav_drive_step_material"):
         s = Swarm(story, specs, _model(), seed=0, truth_occ=np.zeros((64, 64), bool), material=grid)
     assert not s._native_drive  # fell back to the torch drive
     # ... and the fallback drive still applies the material force (arrives + no
