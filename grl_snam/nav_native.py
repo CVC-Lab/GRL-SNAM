@@ -629,12 +629,71 @@ def train_coef_mlp(
 # simply leaves the flag False.
 
 HAS_MATERIAL = AVAILABLE and hasattr(_pycvc, "nav_witness_gate")
-# The material rollout binding that exists today (bit/float-tier tested):
-# nav_bicycle_rollout_material. A FUSED torch-free material drive
-# (nav_drive_step_material, the sample->coef_feats->coef_mlp->bicycle_material
-# unit the Swarm's native drive path would call) is a documented follow-up;
-# HAS_MATERIAL_ROLLOUT flags the rollout that is actually wired.
+# nav_bicycle_rollout_material: the standalone material rollout (bit/float-tier
+# tested). nav_drive_step_material: the FUSED torch-free material drive
+# (sample -> coef_feats -> coef_mlp -> bicycle_material) the Swarm's native
+# drive path calls under GRL_SNAM_NAV_DRIVE=native + a material grid.
 HAS_MATERIAL_ROLLOUT = AVAILABLE and hasattr(_pycvc, "nav_bicycle_rollout_material")
+HAS_MATERIAL_DRIVE = AVAILABLE and hasattr(_pycvc, "nav_drive_step_material")
+
+
+def drive_step_material(
+    field,
+    o,
+    th,
+    sp,
+    carrot,
+    weights_path,
+    mat_field,
+    lam_soft,
+    lam_hard,
+    *,
+    mat_k_sharp,
+    mat_d_hat_m,
+    bounds,
+    center,
+    scale,
+    params,
+    map_id=None,
+    num_threads=0,
+):
+    """The FUSED torch-free material drive tick: :func:`drive_step` plus the
+    material force (soft risk gradient + hard hazard barrier). ``mat_field`` is
+    a (Mm,6,H,W) material stack (grl_snam.material.MaterialField.field);
+    ``lam_soft`` is the EFFECTIVE per-agent soft weight (gate already applied),
+    ``lam_hard`` the per-agent hazard weight. Returns fresh (o, th, sp, minclr)
+    f32, float-equivalent to the torch material drive."""
+    P = params
+    return _pycvc.nav_drive_step_material(
+        np.ascontiguousarray(field, np.float32),
+        np.ascontiguousarray(o, np.float32),
+        np.ascontiguousarray(th, np.float32),
+        np.ascontiguousarray(sp, np.float32),
+        np.ascontiguousarray(carrot, np.float32),
+        str(weights_path),
+        np.ascontiguousarray(mat_field, np.float32),
+        np.ascontiguousarray(lam_soft, np.float32),
+        np.ascontiguousarray(lam_hard, np.float32),
+        float(mat_k_sharp),
+        float(mat_d_hat_m),
+        None if map_id is None else np.ascontiguousarray(map_id, np.int32),
+        *(float(b) for b in bounds),
+        float(center[0]),
+        float(center[1]),
+        float(scale),
+        float(P["rr"]),
+        float(P["d_hat"]),
+        float(P["dt"]),
+        float(P["vmax"]),
+        float(P["L"]),
+        float(P["delta_max"]),
+        float(P["a_max"]),
+        float(P["a_lat_max"]),
+        float(P["k_steer"]),
+        int(P["nsub"]),
+        int(bool(P["allow_reverse"])),
+        int(num_threads),
+    )
 
 
 def material_enabled() -> bool:

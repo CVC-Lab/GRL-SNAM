@@ -203,28 +203,30 @@ class Swarm:
             self._material.update_occ(np.asarray(self.truth, bool))
 
         self._native_drive = False
+        self._native_drive_material = False
         self._native_weights_path = None
         want_native_drive = os.environ.get("GRL_SNAM_NAV_DRIVE", "torch").lower() == "native"
         if self._material is not None and want_native_drive:
-            # The torch-free fused drive (nav_drive_step) does not yet carry the
-            # material forces — that native material drive is a documented
-            # follow-up. Rather than silently drop the material (wrong) or hard
-            # fail (blocks a legitimate combination), fall back to the torch
-            # drive, which DOES honor material via _material_kw(); the geometry
-            # kernels + witness gate still run in C++ under
-            # GRL_SNAM_MATERIAL_BACKEND=native, and a pure torch-free material
-            # drive is available today through cvc::nav sim_world::set_material.
-            import warnings
+            # The fused torch-free material drive (nav_drive_step_material) carries
+            # the material forces natively — use it when this pycvc has it. Older
+            # builds lack it: fall back to the torch drive, which still honors
+            # material via _material_kw() (the geometry kernels + witness gate
+            # already run in C++ under GRL_SNAM_MATERIAL_BACKEND=native), rather
+            # than silently dropping the material or hard-failing.
+            if getattr(_native, "HAS_MATERIAL_DRIVE", False):
+                self._native_drive_material = True
+            else:
+                import warnings
 
-            warnings.warn(
-                "GRL_SNAM_NAV_DRIVE=native is not yet supported together with a "
-                "material grid; using the torch drive for this Swarm (material "
-                "forces are still applied). For a torch-free material drive use "
-                "the C++ cvc::nav sim_world::set_material path.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            want_native_drive = False
+                warnings.warn(
+                    "GRL_SNAM_NAV_DRIVE=native with a material grid, but this pycvc "
+                    "has no nav_drive_step_material; using the torch drive for this "
+                    "Swarm (material forces are still applied). Upgrade pycvc for the "
+                    "fully torch-free material drive.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                want_native_drive = False
         if want_native_drive and _native.HAS_DRIVE:
             import tempfile
 
@@ -441,22 +443,28 @@ class Swarm:
         self.gstep += 1
         self._gen += 1
 
-    def _material_kw(self) -> dict:
-        """Per-tick material kwargs for the batched rollout: one vectorized
-        witness-gate call over all N agents (against each agent's own goal),
-        yielding the effective lambda columns. Empty when no material."""
-        if self._material is None:
-            return {}
+    def _material_gate_mult(self) -> np.ndarray:
+        """One vectorized witness-gate call over all N agents (against each
+        agent's own goal) -> the per-agent soft-force multiplier (0/1 as [N]
+        float32). Also stamps self.material_gate for renderers/metrics. Shared
+        by the torch and native material drives so the gate runs once."""
         self._material.consume_version_change()
-        p = self._material.params
-        if p.gate_enabled:
+        if self._material.params.gate_enabled:
             pos_w = self.n2w(self.o).cpu().numpy().astype(np.float64)
             goal_w = self.n2w(self.goal).cpu().numpy().astype(np.float64)
-            active = self._material.gate_batch(pos_w, goal_w)
-            mult = torch.from_numpy(active.astype(np.float32)).to(self.dev)
+            mult = self._material.gate_batch(pos_w, goal_w).astype(np.float32)
         else:
-            mult = torch.ones(self.N, device=self.dev)
-        self.material_gate = mult.bool()  # exposed for renderers/metrics
+            mult = np.ones(self.N, np.float32)
+        self.material_gate = torch.from_numpy(mult).to(self.dev).bool()
+        return mult
+
+    def _material_kw(self) -> dict:
+        """Per-tick material kwargs for the batched TORCH rollout: the effective
+        lambda columns from the witness gate. Empty when no material."""
+        if self._material is None:
+            return {}
+        p = self._material.params
+        mult = torch.from_numpy(self._material_gate_mult()).to(self.dev)
         return dict(
             material=self._material.field,
             lam_soft=p.lam_soft * mult,
@@ -466,7 +474,8 @@ class Swarm:
         )
 
     def _native_drive_step(self, carrot: torch.Tensor) -> None:
-        """Drive one tick through the torch-free C++ path (:func:`nav_native.drive_step`)
+        """Drive one tick through the torch-free C++ path (:func:`nav_native.drive_step`,
+        or :func:`nav_native.drive_step_material` when a material grid is attached)
         instead of the torch coef-net + rollout, updating ``self.o/th/sp`` in place.
         Float-equivalent to the torch drive; used only when ``GRL_SNAM_NAV_DRIVE=native``.
         The field stack, poses and carrot cross to numpy (f32) and the fresh poses come
@@ -474,19 +483,35 @@ class Swarm:
         (``None`` for shared M==1)."""
         field_np = self.field.field.detach().cpu().numpy()  # (M,3,H,W) f32
         mid = None if self.M == 1 else self.map_id
-        o2, th2, sp2, _ = _native.drive_step(
-            field_np,
-            self.o.detach().cpu().numpy(),
-            self.th.detach().cpu().numpy(),
-            self.sp.detach().cpu().numpy(),
-            carrot.detach().cpu().numpy(),
-            self._native_weights_path,
-            bounds=self.bounds,
-            center=(self.cx, self.cy),
-            scale=self.S,
-            params={**self.kw, **self.veh, "nsub": self.nsub},
-            map_id=mid,
+        params = {**self.kw, **self.veh, "nsub": self.nsub}
+        common = dict(
+            bounds=self.bounds, center=(self.cx, self.cy), scale=self.S, params=params, map_id=mid
         )
+        o_np = self.o.detach().cpu().numpy()
+        th_np = self.th.detach().cpu().numpy()
+        sp_np = self.sp.detach().cpu().numpy()
+        cr_np = carrot.detach().cpu().numpy()
+        if self._native_drive_material:
+            p = self._material.params
+            mult = self._material_gate_mult()  # [N] f32; also stamps material_gate
+            o2, th2, sp2, _ = _native.drive_step_material(
+                field_np,
+                o_np,
+                th_np,
+                sp_np,
+                cr_np,
+                self._native_weights_path,
+                self._material.field.field.detach().cpu().numpy(),
+                p.lam_soft * mult,
+                np.full(self.N, float(p.lam_hard), np.float32),
+                mat_k_sharp=float(p.k_sharp),
+                mat_d_hat_m=float(p.d_hat_sdf_m),
+                **common,
+            )
+        else:
+            o2, th2, sp2, _ = _native.drive_step(
+                field_np, o_np, th_np, sp_np, cr_np, self._native_weights_path, **common
+            )
         self.o = torch.from_numpy(o2).to(self.dev)
         self.th = torch.from_numpy(th2).to(self.dev)
         self.sp = torch.from_numpy(sp2).to(self.dev)
