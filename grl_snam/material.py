@@ -255,7 +255,7 @@ class MaterialGrid:
             planes = _native.material_build(
                 self.risk_raw, self.hard, self.cell_w, self.scale, self.sigma
             )
-            (self.risk, self.phi_hard_m, self.grad_rx, self.grad_ry, self.grad_px, self.grad_py) = (
+            self.risk, self.phi_hard_m, self.grad_rx, self.grad_ry, self.grad_px, self.grad_py = (
                 planes
             )
         else:
