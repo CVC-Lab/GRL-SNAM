@@ -21,9 +21,35 @@ performance-critical TACC target.
 | **P1** | Native fused material inference drive (`nav_drive_step_material`) | **DONE** — libcvc #232, GRL-SNAM #34 |
 | **P2** | Deferred native plumbing: sim_world material binding, grouped M-planes, batched Squad drive | planned |
 | **P3** | CUDA material inference (`drive.cu` material twin, `sim_world_cuda` material) | planned |
-| **P4** | Torch-free `CoefEnergyNetMaterial` forward (transformer + CNN), CPU + CUDA | planned |
-| **P5** | Torch-free material **training** loop, CPU + CUDA — the TACC target | planned |
+| **P4** | Torch-free `CoefEnergyNetMaterial` forward (transformer + CNN) | **DONE** — libcvc #235, GRL-SNAM #35 |
+| **P5** | Torch-free material **training** loop — the TACC target | **DONE (CPU + GPU rollout)** — see below |
 | **P6** | Scope completions: route_aware baseline, μ_lat/TTC, Setting-3 belief, v7 decision | planned |
+
+**P5 is complete on CPU and drivable from Python.** The whole `train_material.py`
+stage-2 learned-policy training loop runs torch-free in C++, every hand-written
+adjoint validated by a finite-difference gradcheck:
+
+| P5 piece | PR |
+|---|---|
+| Rollout backward (`integrate_surrogate_material_vjp`) | libcvc #240 |
+| Model backward (masked MHA / LayerNorm / Conv2d / heads) | libcvc #241 |
+| Full loss + full-chain gradcheck (the release gate) | libcvc #243 |
+| Adam + global-norm clip + cosine + `.cvcnm` write | libcvc #245 |
+| `L_multi` (geometry `integrate_surrogate_v2` + multi-start) | libcvc #246 |
+| Python driver (`MaterialTrainer` pycvc binding + wrapper) | libcvc #247, GRL-SNAM #37 |
+| CUDA material rollout fwd+VJP (CPU-parity on GTX 1650) | libcvc #248 |
+
+**Deferred (not in the stage-2 learned trainer):** `mu_lat` (in the forward,
+unused by the loss), `selectivity_loss` (default `w_selectivity=0`), Stage-1
+freeze (warm-start via `.cvcnm` load instead), Stage-3 belief patches
+(unimplemented upstream → P6), `route_aware`/`v7` (P6 / dropped). The dataset and
+epoch loop stay in Python by design — C++ provides the step. The one CUDA piece
+left is **the model (transformer+CNN) forward+backward on device** — the dominant
+cost, so it's what a full-GPU trainer needs; the rollout landing first proves the
+device path. It's a large batched-GEMM effort held pending a throughput decision.
+Deployment note: the pycvc-gl recipe must be rebuilt/bumped so the GRL-SNAM CI
+closure picks up the `nav_material_trainer_*` binding (the native test skips until
+then, as the material parity tests did after #234).
 
 Fidelity tiers (as the base port): **BIT** = `array_equal`/`tobytes`;
 **FLOAT** = float-equivalent (rtol 1e-4 / atol 1e-5), the realistic tier for
@@ -142,7 +168,11 @@ heaviest component and should be cached when agents share a risk tile — at
 
 ---
 
-## P5 — Torch-free material **training** loop (CPU + CUDA) — the TACC target
+## P5 — Torch-free material **training** loop (CPU + CUDA) — the TACC target ✅ (CPU + GPU rollout)
+
+> Implemented — see the P5 PR table under **Status** above. The design notes
+> below are the plan that was built; the one remaining item is the model
+> (transformer+CNN) forward+backward on device (the rollout landed first).
 
 The performance-critical piece. Differentiate the loss end-to-end without
 libtorch, validated by finite-difference gradcheck (the base `coef_train`
