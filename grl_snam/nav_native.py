@@ -814,3 +814,27 @@ def material_sample(field6, on, num_threads=0):
         int(num_threads),
     )  # (n, 6) float32
     return out[:, 0], out[:, 1], out[:, 2:4], out[:, 4:6]
+
+
+# ── learned material coefficient net (cvc::nav::coef_energy_net) ─────────────
+HAS_MATNET = AVAILABLE and hasattr(_pycvc, "nav_matnet_forward")
+
+
+def matnet_forward(
+    weights_path, obs_feats, obs_mask, obs_offsets, goal_feats, risk_patch, num_threads=0
+):
+    """Torch-free forward of the learned material coefficient network
+    (CoefEnergyNetMaterial) via ``.cvcnm`` weights. Batched over n agents with
+    ragged obstacle lists: ``obs_offsets`` (n+1,) indexes ``obs_feats`` (total,6)
+    / ``obs_mask`` (total,); ``goal_feats`` (n,4); ``risk_patch`` (n,2,P,P).
+    Returns ``(alphas (total,), beta, gamma, lam_soft, lam_hard, mu_lat)``,
+    float-equivalent to the torch model (math attention path)."""
+    return _pycvc.nav_matnet_forward(
+        str(weights_path),
+        np.ascontiguousarray(obs_feats, np.float32).reshape(-1, 6),
+        np.ascontiguousarray(obs_mask, np.uint8).reshape(-1),
+        np.ascontiguousarray(obs_offsets, np.int32).reshape(-1),
+        np.ascontiguousarray(goal_feats, np.float32).reshape(-1, 4),
+        np.ascontiguousarray(risk_patch, np.float32),
+        int(num_threads),
+    )
