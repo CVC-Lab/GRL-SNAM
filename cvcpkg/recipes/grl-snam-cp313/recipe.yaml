@@ -2,7 +2,7 @@ schema_version: 1
 
 recipe:
   name: grl-snam-cp313
-  upstream_version: "0.1.0"
+  upstream_version: "0.2.0"
   # cvc_revision 1 of the per-interpreter columns, which supersede the published
   # bare `grl-snam` package (that recipe targeted python311 only).
   # Bumped 1 -> 2: complete the declared PyPI closure — click (the
@@ -20,7 +20,9 @@ recipe:
   # asset + sha256) -> vendored, matching libcvc's own recipes. The pin froze
   # this column at the released tree; `cvcpkg build` could never build a local
   # checkout, and every source change required re-cutting the release asset.
-  cvc_revision: 4
+  # Reset 4 -> 1 for the 0.2.0 upstream version: cvc_revision counts
+  # revisions OF an upstream version, so a version bump restarts it.
+  cvc_revision: 1
   maintainer: "cvcpkg group"
   maintainer_email: "info@cvcpkg.org"
   maintainer_url: "https://cvcpkg.org"
@@ -127,7 +129,7 @@ package:
   files:
     - lib/python3.13/site-packages/grl_snam/
     - lib/python3.13/site-packages/grl_snam_lab/
-    - lib/python3.13/site-packages/grl_snam-0.1.0.dist-info/
+    - lib/python3.13/site-packages/grl_snam-0.2.0.dist-info/
     - lib/python3.13/site-packages/scripts/
     - lib/python3.13/site-packages/experiments/
     - lib/python3.13/site-packages/src/
