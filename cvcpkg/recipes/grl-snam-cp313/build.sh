@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # recipes/grl-snam-cp31X/build.sh — install the GRL-SNAM pure-Python package
-# (source.type python_sdist) into the column interpreter's site-packages.
+# (source.type vendored) into the column interpreter's site-packages.
 #
 # This script is column-generic: it is byte-identical across the
 # grl-snam-cp311/cp312/cp313 recipe dirs (keep the copies in lockstep) and is
@@ -8,10 +8,12 @@
 # from the recipe's python.interpreter — the same pattern as libcvc-deps'
 # recipes/_common/python-wheel.sh.
 #
-# cvcpkg fetches the sdist and verifies its sha256 (source.type python_sdist)
-# and extracts it to $CVC_SOURCE_DIR before this runs.  GRL-SNAM is pure Python
-# (py3-none-any), so the build produces a noarch wheel and the install below is
-# fully offline (--no-index).
+# $CVC_SOURCE_DIR is the GRL-SNAM checkout itself (source.type vendored, the
+# same arrangement libcvc's pycvc-cp31X recipes use), so this builds the tree in
+# place rather than a re-downloaded release asset.  `pip install <dir>` is
+# directory-based either way, so nothing below had to change when the recipe
+# moved off python_sdist.  GRL-SNAM is pure Python (py3-none-any): the build
+# produces a noarch wheel and the install is fully offline (--no-index).
 set -euo pipefail
 
 : "${CVC_SOURCE_DIR:?CVC_SOURCE_DIR must be set}"
@@ -73,14 +75,11 @@ if [ -z "${libdir}" ]; then
   echo "build.sh: no site-packages found under ${CVC_INSTALL_DIR}" >&2
   exit 1
 fi
-# The v0.1.0 asset was rebuilt from the current tree, so the sdist now DOES
-# declare [project.scripts] — the reason this smoke was previously trimmed
-# ("asserting them here can never pass until the recipes pin a newer release,
-# at which point this smoke should grow back with it").  It has grown back:
-# assert the console script is installed, because a bundle that carries the
-# importable package but no `grl-snam` command is exactly what shipped as
-# 0.1.0+cvc.1 and exactly what made every documented install fail at the
-# first command.
+# Assert the console script is installed: a bundle that carries the importable
+# package but no `grl-snam` command is exactly what shipped as 0.1.0+cvc.1, and
+# exactly what made every documented install fail at the first command.  Now
+# that source is the checkout, this tracks pyproject's [project.scripts]
+# directly instead of whatever the last release asset happened to declare.
 if [ ! -x "${CVC_INSTALL_DIR}/bin/grl-snam" ]; then
   echo "build.sh: console script not installed: ${CVC_INSTALL_DIR}/bin/grl-snam" >&2
   echo "  (does this sdist declare [project.scripts]?)" >&2
