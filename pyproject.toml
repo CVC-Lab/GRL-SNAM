@@ -1,6 +1,6 @@
 [project]
 name = "grl-snam"
-version = "0.1.0"
+version = "0.2.0"
 description = "GRL-SNAM: Geometric Reinforcement Learning for Simultaneous Navigation and Mapping"
 authors = [{ name = "GRL-SNAM authors" }]
 license = "MIT"
