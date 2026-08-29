@@ -486,7 +486,7 @@ class Squad:
         return res
 
 
-def attach_clearance_routing(squad: "Squad", d_safe: float = 6.0, gamma: float = 1.5) -> None:
+def attach_clearance_routing(squad: Squad, d_safe: float = 6.0, gamma: float = 1.5) -> None:
     """Bias every agent's global A* route toward standoff from obstacles.
 
     Sets each scenario's ``route_cost_fn`` (the sanctioned cost-surface seam) to a

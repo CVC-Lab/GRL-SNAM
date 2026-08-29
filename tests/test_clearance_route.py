@@ -2,6 +2,7 @@
 the SDF clearance field into a per-cell A* surcharge; fed to planner.astar (or a
 scenario's route_cost_fn via squad.attach_clearance_routing) it trades a little
 path length for standoff, which the local drive follows far more reliably."""
+
 import numpy as np
 
 import sdf_nav
@@ -42,7 +43,9 @@ def test_clearance_route_keeps_more_standoff():
     occ[12:18, 12:18] = 1
     start, goal = (15, 2), (15, 27)
     plain = planner.astar(occ, start, goal)
-    weighted = planner.astar(occ, start, goal, cost=sdf_nav.clearance_cost(occ, d_safe=5.0, gamma=2.0))
+    weighted = planner.astar(
+        occ, start, goal, cost=sdf_nav.clearance_cost(occ, d_safe=5.0, gamma=2.0)
+    )
     assert plain and weighted, "both routes exist"
     mc_plain = _min_clearance(occ, plain)
     mc_weighted = _min_clearance(occ, weighted)
@@ -58,6 +61,8 @@ def test_clearance_route_degrades_to_shortest_when_forced():
     occ[5, :] = 0  # a single open row (the only corridor)
     start, goal = (5, 0), (5, 10)
     plain = planner.astar(occ, start, goal)
-    weighted = planner.astar(occ, start, goal, cost=sdf_nav.clearance_cost(occ, d_safe=5.0, gamma=3.0))
+    weighted = planner.astar(
+        occ, start, goal, cost=sdf_nav.clearance_cost(occ, d_safe=5.0, gamma=3.0)
+    )
     assert plain and weighted
     assert [tuple(p) for p in weighted] == [tuple(p) for p in plain]  # same path, not stranded
