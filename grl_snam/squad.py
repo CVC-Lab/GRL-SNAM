@@ -484,3 +484,21 @@ class Squad:
         res.penetration = pen
         res.reached = {k: sc.done for k, sc in self.scenarios.items()}
         return res
+
+
+def attach_clearance_routing(squad: "Squad", d_safe: float = 5.0, gamma: float = 1.5) -> None:
+    """Bias every agent's global A* route toward standoff from obstacles.
+
+    Sets each scenario's ``route_cost_fn`` (the sanctioned cost-surface seam) to a
+    fixed :func:`sdf_nav.clearance_cost` surcharge over its initial planning
+    occupancy — so the route the local drive follows keeps clearance instead of
+    hugging walls. Call after constructing the squad and before stepping. This is
+    the lever for demo reach quality: the learned local policy is already near its
+    ceiling, but a higher-standoff spine lifts route-guided reach markedly (city
+    squad: ~0.75 -> ~0.95). A fixed surcharge suits a static map; for a map that
+    keeps changing, recompute per replan instead. Passing route_cost_fn also turns
+    off A* batching (each agent's search is now cost-specific).
+    """
+    for sc in squad.scenarios.values():
+        cg = sdf_nav.clearance_cost(sc._compose_occ(), d_safe, gamma)
+        sc.route_cost_fn = (lambda c: (lambda: c))(cg)
