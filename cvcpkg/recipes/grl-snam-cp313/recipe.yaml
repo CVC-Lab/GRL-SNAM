@@ -16,7 +16,11 @@ recipe:
   # 0.1.0+cvc.1 shipped the importable package with NO `grl-snam` console
   # script at all, which is why every "run it yourself" instruction that ended
   # at `cvcpkg install` could not actually work.
-  cvc_revision: 3
+  # Bumped 3 -> 4: source.type python_sdist (pinned to the v0.1.0 release
+  # asset + sha256) -> vendored, matching libcvc's own recipes. The pin froze
+  # this column at the released tree; `cvcpkg build` could never build a local
+  # checkout, and every source change required re-cutting the release asset.
+  cvc_revision: 4
   maintainer: "cvcpkg group"
   maintainer_email: "info@cvcpkg.org"
   maintainer_url: "https://cvcpkg.org"
@@ -32,15 +36,19 @@ recipe:
     bindings and the importable `grl_snam` API side by side.
 
 source:
-  # Pure-Python noarch sdist: a single artifact valid on every platform (and
-  # identical across the cp311/cp312/cp313 columns), so there is no
-  # per-platform `artifacts` map — cvcpkg falls back to this top-level
-  # url/sha256 (the documented pure-Python case).  cvcpkg fetches the tarball
-  # and verifies the sha256 before build.sh runs; the install is then offline.
-  type: python_sdist
-  url: https://github.com/CVC-Lab/GRL-SNAM/releases/download/v0.1.0/grl_snam-0.1.0.tar.gz
-  sha256: "74d186c15296dd730ce919a12bd253d955f6634183efe0cd39268250139bb203"
-  strip_components: 1
+  # Co-located with the GRL-SNAM source tree — the same pattern libcvc's own
+  # recipes use (cvcpkg/recipes/pycvc-cp31X, cvc-cli, …).  `../../..` is the
+  # repo root, so `cvcpkg build grl-snam-cp31X` builds THIS checkout.
+  #
+  # This replaces a `python_sdist` pin on the v0.1.0 GitHub release asset.
+  # That pin made the recipe permanently describe 0.1.0 no matter what the
+  # tree contained: every source change needed an sdist rebuild, a re-uploaded
+  # release asset, a moved tag, a new sha256 and a cvc_revision bump — and in
+  # between, `cvcpkg build` silently built the released code rather than the
+  # working tree.  Vendored source removes that whole loop; the version now
+  # comes from pyproject.toml, which is the single place it is declared.
+  type: vendored
+  path: ../../..
 
 python:
   # grl-snam ships pure Python (py3-none-any), but like the rest of the cvcpkg
@@ -128,11 +136,12 @@ package:
     - lib/python3.13/site-packages/surrogate_robust.py
 
 notes: >-
-  Provenance & follow-ups.  (1) The sdist is the artifact built from
-  CVC-Lab/GRL-SNAM (`grl_snam-0.1.0.tar.gz`); the pinned sha256 is that
-  file's hash.  The url points at the v0.1.0 GitHub release asset — publish
-  that release (or mirror the sdist to a cvcpkg source host) so the fetch
-  resolves.  (2) This is the cp313 column of the grl-snam per-interpreter
+  Provenance & follow-ups.  (1) Source is the GRL-SNAM checkout this recipe
+  ships in (`source.type: vendored`, `path: ../../..`), the same arrangement
+  libcvc uses for pycvc-cp31X / cvc-cli — so the column tracks the tree and
+  needs no release asset, no mirrored sdist and no sha256 to re-pin.
+  `upstream_version` and the `package.files` dist-info path below both carry
+  the pyproject version; move all three together when it bumps.  (2) This is the cp313 column of the grl-snam per-interpreter
   matrix (grl-snam-cp311/cp312/cp313); the three columns supersede the
   published bare `grl-snam` recipe.  No cp313t column while pycvc-gl (SWIG)
   has none.  (3) Runtime PyPI deps: the full declared closure — click, numpy,

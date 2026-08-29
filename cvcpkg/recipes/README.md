@@ -53,14 +53,26 @@ for col in grl-snam-cp311 grl-snam-cp312 grl-snam-cp313; do
 done
 ```
 
-The `v0.1.0` release asset is published and `source.url` resolves; the
-matplotlib/imageio/poetry-core columns exist, so the closure is complete.
+The matplotlib/imageio/poetry-core columns exist, so the closure is complete.
 
-**Re-publishing after a code change.** The recipes pin a sha256 of the release
-asset, so a new revision means rebuilding the sdist, replacing the asset on the
-`v0.1.0` release, updating `sha256` in all three columns and bumping
-`cvc_revision`. Revision 3 is the first whose sdist declares
-`[project.scripts]`: 0.1.0+cvc.1 shipped the importable package with no
-`grl-snam` console script at all, so `cvcpkg install` gave you the library and
-no command. `build.sh` now asserts the script exists, so that cannot ship
-again unnoticed.
+**Source is the checkout.** As of revision 4 these columns are
+`source.type: vendored` with `path: ../../..` — the same arrangement libcvc uses
+for `pycvc-cp31X` and `cvc-cli`. `cvcpkg build grl-snam-cp31X` therefore builds
+*this tree*.
+
+Revisions 1–3 pinned `python_sdist` to the `v0.1.0` GitHub release asset and its
+sha256. That froze the columns at whatever had last been released: a code change
+meant rebuilding the sdist, replacing the asset, moving the tag, re-pinning
+`sha256` in all three columns and bumping `cvc_revision` — and until you did,
+`cvcpkg build` silently built the *released* code rather than your working tree.
+Vendoring removes that loop entirely.
+
+**Re-publishing after a code change** is now just a `cvc_revision` bump in all
+three columns (the recipes stay in lockstep), then `cvcpkg publish`. The version
+itself lives in `pyproject.toml`; when it moves, update `upstream_version` and
+the `package.files` dist-info path with it.
+
+Revision 3 was the first whose artifact declared `[project.scripts]`:
+0.1.0+cvc.1 shipped the importable package with no `grl-snam` console script at
+all, so `cvcpkg install` gave you the library and no command. `build.sh` asserts
+the script exists, so that cannot ship again unnoticed.
