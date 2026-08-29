@@ -1,0 +1,183 @@
+# Publish the grl-snam cvcpkg columns to cvcpkg.org.
+#
+# The GRL-SNAM counterpart of libcvc's publish-cvcpkg.yml, cut down to what a
+# pure-Python package needs. Differences from the libcvc workflow, all of which
+# follow from `build_type_independent: true` + `platform: any` in the recipes:
+#
+#   * No OS/arch matrix. grl-snam builds one noarch artifact valid everywhere,
+#     so a single ubuntu runner packs all three interpreter columns. libcvc
+#     needs linux/macos/windows x release/debug because it ships binaries.
+#   * No deps-prefix staging from libcvc-deps releases, no CMake. The closure
+#     (python31X, pycvc-gl-cp31X, numpy, torch, and the pytest/ruff/black build
+#     edges) comes from the same reusable action ci.yml already uses.
+#   * No `ensure-org` bootstrap — the cvc org exists; libcvc's workflow creates
+#     it because it is the family's root publisher.
+#
+# Secrets:
+#   CVCPKG_TOKEN       — publisher token for the cvc org. Required to publish;
+#                        without it the workflow packs and stops (see dry_run).
+#   CVCPKG_SERVER_URL  — optional server override; defaults to cvcpkg.org.
+#
+# Triggers: a v* tag publishes; a manual dispatch defaults to DRY RUN (pack
+# only) so you can exercise the whole path without touching the catalog.
+
+name: publish-cvcpkg
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and pack only; skip publish.'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+concurrency:
+  group: publish-cvcpkg-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CVCPKG_ORG: cvc
+  CVCPKG_SERVER: ${{ secrets.CVCPKG_SERVER_URL || 'https://cvcpkg.org' }}
+
+jobs:
+  # Push this repo's recipes so the server can render grl-snam's dependency
+  # graph. cvcpkg.org builds /v1/deps from the recipes it knows about, and
+  # grl-snam's live HERE, not in libcvc-deps — until they are pushed the
+  # package page shows no Dependencies and is badged `community`.
+  push-recipes:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || github.event.inputs.dry_run == 'false' }}
+    env:
+      CVCPKG_TOKEN: ${{ secrets.CVCPKG_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install cvcpkg
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install 'cvcpkg[publish] @ git+https://github.com/transfix/libcvc-deps@master'
+          cvcpkg --version
+      - name: Push grl-snam's recipes
+        run: |
+          set -euo pipefail
+          if [ -z "${CVCPKG_TOKEN:-}" ]; then
+            echo "::error::CVCPKG_TOKEN secret is required to push recipes"
+            exit 1
+          fi
+          cvcpkg recipe push-all \
+            --server "$CVCPKG_SERVER" \
+            --org "$CVCPKG_ORG" \
+            --recipes-dir cvcpkg/recipes \
+            --no-default-recipes \
+            --token "$CVCPKG_TOKEN"
+
+  # One revision for the whole family, computed once, so the three columns
+  # publish at the same +cvc.N and a re-run never 409s on an already-published
+  # revision. Falls back to the recipes' committed revision when the server is
+  # unreachable, which is harmless: such runs are dry runs anyway.
+  compute-revision:
+    runs-on: ubuntu-latest
+    outputs:
+      rev: ${{ steps.rev.outputs.rev }}
+    env:
+      CVCPKG_TOKEN: ${{ secrets.CVCPKG_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install cvcpkg
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install 'cvcpkg[publish] @ git+https://github.com/transfix/libcvc-deps@master'
+      - name: Compute next revision
+        id: rev
+        run: |
+          set -euo pipefail
+          # The columns share an upstream_version and are bumped together, so
+          # asking about any one of them gives the family's number.
+          rev=$(cvcpkg next-revision grl-snam-cp312 \
+                  --recipes-dir cvcpkg/recipes \
+                  --server "$CVCPKG_SERVER" \
+                  --org "$CVCPKG_ORG" 2>/dev/null || true)
+          if ! printf '%s' "$rev" | grep -qE '^[0-9]+$'; then
+            rev=$(grep -oE '^  cvc_revision: [0-9]+' cvcpkg/recipes/grl-snam-cp312/recipe.yaml \
+                  | grep -oE '[0-9]+')
+            echo "::warning::server did not answer; falling back to the committed revision $rev"
+          fi
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+          echo "packing all columns at +cvc.$rev"
+
+  pack-publish:
+    needs: [compute-revision]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        py: ["311", "312", "313"]
+    name: pack (cp${{ matrix.py }})
+    env:
+      CVCPKG_TOKEN: ${{ secrets.CVCPKG_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Same closure ci.yml installs: the recipe is the single source of truth,
+      # so there is no requirements file to drift.
+      - name: Install dependency closure via cvcpkg
+        id: deps
+        uses: transfix/libcvc-deps/.github/actions/cvcpkg-install@master
+        with:
+          recipe: cvcpkg/recipes/grl-snam-cp${{ matrix.py }}
+          build_type: Release
+
+      - name: Install cvcpkg (publish extra)
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install 'cvcpkg[publish] @ git+https://github.com/transfix/libcvc-deps@master'
+          cvcpkg --version
+
+      # `source.type: vendored` — this packs the checkout, which is the whole
+      # point of the recipes no longer pinning a released sdist.
+      - name: Pack
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cvcpkg pack cvcpkg/recipes/grl-snam-cp${{ matrix.py }} \
+            --recipes-dir cvcpkg/recipes \
+            --platform any \
+            --config release \
+            --local \
+            --cvc-revision ${{ needs.compute-revision.outputs.rev }} \
+            --output-dir dist
+
+      - name: Show what was packed
+        run: ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grl-snam-cp${{ matrix.py }}-bundle
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish to cvcpkg.org
+        if: ${{ github.event_name == 'push' || github.event.inputs.dry_run == 'false' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CVCPKG_TOKEN:-}" ]; then
+            echo "::error::CVCPKG_TOKEN secret is required to publish"
+            exit 1
+          fi
+          cvcpkg publish grl-snam-cp${{ matrix.py }} \
+            --server "$CVCPKG_SERVER" \
+            --org "$CVCPKG_ORG" \
+            --platform any \
+            --config release \
+            --recipes-dir cvcpkg/recipes \
+            --output-dir dist \
+            --token "$CVCPKG_TOKEN"
