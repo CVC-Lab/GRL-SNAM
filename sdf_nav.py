@@ -152,7 +152,7 @@ def build_sdf(occ: np.ndarray, bounds, scale: float):
     return phi, (gx / gmag).astype(np.float32), (gy / gmag).astype(np.float32)
 
 
-def clearance_cost(occ: np.ndarray, d_safe: float = 5.0, gamma: float = 1.5) -> np.ndarray:
+def clearance_cost(occ: np.ndarray, d_safe: float = 6.0, gamma: float = 1.5) -> np.ndarray:
     """Per-cell A* surcharge that biases a route toward standoff from obstacles.
 
     ``occ`` is a rows×cols grid, nonzero = blocked (the belief/planning occupancy
@@ -169,8 +169,12 @@ def clearance_cost(occ: np.ndarray, d_safe: float = 5.0, gamma: float = 1.5) -> 
     higher-standoff, smoother spine, which the local drive follows far more
     reliably. Because it is additive and never forbids a cell, a corridor
     narrower than ``d_safe`` everywhere just degrades to the shortest path rather
-    than stranding the agent. Measured (city squad, route-guided reach): the
-    default (d_safe=5, gamma=1.5) lifts reach ~0.75 -> ~0.95.
+    than stranding the agent. Measured (procedural city squad, route-guided reach,
+    n=20 x 5 seeds): the default (d_safe=6, gamma=1.5) lifts reach ~0.80 -> ~0.90.
+    NOTE it is **budget-sensitive** — the higher-standoff route is longer, so it
+    only pays off when the tick budget is generous enough to finish it; under a
+    tight budget the longer routes get cut off and reach can *regress* below the
+    shortest path. Give route-clearance runs headroom.
 
     ``d_safe`` is in cells; ``gamma`` in grid-step surcharge per cell of shortfall.
     """
