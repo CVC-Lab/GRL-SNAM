@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from grl_snam.clock import WorldClock
-from grl_snam.squad import AgentSpec, Squad
+from grl_snam.squad import AgentSpec, Squad, attach_clearance_routing
 from grl_snam.tools.fog_record import _ROW_FIELDS, story_hash
 
 
@@ -31,11 +31,16 @@ def record_squad(
     progress=None,
     truth_occ=None,
     prior_occ=None,
+    route_clearance: tuple[float, float] | None = None,
 ) -> Path:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     squad = Squad(story, agents, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ)
+    # Bias each agent's global route toward obstacle standoff — the lever that
+    # lifts route-guided reach (the local policy is already near its ceiling).
+    if route_clearance is not None:
+        attach_clearance_routing(squad, *route_clearance)
     clock = WorldClock(fixed_dt=story.dt, mode="replay")
 
     rows = {a.key: {k: [] for k in _ROW_FIELDS} for a in agents}

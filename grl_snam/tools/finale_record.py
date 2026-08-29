@@ -96,7 +96,7 @@ def record_rendezvous(bundle_dir: str, out_dir, *, max_steps: int = 3000, progre
     )
     return record_squad(
         story, agents, out_dir, max_steps=max_steps, truth_occ=occ, prior_occ=None,
-        progress=progress,
+        progress=progress, route_clearance=(6.0, 1.5),
     )  # fmt: skip
 
 
