@@ -234,30 +234,38 @@ invisible and the safer policy loses on the scoreboard.
 ### Training WITH the footprint: the answer for footprint scenarios
 
 The loss uses the `min` over the body when `veh` carries a footprint, so what is
-optimised is the same quantity `FogScenario.body_clearance_m` reports. That path
-was written for #48 but not measured. It pays, and by a lot.
+optimised is the same quantity `FogScenario.body_clearance_m` reports.
 
 Three seeds, `w_coll` = 3, ice-bearing city. **Both arms are driven and scored
 with the 3-disc footprint** — the only difference is what the training loss
-looked at. Penetration here is body penetration (min over discs), not the
-reference point:
+looked at. Penetration is body penetration (min over discs):
 
 | arm | reach | body penetration | raw |
 |---|---|---|---|
-| seed (untrained) | 15.1% | 19.22 | — |
-| trained on the POINT | 19.4% | 14.47 | 20.2, 13.1, 10.1 |
-| **trained on the BODY** | **20.7%** | **8.35** | 8.7, 10.0, 6.4 |
+| seed (untrained) | 15.1% | 1.52 | — |
+| trained on the POINT | 19.4% | 1.60 | 1.75, 1.60, 1.46 |
+| **trained on the BODY** | **20.7%** | **1.44** | 1.46, 1.47, 1.40 |
 
-Training on the body metric **cuts body penetration by 42%** against training on
-the point metric — and gains reach rather than spending it. It is also far more
-stable: a ±1.49 spread against ±4.26, because the point-trained policy's body
-penetration depends on which parts of the body happen to overhang, which varies
-by seed.
+Training on the body metric is a Pareto improvement over training on the point:
+more reach *and* less body penetration, a **10% cut**. Note also that the
+point-trained policy is *worse than the untrained seed* on body penetration
+(1.60 against 1.52) while looking better on reach — it is optimising a quantity
+that is not the one being scored, and paying for it exactly where you would
+expect. And it is four times steadier: ±0.03 against ±0.12, because a
+point-trained policy's body penetration depends on which part of the body
+happens to overhang, which varies by seed.
 
-This is the recommended approach for any scenario that adopts the footprint:
-**train with the same footprint you deploy**. A policy tuned on the reference
-point and then given a body is being scored on a quantity it never optimised,
-and the gap between the two is the 14.47 above.
+So: **train with the same footprint you deploy.** The effect is real but modest,
+and it is worth having the honest size of it.
+
+> **This table was published wrong once.** The first version reported a 42% cut
+> (14.47 → 8.35) because it counted clearance below `+0.5 * rr` — the *stopping
+> margin*, a near miss — while the `w_coll` table above counted clearance below
+> `-0.5 * rr`, actual overlap. The looser threshold fires about ten times as
+> often, so the two tables were not comparable even though both said
+> "penetration". `coef_eval.pen_threshold` now names the definition and a test
+> pins its sign. If you are comparing penetration numbers across documents,
+> check they used the same ruler.
 
 Note this is a training result, not a scenario result — training uses the
 analytic SDF, which has sub-cell information. Scoring the metric *in a scenario*
@@ -442,7 +450,8 @@ Not done, and worth knowing before quoting this feature:
   the point test (see the resolution requirement above), so a vehicle-scale
   lattice is the prerequisite for a footprint scenario — not the scenario.
   Training for one, though, is unblocked and worthwhile today: see "Training
-  WITH the footprint" above, which cuts body penetration 42%.
+  WITH the footprint" above, which cuts body penetration 10% and is markedly
+  steadier across seeds.
 - **The native trainer cannot train against a footprint.** `diff::bike_veh` has
-  no body fields, so `train_bicycle(veh=...)` is torch-only. Given the size of
-  that 42%, this is the gap worth closing next on the C++ side.
+  no body fields, so `train_bicycle(veh=...)` is torch-only. Worth closing on
+  the C++ side, though at a 10% effect it is not urgent.

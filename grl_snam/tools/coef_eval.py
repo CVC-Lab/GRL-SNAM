@@ -16,9 +16,14 @@ policy and the third never leaves the seed. Its mean, 0.57, describes no policy
 that exists. Three seeds is the floor, and a single-seed number from here should
 not be quoted.
 
-Penetration counts agent-ticks with clearance below half the stopping margin,
-and clearance is the MIN over the body when a footprint is configured -- the
-same quantity ``FogScenario.body_clearance_m`` reports.
+PENETRATION counts agent-ticks whose clearance is below ``-0.5 * rr`` -- the
+vehicle overlapping geometry by more than half its radius. It is NOT the same as
+violating the stopping margin (clearance below ``+0.5 * rr``), which happens
+about ten times as often; conflating the two makes a policy look ten times worse
+and, worse, makes two tables that used different thresholds look comparable.
+Clearance is the MIN over the body when a footprint is configured -- the same
+quantity ``FogScenario.body_clearance_m`` reports -- so a body finds contacts the
+centre point does not.
 """
 
 from __future__ import annotations
@@ -67,6 +72,17 @@ def ice_band_world(grid=96, mu=0.18, seed=0):
     return field, meta, rand_on, friction
 
 
+def pen_threshold(rr_eff):
+    """Clearance below which a tick counts as PENETRATION: overlapping geometry
+    by more than half the radius.
+
+    Deliberately NEGATIVE. The stopping margin is at ``+0.5 * rr`` and fires
+    roughly ten times as often; using it here once made a policy look ten times
+    worse and, worse, made two tables that used different thresholds read as
+    comparable. If this ever returns a positive number, that bug is back."""
+    return -0.5 * float(rr_eff)
+
+
 def _clearance(field, o, th, veh):
     """Min clearance over the body, or the reference point if there is none."""
     offs = veh.get("body_offsets") if veh else None
@@ -95,7 +111,8 @@ def evaluate(model, field, meta, rand_on, *, friction=None, veh=None, n=192, tic
     sp = torch.zeros(n)
     reached = torch.zeros(n, dtype=torch.bool)
     pen, worst = torch.zeros(n), torch.full((n,), 1e9)
-    margin = 0.5 * float(kw.get("body_rr", rr) if kw.get("body_offsets") else rr)
+    rr_eff = float(kw.get("body_rr", rr) if kw.get("body_offsets") else rr)
+    pen_at = pen_threshold(rr_eff)
     with torch.no_grad():
         for _ in range(ticks):
             feat = sdf_nav.coef_feats(field, o, goal, friction=friction if wants_mu else None)
@@ -118,7 +135,7 @@ def evaluate(model, field, meta, rand_on, *, friction=None, veh=None, n=192, tic
                 **kw,
             )
             c = _clearance(field, o, th, kw)
-            pen += (c < margin).float()
+            pen += (c < pen_at).float()
             worst = torch.minimum(worst, c)
             reached |= (goal - o).norm(dim=1) < 0.15
     return dict(
