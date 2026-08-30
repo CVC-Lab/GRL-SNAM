@@ -326,23 +326,25 @@ def bicycle_rollout(
     ``rr,d_hat,dt,vmax,L,delta_max,a_max,a_lat_max,k_steer,nsub,allow_reverse``.
     Returns fresh ``(o, th, sp, minclr)`` f32; inputs are not mutated.
 
-    The optional vehicle refinements (``body_offsets``/``body_rr``,
-    ``track_width``, ``friction``) are NOT in the C++ drive yet. Silently
-    dropping them here is precisely the "fast digital twin that moves
-    differently" failure this port is built to avoid -- native and torch would
-    disagree on the trajectory with nothing in the output to say so -- and no
-    parity gate would catch it, because the gates compare the two paths on the
-    same params. So refuse loudly instead of diverging quietly; drop
-    ``GRL_SNAM_NAV_DRIVE=native`` until ``drive.h`` grows them."""
-    _unported = [k for k in ("body_offsets", "body_rr", "track_width") if params.get(k) is not None]
-    if _unported:
-        raise NotImplementedError(
-            f"cvc::nav bicycle_rollout does not implement {', '.join(_unported)} yet; "
-            "the native drive would silently move differently from the torch reference. "
-            "Run the torch path (unset GRL_SNAM_NAV_DRIVE=native) until the C++ port lands."
-        )
+    ``params`` may also carry the optional vehicle refinements —
+    ``body_offsets``/``body_rr``, ``track_width`` and ``friction`` (a
+    :class:`grl_snam.material.FrictionField`, or a raw ``[H,W]`` mu plane). The
+    grip raster must share the FIELD's world frame (same bounds, center and
+    scale); the binding takes those from the field rather than carrying seven
+    more constants, and every caller builds both from one scenario anyway."""
     f = np.ascontiguousarray(field, np.float32)
     P = params
+    _body = P.get("body_offsets")
+    _grip = P.get("friction")
+    if _grip is not None:
+        # FrictionField keeps the raw plane; accept a bare array too.
+        _grip = np.ascontiguousarray(getattr(_grip, "mu_raw", _grip), np.float32)
+    _extra = (
+        None if _body is None else np.ascontiguousarray(_body, np.float32),
+        float(P.get("body_rr") or 0.0),
+        float(P.get("track_width") or 0.0),
+        _grip,
+    )
     return _pycvc.nav_bicycle_rollout(
         f,
         np.ascontiguousarray(o, np.float32),
@@ -369,6 +371,7 @@ def bicycle_rollout(
         int(P["nsub"]),
         int(bool(P["allow_reverse"])),
         int(num_threads),
+        *_extra,
     )
 
 
