@@ -115,15 +115,25 @@ turn — while the *dry* vehicle brakes for a corner it is actually taking.
 "Ice is slower" is true only when the corner is forced (a wall, a convoy slot).
 Do not assert it as an invariant.
 
-**mu is sampled at the CURRENT pose, so the vehicle cannot anticipate.** Enter
-ice at speed and the stopping governor has already budgeted for grip it no
-longer has. That is the intended failure mode. Anticipation needs mu in the
-features — below.
+**The DYNAMICS still cannot anticipate, by design.** `a_max`/`a_lat_max` scale
+by mu at the current pose, so entering ice at speed means the stopping governor
+already budgeted for grip the vehicle no longer has. That is the intended
+failure mode of the plant. Anticipation has to come from the coefficients, which
+is what the sixth feature is for — and that feature looks *ahead*, not
+underfoot; see below.
 
 ## Anticipation without invalidating trained weights
 
-`coef_feats(field, o, goal, friction=mu)` appends the sampled mu as a **sixth**
-feature. That would normally invalidate every trained `.cvcnav` file, and
+`coef_feats(field, o, goal, friction=mu)` appends a **sixth** feature: the
+**worst grip between here and the carrot** — `min` over a short probe out to
+`mu_lookahead` (default 0.3 normalized, never past the carrot).
+
+It looks ahead rather than underfoot for a reason that took a failed experiment
+to see. The first version sampled mu at `o`, which reports the surface the
+vehicle is standing ON and never the one it is about to hit — so it could not
+support anticipation *even in principle*, and training predictably learned
+nothing from it. The dynamics already react to current mu; what the coefficients
+need is the part the dynamics cannot see yet. That would normally invalidate every trained `.cvcnav` file, and
 training this policy from a fresh init is known to collapse reach against the
 shipped seed. So do not retrain from scratch:
 
