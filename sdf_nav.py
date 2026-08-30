@@ -433,6 +433,10 @@ def bicycle_rollout(
     lam_hard=None,
     mat_k_sharp=5.0,
     mat_d_hat_m=3.0,
+    body_offsets=None,
+    body_rr=None,
+    track_width=None,
+    friction=None,
 ):
     """Differentiable *kinematic bicycle* rollout over the same SDF barrier.
 
@@ -477,17 +481,124 @@ def bicycle_rollout(
     degenerate to speed modulation. No repulsive-only clamp is needed (unlike
     the IPC bias): both material terms already point away from risk/hazard.
     ``None`` (the default) is bit-for-bit the pre-parameter behaviour.
+
+    Three optional vehicle refinements, each **bit-for-bit the legacy path when
+    left at ``None``** (they are multiplications by 1.0 or a single un-taken
+    branch), so every golden trace and every ``.cvcnav`` weight stays valid:
+
+    * ``body_offsets`` + ``body_rr`` — **footprint**. By default the vehicle is
+      one disc of radius ``rr`` at the rear axle, which at the canonical
+      ``rr=0.15, L=0.035`` is 4.3 wheelbases of collision radius against ~0.8
+      for a disc that merely circumscribes a car. ``body_offsets`` is a
+      sequence of longitudinal offsets (normalized units, along the heading,
+      from the rear axle) at which to place discs of radius ``body_rr``; a car
+      is ``(0.0, L/2, L)`` at ``body_rr ~ half-width``. Clearance becomes the
+      MIN over discs and the barrier force their SUM, so the nose is pushed off
+      a wall the rear axle cannot see. Costs one ``field.sample`` per disc.
+
+      **The sum is a K-times gain on ``al``, and it is NOT a drop-in.** ``al``
+      is a learned coefficient fit for ONE sample point; K overlapping discs
+      multiply the barrier by up to K. The vehicle does not break — it becomes
+      TIMID: more standoff, lower collision rate, and a longer time to goal, so
+      it misses any fixed budget more often. Measured on the city story, 5
+      seeds x 4 agents, three discs vs one at matched radius::
+
+          budget    disc 0.150   fp3 0.150   disc 0.075   fp3 0.075
+          700       45% reach     0%          35%          15%
+          1600      75%          30%          60%          40%
+          pen/agent  2.9          2.8          3.5           2.8
+          clearance  2.92 m       3.65 m       2.59 m        2.44 m
+
+      The ordering holds at both budgets, so this is not a budget artifact; but
+      note the footprint is consistently SAFER per unit of driving (2.8 vs 3.5
+      penetration at r=0.075). Both effects are the same K-times gain. Scale
+      ``al`` by the disc count (or retune the barrier) before reading anything
+      into a footprint run — the open question is whether gain-corrected discs
+      keep the lower collision rate without the timidity.
+    * ``track_width`` — **steering lock**. The bicycle's ``delta`` is the
+      virtual centre-wheel angle; on a real Ackermann axle the INNER wheel
+      reaches the mechanical lock first, so the achievable virtual angle is
+      ``atan(L / (L/tan(delta_max) + track_width/2))``, not ``delta_max``. At
+      ``track_width = 0.6 L`` that is a 14% smaller steer and a 20% larger
+      ``R_min`` — a real constraint, not a rounding correction.
+    * ``friction`` — **material grip**. Any sampler with ``sample(o) -> mu[B]``
+      where ``mu = 1`` is the reference dry surface (see
+      ``grl_snam.material.FrictionField``). Both actuator limits are friction-
+      limited in reality, so ``a_max`` and ``a_lat_max`` are scaled by ``mu``:
+      on ice the corner-speed cap ``sqrt(mu a_lat_max / kappa)`` and the
+      stopping-distance governor ``sqrt(2 mu a_max (d - rr/2))`` both collapse
+      together. Note this is understeer-as-a-curvature-limit, NOT a sideslip
+      skid: a kinematic bicycle has no lateral velocity state, so the vehicle
+      runs wide rather than fishtailing. mu is sampled at the CURRENT position,
+      so a vehicle that enters ice at speed genuinely cannot brake in time --
+      that is the intended failure mode, not a bug. To let the vehicle
+      ANTICIPATE instead, give the coefficient net mu as a sixth feature
+      (:func:`coef_feats` ``friction=``) starting from a
+      :func:`widen_coef_mlp` copy of a trained net; see "Grip" in
+      docs/MATERIAL_NAV.md.
     """
     hdt = dt / nsub
+    # Inner-wheel lock: see ``track_width`` above. ``None`` leaves both
+    # constants exactly as passed, so the legacy path is untouched.
+    if track_width is not None:
+        delta_max = math.atan(L / (L / math.tan(delta_max) + 0.5 * float(track_width)))
     tan_dmax = math.tan(delta_max)
     minclr = torch.full((o.shape[0],), 9.9, device=o.device)
     for _ in range(steps):
         for _s in range(nsub):
-            phi, nrm = field.sample(o)
-            d = phi - rr
+            head = torch.stack([torch.cos(th), torch.sin(th)], -1)  # [B,2]
+            left = torch.stack([-torch.sin(th), torch.cos(th)], -1)  # [B,2]
+
+            if body_offsets is None:
+                phi, nrm = field.sample(o)
+                d = phi - rr
+                F_bar = -(al * _ipc_dbdd(d, d_hat)).unsqueeze(-1) * nrm
+            else:
+                # Multi-disc footprint. Clearance is the MIN over discs (the
+                # binding one); the barrier force is their SUM, so the nose is
+                # pushed off a wall the rear axle cannot see. ``d``/``nrm``
+                # handed downstream are the ARGMIN disc's, because "am I
+                # driving into the nearest wall" is a question about that disc.
+                _brr = rr if body_rr is None else body_rr
+                _ds, _ns = [], []
+                F_bar = F_rep = None
+                for _off in body_offsets:
+                    _p = o if _off == 0.0 else o + float(_off) * head
+                    _phi_k, _nrm_k = field.sample(_p)
+                    _d_k = _phi_k - _brr
+                    _b_k = _ipc_dbdd(_d_k, d_hat)
+                    _fb = -(al * _b_k).unsqueeze(-1) * _nrm_k
+                    _fr = -(al * _b_k.clamp(max=0.0)).unsqueeze(-1) * _nrm_k
+                    F_bar = _fb if F_bar is None else F_bar + _fb
+                    F_rep = _fr if F_rep is None else F_rep + _fr
+                    _ds.append(_d_k)
+                    _ns.append(_nrm_k)
+                d, _kmin = torch.stack(_ds, -1).min(dim=-1)  # [B,K] -> [B]
+                nrm = (
+                    torch.stack(_ns, 1)  # [B,K,2]
+                    .gather(1, _kmin[:, None, None].expand(-1, 1, 2))
+                    .squeeze(1)
+                )
+            # The governor, the creep cutoff and the nose-blocked test all use
+            # ``rr`` as a stand-in for "one vehicle radius". With a footprint
+            # that is no longer the rr-disc, they must use the radius actually
+            # in play, or the margins stay sized for a body 12x too fat and the
+            # tighter footprint buys nothing. ``None`` -> exactly ``rr``.
+            _gov_rr = rr if body_offsets is None else _brr
             minclr = torch.minimum(minclr, d.detach())
 
-            F_bar = -(al * _ipc_dbdd(d, d_hat)).unsqueeze(-1) * nrm
+            # Friction-limited actuator envelope. BOTH limits are grip-limited
+            # in reality, so both scale with mu together -- that coupling is
+            # what makes ice read as ice: the corner cap and the stopping
+            # governor collapse at the same time. mu is None -> the constants
+            # pass through untouched (not `* 1.0`), so the legacy trace is
+            # bit-identical by construction rather than by float luck.
+            if friction is None:
+                a_max_e, a_lat_e = a_max, a_lat_max
+            else:
+                _mu = friction.sample(o)
+                a_max_e, a_lat_e = a_max * _mu, a_lat_max * _mu
+
             F_goal = -be.unsqueeze(-1) * (o - goal)
             if material is not None:
                 F_mat = _material_force(material, o, lam_soft, lam_hard, mat_k_sharp, mat_d_hat_m)
@@ -495,12 +606,9 @@ def bicycle_rollout(
             else:
                 F = F_bar + F_goal
 
-            head = torch.stack([torch.cos(th), torch.sin(th)], -1)  # [B,2]
-            left = torch.stack([-torch.sin(th), torch.cos(th)], -1)  # [B,2]
-
             # longitudinal: project the virtual force onto the heading; damping
             # becomes drag on speed. Clamped to the actuator limit.
-            a_long = ((F * head).sum(-1) - ga * sp).clamp(-a_max, a_max)
+            a_long = torch.clamp(((F * head).sum(-1) - ga * sp), -a_max_e, a_max_e)
 
             # steering: pure pursuit toward the carrot + bounded barrier bias.
             to_goal = goal - o
@@ -531,7 +639,8 @@ def bicycle_rollout(
             # The force term F_bar keeps the original form (point-mode parity);
             # only what feeds the steering wheel is clamped repulsive-only,
             # which also removes the 0.6 rad steering slew at the d_hat shell.
-            F_rep = -(al * _ipc_dbdd(d, d_hat).clamp(max=0.0)).unsqueeze(-1) * nrm
+            if body_offsets is None:  # multi-disc already summed F_rep per disc
+                F_rep = -(al * _ipc_dbdd(d, d_hat).clamp(max=0.0)).unsqueeze(-1) * nrm
             if material is not None:
                 delta = delta + k_steer * torch.tanh(((F_rep + F_mat) * left).sum(-1))
             else:
@@ -540,7 +649,7 @@ def bicycle_rollout(
 
             # corner speed limit from the lateral-acceleration cap.
             kappa = torch.tan(delta).abs() / L
-            v_corner = torch.sqrt(a_lat_max / kappa.clamp_min(tan_dmax / (L * 400.0)))
+            v_corner = torch.sqrt(a_lat_e / kappa.clamp_min(tan_dmax / (L * 400.0)))
 
             # stopping-distance governor: never drive faster than you can stop
             # inside the clearance ahead (v^2 <= 2 a_max (d - margin)). Forces
@@ -554,7 +663,19 @@ def bicycle_rollout(
             # wall at small clearance is fine. An isotropic cap pins speed to
             # ~0 head-on, and a bicycle cannot turn at zero speed (th' ~ v),
             # so the vehicle would park nose-in forever.
-            v_stop = torch.sqrt(2.0 * a_max * (d - 0.5 * rr).clamp_min(0.0))
+            _slack = (d - 0.5 * _gov_rr).clamp_min(0.0)
+            if body_offsets is None and friction is None:
+                v_stop = torch.sqrt(2.0 * a_max_e * _slack)  # legacy, bit-exact
+            else:
+                # sqrt'(0) is infinite and clamp_min's subgradient below its
+                # floor is 0, so the moment the vehicle actually reaches the
+                # stop margin the backward pass evaluates 0 * inf = NaN and
+                # poisons every coefficient gradient. A tighter footprint makes
+                # that reachable in ordinary driving, so the guarded form is
+                # required here. The epsilon is far below float32 resolution
+                # for any live value, and the legacy branch above keeps its
+                # exact op sequence so stored traces are unaffected.
+                v_stop = torch.sqrt(2.0 * a_max_e * _slack + 1e-24)
             # Into-wall component of the MOTION direction (reversing flips
             # it): a vehicle backing away from a wall is not approaching it.
             motion_sign = torch.where(sp >= 0.0, torch.ones_like(sp), -torch.ones_like(sp))
@@ -584,7 +705,7 @@ def bicycle_rollout(
             # (0.5 rr): the governor parks the vehicle exactly at that margin,
             # and if the creep cutoff sat at the same distance the two would
             # deadlock nose-in at v=0, unable to rotate.
-            can_move = d > 0.25 * rr
+            can_move = d > 0.25 * _gov_rr
             v_floor = torch.where(
                 hard_steer & can_move, torch.full_like(v_lim, 0.08), torch.zeros_like(v_lim)
             )
@@ -604,7 +725,9 @@ def bicycle_rollout(
             # spring is negative when the goal is behind).
             v_creep = torch.minimum(
                 0.5 * v_corner,
-                torch.full_like(v_corner, 0.5 * math.sqrt(a_lat_max * L / tan_dmax)),
+                torch.full_like(v_corner, 0.5 * math.sqrt(a_lat_max * L / tan_dmax))
+                if friction is None
+                else 0.5 * torch.sqrt(a_lat_e * (L / tan_dmax)),
             )
             a_long = torch.where(
                 behind,
@@ -621,10 +744,10 @@ def bicycle_rollout(
                 # opposite steer -- reversing with delta rotates the heading
                 # the other way, exactly as a real car backs out of a spot.
                 head_on = (-(nrm * head).sum(-1)).clamp(0.0, 1.0) > 0.6
-                nose_blocked = behind & head_on & (d < 0.5 * rr + 0.02)
+                nose_blocked = behind & head_on & (d < 0.5 * _gov_rr + 0.02)
                 a_long = torch.where(nose_blocked, (-0.10 - sp) / hdt, a_long)
                 delta = torch.where(nose_blocked, -delta, delta)
-            a_long = a_long.clamp(-a_max, a_max)
+            a_long = torch.clamp(a_long, -a_max_e, a_max_e)
 
             # semi-implicit: speed, then heading with the new speed, then
             # position. Speed approaches v_lim through the ACTUATOR, not a
@@ -634,10 +757,10 @@ def bicycle_rollout(
             # transiently while shedding speed; the steering clamp below
             # keeps the lateral invariant exact during exactly that window
             # (the vehicle carves a wider arc while braking, as a car does).
-            a_long = torch.minimum(a_long, (v_lim - sp) / hdt).clamp(-a_max, a_max)
+            a_long = torch.clamp(torch.minimum(a_long, (v_lim - sp) / hdt), -a_max_e, a_max_e)
             sp_min = -0.25 * vmax if allow_reverse else 0.0
             sp = (sp + hdt * a_long).clamp(torch.full_like(sp, sp_min), torch.full_like(sp, vmax))
-            d_cap = torch.atan(a_lat_max * L / sp.square().clamp_min(1e-9))
+            d_cap = torch.atan(a_lat_e * L / sp.square().clamp_min(1e-9))
             delta = torch.clamp(delta, -d_cap, d_cap)
             th = th + hdt * (sp / L) * torch.tan(delta)
             head = torch.stack([torch.cos(th), torch.sin(th)], -1)
@@ -645,15 +768,57 @@ def bicycle_rollout(
     return o, th, sp, minclr
 
 
+def ackermann_wheel_angles(delta, L: float, track_width: float):
+    """Split the bicycle's virtual centre-wheel angle into per-wheel angles.
+
+    Returns ``(delta_left, delta_right)``.  This is the *rendering* half of
+    Ackermann geometry and changes nothing about where the vehicle goes: the
+    kinematic bicycle already IS the exact kinematic reduction of an Ackermann
+    axle, and ``delta`` is precisely the virtual angle these two bracket.  Use
+    it to pose front-wheel pivots in a viewer; do not feed it back into the
+    rollout.
+
+    From the shared instantaneous centre on the rear-axle line at radius
+    ``R = L/tan(delta)``, the inner wheel (the one on the inside of the turn)
+    subtends ``atan(L / (R - t/2))`` and the outer ``atan(L / (R + t/2))``.
+    Written through ``tan(delta)`` rather than ``R`` so ``delta = 0`` is a
+    plain 0/0-free zero instead of a division by an infinite radius.
+
+    ``delta > 0`` is a left turn, so the left wheel is the inner one and
+    ``|delta_left| > |delta| > |delta_right|``.
+    """
+    t = torch.tan(delta) if torch.is_tensor(delta) else math.tan(delta)
+    k = 0.5 * float(track_width) / float(L)
+    if torch.is_tensor(delta):
+        return torch.atan(t / (1.0 - k * t)), torch.atan(t / (1.0 + k * t))
+    return math.atan(t / (1.0 - k * t)), math.atan(t / (1.0 + k * t))
+
+
+def ackermann_delta_max(L: float, delta_max: float, track_width: float) -> float:
+    """The virtual steer limit once the INNER wheel's mechanical lock binds.
+
+    The inner wheel always out-steers the virtual one, so it reaches
+    ``delta_max`` first and the achievable virtual angle is strictly smaller:
+    ``atan(L / (L/tan(delta_max) + t/2))``.  This is the same quantity
+    ``bicycle_rollout(track_width=...)`` applies internally, exposed so a
+    caller can report the honest ``R_min = L/tan(.)`` without re-deriving it.
+    """
+    return math.atan(L / (L / math.tan(delta_max) + 0.5 * float(track_width)))
+
+
 class CoefMLP(nn.Module):
     """Predict ``(alpha, beta, gamma)`` from local SDF features, biased toward the
     known-good navigating regime (``bias``) so the self-supervised optimizer starts
     in — and stays near — the stable basin."""
 
-    def __init__(self, hidden=64, bias=(1.0, 3.0, 4.0)):
+    def __init__(self, hidden=64, bias=(1.0, 3.0, 4.0), in_dim=5):
         super().__init__()
+        #: 5 = the original [phi, goal_dist, gdir_x, gdir_y, align]; 6 adds the
+        #: sampled grip mu (see :func:`coef_feats`). Stored so the exporter and
+        #: the C++ twin can read the stride off the model instead of assuming.
+        self.in_dim = int(in_dim)
         self.net = nn.Sequential(
-            nn.Linear(5, hidden),
+            nn.Linear(self.in_dim, hidden),
             nn.SiLU(),
             nn.Linear(hidden, hidden),
             nn.SiLU(),
@@ -667,12 +832,58 @@ class CoefMLP(nn.Module):
         return c[:, 0], c[:, 1], c[:, 2]
 
 
-def coef_feats(field: SDFField, o, goal):
+def coef_feats(field: SDFField, o, goal, friction=None):
     """Local features for ``CoefMLP``: ``[phi, goal_dist, goal_dir_x, goal_dir_y,
-    goal·wall_normal]`` — the last says whether a wall stands between agent and goal."""
+    goal·wall_normal]`` — the last says whether a wall stands between agent and goal.
+
+    ``friction`` (a :class:`grl_snam.material.FrictionField`) appends the sampled
+    grip ``mu`` as a SIXTH feature. Without it the drive discovers ice only by
+    standing on it — the stopping governor has already budgeted for grip it no
+    longer has — so anticipation has to come through the coefficients, and they
+    cannot anticipate what they cannot see.
+
+    ``None`` (the default) returns the 5-feature vector bit-for-bit, so every
+    trained ``.cvcnav`` weight file stays loadable. A 6-feature net is NOT a
+    retrain from scratch: :func:`widen_coef_mlp` lifts a trained 5-feature net
+    into one whose mu column is zero, which is output-identical at init and
+    therefore starts fine-tuning inside the known-good basin rather than in the
+    collapsed one a fresh init lands in.
+    """
     phi, nrm = field.sample(o)
     dg = goal - o
     gd = dg.norm(dim=-1, keepdim=True)
     gdir = dg / (gd + 1e-6)
     align = (gdir * nrm).sum(-1, keepdim=True)
-    return torch.cat([phi.unsqueeze(-1), gd, gdir, align], -1)
+    cols = [phi.unsqueeze(-1), gd, gdir, align]
+    if friction is not None:
+        cols.append(friction.sample(o).unsqueeze(-1))
+    return torch.cat(cols, -1)
+
+
+def widen_coef_mlp(model: "CoefMLP") -> "CoefMLP":
+    """Lift a trained 5-feature ``CoefMLP`` to a 6-feature one that sees grip.
+
+    The new mu column of the first layer is ZERO, so the widened net computes
+    exactly the same function of the original five features — identical outputs,
+    bit-for-bit, on any input whose first five columns match. That matters
+    because training this net from a fresh init is known to collapse reach
+    against the shipped seed; starting from a provably-equivalent copy means the
+    only thing fine-tuning can do is discover a use for mu, from inside the
+    basin that already works.
+
+    Returns a new model; the input is untouched.
+    """
+    if model.in_dim != 5:
+        raise ValueError(f"expected a 5-feature CoefMLP, got in_dim={model.in_dim}")
+    first = model.net[0]
+    hidden = first.out_features
+    out = CoefMLP(hidden=hidden, bias=tuple(model.bias.tolist()), in_dim=6)
+    with torch.no_grad():
+        out.net[0].weight.zero_()
+        out.net[0].weight[:, :5].copy_(first.weight)
+        out.net[0].bias.copy_(first.bias)
+        for i in (2, 4):
+            out.net[i].weight.copy_(model.net[i].weight)
+            out.net[i].bias.copy_(model.net[i].bias)
+        out.bias.copy_(model.bias)
+    return out

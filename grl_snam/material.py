@@ -344,6 +344,62 @@ class MaterialField:
         return out[:, 0], out[:, 1], out[:, 2:4], out[:, 4:6]
 
 
+class FrictionField:
+    """Torch sampler over a single ``[1, 1, H, W]`` grip plane.
+
+    ``mu = 1`` is the REFERENCE DRY surface the vehicle constants (``a_max``,
+    ``a_lat_max``) are already quoted against, so a uniform ``mu = 1`` plane
+    reproduces the pre-friction rollout exactly.  Rough guide, matching the
+    usual surface table: ice 0.15, mud 0.35, grass 0.45, gravel 0.6, wet
+    asphalt 0.75, dry 1.0.
+
+    Deliberately a SEPARATE sampler rather than a 7th ``MaterialField``
+    channel.  Risk and grip are independent surface properties — ice is
+    innocuous to look at and lethal to drive on, rubble is the reverse — so
+    folding grip into ``risk`` would make the one case worth simulating
+    unrepresentable.  Keeping the 6-plane stack untouched also leaves the
+    bit-identical C++ ``material_sample`` twin, every stored bundle, and every
+    golden trace valid.  No gradient planes are needed: unlike risk, where the
+    force *is* the gradient, mu enters only as a magnitude, and autograd
+    differentiates the bilinear sample itself.
+
+    The coordinate chain is ``SDFField.sample``'s, verbatim, so the eventual
+    C++ twin can copy the proven op order.
+    """
+
+    def __init__(self, mu: np.ndarray, bounds, center, scale: float, device: str = "cpu"):
+        self.dev = torch.device(device)
+        plane = np.asarray(mu, np.float32)
+        if plane.ndim != 2:
+            raise ValueError(f"mu must be a 2-D plane, got shape {plane.shape}")
+        self.mu_raw = plane.copy()
+        self.field = torch.from_numpy(plane[None, None]).float().to(self.dev)
+        self.mnx, self.mny, self.mxx, self.mxy = (float(b) for b in bounds)
+        self.cx, self.cy = (float(c) for c in center)
+        self.S = float(scale)
+
+    @classmethod
+    def uniform(cls, shape, bounds, center, scale: float, mu: float = 1.0, device: str = "cpu"):
+        """A constant-grip plane — ``mu=1.0`` is the no-op reference surface."""
+        return cls(np.full(tuple(shape), float(mu), np.float32), bounds, center, scale, device)
+
+    def stamp(self, r0: int, r1: int, c0: int, c1: int, mu: float) -> None:
+        """Paint a rectangular patch of grip (the ice-patch demo event)."""
+        self.mu_raw[r0:r1, c0:c1] = np.float32(mu)
+        self.field = torch.from_numpy(self.mu_raw[None, None]).float().to(self.dev)
+
+    def sample(self, on: torch.Tensor):
+        """``on``: ``[B,2]`` normalized -> ``mu[B]``."""
+        wx = on[:, 0] / self.S + self.cx
+        wy = on[:, 1] / self.S + self.cy
+        gx = 2 * (wx - self.mnx) / (self.mxx - self.mnx) - 1
+        gy = 2 * (wy - self.mny) / (self.mxy - self.mny) - 1
+        grid = torch.stack([gx, gy], -1)[None, None]  # [1,1,B,2]
+        return F.grid_sample(
+            self.field, grid, mode="bilinear", align_corners=True, padding_mode="border"
+        )[0, 0, 0, :]
+
+
 # ---------------------------------------------------------------------------
 # Witness gate — Layer-B normative reference (float64 end-to-end)
 # ---------------------------------------------------------------------------
