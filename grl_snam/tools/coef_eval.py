@@ -17,13 +17,31 @@ that exists. Three seeds is the floor, and a single-seed number from here should
 not be quoted.
 
 PENETRATION counts agent-ticks whose clearance is below ``-0.5 * rr`` -- the
-vehicle overlapping geometry by more than half its radius. It is NOT the same as
-violating the stopping margin (clearance below ``+0.5 * rr``), which happens
-about ten times as often; conflating the two makes a policy look ten times worse
-and, worse, makes two tables that used different thresholds look comparable.
-Clearance is the MIN over the body when a footprint is configured -- the same
-quantity ``FogScenario.body_clearance_m`` reports -- so a body finds contacts the
+vehicle overlapping geometry by more than half its radius. Clearance is the MIN
+over the body when a footprint is configured, so a body finds contacts the
 centre point does not.
+
+**Three thresholds exist in this project and they are not interchangeable.**
+Getting them confused already put two incomparable tables in one document:
+
+===============================  ==================  =========================
+what                             fires when          where
+===============================  ==================  =========================
+stopping margin (NOT a metric)   clearance < +0.5rr  the governor's target
+this module's ``pen``            clearance < -0.5rr  every published table here
+``FogScenario.body_penetration`` clearance < 0       the shipped deliverable
+===============================  ==================  =========================
+
+The margin fires ~10x more often than penetration -- counting it as penetration
+is the bug fixed in #51, and it made a policy look ten times worse.
+``FogScenario`` is STRICTER than this module (any overlap at all, plus an
+occupancy cell test for stamped peers and movers that no SDF sees), so its count
+is an upper bound on this one. The two are not comparable; only ``clear`` here
+is directly comparable to ``body_clearance_m``, because it is the same quantity
+rather than a count derived from it.
+
+This module keeps ``-0.5 * rr`` because every published table used it. Do not
+"harmonise" it with ``FogScenario`` without re-deriving those tables.
 """
 
 from __future__ import annotations
