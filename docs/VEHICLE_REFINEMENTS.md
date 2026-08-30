@@ -150,18 +150,111 @@ only thing it can do is discover a use for mu.
 
 ```python
 from grl_snam.tools import coef_train
-tuned = coef_train.train_bicycle(model=wide, friction=mu, steps=300)
+tuned = coef_train.train_bicycle(model=wide, friction=mu, steps=300, w_coll=3.0)
 ```
+
+From the command line, `--rollout bicycle` selects this trainer and `--w-coll`
+sets the dial:
+
+```bash
+python -m grl_snam.tools.coef_train --rollout bicycle --w-coll 3 --out coef_mlp.cvcnav
+```
+
+There is deliberately **no flag for friction or the footprint**: both need a
+world rather than a scalar, so they stay programmatic. (`--rollout bicycle` used
+to be accepted and then ignored on the torch backend — it always trained the
+surrogate, printed a `reach_rate` and wrote a file, so the failure was
+invisible. Fixed, with a test on the routing.)
 
 `train_bicycle` exists because `train` integrates `sdf_rollout` — a holonomic
 *point*, which has no actuator envelope for grip to limit, so mu there is an
 input the loss has no reason to use. Through the vehicle, entering ice too fast
-breaches the barrier, so the intended mechanism was that the existing collision
-penalty would flow back to the coefficient that set the approach speed.
+breaches the barrier, so the collision penalty can flow back to the coefficient
+that set the approach speed.
 
-**That was measured and it does not happen** — see Status below. Treat this loop
-as a working seam, not a result; a loss term that rewards slowing before a mu
-transition is probably what it needs.
+### The loss had to be rescaled before any of that could work
+
+The first version of this loop learned nothing, and the reason was the
+objective, not the feature. `goal_dist + w_coll * mean(relu(rr - phi))` puts a
+world-scale distance (~5.5) against a breach depth bounded by `rr` = 0.15 —
+about **36×** apart on units alone. Worse, a breach depth is nonzero only for an
+agent *already inside* geometry: measured over random free-space starts, **0.00%
+of the batch**, so averaging divided the term by another ~100×. Collision ended
+up **0.2–0.7% of the loss**. Training minimised goal distance alone, and since
+slowing costs goal distance it was correctly learning *not* to slow down.
+
+That is not a tuning problem — balancing it needed `w_coll` ≈ 3,700 on ice and
+≈ 55,000 on dry, and no single constant serves both. Both terms are now O(1):
+goal distance is divided by the world half-extent, and the penalty is a **margin
+shortfall**, `relu(d_safe − clearance) / d_safe`, which is nonzero for anything
+merely *near* geometry (21% of random starts, against 0.00%).
+
+`clearance` is the `min` over the **body** when the vehicle carries a footprint,
+so the quantity being optimised is the same one `FogScenario.body_clearance_m`
+reports — what is trained and what is published cannot drift apart.
+
+### The safety-for-reach trade, measured
+
+With the loss balanced, `w_coll` spans the trade with small numbers. Three
+training seeds each, 120 steps, widened 6-feature net, ice-bearing city;
+penetration is per agent, and the raw per-seed column is there because at least
+one row is not summarised honestly by its mean:
+
+| `w_coll` | reach | penetration | final gap | raw penetration |
+|---|---|---|---|---|
+| *seed* | 14.6% | 1.56 | 3.524 | — |
+| 0 | 18.9% ±0.2 | 2.05 ±0.17 | 3.845 | 2.25, 2.05, 1.83 |
+| 1 | 20.1% ±0.2 | 1.54 ±0.01 | 3.525 | 1.55, 1.55, 1.53 |
+| **3** | **20.1% ±0.2** | **1.52 ±0.03** | **3.524** | 1.48, 1.54, 1.54 |
+| 10 | 11.6% ±5.8 | 0.57 ±0.70 | 4.773 | **0.06, 0.10, 1.56** |
+| 30 | 5.2% ±2.7 | 0.09 ±0.06 | 5.522 | 0.05, 0.05, 0.17 |
+
+Read it as three regimes, not a smooth curve:
+
+* **`w_coll` = 1–3 is a reliable Pareto improvement** over the shipped seed:
+  +5.5 points of reach, slightly *better* penetration, the same final gap, and a
+  ±0.2 spread across seeds. This is the default, and it is not buying safety
+  with reach — it is getting both.
+* **`w_coll` = 10 is bimodal, not noisy.** Two seeds converge on a genuinely
+  cautious policy (0.06, 0.10); the third never leaves the seed (1.56). The
+  ±0.70 is a convergence coin-flip being averaged, and quoting the mean — or
+  worse, the best seed — would misrepresent it. If you want this operating
+  point, train several seeds and select, or use `w_coll` = 30.
+* **`w_coll` = 30 reliably reaches penetration ~0.09** — a 94% cut — and costs
+  most of the reach (14.6% → 5.2%).
+
+`w_coll` is therefore a **dial, not a hyperparameter to tune away**. It selects
+an operating point on a safety-for-reach curve, and every headline metric this
+project publishes — `reach_rate`, `ScenarioResult.reached` — measures only the
+reach side. A model trained at `w_coll` = 30 will look like a two-thirds
+*regression* on every published number while being 17× safer. Report
+`body_penetration_steps` and `body_clearance_m` alongside reach, or the trade is
+invisible and the safer policy loses on the scoreboard.
+
+### What this does NOT show: the mu feature still has not earned its keep
+
+The table above is all 6-feature nets, so it demonstrates the **loss**, not the
+**feature**. Running the same thing with a blind 5-feature net — identical
+dynamics, both arms driving on ice, the only difference being whether the policy
+can see the grip ahead of it — the feature does essentially nothing:
+
+| `w_coll` | arm | reach | penetration |
+|---|---|---|---|
+| 3 | blind (5-feature) | 19.6% | 1.58 |
+| 3 | mu-ahead (6-feature) | 20.1% | 1.52 |
+| 10 | blind (5-feature) | 11.1% | 0.55 |
+| 10 | mu-ahead (6-feature) | 11.6% | 0.57 |
+
+So the gain over the seed is **entirely attributable to fixing the objective**,
+and is fully available to a net that cannot see mu at all. Anticipation remains
+a plumbed, tested, unproven seam. That is worth knowing before quoting this
+feature: the honest claim is *"the training loss was broken and now works"*, not
+*"the policy learned to anticipate ice"*.
+
+Why it might still be a wash: a policy that keeps a large margin from geometry
+is already robust to a surface that lengthens its stopping distance, so with
+`w_coll` doing that job there may be little left for mu to explain. Separating
+those would need a scenario where anticipation and clearance disagree.
 
 **`grid` must be big enough to contain buildings.** `shrunk` scales the city's
 rects with the grid: fraction of random starts inside the barrier band is 0.00
@@ -295,51 +388,20 @@ Done and measured: all four knobs, on CPU, CUDA, and through the SWIG binding;
 
 Not done, and worth knowing before quoting this feature:
 
-- **mu-in-features is a working seam, not a demonstrated win — this was tried
-  and it did not pay off.** A widened net fine-tuned through the vehicle on an
-  ice-bearing city, against the seed it was widened from:
+- **mu-in-features is a working seam, not a demonstrated win.** The first
+  attempt failed for a reason that turned out to be the *loss*, not the feature
+  — see "The loss had to be rescaled" above — and rescaling it produced a real,
+  reliable gain over the seed (14.6% -> 20.1% reach at slightly better
+  penetration). But an ablation against a blind 5-feature net attributes that
+  gain entirely to the objective: with mu visible, 20.1% / 1.52; blind, 19.6% /
+  1.58. The feature is plumbed, tested on both the torch and native paths, and
+  provably output-identical at init via `widen_coef_mlp` — and still not shown
+  to buy anything. Do not quote it as anticipation.
 
-  | model | reach | pen/agent | final gap |
-  |---|---|---|---|
-  | A seed (5-feature, blind) | 14.6% | 1.56 | 3.524 |
-  | B widened, untuned | 14.6% | 1.56 | 3.524 |
-  | C widened + grip-tuned | 18.8% | 1.71 | 3.845 |
-
-  B matching A exactly is the control working — `widen_coef_mlp` really is the
-  identity at init, confirmed in a live drive and not just on synthetic
-  features. But C's extra reach comes with *worse* penetration and a *worse*
-  final gap, and 20 training steps produce the same numbers as 250. Across
-  lr 1e-3 / 2e-4 / 5e-5 the loss lands at 4.986 / 4.988 / 4.997 — a 20x range
-  with no effect, which says the loss is insensitive to these parameters rather
-  than that the tuning is off; smaller lr just stays nearer the seed.
-
-  That table predates two later findings which together explain it, and both
-  matter more than the numbers above:
-
-  **1. The feature was blind.** It sampled mu at `o` — the surface underfoot,
-  never the one ahead — so it could not support anticipation even in principle.
-  It now probes toward the carrot. Re-running with the fixed feature changed
-  nothing on its own; the loss trace was bit-identical.
-
-  **2. The objective is the problem, and it is quantified.** A hand-written rule
-  using the same feature (`ga *= 1 + k(1−mu_ahead)`, no optimiser) cut
-  penetration **1.56 → 0.81, a 48% reduction** — so the feature carries real
-  signal and the metric can see it. What training could not do, three lines of
-  arithmetic could. The reason: at `w_coll=6` the collision term is **0.2–0.7%
-  of the loss**, so training was minimising goal distance alone — and slowing
-  for ice *costs* goal distance. It was correctly learning not to slow down.
-
-  | `w_coll` | reach | pen/agent | gap |
-  |---|---|---|---|
-  | seed | 14.6% | 1.56 | 3.524 |
-  | 6 (current default) | 18.8% | 1.74 | 3.843 |
-  | 300 | 18.8% | 1.49 | 3.819 |
-  | 1500 | 19.8% | **1.48** | 3.562 |
-
-  At `w_coll=1500` training becomes a Pareto improvement over the seed instead
-  of a regression. Single seed, single eval — **replicate before acting on it.**
-  The `w_coll` default is the first thing to settle before any training
-  campaign; it is wrong by roughly two orders of magnitude for this objective.
+  The control is worth keeping in mind when reading that: a widened net,
+  untuned, reproduces the seed exactly (14.6% / 1.56 / 3.524) in a live drive,
+  so `widen_coef_mlp` really is the identity and any difference measured after
+  fine-tuning is the fine-tuning.
 - **The native binding is compile-validated, not runtime-validated** — see
   libcvc `docs/NAV_VEHICLE.md`. It ships when pycvc is next republished.
 - **No scenario turns the footprint on by default**, and the blocker is now

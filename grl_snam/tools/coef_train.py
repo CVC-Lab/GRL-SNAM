@@ -142,11 +142,12 @@ def train_bicycle(
     lr=1e-3,
     seed=0,
     grid=96,
-    w_coll=6.0,
+    w_coll=3.0,
     window=6,
     model=None,
     friction=None,
     veh=None,
+    d_safe=None,
 ):
     """Fine-tune the coefficients through the VEHICLE, with grip in the dynamics.
 
@@ -156,23 +157,56 @@ def train_bicycle(
     :func:`sdf_nav.bicycle_rollout` instead, where mu scales BOTH ``a_max`` and
     ``a_lat_max``, and that is what makes anticipation learnable.
 
-    The INTENDED mechanism is that no bespoke "ice term" is needed: with grip in
-    the dynamics, entering ice too fast means the stopping governor budgeted for
-    grip the vehicle no longer has, the barrier is breached, and the collision
-    penalty flows back to the coefficient that set the approach speed.
+    THE LOSS. Both terms are normalized to O(1), and that is load-bearing
+    rather than cosmetic. The original form -- ``goal_dist + w_coll * mean(relu(
+    rr - phi))`` -- could not train this at all, for two multiplying reasons:
 
-    MEASURED, and it does not work out that way. Fine-tuning a widened net here
-    on an ice-bearing city produced no anticipation win: reach moved 14.6% ->
-    18.8% while penetration got WORSE (1.56 -> 1.71) and mean final goal
-    distance got worse (3.52 -> 3.85), and the same numbers came out at 20 steps
-    and at 250. Across lr 1e-3 / 2e-4 / 5e-5 the loss lands at 4.986 / 4.988 /
-    4.997 — a 20x lr range with no effect, which is the signature of a loss that
-    is insensitive to these parameters rather than of a tuning problem. Smaller
-    lr simply stays nearer the seed.
+    * **Units.** ``goal_dist`` spans the WORLD (~5.5 normalized); the penalty is
+      a breach depth bounded by ``rr`` = 0.15. ~36x apart before anything else.
+    * **Sparsity.** ``goal_dist`` is nonzero for every agent every tick; a breach
+      depth is nonzero only while actually inside geometry. Measured at random
+      free-space starts: **0.00%** of agents. Averaging over the batch divides
+      the term by another ~100x, and you cannot up-weight a term that is zero.
 
-    So this loop is a working SEAM, not a demonstrated result. Teaching
-    anticipation likely needs a term that rewards it directly — penalising speed
-    carried into low mu — rather than hoping the collision penalty finds it.
+    Together that put the collision term at **0.2-0.7% of the loss**, so training
+    minimised goal distance alone -- and since slowing costs goal distance, it
+    was correctly learning NOT to slow down. A balanced weight would have been
+    ~3,700 on ice and ~55,000 on dry: no single constant works across surfaces.
+
+    So the penalty is now a **margin shortfall**, ``relu(d_safe - clearance) /
+    d_safe``, nonzero for any agent within ``d_safe`` of geometry (21% of random
+    starts at the default ``d_safe = d_hat``, against 0.00%), and ``goal_dist``
+    is divided by the world half-extent. With both O(1), ``w_coll`` finally
+    expresses a preference and spans the trade with small numbers. Three
+    training seeds each, 120 steps, ice-bearing city; the raw column is there
+    because one row is not honestly summarised by its mean:
+
+        w_coll   reach          pen/agent      raw pen
+        seed     14.6%            1.56
+        0        18.9% +-0.2      2.05 +-0.17  2.25 2.05 1.83   goal only:
+        1        20.1% +-0.2      1.54 +-0.01  1.55 1.55 1.53   more reach,
+        3        20.1% +-0.2      1.52 +-0.03  1.48 1.54 1.54   MORE collisions
+        10       11.6% +-5.8      0.57 +-0.70  0.06 0.10 1.56   BIMODAL
+        30        5.2% +-2.7      0.09 +-0.06  0.05 0.05 0.17
+
+    w_coll 1-3 is a reliable Pareto improvement on the seed -- more reach AND
+    less penetration, tight across seeds -- and 3 is the default. w_coll = 10 is
+    bimodal rather than noisy: two seeds find a cautious policy, the third never
+    leaves the seed, so train several and select, or use 30, which reaches ~0.09
+    dependably and spends two thirds of the reach doing it.
+
+    This demonstrates the LOSS, not the mu feature. Against a blind 5-feature
+    net -- same dynamics, both arms driving on ice -- mu is a wash (w=3:
+    20.1%/1.52 seeing mu vs 19.6%/1.58 blind; w=10: 11.6%/0.57 vs 11.1%/0.55).
+    The gain is the objective; anticipation is still unproven.
+
+    ``clearance`` is the min over the BODY when ``veh`` carries a footprint, and
+    the reference point otherwise -- the training signal is then the same
+    quantity ``FogScenario.body_clearance_m`` reports, so what is optimised and
+    what is published cannot drift apart.
+
+    Pick ``w_coll`` deliberately: it selects a point on a safety-for-reach curve,
+    and every metric this project publishes measures only the reach side.
 
     Pass a :func:`sdf_nav.widen_coef_mlp` copy as ``model`` together with
     ``friction`` so the net can SEE mu; a 5-input net trains fine here too, it
@@ -191,6 +225,27 @@ def train_bicycle(
     rr, d_hat, dt, vmax = meta["rr"], meta["d_hat"], meta["dt"], meta["vmax"]
     kw = dict(L=0.035, delta_max=0.6, a_max=1.5, a_lat_max=1.0, k_steer=0.8, allow_reverse=True)
     kw.update(veh or {})
+    # Both loss terms are normalized to O(1) so w_coll is a PREFERENCE, not a
+    # unit conversion. See the docstring for the measurement behind this.
+    region_n = float(meta["region"]) * float(meta["scale"])
+    d_safe = float(d_hat if d_safe is None else d_safe)
+    body_offsets = kw.get("body_offsets")
+    body_rr = kw.get("body_rr")
+
+    def _clearance(o_, th_):
+        """Min clearance over the BODY, differentiable. Falls back to the
+        reference point when no footprint is configured."""
+        if not body_offsets:
+            phi_, _ = field.sample(o_)
+            return phi_ - rr
+        head = torch.stack([torch.cos(th_), torch.sin(th_)], -1)
+        worst = None
+        for off in body_offsets:
+            phi_, _ = field.sample(o_ + float(off) * head)
+            c = phi_ - float(body_rr if body_rr else rr)
+            worst = c if worst is None else torch.minimum(worst, c)
+        return worst
+
     model = sdf_nav.CoefMLP() if model is None else model
     wants_mu = getattr(model, "in_dim", 5) == 6
     if wants_mu and friction is None:
@@ -229,20 +284,24 @@ def train_bicycle(
                 friction=friction,
                 **kw,
             )
-            phi_o, _ = field.sample(o)
-            coll = coll + torch.relu(rr - phi_o).mean()
+            # Margin shortfall, not breach depth: nonzero for any agent within
+            # d_safe of geometry, which is where the signal has to live.
+            coll = coll + (torch.relu(d_safe - _clearance(o, th)) / d_safe).mean()
             if (t + 1) % window == 0 or t == horizon - 1:
-                goal_loss = (goal - o).norm(dim=1).mean()
+                goal_loss = (goal - o).norm(dim=1).mean() / region_n
                 loss = goal_loss + w_coll * coll / window
                 opt.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 opt.step()
-                last = (goal_loss.item(), float(coll.detach()))
+                # The two summands AS APPLIED, so a caller can check the
+                # objective is balanced without scraping stdout.
+                last = (goal_loss.item(), float(w_coll * coll.detach() / window))
                 o, th, sp, coll = o.detach(), th.detach(), sp.detach(), torch.zeros(())
         if step % 50 == 0 or step == steps - 1:
             print(f"  step {step:4d}: goal_dist {last[0]:6.3f}  coll {last[1]:6.3f}")
     model.eval()
+    model.last_loss_terms = last
     return model
 
 
@@ -327,7 +386,21 @@ def main(argv=None):
         choices=["torch", "native"],
         default=os.environ.get("GRL_SNAM_TRAIN_BACKEND", "torch"),
     )
-    ap.add_argument("--rollout", choices=["surrogate", "bicycle"], default="surrogate")
+    ap.add_argument(
+        "--rollout",
+        choices=["surrogate", "bicycle"],
+        default="surrogate",
+        help="surrogate: the holonomic point. bicycle: integrate the vehicle, which is "
+        "the only path where grip and the footprint can reach the loss.",
+    )
+    ap.add_argument(
+        "--w-coll",
+        type=float,
+        default=3.0,
+        help="bicycle rollout only: the safety-for-reach dial. 1-3 improves on the seed "
+        "in both; 30 cuts penetration ~94%% and spends two thirds of the reach. This "
+        "selects an operating point -- it is not a hyperparameter to tune away.",
+    )
     ap.add_argument("--cuda", action="store_true", help="native backend: use the GPU trainer")
     args = ap.parse_args(argv)
 
@@ -345,8 +418,17 @@ def main(argv=None):
         print(f"wrote {args.out} (native cvc::nav)")
         return
 
-    print(f"training ({args.steps} steps)...")
-    model = train(args.steps, args.horizon, args.n, args.lr, args.seed)
+    print(f"training ({args.rollout}, {args.steps} steps)...")
+    if args.rollout == "bicycle":
+        # Grip and the footprint have no way into the loss through the holonomic
+        # surrogate, so this is the path that can learn about either. Pass a
+        # FrictionField or a footprint programmatically -- there is no flag for
+        # them because both need a world, not a scalar.
+        model = train_bicycle(
+            args.steps, args.horizon, args.n, args.lr, args.seed, w_coll=args.w_coll
+        )
+    else:
+        model = train(args.steps, args.horizon, args.n, args.lr, args.seed)
     write_coef_mlp(model, args.out)
     print(f"wrote {args.out}   reach_rate={reach_rate(model):.2%}")
 

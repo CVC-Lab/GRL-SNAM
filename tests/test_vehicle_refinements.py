@@ -676,6 +676,71 @@ def test_bicycle_training_rejects_a_blind_model_asked_to_use_grip():
         )
 
 
+def test_cli_rollout_bicycle_actually_trains_the_bicycle(tmp_path, monkeypatch):
+    """--rollout bicycle was accepted and then ignored on the torch backend: it
+    always ran the holonomic surrogate, so the flag that selects the only path
+    grip and the footprint can reach silently did nothing."""
+    from grl_snam.tools import coef_train
+
+    called = []
+    monkeypatch.setattr(
+        coef_train,
+        "train_bicycle",
+        lambda *a, **k: called.append(("bicycle", k.get("w_coll"))) or sdf_nav.CoefMLP(),
+    )
+    monkeypatch.setattr(
+        coef_train, "train", lambda *a, **k: called.append(("surrogate", None)) or sdf_nav.CoefMLP()
+    )
+    monkeypatch.setattr(coef_train, "reach_rate", lambda m: 0.0)
+
+    out = str(tmp_path / "m.cvcnav")
+    coef_train.main(["--rollout", "bicycle", "--steps", "1", "--out", out, "--w-coll", "7"])
+    assert called == [("bicycle", 7.0)]
+
+    called.clear()
+    coef_train.main(["--rollout", "surrogate", "--steps", "1", "--out", out])
+    assert called == [("surrogate", None)]
+
+
+def test_the_collision_term_is_dense_where_breach_depth_was_not():
+    """The reason train_bicycle's penalty is a margin shortfall and not a breach
+    depth. A breach depth is nonzero only for an agent already inside geometry,
+    which essentially never happens at a free-space start -- averaged over the
+    batch that term is ~0 and no weight can rescue it. The margin shortfall is
+    nonzero for anything merely NEAR geometry, which is where the signal is."""
+    from grl_snam.tools import coef_train
+
+    field, meta, rand_on = coef_train._scene(96, 0)
+    rr, d_hat = meta["rr"], meta["d_hat"]
+    o = torch.from_numpy(rand_on(4096, np.random.default_rng(0)))
+    phi, _ = field.sample(o)
+
+    breached = (torch.relu(rr - phi) > 0).float().mean().item()
+    in_margin = (torch.relu(d_hat - (phi - rr)) > 0).float().mean().item()
+
+    assert breached < 0.01, f"breach depth should be ~never nonzero, got {breached:.3f}"
+    assert in_margin > 0.05, f"margin shortfall must be dense, got {in_margin:.3f}"
+
+
+def test_the_two_loss_terms_are_comparable_in_size():
+    """w_coll can only express a PREFERENCE if the terms it trades between are
+    the same size. They were not: goal distance ran in world units while the
+    penalty was a breach depth bounded by rr and nonzero for ~0% of the batch,
+    leaving collision at well under 1% of the objective. Balancing it would have
+    taken w_coll ~ 3,700 on ice and ~55,000 on dry -- no constant works on both,
+    which is the tell that the terms, not the weight, were wrong."""
+    from grl_snam.tools import coef_train
+
+    m = coef_train.train_bicycle(steps=1, n=128, horizon=6, window=6, grid=96, seed=0)
+    goal_term, coll_term = m.last_loss_terms
+
+    share = coll_term / (goal_term + coll_term)
+    assert 0.05 < share < 0.95, (
+        f"at the default w_coll the collision term is {share:.1%} of the loss; "
+        "outside this band one objective has swamped the other"
+    )
+
+
 def test_body_gain_cancels_the_k_times_barrier():
     """``body_gain = 1/K`` makes K COINCIDENT discs exactly one disc again.
 
