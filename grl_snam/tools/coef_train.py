@@ -67,8 +67,16 @@ def _scene(grid, seed):
 
 
 def train(
-    steps=400, horizon=28, n=192, lr=1e-3, seed=0, grid=96, w_coll=6.0, window=7,
-    model=None, friction=None,
+    steps=400,
+    horizon=28,
+    n=192,
+    lr=1e-3,
+    seed=0,
+    grid=96,
+    w_coll=6.0,
+    window=7,
+    model=None,
+    friction=None,
 ):
     """Truncated BPTT: the rollout is `horizon` steps but the autograd graph is
     detached every `window` steps (bounded memory; a long full-BPTT graph OOMs).
@@ -128,8 +136,17 @@ def train(
 
 
 def train_bicycle(
-    steps=300, horizon=24, n=128, lr=1e-3, seed=0, grid=96, w_coll=6.0, window=6,
-    model=None, friction=None, veh=None,
+    steps=300,
+    horizon=24,
+    n=128,
+    lr=1e-3,
+    seed=0,
+    grid=96,
+    w_coll=6.0,
+    window=6,
+    model=None,
+    friction=None,
+    veh=None,
 ):
     """Fine-tune the coefficients through the VEHICLE, with grip in the dynamics.
 
@@ -185,8 +202,21 @@ def train_bicycle(
             feat = sdf_nav.coef_feats(field, o, goal, friction=friction if wants_mu else None)
             al, be, ga = model(feat)
             o, th, sp, _ = sdf_nav.bicycle_rollout(
-                field, o, th, sp, goal, al, be, ga, 1,
-                rr=rr, d_hat=d_hat, dt=dt, vmax=vmax, friction=friction, **kw,
+                field,
+                o,
+                th,
+                sp,
+                goal,
+                al,
+                be,
+                ga,
+                1,
+                rr=rr,
+                d_hat=d_hat,
+                dt=dt,
+                vmax=vmax,
+                friction=friction,
+                **kw,
             )
             phi_o, _ = field.sample(o)
             coll = coll + torch.relu(rr - phi_o).mean()
