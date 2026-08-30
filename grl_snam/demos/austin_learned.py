@@ -33,6 +33,8 @@ def setup() -> None:
     )
     from pycvc_gl.vehicle import VehiclePose
 
+    from grl_snam.route import cells_for_metres, plan_clearance_route
+
     bundle = os.environ.get("GRL_SNAM_SCENE_BUNDLE", os.path.expanduser("~/scenes/austin_south"))
     ckpt = os.environ.get("GRL_SNAM_CHECKPOINT", "checkpoints/coef_sdf.pt")
     torch.set_num_threads(2)
@@ -76,7 +78,23 @@ def setup() -> None:
 
     start = (-region * 0.9, -region * 0.75)
     goal = (region * 0.9, region * 0.8)
-    route = plan_ground_route(occ_r, bounds, [start, goal], close_loop=False)
+    # Clearance-weighted spine, not the shortest path. The shortest route hugs
+    # building corners because that is what shortest means, and the local drive
+    # then spends the whole run fighting its own wall barrier. A ~12 m standoff
+    # target lifts route-guided reach ~0.80 -> ~0.90 on the procedural city and
+    # gives visibly smoother paths here. Set GRL_SNAM_ROUTE_STANDOFF_M=0 for the
+    # old shortest-path behaviour.
+    standoff_m = float(os.environ.get("GRL_SNAM_ROUTE_STANDOFF_M", "12"))
+    if standoff_m > 0:
+        route = plan_clearance_route(
+            occ_r,
+            bounds,
+            [start, goal],
+            close_loop=False,
+            d_safe=cells_for_metres(bounds, occ_r.shape, standoff_m),
+        )
+    else:
+        route = plan_ground_route(occ_r, bounds, [start, goal], close_loop=False)
     if not route or len(route) < 2:
         raise RuntimeError("route planning failed for this bundle/region")
     route = np.asarray(resample_polyline(route, spacing=0.12 / scale), np.float32)
