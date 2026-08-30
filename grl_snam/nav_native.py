@@ -324,7 +324,23 @@ def bicycle_rollout(
     """One torch-free bicycle drive tick (``params['nsub']`` substeps), float-
     equivalent to :func:`sdf_nav.bicycle_rollout` (steps=1). ``params`` carries
     ``rr,d_hat,dt,vmax,L,delta_max,a_max,a_lat_max,k_steer,nsub,allow_reverse``.
-    Returns fresh ``(o, th, sp, minclr)`` f32; inputs are not mutated."""
+    Returns fresh ``(o, th, sp, minclr)`` f32; inputs are not mutated.
+
+    The optional vehicle refinements (``body_offsets``/``body_rr``,
+    ``track_width``, ``friction``) are NOT in the C++ drive yet. Silently
+    dropping them here is precisely the "fast digital twin that moves
+    differently" failure this port is built to avoid -- native and torch would
+    disagree on the trajectory with nothing in the output to say so -- and no
+    parity gate would catch it, because the gates compare the two paths on the
+    same params. So refuse loudly instead of diverging quietly; drop
+    ``GRL_SNAM_NAV_DRIVE=native`` until ``drive.h`` grows them."""
+    _unported = [k for k in ("body_offsets", "body_rr", "track_width") if params.get(k) is not None]
+    if _unported:
+        raise NotImplementedError(
+            f"cvc::nav bicycle_rollout does not implement {', '.join(_unported)} yet; "
+            "the native drive would silently move differently from the torch reference. "
+            "Run the torch path (unset GRL_SNAM_NAV_DRIVE=native) until the C++ port lands."
+        )
     f = np.ascontiguousarray(field, np.float32)
     P = params
     return _pycvc.nav_bicycle_rollout(

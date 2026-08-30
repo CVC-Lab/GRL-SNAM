@@ -199,3 +199,96 @@ sequential accumulation, round-half-even cells, risk recorded before the
 feasibility break. The research-core gate keeps the source's float32 math
 verbatim; the two are the same algorithm and may disagree only in the last
 ulp on adversarial ties.
+
+## Grip — `FrictionField` (separate from risk, and deliberately so)
+
+Risk and grip are **independent** surface properties, so grip is a separate
+one-plane sampler (`grl_snam.material.FrictionField`) rather than a seventh
+`MaterialField` channel. Ice is innocuous to look at and lethal to drive on;
+rubble is the reverse. Folding grip into `risk` would make the one case worth
+simulating unrepresentable, and it would cost the bit-identical
+`material_sample` twin, every stored bundle, and every golden trace. The
+6-plane stack is untouched.
+
+`mu = 1` is the reference dry surface the vehicle constants are already quoted
+against, so an absent or uniform-1 field is bit-for-bit the pre-grip rollout.
+Rough table: ice 0.15, mud 0.35, grass 0.45, gravel 0.6, wet 0.75, dry 1.0.
+
+```python
+from grl_snam.material import FrictionField
+nav.friction = FrictionField.uniform(occ.shape, bounds, center, scale, mu=1.0)
+nav.friction.stamp(r0, r1, c0, c1, 0.15)   # an ice patch
+```
+
+**Both** actuator limits scale with mu, because both are grip-limited:
+`a_max` (brake/traction) and `a_lat_max` (cornering). That coupling is the
+whole point — wiring only one would leave the vehicle an escape via the other.
+
+Three properties of this model are worth stating plainly, because each is easy
+to mistake for a bug:
+
+1. **It understeers; it does not skid.** A kinematic bicycle has no lateral
+   velocity state, so it cannot fishtail. On ice `d_cap = atan(mu a_lat L/v^2)`
+   collapses and the vehicle simply ploughs on toward the outside of the turn.
+2. **Ice therefore makes a free turn FASTER, not slower.** The dry vehicle
+   brakes for a corner it is actually taking; the ice vehicle fails to take it
+   and carries its speed. "Ice is slower" is true only when the corner is
+   forced (a wall, a convoy slot), so do not assert it as an invariant —
+   `tests/test_vehicle_refinements.py` pins the understeer instead.
+3. **mu is sampled at the CURRENT position, so the vehicle cannot anticipate.**
+   Enter ice at speed and the stopping governor's guarantee is already broken —
+   it budgeted for grip it no longer has. That is the intended failure mode.
+
+### Anticipation: mu as a coefficient feature
+
+`coef_feats(..., friction=f)` appends the sampled mu as a **sixth** feature, so
+the learned coefficients can slow *before* a transition instead of discovering
+ice by standing on it. `None` still returns the 5-feature vector bit-for-bit.
+
+The obvious objection to a 5 -> 6 change is that it invalidates every trained
+`.cvcnav` weight file and demands a retrain — and training this net from a fresh
+init is known to *collapse* reach against the shipped seed. So do not retrain
+from scratch:
+
+```python
+wide = sdf_nav.widen_coef_mlp(trained_5_feature_net)   # in_dim 5 -> 6
+```
+
+The new mu column is **zero**, so the widened net computes exactly the same
+function of the original five features — identical outputs, bit-for-bit, for any
+mu. It is a strictly-equivalent starting point, so fine-tuning begins inside the
+basin that already works and the only thing it can do is discover a use for mu.
+`SdfNavigator` reads the width off the model, so attaching a friction field to a
+5-input net still feeds it exactly five features.
+
+**Still open:** nobody has actually fine-tuned a widened net. Until that runs,
+mu-in-features is plumbing with a proof of equivalence, not a demonstrated
+anticipation win.
+
+### C++ / CUDA
+
+Ported. `veh_params` carries `body_offsets`/`body_rr`, `track_width` and a
+`friction_field *grip`; each is inert at its default, so `bicycle_rollout`,
+`bicycle_rollout_material` and `drive_step` pick them up with no signature
+change. Validated against the torch reference by a standalone harness that links
+`drive.cpp` directly (the SWIG binding does not expose the new fields yet, so the
+usual Python gate cannot reach them):
+
+| case | worst residual |
+|---|---|
+| legacy (regression gate) | **0.0 — bit-identical** |
+| footprint | **0.0 — bit-identical** |
+| steering lock | 1.8e-07 |
+| grip | 1.5e-08 |
+| all three | 1.8e-07 |
+
+against a ~1e-5 float-equivalence contract. Two paths deliberately refuse rather
+than diverge quietly, because a native path honouring fewer constraints than the
+torch reference is the "fast digital twin that moves differently" failure and no
+parity gate would catch it — the gates hand both paths the same params:
+
+* `sim_world_cuda` throws if any refinement is set (the device-resident world
+  needs per-world buffers with its own lifetime, not per-call ones).
+* `drive_step_cuda` throws on a 6-feature net (`drive_kernel` assembles the
+  5-feature vector inline in registers).
+* `grl_snam/nav_native.py` throws until the SWIG binding exposes the fields.

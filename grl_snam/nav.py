@@ -28,10 +28,24 @@ from .metrics import NavMetrics
 class SdfNavigator:
     """Drive a point agent across a trained SDF field toward a (retargetable) goal."""
 
-    #: default kinematic-bicycle parameters (normalized units; L ~ 3 m at the
-    #: Austin scale). Overridable per-instance via ``vehicle=dict(...)``.
+    #: default kinematic-bicycle parameters (normalized units; at the Austin
+    #: ``scale = 0.05`` that is L = 0.7 m, and rr/L = 4.3 -- the collision disc
+    #: is 4.3 wheelbases, deliberate margin, so quote the RATIO and never a
+    #: metre figure for L alone). Overridable per-instance via ``vehicle=dict(...)``.
+    #: ``body_offsets``/``body_rr`` (multi-disc footprint) and ``track_width``
+    #: (inner-wheel steering lock) default to None = the legacy single rr-disc
+    #: and virtual-wheel limit, bit-for-bit. They ride in this dict so a Squad's
+    #: batched rollout (``squad.py``) picks them up with no extra plumbing.
     VEHICLE_DEFAULTS = dict(
-        L=0.035, delta_max=0.6, a_max=1.5, a_lat_max=1.0, k_steer=0.8, allow_reverse=True
+        L=0.035,
+        delta_max=0.6,
+        a_max=1.5,
+        a_lat_max=1.0,
+        k_steer=0.8,
+        allow_reverse=True,
+        body_offsets=None,
+        body_rr=None,
+        track_width=None,
     )
 
     def __init__(
@@ -76,6 +90,12 @@ class SdfNavigator:
         # target and threads the material force into the rollout. Unset (the
         # default) leaves every trajectory bit-for-bit what it was.
         self.material = None
+        # Optional grip raster (grl_snam.material.FrictionField), mu=1 = dry.
+        # A WORLD field like ``material``, not a vehicle constant, so it lives
+        # here rather than in VEHICLE_DEFAULTS -- and only the bicycle branch
+        # consumes it, since a holonomic point has no actuator envelope to
+        # limit. Unset (the default) leaves every trajectory bit-for-bit.
+        self.friction = None
         self.step_i = 0
         self.goal_index = 0
         self._parked = False
@@ -361,7 +381,11 @@ class SdfNavigator:
         pre-split loop); a Squad calls them separately so it can roll every
         agent forward in one batched rollout in between."""
         gt = self._plan_carrot()
-        al, be, ga = self.model(sdf_nav.coef_feats(self.field, self.o, gt))
+        # A grip-widened net (sdf_nav.widen_coef_mlp) takes mu as a 6th feature;
+        # read the width off the MODEL rather than assuming, so a 5-input net
+        # with a friction field attached still gets exactly its 5 features.
+        _feat_grip = self.friction if getattr(self.model, "in_dim", 5) == 6 else None
+        al, be, ga = self.model(sdf_nav.coef_feats(self.field, self.o, gt, friction=_feat_grip))
         mat_kw = self._material_kw()
         if self._dyn == "bicycle":
             self.o, self.th, self.sp, _ = sdf_nav.bicycle_rollout(
@@ -375,6 +399,7 @@ class SdfNavigator:
                 ga,
                 1,
                 nsub=self.nsub,
+                friction=self.friction,
                 **self.kw,
                 **self._veh,
                 **mat_kw,

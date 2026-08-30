@@ -58,13 +58,35 @@ def _scene(grid, seed):
     return field, meta, rand_on
 
 
-def train(steps=400, horizon=28, n=192, lr=1e-3, seed=0, grid=96, w_coll=6.0, window=7):
+def train(
+    steps=400, horizon=28, n=192, lr=1e-3, seed=0, grid=96, w_coll=6.0, window=7,
+    model=None, friction=None,
+):
     """Truncated BPTT: the rollout is `horizon` steps but the autograd graph is
-    detached every `window` steps (bounded memory; a long full-BPTT graph OOMs)."""
+    detached every `window` steps (bounded memory; a long full-BPTT graph OOMs).
+
+    ``model`` fine-tunes an existing net instead of a fresh init -- the seam a
+    grip-widened net needs, since training this policy from scratch is known to
+    collapse reach against the shipped seed, while a
+    :func:`sdf_nav.widen_coef_mlp` copy starts output-identical to a net that
+    works. ``friction`` then feeds mu in as the sixth feature.
+
+    CAVEAT, and it is the whole reason this is a seam and not a result: this
+    loop integrates :func:`sdf_nav.sdf_rollout`, a HOLONOMIC POINT. Grip does
+    not enter a point's dynamics at all -- there is no actuator envelope to
+    limit -- so mu here is an input the loss has no reason to use. Teaching
+    anticipation needs a bicycle-rollout loop with grip in the dynamics AND a
+    term that punishes arriving at ice too fast. That harness does not exist
+    yet; do not read a fine-tune on this one as evidence either way.
+    """
     torch.manual_seed(seed)
     field, meta, rand_on = _scene(grid, seed)
     rr, d_hat, dt, vmax = meta["rr"], meta["d_hat"], meta["dt"], meta["vmax"]
-    model = sdf_nav.CoefMLP()
+    model = sdf_nav.CoefMLP() if model is None else model
+    if friction is not None and getattr(model, "in_dim", 5) != 6:
+        raise ValueError(
+            "friction= needs a 6-feature model; call sdf_nav.widen_coef_mlp(model) first"
+        )
     model.train()
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     rng = np.random.default_rng(seed)
@@ -75,7 +97,7 @@ def train(steps=400, horizon=28, n=192, lr=1e-3, seed=0, grid=96, w_coll=6.0, wi
         last_goal, last_coll = 0.0, 0.0
         coll = torch.zeros(())
         for t in range(horizon):
-            feat = sdf_nav.coef_feats(field, o, goal)
+            feat = sdf_nav.coef_feats(field, o, goal, friction=friction)
             al, be, ga = model(feat)
             o, v, _ = sdf_nav.sdf_rollout(
                 field, o, v, goal, al, be, ga, 1, rr=rr, d_hat=d_hat, dt=dt, vmax=vmax
