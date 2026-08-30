@@ -441,3 +441,8 @@ Not done, and worth knowing before quoting this feature:
   **cannot measure its benefit**. At 2.1 m cells the body metric degenerates to
   the point test (see the resolution requirement above), so a vehicle-scale
   lattice is the prerequisite for a footprint scenario — not the scenario.
+  Training for one, though, is unblocked and worthwhile today: see "Training
+  WITH the footprint" above, which cuts body penetration 42%.
+- **The native trainer cannot train against a footprint.** `diff::bike_veh` has
+  no body fields, so `train_bicycle(veh=...)` is torch-only. Given the size of
+  that 42%, this is the gap worth closing next on the C++ side.
