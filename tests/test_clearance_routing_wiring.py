@@ -1,14 +1,20 @@
 """The clearance-routing helper every demo now plans through."""
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt
 
+import sdf_nav
 from grl_snam import planner
 from grl_snam.route import cells_for_metres, plan_clearance_route
 
 
 def _clearance(occ):
-    return distance_transform_edt(1 - np.asarray(occ))
+    """Cells to the nearest blocked cell, via the SAME EDT clearance_cost uses.
+
+    Not scipy: it is not a dependency of this package and CI has no such wheel,
+    which is how the first version of this file turned CI red. Measuring with
+    the production EDT is also the more honest check.
+    """
+    return np.sqrt(sdf_nav._edt2(np.asarray(occ) != 0))
 
 
 def _min_along(clr, route):
