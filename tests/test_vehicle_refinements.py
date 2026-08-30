@@ -676,6 +676,32 @@ def test_bicycle_training_rejects_a_blind_model_asked_to_use_grip():
         )
 
 
+def test_cli_rollout_bicycle_actually_trains_the_bicycle(tmp_path, monkeypatch):
+    """--rollout bicycle was accepted and then ignored on the torch backend: it
+    always ran the holonomic surrogate, so the flag that selects the only path
+    grip and the footprint can reach silently did nothing."""
+    from grl_snam.tools import coef_train
+
+    called = []
+    monkeypatch.setattr(
+        coef_train,
+        "train_bicycle",
+        lambda *a, **k: called.append(("bicycle", k.get("w_coll"))) or sdf_nav.CoefMLP(),
+    )
+    monkeypatch.setattr(
+        coef_train, "train", lambda *a, **k: called.append(("surrogate", None)) or sdf_nav.CoefMLP()
+    )
+    monkeypatch.setattr(coef_train, "reach_rate", lambda m: 0.0)
+
+    out = str(tmp_path / "m.cvcnav")
+    coef_train.main(["--rollout", "bicycle", "--steps", "1", "--out", out, "--w-coll", "7"])
+    assert called == [("bicycle", 7.0)]
+
+    called.clear()
+    coef_train.main(["--rollout", "surrogate", "--steps", "1", "--out", out])
+    assert called == [("surrogate", None)]
+
+
 def test_the_collision_term_is_dense_where_breach_depth_was_not():
     """The reason train_bicycle's penalty is a margin shortfall and not a breach
     depth. A breach depth is nonzero only for an agent already inside geometry,

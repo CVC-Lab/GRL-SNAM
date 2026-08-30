@@ -386,7 +386,21 @@ def main(argv=None):
         choices=["torch", "native"],
         default=os.environ.get("GRL_SNAM_TRAIN_BACKEND", "torch"),
     )
-    ap.add_argument("--rollout", choices=["surrogate", "bicycle"], default="surrogate")
+    ap.add_argument(
+        "--rollout",
+        choices=["surrogate", "bicycle"],
+        default="surrogate",
+        help="surrogate: the holonomic point. bicycle: integrate the vehicle, which is "
+        "the only path where grip and the footprint can reach the loss.",
+    )
+    ap.add_argument(
+        "--w-coll",
+        type=float,
+        default=3.0,
+        help="bicycle rollout only: the safety-for-reach dial. 1-3 improves on the seed "
+        "in both; 30 cuts penetration ~94%% and spends two thirds of the reach. This "
+        "selects an operating point -- it is not a hyperparameter to tune away.",
+    )
     ap.add_argument("--cuda", action="store_true", help="native backend: use the GPU trainer")
     args = ap.parse_args(argv)
 
@@ -404,8 +418,17 @@ def main(argv=None):
         print(f"wrote {args.out} (native cvc::nav)")
         return
 
-    print(f"training ({args.steps} steps)...")
-    model = train(args.steps, args.horizon, args.n, args.lr, args.seed)
+    print(f"training ({args.rollout}, {args.steps} steps)...")
+    if args.rollout == "bicycle":
+        # Grip and the footprint have no way into the loss through the holonomic
+        # surrogate, so this is the path that can learn about either. Pass a
+        # FrictionField or a footprint programmatically -- there is no flag for
+        # them because both need a world, not a scalar.
+        model = train_bicycle(
+            args.steps, args.horizon, args.n, args.lr, args.seed, w_coll=args.w_coll
+        )
+    else:
+        model = train(args.steps, args.horizon, args.n, args.lr, args.seed)
     write_coef_mlp(model, args.out)
     print(f"wrote {args.out}   reach_rate={reach_rate(model):.2%}")
 
