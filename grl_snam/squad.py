@@ -65,6 +65,11 @@ class SquadResult:
     ticks: int = 0
     reached: dict = field(default_factory=dict)
     penetration: dict = field(default_factory=dict)
+    #: Steps with ANY body point in truth, per agent. `penetration` is a POINT
+    #: test at the rear axle and under-reports a body clipping a corner, so a
+    #: footprint's whole benefit is invisible in it. Report both when comparing
+    #: vehicle configurations, or the safety half of the trade goes unmeasured.
+    body_penetration: dict = field(default_factory=dict)
     tracks: dict = field(default_factory=dict)
 
 
@@ -463,6 +468,7 @@ class Squad:
         res = SquadResult()
         tracks = {k: [] for k in self.scenarios}
         pen = {k: 0 for k in self.scenarios}
+        bpen = {k: 0 for k in self.scenarios}
         best = {k: float("inf") for k in self.scenarios}
         since = 0
         for _ in range(max_steps):
@@ -471,6 +477,7 @@ class Squad:
             for k, r in recs.items():
                 tracks[k].append((r.x, r.y))
                 pen[k] += int(r.truth_penetration)
+                bpen[k] += int(r.body_penetration)
                 if r.goal_dist_m < best[k] - 0.5:
                     best[k] = r.goal_dist_m
                     improved = True
@@ -482,6 +489,7 @@ class Squad:
                 break
         res.tracks = {k: np.asarray(v, np.float32) for k, v in tracks.items()}
         res.penetration = pen
+        res.body_penetration = bpen
         res.reached = {k: sc.done for k, sc in self.scenarios.items()}
         return res
 
