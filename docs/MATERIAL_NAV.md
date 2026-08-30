@@ -202,6 +202,10 @@ ulp on adversarial ties.
 
 ## Grip — `FrictionField` (separate from risk, and deliberately so)
 
+> Grip is one of four vehicle refinements; the footprint, the inner-wheel
+> steering lock, activation and the measured navigation results are in
+> [VEHICLE_REFINEMENTS.md](VEHICLE_REFINEMENTS.md).
+
 Risk and grip are **independent** surface properties, so grip is a separate
 one-plane sampler (`grl_snam.material.FrictionField`) rather than a seventh
 `MaterialField` channel. Ice is innocuous to look at and lethal to drive on;
