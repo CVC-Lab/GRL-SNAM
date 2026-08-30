@@ -503,19 +503,20 @@ def bicycle_rollout(
       uncorrected the vehicle does not break, it becomes TIMID: more standoff,
       fewer collisions, and a longer time to goal, so it misses any fixed
       budget. ``body_gain = 1/len(body_offsets)`` cancels it. Measured on the
-      city story, 5 seeds x 4 agents, 700-tick budget::
+      city story, 5 seeds x 4 agents, at two fixed budgets::
 
-          arm                       reach   pen/agent   clearance
-          disc 0.150 (legacy)        45%       2.9        2.92 m
-          fp3 0.150, gain 1           0%       2.8        3.65 m
-          fp3 0.150, gain 1/3        35%       2.8        3.65 m
-          fp3 0.075, gain 1/3        50%       7.2        2.59 m
+          arm                    reach@700  reach@1600  pen/agent  clearance
+          disc 0.150 (legacy)       45%         75%        2.9      2.92 m
+          fp3 0.150, gain 1          0%         30%        2.8      3.65 m
+          fp3 0.150, gain 1/3       35%         60%        2.8      3.65 m
+          fp3 0.075, gain 1/3       50%         60%        7.2      2.59 m
 
-      Gain-corrected, the footprint keeps the lower collision rate AND the
-      extra 0.7 m of standoff while recovering most of the reach — that is the
-      trade worth making. Note the last row: shrinking the discs as well buys
-      the most reach and 2.5x the collisions, because a body that small threads
-      gaps it should not fit through.
+      **Use full radius with gain 1/n.** Gain-corrected it keeps the lower
+      collision rate AND ~0.7 m more standoff while recovering most of the
+      reach. The last row is the trap: shrinking the discs looks best at a
+      tight budget, but by 1600 ticks it has the SAME reach as full radius and
+      2.5x the collisions — a body that small threads gaps it should not fit
+      through, and the extra reach was only ever borrowed from safety.
     * ``track_width`` — **steering lock**. The bicycle's ``delta`` is the
       virtual centre-wheel angle; on a real Ackermann axle the INNER wheel
       reaches the mechanical lock first, so the achievable virtual angle is
