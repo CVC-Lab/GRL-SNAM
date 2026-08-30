@@ -55,4 +55,52 @@ def test_evaluating_with_a_footprint_is_not_the_same_as_without():
     kw = dict(field=field, meta=meta, rand_on=rand_on, friction=friction, n=64, ticks=25)
     point = coef_eval.evaluate(model, **kw)
     body = coef_eval.evaluate(model, veh=coef_eval.FOOTPRINT, **kw)
-    assert body["pen"] > point["pen"], "a body must find contacts the centre point does not"
+    assert body["clear"] < point["clear"], "a body must come closer than its centre point"
+
+
+def test_penetration_threshold_is_overlap_not_the_stopping_margin():
+    """Two thresholds were published under one name once already: penetration is
+    clearance below -0.5*rr (overlapping by more than half the radius), while
+    +0.5*rr is the stopping margin and fires about ten times as often. The sign
+    is the whole distinction, so pin it."""
+    assert coef_eval.pen_threshold(0.15) == -0.075
+    assert coef_eval.pen_threshold(0.15) < 0.0, "a positive threshold is the near-miss bug"
+
+
+def test_penetration_is_far_rarer_than_a_margin_violation():
+    """Why the sign matters, measured: along driven trajectories the loose
+    threshold fires many times more often, which is the factor by which the two
+    tables disagreed."""
+    field, meta, rand_on, friction = coef_eval.ice_band_world(grid=96)
+    torch.manual_seed(0)
+    model = sdf_nav.CoefMLP()
+    rr = meta["rr"]
+    rng = np.random.default_rng(5)
+    o = torch.from_numpy(rand_on(128, rng))
+    goal = torch.from_numpy(rand_on(128, rng))
+    th = torch.from_numpy(rng.uniform(-np.pi, np.pi, 128).astype(np.float32))
+    sp = torch.zeros(128)
+    overlap = margin = 0
+    with torch.no_grad():
+        for _ in range(60):
+            al, be, ga = model(sdf_nav.coef_feats(field, o, goal))
+            o, th, sp, _ = sdf_nav.bicycle_rollout(
+                field,
+                o,
+                th,
+                sp,
+                goal,
+                al,
+                be,
+                ga,
+                1,
+                rr=rr,
+                d_hat=meta["d_hat"],
+                dt=meta["dt"],
+                vmax=meta["vmax"],
+                **coef_eval.VEH,
+            )
+            phi, _ = field.sample(o)
+            overlap += int((phi < 0.5 * rr).sum())
+            margin += int((phi < 1.5 * rr).sum())
+    assert margin > 3 * overlap, f"expected a wide gap, got margin={margin} overlap={overlap}"
