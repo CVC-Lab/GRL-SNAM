@@ -759,9 +759,11 @@ def bicycle_rollout(
             # spring is negative when the goal is behind).
             v_creep = torch.minimum(
                 0.5 * v_corner,
-                torch.full_like(v_corner, 0.5 * math.sqrt(a_lat_max * L / tan_dmax))
-                if friction is None
-                else 0.5 * torch.sqrt(a_lat_e * (L / tan_dmax)),
+                (
+                    torch.full_like(v_corner, 0.5 * math.sqrt(a_lat_max * L / tan_dmax))
+                    if friction is None
+                    else 0.5 * torch.sqrt(a_lat_e * (L / tan_dmax))
+                ),
             )
             a_long = torch.where(
                 behind,
@@ -866,7 +868,7 @@ class CoefMLP(nn.Module):
         return c[:, 0], c[:, 1], c[:, 2]
 
 
-def coef_feats(field: SDFField, o, goal, friction=None):
+def coef_feats(field: SDFField, o, goal, friction=None, mu_lookahead=0.3, mu_probes=3):
     """Local features for ``CoefMLP``: ``[phi, goal_dist, goal_dir_x, goal_dir_y,
     goal·wall_normal]`` — the last says whether a wall stands between agent and goal.
 
@@ -890,7 +892,24 @@ def coef_feats(field: SDFField, o, goal, friction=None):
     align = (gdir * nrm).sum(-1, keepdim=True)
     cols = [phi.unsqueeze(-1), gd, gdir, align]
     if friction is not None:
-        cols.append(friction.sample(o).unsqueeze(-1))
+        # The WORST grip between here and the carrot, not the grip underfoot.
+        # Sampling mu at ``o`` (the first version of this) cannot support
+        # anticipation even in principle: it says what the vehicle is standing
+        # ON, never what it is about to hit, so there is no signal to slow down
+        # for. The dynamics already react to current mu -- a_max and a_lat_max
+        # scale by it -- so what the coefficients need is the part the dynamics
+        # cannot see yet.
+        #
+        # Probe out to ``mu_lookahead`` along the carrot direction, never past
+        # the carrot itself, and take the MIN. Min rather than mean because a
+        # short ice patch you are about to cross should read as ice, not as
+        # mostly-dry. Includes o, so a uniform surface gives exactly the old
+        # value and the feature degrades gracefully.
+        reach = gd.clamp(max=float(mu_lookahead))
+        probes = [friction.sample(o)]
+        for k in range(1, int(mu_probes) + 1):
+            probes.append(friction.sample(o + (k / float(mu_probes)) * reach * gdir))
+        cols.append(torch.stack(probes, -1).min(dim=-1).values.unsqueeze(-1))
     return torch.cat(cols, -1)
 
 

@@ -544,6 +544,37 @@ def test_coef_feats_defaults_to_five_columns():
     assert torch.equal(feat, sdf_nav.coef_feats(f, o, goal, friction=None))
 
 
+def test_coef_feats_grip_column_looks_AHEAD_not_underfoot():
+    """The sixth feature must report grip the vehicle is about to reach.
+
+    Sampling mu at ``o`` -- the first version of this -- cannot support
+    anticipation even in principle: it says what the vehicle is standing ON,
+    never what it is about to hit. The dynamics already react to current mu
+    (a_max/a_lat_max scale by it), so the coefficients need the part the
+    dynamics cannot see yet.
+    """
+    f = _field()  # open field: isolate grip from the barrier
+    ice = np.ones((N, N), np.float32)
+    ice[:, N // 2 :] = 0.15  # ice at normalized x > 0
+    mu = FrictionField(ice, BOUNDS, (0.0, 0.0), SCALE)
+    here = torch.tensor([[-0.2, 0.0]])  # ON DRY, inside the default lookahead
+    assert mu.sample(here).item() == pytest.approx(1.0), "start must be on dry ground"
+
+    toward = sdf_nav.coef_feats(f, here, torch.tensor([[2.0, 0.0]]), friction=mu)[0, 5]
+    away = sdf_nav.coef_feats(f, here, torch.tensor([[-2.0, 0.0]]), friction=mu)[0, 5]
+    assert toward.item() == pytest.approx(0.15, abs=1e-3), "did not see the ice ahead"
+    # DIRECTION-sensitive, not merely proximity-sensitive -- the same position
+    # with the carrot reversed must read dry, or this is just a blurred sample.
+    assert away.item() == pytest.approx(1.0, abs=1e-3)
+
+    # Beyond the lookahead it must NOT see the ice: an unbounded probe would
+    # make every agent in the world permanently believe it is on ice.
+    far = torch.tensor([[-0.45, 0.0]])
+    assert sdf_nav.coef_feats(f, far, torch.tensor([[2.0, 0.0]]), friction=mu)[0, 5].item() == (
+        pytest.approx(1.0, abs=1e-3)
+    )
+
+
 def test_coef_feats_appends_sampled_grip():
     f = _field(_wall_at_col(150))
     o = torch.tensor([[2.0, 0.0], [0.0, 1.0]])
