@@ -144,9 +144,12 @@ tuned = coef_train.train_bicycle(model=wide, friction=mu, steps=300)
 `train_bicycle` exists because `train` integrates `sdf_rollout` — a holonomic
 *point*, which has no actuator envelope for grip to limit, so mu there is an
 input the loss has no reason to use. Through the vehicle, entering ice too fast
-breaches the barrier and the existing collision penalty flows back to the
-coefficient that set the approach speed. Anticipation is the gradient's answer;
-no hand-written "ice term" is needed, and adding one would be the wrong shape.
+breaches the barrier, so the intended mechanism was that the existing collision
+penalty would flow back to the coefficient that set the approach speed.
+
+**That was measured and it does not happen** — see Status below. Treat this loop
+as a working seam, not a result; a loss term that rewards slowing before a mu
+transition is probably what it needs.
 
 **`grid` must be big enough to contain buildings.** `shrunk` scales the city's
 rects with the grid: fraction of random starts inside the barrier band is 0.00
