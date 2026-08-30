@@ -231,6 +231,38 @@ reach side. A model trained at `w_coll` = 30 will look like a two-thirds
 `body_penetration_steps` and `body_clearance_m` alongside reach, or the trade is
 invisible and the safer policy loses on the scoreboard.
 
+### Training WITH the footprint: the answer for footprint scenarios
+
+The loss uses the `min` over the body when `veh` carries a footprint, so what is
+optimised is the same quantity `FogScenario.body_clearance_m` reports. That path
+was written for #48 but not measured. It pays, and by a lot.
+
+Three seeds, `w_coll` = 3, ice-bearing city. **Both arms are driven and scored
+with the 3-disc footprint** — the only difference is what the training loss
+looked at. Penetration here is body penetration (min over discs), not the
+reference point:
+
+| arm | reach | body penetration | raw |
+|---|---|---|---|
+| seed (untrained) | 15.1% | 19.22 | — |
+| trained on the POINT | 19.4% | 14.47 | 20.2, 13.1, 10.1 |
+| **trained on the BODY** | **20.7%** | **8.35** | 8.7, 10.0, 6.4 |
+
+Training on the body metric **cuts body penetration by 42%** against training on
+the point metric — and gains reach rather than spending it. It is also far more
+stable: a ±1.49 spread against ±4.26, because the point-trained policy's body
+penetration depends on which parts of the body happen to overhang, which varies
+by seed.
+
+This is the recommended approach for any scenario that adopts the footprint:
+**train with the same footprint you deploy**. A policy tuned on the reference
+point and then given a body is being scored on a quantity it never optimised,
+and the gap between the two is the 14.47 above.
+
+Note this is a training result, not a scenario result — training uses the
+analytic SDF, which has sub-cell information. Scoring the metric *in a scenario*
+still needs the lattice resolution described below.
+
 ### What this does NOT show: the mu feature still has not earned its keep
 
 The table above is all 6-feature nets, so it demonstrates the **loss**, not the
