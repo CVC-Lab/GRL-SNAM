@@ -227,8 +227,29 @@ Done and measured: all four knobs, on CPU, CUDA, and through the SWIG binding;
 
 Not done, and worth knowing before quoting this feature:
 
-- **Nobody has fine-tuned a widened net.** mu-in-features is plumbing with a
-  proof of equivalence, not a demonstrated anticipation win.
+- **mu-in-features is a working seam, not a demonstrated win — this was tried
+  and it did not pay off.** A widened net fine-tuned through the vehicle on an
+  ice-bearing city, against the seed it was widened from:
+
+  | model | reach | pen/agent | final gap |
+  |---|---|---|---|
+  | A seed (5-feature, blind) | 14.6% | 1.56 | 3.524 |
+  | B widened, untuned | 14.6% | 1.56 | 3.524 |
+  | C widened + grip-tuned | 18.8% | 1.71 | 3.845 |
+
+  B matching A exactly is the control working — `widen_coef_mlp` really is the
+  identity at init, confirmed in a live drive and not just on synthetic
+  features. But C's extra reach comes with *worse* penetration and a *worse*
+  final gap, and 20 training steps produce the same numbers as 250. Across
+  lr 1e-3 / 2e-4 / 5e-5 the loss lands at 4.986 / 4.988 / 4.997 — a 20x range
+  with no effect, which says the loss is insensitive to these parameters rather
+  than that the tuning is off; smaller lr just stays nearer the seed.
+
+  So the honest reading is that the collision penalty does **not** by itself
+  teach the policy to slow before a mu transition. Making it learn that probably
+  needs a term that rewards it directly — penalising speed carried into low mu —
+  rather than hoping the existing penalty finds it. The plumbing, the
+  equivalence proof and the training seam are all in place for whoever tries.
 - **The native binding is compile-validated, not runtime-validated** — see
   libcvc `docs/NAV_VEHICLE.md`. It ships when pycvc is next republished.
 - **No scenario turns the footprint on by default.** It is available, not
