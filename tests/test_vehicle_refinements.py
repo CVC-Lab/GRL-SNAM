@@ -342,20 +342,50 @@ def test_navigator_threads_footprint_and_grip_into_the_drive():
     assert not torch.equal(plain.o, tuned.o), "navigator dropped the refinements"
 
 
-def test_native_drive_refuses_the_unported_refinements():
-    """Silently ignoring a footprint in C++ while honouring it in torch is the
-    exact "fast twin that moves differently" failure; the parity gates cannot
-    catch it because they feed both paths the same params."""
+def test_native_drive_honours_the_refinements():
+    """The C++ drive must MOVE like the torch reference with the refinements on.
+
+    Silently dropping them in native while honouring them in torch is the "fast
+    digital twin that moves differently" failure, and no existing parity gate
+    would catch it -- they feed both paths the same params and neither path had
+    the knobs. Skips (rather than passes) on a pycvc that predates the binding,
+    because a green tick from an absent feature is worse than a skip.
+    """
     nav_native = pytest.importorskip("grl_snam.nav_native")
-    params = dict(
-        rr=RR, d_hat=DHAT, dt=DT, vmax=VMAX, **VEH,
-        nsub=2, allow_reverse=True, body_offsets=BODY, body_rr=HALF_W,
-    )
-    with pytest.raises(NotImplementedError, match="body_offsets"):
-        nav_native.bicycle_rollout(
-            None, None, None, None, None, None, None, None,
-            bounds=BOUNDS, center=(0.0, 0.0), scale=SCALE, params=params,
+    if not nav_native.enabled():
+        pytest.skip("pycvc lacks the nav kernels")
+    occ = _wall_at_col(150)
+    phi, nx_g, ny_g = sdf_nav.build_sdf(occ, BOUNDS, SCALE)
+    field = np.stack([phi, nx_g, ny_g], 0)[None].astype(np.float32)
+    f = sdf_nav.SDFField(phi, nx_g, ny_g, BOUNDS, (0.0, 0.0), SCALE)
+    n = 3
+    o = np.array([[2.0, 0.0], [1.6, 0.3], [2.2, -0.2]], np.float32)
+    th = np.array([0.0, 0.5, -0.4], np.float32)
+    sp = np.array([0.3, 0.5, 0.2], np.float32)
+    goal = np.array([[3.0, 0.0], [3.0, 0.4], [2.8, -0.3]], np.float32)
+    al = np.full(n, 1.0, np.float32)
+    be = np.full(n, 3.0, np.float32)
+    ga = np.full(n, 4.0, np.float32)
+    mu = _ice(0.3)
+    P = dict(rr=RR, d_hat=DHAT, dt=DT, vmax=VMAX, nsub=2, allow_reverse=True, **VEH)
+    P.update(body_offsets=np.asarray(BODY, np.float32), body_rr=HALF_W,
+             track_width=TRACK, friction=mu)
+    try:
+        co, ct, cs, _ = nav_native.bicycle_rollout(
+            field, o, th, sp, goal, al, be, ga,
+            bounds=BOUNDS, center=(0.0, 0.0), scale=SCALE, params=P,
         )
+    except TypeError:
+        pytest.skip("installed pycvc predates the refinement binding")
+    ro, rt, rs, _ = sdf_nav.bicycle_rollout(
+        f, torch.from_numpy(o.copy()), torch.from_numpy(th.copy()), torch.from_numpy(sp.copy()),
+        torch.from_numpy(goal), torch.from_numpy(al), torch.from_numpy(be), torch.from_numpy(ga),
+        1, rr=RR, d_hat=DHAT, dt=DT, nsub=2, vmax=VMAX,
+        body_offsets=BODY, body_rr=HALF_W, track_width=TRACK, friction=mu, **VEH,
+    )
+    assert np.allclose(co, ro.numpy(), rtol=1e-4, atol=1e-5), np.abs(co - ro.numpy()).max()
+    assert np.allclose(ct, rt.numpy(), rtol=1e-4, atol=1e-5)
+    assert np.allclose(cs, rs.numpy(), rtol=1e-4, atol=1e-5)
 
 
 # --------------------------------------------------------------------------
