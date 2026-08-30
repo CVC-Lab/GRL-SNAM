@@ -293,13 +293,15 @@ and uncorrected it cost the city story its entire reach (45% → 0% at matched
 radius) while *improving* standoff and collision rate. Gain-corrected it
 recovers to 35% and keeps both safety gains.
 
-Supported everywhere now — `bicycle_rollout`, `bicycle_rollout_material`,
-`drive_step`, `bicycle_rollout_cuda`, the device-resident `sim_world_cuda`, and
-the SWIG binding. One path still refuses rather than diverging quietly, because
-a native path honouring fewer constraints than the torch reference is the "fast
-digital twin that moves differently" failure and no parity gate would catch it —
-the gates hand both paths the same params:
+Supported everywhere: `bicycle_rollout`, `bicycle_rollout_material`,
+`drive_step`, `bicycle_rollout_cuda`, `drive_step_cuda` (its fused kernel builds
+the sixth column too, for a grip-widened net), the device-resident
+`sim_world_cuda`, and the SWIG binding.
 
-* `drive_step_cuda` throws on a 6-feature net, because `drive_kernel` assembles
-  the 5-feature vector inline in registers. Use the CPU `drive_step` for a
-  grip-widened policy.
+Where a width or a field is missing the code raises rather than running — a
+native path honouring fewer constraints than the torch reference is the "fast
+digital twin that moves differently" failure, and no parity gate would catch it
+because the gates hand both paths the same params. So `drive_step` and
+`drive_step_cuda` both refuse a model whose input width is neither 5 nor 6, and
+refuse a 6-feature model with no grip field, instead of feeding the first layer
+a short vector — arithmetic that would succeed and be wrong.
