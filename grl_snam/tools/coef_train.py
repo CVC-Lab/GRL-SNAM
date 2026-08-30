@@ -156,12 +156,23 @@ def train_bicycle(
     :func:`sdf_nav.bicycle_rollout` instead, where mu scales BOTH ``a_max`` and
     ``a_lat_max``, and that is what makes anticipation learnable.
 
-    No bespoke "ice term" is needed, and adding one would be the wrong shape.
-    The existing collision penalty already does the work: with grip in the
-    dynamics, entering ice too fast means the stopping governor has budgeted for
-    grip the vehicle no longer has, the barrier is breached, and the penalty
-    flows back through the rollout to the coefficient that set the approach
-    speed. Anticipation is the gradient's answer, not a hand-written rule.
+    The INTENDED mechanism is that no bespoke "ice term" is needed: with grip in
+    the dynamics, entering ice too fast means the stopping governor budgeted for
+    grip the vehicle no longer has, the barrier is breached, and the collision
+    penalty flows back to the coefficient that set the approach speed.
+
+    MEASURED, and it does not work out that way. Fine-tuning a widened net here
+    on an ice-bearing city produced no anticipation win: reach moved 14.6% ->
+    18.8% while penetration got WORSE (1.56 -> 1.71) and mean final goal
+    distance got worse (3.52 -> 3.85), and the same numbers came out at 20 steps
+    and at 250. Across lr 1e-3 / 2e-4 / 5e-5 the loss lands at 4.986 / 4.988 /
+    4.997 — a 20x lr range with no effect, which is the signature of a loss that
+    is insensitive to these parameters rather than of a tuning problem. Smaller
+    lr simply stays nearer the seed.
+
+    So this loop is a working SEAM, not a demonstrated result. Teaching
+    anticipation likely needs a term that rewards it directly — penalising speed
+    carried into low mu — rather than hoping the collision penalty finds it.
 
     Pass a :func:`sdf_nav.widen_coef_mlp` copy as ``model`` together with
     ``friction`` so the net can SEE mu; a 5-input net trains fine here too, it
