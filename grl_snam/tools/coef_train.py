@@ -36,6 +36,14 @@ from .coef_export import write_coef_mlp
 
 
 def _scene(grid, seed):
+    """The training world. NOTE ``grid``: ``shrunk`` scales the city's rects
+    with the grid, so a small enough world has no buildings left. Measured
+    fraction of random starts inside the barrier band (phi - rr < d_hat): 0.00
+    at n=32, 0.31 at n=96. Below ~64 the barrier is identically zero, ``alpha``
+    scales nothing, its gradient is exactly 0, and training silently fits the
+    goal spring alone — it looks like it is working and teaches nothing about
+    walls. Use the default unless you have checked the small world still has
+    geometry the agents can reach."""
     story = shrunk(STORIES["city"], n=grid, max_steps=100)
     truth = story.truth_grid()
     meta = story.meta()
@@ -115,6 +123,84 @@ def train(
                 o, v, coll = o.detach(), v.detach(), torch.zeros(())
         if step % 50 == 0 or step == steps - 1:
             print(f"  step {step:4d}: goal_dist {last_goal:6.3f}  coll {last_coll:6.3f}")
+    model.eval()
+    return model
+
+
+def train_bicycle(
+    steps=300, horizon=24, n=128, lr=1e-3, seed=0, grid=96, w_coll=6.0, window=6,
+    model=None, friction=None, veh=None,
+):
+    """Fine-tune the coefficients through the VEHICLE, with grip in the dynamics.
+
+    :func:`train` integrates :func:`sdf_nav.sdf_rollout` -- a holonomic point,
+    which has no actuator envelope for grip to limit -- so mu there is an input
+    the loss has no reason to use. This loop integrates
+    :func:`sdf_nav.bicycle_rollout` instead, where mu scales BOTH ``a_max`` and
+    ``a_lat_max``, and that is what makes anticipation learnable.
+
+    No bespoke "ice term" is needed, and adding one would be the wrong shape.
+    The existing collision penalty already does the work: with grip in the
+    dynamics, entering ice too fast means the stopping governor has budgeted for
+    grip the vehicle no longer has, the barrier is breached, and the penalty
+    flows back through the rollout to the coefficient that set the approach
+    speed. Anticipation is the gradient's answer, not a hand-written rule.
+
+    Pass a :func:`sdf_nav.widen_coef_mlp` copy as ``model`` together with
+    ``friction`` so the net can SEE mu; a 5-input net trains fine here too, it
+    just cannot anticipate -- it can only react once it is already sliding.
+
+    ``grid`` MUST be coarse enough to still contain geometry. ``shrunk`` scales
+    the city's rects with the grid, and by n=32 almost nothing survives: with no
+    cell inside the barrier band, ``alpha`` scales a force that is identically
+    zero and its gradient is exactly 0 -- the net trains on the goal spring
+    alone and silently learns nothing about walls. Measured on the shrunk city,
+    fraction of starts inside the band: 0.00 at n=32, 0.31 at n=96. Keep the
+    default unless you have checked that a smaller world still has walls in it.
+    """
+    torch.manual_seed(seed)
+    field, meta, rand_on = _scene(grid, seed)
+    rr, d_hat, dt, vmax = meta["rr"], meta["d_hat"], meta["dt"], meta["vmax"]
+    kw = dict(L=0.035, delta_max=0.6, a_max=1.5, a_lat_max=1.0, k_steer=0.8, allow_reverse=True)
+    kw.update(veh or {})
+    model = sdf_nav.CoefMLP() if model is None else model
+    wants_mu = getattr(model, "in_dim", 5) == 6
+    if wants_mu and friction is None:
+        raise ValueError("a 6-feature model needs friction= to supply its mu column")
+    model.train()
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    rng = np.random.default_rng(seed)
+    last = (0.0, 0.0)
+    for step in range(steps):
+        o = torch.from_numpy(rand_on(n, rng))
+        goal = torch.from_numpy(rand_on(n, rng))
+        th = torch.from_numpy(rng.uniform(-np.pi, np.pi, n).astype(np.float32))
+        # A spread of starting speeds, not rest: training only from standstill
+        # would fit the coefficients to the launch transient, where a_long sits
+        # against the actuator clamp, rather than to the cruising regime the
+        # vehicle spends its time in.
+        sp = torch.from_numpy(rng.uniform(0.0, float(vmax), n).astype(np.float32))
+        coll = torch.zeros(())
+        for t in range(horizon):
+            feat = sdf_nav.coef_feats(field, o, goal, friction=friction if wants_mu else None)
+            al, be, ga = model(feat)
+            o, th, sp, _ = sdf_nav.bicycle_rollout(
+                field, o, th, sp, goal, al, be, ga, 1,
+                rr=rr, d_hat=d_hat, dt=dt, vmax=vmax, friction=friction, **kw,
+            )
+            phi_o, _ = field.sample(o)
+            coll = coll + torch.relu(rr - phi_o).mean()
+            if (t + 1) % window == 0 or t == horizon - 1:
+                goal_loss = (goal - o).norm(dim=1).mean()
+                loss = goal_loss + w_coll * coll / window
+                opt.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                opt.step()
+                last = (goal_loss.item(), float(coll.detach()))
+                o, th, sp, coll = o.detach(), th.detach(), sp.detach(), torch.zeros(())
+        if step % 50 == 0 or step == steps - 1:
+            print(f"  step {step:4d}: goal_dist {last[0]:6.3f}  coll {last[1]:6.3f}")
     model.eval()
     return model
 

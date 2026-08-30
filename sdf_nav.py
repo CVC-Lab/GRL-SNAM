@@ -435,6 +435,7 @@ def bicycle_rollout(
     mat_d_hat_m=3.0,
     body_offsets=None,
     body_rr=None,
+    body_gain=1.0,
     track_width=None,
     friction=None,
 ):
@@ -496,25 +497,25 @@ def bicycle_rollout(
       MIN over discs and the barrier force their SUM, so the nose is pushed off
       a wall the rear axle cannot see. Costs one ``field.sample`` per disc.
 
-      **The sum is a K-times gain on ``al``, and it is NOT a drop-in.** ``al``
-      is a learned coefficient fit for ONE sample point; K overlapping discs
-      multiply the barrier by up to K. The vehicle does not break — it becomes
-      TIMID: more standoff, lower collision rate, and a longer time to goal, so
-      it misses any fixed budget more often. Measured on the city story, 5
-      seeds x 4 agents, three discs vs one at matched radius::
+      **Set ``body_gain`` when you use this.** The summed barrier is a K-times
+      gain on ``al``, which is a learned coefficient fit for ONE sample point,
+      so K overlapping discs multiply the repulsion by up to K. Left
+      uncorrected the vehicle does not break, it becomes TIMID: more standoff,
+      fewer collisions, and a longer time to goal, so it misses any fixed
+      budget. ``body_gain = 1/len(body_offsets)`` cancels it. Measured on the
+      city story, 5 seeds x 4 agents, 700-tick budget::
 
-          budget    disc 0.150   fp3 0.150   disc 0.075   fp3 0.075
-          700       45% reach     0%          35%          15%
-          1600      75%          30%          60%          40%
-          pen/agent  2.9          2.8          3.5           2.8
-          clearance  2.92 m       3.65 m       2.59 m        2.44 m
+          arm                       reach   pen/agent   clearance
+          disc 0.150 (legacy)        45%       2.9        2.92 m
+          fp3 0.150, gain 1           0%       2.8        3.65 m
+          fp3 0.150, gain 1/3        35%       2.8        3.65 m
+          fp3 0.075, gain 1/3        50%       7.2        2.59 m
 
-      The ordering holds at both budgets, so this is not a budget artifact; but
-      note the footprint is consistently SAFER per unit of driving (2.8 vs 3.5
-      penetration at r=0.075). Both effects are the same K-times gain. Scale
-      ``al`` by the disc count (or retune the barrier) before reading anything
-      into a footprint run — the open question is whether gain-corrected discs
-      keep the lower collision rate without the timidity.
+      Gain-corrected, the footprint keeps the lower collision rate AND the
+      extra 0.7 m of standoff while recovering most of the reach — that is the
+      trade worth making. Note the last row: shrinking the discs as well buys
+      the most reach and 2.5x the collisions, because a body that small threads
+      gaps it should not fit through.
     * ``track_width`` — **steering lock**. The bicycle's ``delta`` is the
       virtual centre-wheel angle; on a real Ackermann axle the INNER wheel
       reaches the mechanical lock first, so the achievable virtual angle is
@@ -567,8 +568,9 @@ def bicycle_rollout(
                     _phi_k, _nrm_k = field.sample(_p)
                     _d_k = _phi_k - _brr
                     _b_k = _ipc_dbdd(_d_k, d_hat)
-                    _fb = -(al * _b_k).unsqueeze(-1) * _nrm_k
-                    _fr = -(al * _b_k.clamp(max=0.0)).unsqueeze(-1) * _nrm_k
+                    _alg = al if body_gain == 1.0 else al * body_gain
+                    _fb = -(_alg * _b_k).unsqueeze(-1) * _nrm_k
+                    _fr = -(_alg * _b_k.clamp(max=0.0)).unsqueeze(-1) * _nrm_k
                     F_bar = _fb if F_bar is None else F_bar + _fb
                     F_rep = _fr if F_rep is None else F_rep + _fr
                     _ds.append(_d_k)

@@ -513,3 +513,83 @@ def test_train_accepts_a_widened_model_and_rejects_a_mismatch():
     assert out is wide and wide.in_dim == 6
     with pytest.raises(ValueError, match="widen_coef_mlp"):
         coef_train.train(steps=1, horizon=2, n=8, grid=32, window=2, friction=_ice(0.5))
+
+
+def test_bicycle_training_loop_puts_grip_in_the_dynamics():
+    """The seam that makes anticipation learnable at all.
+
+    coef_train.train integrates a holonomic point, where grip cannot enter the
+    dynamics -- so mu is an input its loss has no reason to use, and a fine-tune
+    there proves nothing either way. train_bicycle integrates the vehicle, where
+    mu scales both actuator limits, so the existing collision penalty is what
+    teaches the approach speed.
+    """
+    from grl_snam.tools import coef_train
+
+    torch.manual_seed(0)  # the base net's init decides the gradient magnitude
+    wide = sdf_nav.widen_coef_mlp(sdf_nav.CoefMLP())
+    before = wide.net[0].weight[:, 5].detach().clone()
+    # grid=96, NOT a shrunk world: `shrunk` scales the city's rects with the
+    # grid and by n=32 no cell is left inside the barrier band, so alpha scales
+    # an identically-zero force and every coefficient gradient is exactly 0.
+    out = coef_train.train_bicycle(steps=2, horizon=6, n=24, grid=96, window=3,
+                                   model=wide, friction=_ice(0.4))
+    assert out is wide
+    # the mu column starts at exactly zero and must MOVE once it is trained
+    assert not torch.equal(wide.net[0].weight[:, 5].detach(), before)
+    assert torch.isfinite(wide.net[0].weight).all()
+
+
+def test_bicycle_training_rejects_a_blind_model_asked_to_use_grip():
+    from grl_snam.tools import coef_train
+
+    with pytest.raises(ValueError, match="6-feature model needs friction"):
+        coef_train.train_bicycle(steps=1, horizon=2, n=4, grid=32, window=2,
+                                 model=sdf_nav.widen_coef_mlp(sdf_nav.CoefMLP()))
+
+
+def test_body_gain_cancels_the_k_times_barrier():
+    """``body_gain = 1/K`` makes K COINCIDENT discs exactly one disc again.
+
+    That identity is the whole point of the knob: the summed barrier multiplies
+    the learned ``al`` by the disc count, and uncorrected that cost the city
+    story its entire reach (45% -> 0% at matched radius) while *improving* both
+    standoff and collision rate. Gain-corrected it recovers to 35% and keeps
+    both safety gains.
+    """
+    f = _field(_wall_at_col(150))
+    o, th, sp = _state(x=2.30, sp=0.10)
+    goal = torch.tensor([[2.30, 0.0]])
+
+    def run(offsets, gain):
+        return sdf_nav.bicycle_rollout(
+            f, o.clone(), th.clone(), sp.clone(), goal,
+            # al below the a_max clamp: saturated, 1x and 3x the barrier give
+            # the identical trajectory and the comparison would be vacuous.
+            torch.full((1,), 0.2), torch.zeros(1), torch.zeros(1), 3,
+            rr=RR, d_hat=DHAT, dt=DT, nsub=2, vmax=VMAX,
+            body_offsets=offsets, body_rr=HALF_W, body_gain=gain, **VEH,
+        )
+
+    one = run((0.0,), 1.0)
+    three_corrected = run((0.0, 0.0, 0.0), 1.0 / 3.0)
+    for a, b in zip(one, three_corrected):
+        assert torch.allclose(a, b, atol=1e-6), "1/K gain did not cancel the K-times sum"
+    # and the uncorrected sum must genuinely differ, or the knob is decorative.
+    # Compared on POSITION, not speed: with no goal spring the speed is set by
+    # the governor alone and is identical either way, so a speed comparison
+    # would pass for a reason that has nothing to do with the barrier.
+    three_raw = run((0.0, 0.0, 0.0), 1.0)
+    assert not torch.allclose(three_raw[0], one[0], atol=1e-6)
+
+
+def test_body_gain_defaults_to_the_literal_sum():
+    """Default 1.0 keeps the physically literal sum, so the C++/CUDA parity
+    numbers and the existing footprint tests all still describe this path."""
+    f = _field(_wall_at_col(150))
+    o, th, sp = _state(x=2.0, sp=0.3)
+    goal = torch.tensor([[3.0, 0.0]])
+    a = _roll(f, o, th, sp, goal, steps=6, body_offsets=BODY, body_rr=HALF_W)
+    b = _roll(f, o, th, sp, goal, steps=6, body_offsets=BODY, body_rr=HALF_W, body_gain=1.0)
+    for x, y in zip(a, b):
+        assert torch.equal(x, y)

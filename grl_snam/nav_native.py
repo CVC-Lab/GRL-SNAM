@@ -342,6 +342,7 @@ def bicycle_rollout(
     _extra = (
         None if _body is None else np.ascontiguousarray(_body, np.float32),
         float(P.get("body_rr") or 0.0),
+        float(1.0 if P.get("body_gain") is None else P["body_gain"]),
         float(P.get("track_width") or 0.0),
         _grip,
     )
