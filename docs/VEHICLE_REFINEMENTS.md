@@ -153,6 +153,19 @@ from grl_snam.tools import coef_train
 tuned = coef_train.train_bicycle(model=wide, friction=mu, steps=300, w_coll=3.0)
 ```
 
+From the command line, `--rollout bicycle` selects this trainer and `--w-coll`
+sets the dial:
+
+```bash
+python -m grl_snam.tools.coef_train --rollout bicycle --w-coll 3 --out coef_mlp.cvcnav
+```
+
+There is deliberately **no flag for friction or the footprint**: both need a
+world rather than a scalar, so they stay programmatic. (`--rollout bicycle` used
+to be accepted and then ignored on the torch backend — it always trained the
+surrogate, printed a `reach_rate` and wrote a file, so the failure was
+invisible. Fixed, with a test on the routing.)
+
 `train_bicycle` exists because `train` integrates `sdf_rollout` — a holonomic
 *point*, which has no actuator envelope for grip to limit, so mu there is an
 input the loss has no reason to use. Through the vehicle, entering ice too fast
