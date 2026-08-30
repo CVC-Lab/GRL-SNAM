@@ -336,16 +336,32 @@ def bicycle_rollout(
     P = params
     _body = P.get("body_offsets")
     _grip = P.get("friction")
-    if _grip is not None:
-        # FrictionField keeps the raw plane; accept a bare array too.
-        _grip = np.ascontiguousarray(getattr(_grip, "mu_raw", _grip), np.float32)
-    _extra = (
-        None if _body is None else np.ascontiguousarray(_body, np.float32),
-        float(P.get("body_rr") or 0.0),
-        float(1.0 if P.get("body_gain") is None else P["body_gain"]),
-        float(P.get("track_width") or 0.0),
-        _grip,
-    )
+    _gain = P.get("body_gain")
+    # Only widen the call when a refinement is actually set. Passing the extra
+    # arguments unconditionally would break every caller on a pycvc that
+    # predates the binding -- including this repo's own bicycle parity tests --
+    # with a TypeError, for a feature they were not using. When one IS set and
+    # the binding is old, the TypeError is the RIGHT outcome: better to fail
+    # than to run a native drive that quietly ignores the constraint.
+    if (
+        _body is not None
+        or _grip is not None
+        or P.get("body_rr")
+        or P.get("track_width")
+        or (_gain is not None and _gain != 1.0)
+    ):
+        if _grip is not None:
+            # FrictionField keeps the raw plane; accept a bare array too.
+            _grip = np.ascontiguousarray(getattr(_grip, "mu_raw", _grip), np.float32)
+        _extra = (
+            None if _body is None else np.ascontiguousarray(_body, np.float32),
+            float(P.get("body_rr") or 0.0),
+            float(1.0 if _gain is None else _gain),
+            float(P.get("track_width") or 0.0),
+            _grip,
+        )
+    else:
+        _extra = ()
     return _pycvc.nav_bicycle_rollout(
         f,
         np.ascontiguousarray(o, np.float32),
