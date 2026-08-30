@@ -60,8 +60,21 @@ def _coef(b=1, al=1.0, be=3.0, ga=4.0):
 def _roll(field, o, th, sp, goal, steps=1, **kw):
     al, be, ga = _coef(o.shape[0])
     return sdf_nav.bicycle_rollout(
-        field, o.clone(), th.clone(), sp.clone(), goal, al, be, ga, steps,
-        rr=RR, d_hat=DHAT, dt=DT, nsub=2, vmax=VMAX, **{**VEH, **kw},
+        field,
+        o.clone(),
+        th.clone(),
+        sp.clone(),
+        goal,
+        al,
+        be,
+        ga,
+        steps,
+        rr=RR,
+        d_hat=DHAT,
+        dt=DT,
+        nsub=2,
+        vmax=VMAX,
+        **{**VEH, **kw},
     )
 
 
@@ -121,9 +134,9 @@ def test_min_over_discs_binds_at_the_nose():
     _, _, _, clr_one = _roll(f, o, th, sp, goal, steps=1)
     _, _, _, clr_three = _roll(f, o, th, sp, goal, steps=1, body_offsets=BODY, body_rr=RR)
     assert clr_three.item() < clr_one.item(), "the nose disc saw nothing extra"
-    assert clr_three.item() == pytest.approx(clr_one.item() - L, abs=2e-3), (
-        "the binding disc should sit one wheelbase closer to the wall"
-    )
+    assert clr_three.item() == pytest.approx(
+        clr_one.item() - L, abs=2e-3
+    ), "the binding disc should sit one wheelbase closer to the wall"
 
 
 def test_tight_footprint_recovers_clearance_the_disc_gives_away():
@@ -151,10 +164,23 @@ def test_barrier_force_is_the_sum_over_discs():
 
     def run(offsets, al):
         return sdf_nav.bicycle_rollout(
-            f, o.clone(), th.clone(), sp.clone(), goal,
-            torch.full((1,), al), torch.zeros(1), torch.zeros(1), 3,
-            rr=RR, d_hat=DHAT, dt=DT, nsub=2, vmax=VMAX,
-            body_offsets=offsets, body_rr=HALF_W, **VEH,
+            f,
+            o.clone(),
+            th.clone(),
+            sp.clone(),
+            goal,
+            torch.full((1,), al),
+            torch.zeros(1),
+            torch.zeros(1),
+            3,
+            rr=RR,
+            d_hat=DHAT,
+            dt=DT,
+            nsub=2,
+            vmax=VMAX,
+            body_offsets=offsets,
+            body_rr=HALF_W,
+            **VEH,
         )
 
     for a, b in zip(run((0.0,), 0.15), run((0.0, 0.0, 0.0), 0.05)):
@@ -303,13 +329,20 @@ def _navigator(**vehicle):
     from grl_snam.nav import SdfNavigator
 
     meta = dict(
-        scale=SCALE, center=(0.0, 0.0), region=100.0,
-        rr=RR, d_hat=DHAT, dt=DT, vmax=VMAX, nsub=2,
+        scale=SCALE,
+        center=(0.0, 0.0),
+        region=100.0,
+        rr=RR,
+        d_hat=DHAT,
+        dt=DT,
+        vmax=VMAX,
+        nsub=2,
         bounds=BOUNDS,
     )
     model = sdf_nav.CoefMLP()
-    nav = SdfNavigator(_field(_wall_at_col(150)), model, meta, dynamics="bicycle",
-                       vehicle=vehicle or None)
+    nav = SdfNavigator(
+        _field(_wall_at_col(150)), model, meta, dynamics="bicycle", vehicle=vehicle or None
+    )
     nav.o = torch.tensor([[2.0, 0.0]])
     nav.th, nav.sp = torch.zeros(1), torch.full((1,), 0.3)
     return nav
@@ -368,20 +401,46 @@ def test_native_drive_honours_the_refinements():
     ga = np.full(n, 4.0, np.float32)
     mu = _ice(0.3)
     P = dict(rr=RR, d_hat=DHAT, dt=DT, vmax=VMAX, nsub=2, allow_reverse=True, **VEH)
-    P.update(body_offsets=np.asarray(BODY, np.float32), body_rr=HALF_W,
-             track_width=TRACK, friction=mu)
+    P.update(
+        body_offsets=np.asarray(BODY, np.float32), body_rr=HALF_W, track_width=TRACK, friction=mu
+    )
     try:
         co, ct, cs, _ = nav_native.bicycle_rollout(
-            field, o, th, sp, goal, al, be, ga,
-            bounds=BOUNDS, center=(0.0, 0.0), scale=SCALE, params=P,
+            field,
+            o,
+            th,
+            sp,
+            goal,
+            al,
+            be,
+            ga,
+            bounds=BOUNDS,
+            center=(0.0, 0.0),
+            scale=SCALE,
+            params=P,
         )
     except TypeError:
         pytest.skip("installed pycvc predates the refinement binding")
     ro, rt, rs, _ = sdf_nav.bicycle_rollout(
-        f, torch.from_numpy(o.copy()), torch.from_numpy(th.copy()), torch.from_numpy(sp.copy()),
-        torch.from_numpy(goal), torch.from_numpy(al), torch.from_numpy(be), torch.from_numpy(ga),
-        1, rr=RR, d_hat=DHAT, dt=DT, nsub=2, vmax=VMAX,
-        body_offsets=BODY, body_rr=HALF_W, track_width=TRACK, friction=mu, **VEH,
+        f,
+        torch.from_numpy(o.copy()),
+        torch.from_numpy(th.copy()),
+        torch.from_numpy(sp.copy()),
+        torch.from_numpy(goal),
+        torch.from_numpy(al),
+        torch.from_numpy(be),
+        torch.from_numpy(ga),
+        1,
+        rr=RR,
+        d_hat=DHAT,
+        dt=DT,
+        nsub=2,
+        vmax=VMAX,
+        body_offsets=BODY,
+        body_rr=HALF_W,
+        track_width=TRACK,
+        friction=mu,
+        **VEH,
     )
     assert np.allclose(co, ro.numpy(), rtol=1e-4, atol=1e-5), np.abs(co - ro.numpy()).max()
     assert np.allclose(ct, rt.numpy(), rtol=1e-4, atol=1e-5)
@@ -400,8 +459,22 @@ def _grad_run(x, sp0, al0, be0, ga0, steps, **kw):
     be = torch.tensor([be0], requires_grad=True)
     ga = torch.tensor([ga0], requires_grad=True)
     oT, _, spT, _ = sdf_nav.bicycle_rollout(
-        f, o, th, sp, torch.tensor([[x, 0.0]]), al, be, ga, steps,
-        rr=RR, d_hat=DHAT, dt=DT, nsub=2, vmax=VMAX, **kw, **VEH,
+        f,
+        o,
+        th,
+        sp,
+        torch.tensor([[x, 0.0]]),
+        al,
+        be,
+        ga,
+        steps,
+        rr=RR,
+        d_hat=DHAT,
+        dt=DT,
+        nsub=2,
+        vmax=VMAX,
+        **kw,
+        **VEH,
     )
     (oT.sum() + spT.sum()).backward()
     return al, be, ga
@@ -416,8 +489,16 @@ def test_gradients_still_flow_with_every_refinement_on():
     is the clamp doing its job, and it would mask a genuinely dead graph.
     """
     al, be, ga = _grad_run(
-        2.30, 0.10, 0.05, 0.0, 0.0, 4,
-        body_offsets=BODY, body_rr=HALF_W, track_width=TRACK, friction=_ice(0.4),
+        2.30,
+        0.10,
+        0.05,
+        0.0,
+        0.0,
+        4,
+        body_offsets=BODY,
+        body_rr=HALF_W,
+        track_width=TRACK,
+        friction=_ice(0.4),
     )
     for name, t in (("al", al), ("be", be), ("ga", ga)):
         assert t.grad is not None and torch.isfinite(t.grad).all(), f"{name} grad broke"
@@ -432,8 +513,16 @@ def test_no_nan_gradient_when_the_footprint_reaches_the_stop_margin():
     there in ordinary driving, which is what exposed this."""
     for x in (2.25, 2.35, 2.40):
         al, be, ga = _grad_run(
-            x, 0.4, 1.0, 3.0, 4.0, 8,
-            body_offsets=BODY, body_rr=HALF_W, track_width=TRACK, friction=_ice(0.4),
+            x,
+            0.4,
+            1.0,
+            3.0,
+            4.0,
+            8,
+            body_offsets=BODY,
+            body_rr=HALF_W,
+            track_width=TRACK,
+            friction=_ice(0.4),
         )
         for name, t in (("al", al), ("be", be), ("ga", ga)):
             assert torch.isfinite(t.grad).all(), f"NaN {name} gradient at x={x}"
@@ -508,8 +597,9 @@ def test_train_accepts_a_widened_model_and_rejects_a_mismatch():
     from grl_snam.tools import coef_train
 
     wide = sdf_nav.widen_coef_mlp(sdf_nav.CoefMLP())
-    out = coef_train.train(steps=1, horizon=2, n=8, grid=32, window=2, model=wide,
-                           friction=_ice(0.5))
+    out = coef_train.train(
+        steps=1, horizon=2, n=8, grid=32, window=2, model=wide, friction=_ice(0.5)
+    )
     assert out is wide and wide.in_dim == 6
     with pytest.raises(ValueError, match="widen_coef_mlp"):
         coef_train.train(steps=1, horizon=2, n=8, grid=32, window=2, friction=_ice(0.5))
@@ -532,8 +622,9 @@ def test_bicycle_training_loop_puts_grip_in_the_dynamics():
     # grid=96, NOT a shrunk world: `shrunk` scales the city's rects with the
     # grid and by n=32 no cell is left inside the barrier band, so alpha scales
     # an identically-zero force and every coefficient gradient is exactly 0.
-    out = coef_train.train_bicycle(steps=2, horizon=6, n=24, grid=96, window=3,
-                                   model=wide, friction=_ice(0.4))
+    out = coef_train.train_bicycle(
+        steps=2, horizon=6, n=24, grid=96, window=3, model=wide, friction=_ice(0.4)
+    )
     assert out is wide
     # the mu column starts at exactly zero and must MOVE once it is trained
     assert not torch.equal(wide.net[0].weight[:, 5].detach(), before)
@@ -544,8 +635,14 @@ def test_bicycle_training_rejects_a_blind_model_asked_to_use_grip():
     from grl_snam.tools import coef_train
 
     with pytest.raises(ValueError, match="6-feature model needs friction"):
-        coef_train.train_bicycle(steps=1, horizon=2, n=4, grid=32, window=2,
-                                 model=sdf_nav.widen_coef_mlp(sdf_nav.CoefMLP()))
+        coef_train.train_bicycle(
+            steps=1,
+            horizon=2,
+            n=4,
+            grid=32,
+            window=2,
+            model=sdf_nav.widen_coef_mlp(sdf_nav.CoefMLP()),
+        )
 
 
 def test_body_gain_cancels_the_k_times_barrier():
@@ -563,12 +660,26 @@ def test_body_gain_cancels_the_k_times_barrier():
 
     def run(offsets, gain):
         return sdf_nav.bicycle_rollout(
-            f, o.clone(), th.clone(), sp.clone(), goal,
+            f,
+            o.clone(),
+            th.clone(),
+            sp.clone(),
+            goal,
             # al below the a_max clamp: saturated, 1x and 3x the barrier give
             # the identical trajectory and the comparison would be vacuous.
-            torch.full((1,), 0.2), torch.zeros(1), torch.zeros(1), 3,
-            rr=RR, d_hat=DHAT, dt=DT, nsub=2, vmax=VMAX,
-            body_offsets=offsets, body_rr=HALF_W, body_gain=gain, **VEH,
+            torch.full((1,), 0.2),
+            torch.zeros(1),
+            torch.zeros(1),
+            3,
+            rr=RR,
+            d_hat=DHAT,
+            dt=DT,
+            nsub=2,
+            vmax=VMAX,
+            body_offsets=offsets,
+            body_rr=HALF_W,
+            body_gain=gain,
+            **VEH,
         )
 
     one = run((0.0,), 1.0)
