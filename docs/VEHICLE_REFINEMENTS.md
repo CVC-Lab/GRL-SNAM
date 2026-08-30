@@ -133,9 +133,11 @@ to see. The first version sampled mu at `o`, which reports the surface the
 vehicle is standing ON and never the one it is about to hit — so it could not
 support anticipation *even in principle*, and training predictably learned
 nothing from it. The dynamics already react to current mu; what the coefficients
-need is the part the dynamics cannot see yet. That would normally invalidate every trained `.cvcnav` file, and
-training this policy from a fresh init is known to collapse reach against the
-shipped seed. So do not retrain from scratch:
+need is the part the dynamics cannot see yet.
+
+Adding a sixth feature would normally invalidate every trained `.cvcnav` file,
+and training this policy from a fresh init is known to collapse reach against
+the shipped seed. So do not retrain from scratch:
 
 ```python
 wide = sdf_nav.widen_coef_mlp(trained_5_feature_net)   # in_dim 5 -> 6
