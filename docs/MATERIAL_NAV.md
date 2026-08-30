@@ -282,13 +282,24 @@ usual Python gate cannot reach them):
 | grip | 1.5e-08 |
 | all three | 1.8e-07 |
 
-against a ~1e-5 float-equivalence contract. Two paths deliberately refuse rather
-than diverge quietly, because a native path honouring fewer constraints than the
-torch reference is the "fast digital twin that moves differently" failure and no
-parity gate would catch it — the gates hand both paths the same params:
+against a ~1e-5 float-equivalence contract, and re-checked on a real GPU
+(RTX 3050 Ti, sm_86) via `bicycle_rollout_cuda` — the unfused device entry point
+added so the vehicle math can be compared without a trained net in the way.
+Worst residual there is 1.19e-07.
 
-* `sim_world_cuda` throws if any refinement is set (the device-resident world
-  needs per-world buffers with its own lifetime, not per-call ones).
-* `drive_step_cuda` throws on a 6-feature net (`drive_kernel` assembles the
-  5-feature vector inline in registers).
-* `grl_snam/nav_native.py` throws until the SWIG binding exposes the fields.
+`veh_params` also carries **`body_gain`**, which scales the summed multi-disc
+barrier. Set it to `1/n_body`: the sum is a K-times gain on the learned `alpha`,
+and uncorrected it cost the city story its entire reach (45% → 0% at matched
+radius) while *improving* standoff and collision rate. Gain-corrected it
+recovers to 35% and keeps both safety gains.
+
+Supported everywhere now — `bicycle_rollout`, `bicycle_rollout_material`,
+`drive_step`, `bicycle_rollout_cuda`, the device-resident `sim_world_cuda`, and
+the SWIG binding. One path still refuses rather than diverging quietly, because
+a native path honouring fewer constraints than the torch reference is the "fast
+digital twin that moves differently" failure and no parity gate would catch it —
+the gates hand both paths the same params:
+
+* `drive_step_cuda` throws on a 6-feature net, because `drive_kernel` assembles
+  the 5-feature vector inline in registers. Use the CPU `drive_step` for a
+  grip-widened policy.
