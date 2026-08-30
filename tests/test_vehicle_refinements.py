@@ -800,3 +800,23 @@ def test_body_gain_defaults_to_the_literal_sum():
     b = _roll(f, o, th, sp, goal, steps=6, body_offsets=BODY, body_rr=HALF_W, body_gain=1.0)
     for x, y in zip(a, b):
         assert torch.equal(x, y)
+
+
+def test_train_bicycle_accepts_external_geometry():
+    """The seam for training on real terrain. Without it this trainer can only
+    ever see the procedural city, which is also the only world its published
+    numbers describe."""
+    from grl_snam.tools import coef_train
+
+    field, meta, rand_on = coef_train._scene(96, 0)
+    seen = []
+
+    def spy(n, rng):
+        seen.append(n)
+        return rand_on(n, rng)
+
+    m = coef_train.train_bicycle(
+        steps=1, n=32, horizon=4, window=4, seed=0, scene=(field, meta, spy)
+    )
+    assert seen, "the supplied scene's sampler was never called"
+    assert m.last_loss_terms[0] > 0.0

@@ -271,30 +271,50 @@ Note this is a training result, not a scenario result — training uses the
 analytic SDF, which has sub-cell information. Scoring the metric *in a scenario*
 still needs the lattice resolution described below.
 
-### What this does NOT show: the mu feature still has not earned its keep
+### Why mu cannot earn its keep in THIS vehicle model
 
-The table above is all 6-feature nets, so it demonstrates the **loss**, not the
-**feature**. Running the same thing with a blind 5-feature net — identical
-dynamics, both arms driving on ice, the only difference being whether the policy
-can see the grip ahead of it — the feature does essentially nothing:
+The wash above is not a tuning failure or a bad world. It is structural, and
+three worlds were built before that became clear:
 
-| `w_coll` | arm | reach | penetration |
-|---|---|---|---|
-| 3 | blind (5-feature) | 19.6% | 1.58 |
-| 3 | mu-ahead (6-feature) | 20.1% | 1.52 |
-| 10 | blind (5-feature) | 11.1% | 0.55 |
-| 10 | mu-ahead (6-feature) | 11.6% | 0.57 |
+1. **Ice-band city** — ice covered the narrow streets, so a clearance-seeking
+   policy already slowed inside it. mu explained nothing extra.
+2. **One wall in open space** — training degenerated (clearance exceeded
+   `d_safe` almost everywhere, the collision term went to ~0, and the net
+   learned `be` = 19.5 / `ga` = 0.001, "max spring, no damping"), and the eval
+   was actuator-saturated, so five seeds returned identical numbers.
+3. **City with ice ONLY in open areas** — the honest separation, and it shows
+   why the separation cannot pay. Sweeping how far the ice reaches, with
+   penetration measured on the untrained policy:
 
-So the gain over the seed is **entirely attributable to fixing the objective**,
-and is fully available to a net that cannot see mu at all. Anticipation remains
-a plumbed, tested, unproven seam. That is worth knowing before quoting this
-feature: the honest claim is *"the training loss was broken and now works"*, not
-*"the policy learned to anticipate ice"*.
+   | ice coverage | ice confined to clearance ≥ | penetration |
+   |---|---|---|
+   | 40% | 1.232 | **0.00** |
+   | 60% | 0.640 | **0.00** |
+   | 86% | 0.316 | **0.00** |
+   | 93% | 0.211 | 0.13 |
+   | 100% | 0.105 | 1.30 |
 
-Why it might still be a wash: a policy that keeps a large margin from geometry
-is already robust to a surface that lengthens its stopping distance, so with
-`w_coll` doing that job there may be little left for mu to explain. Separating
-those would need a scenario where anticipation and clearance disagree.
+**Ice causes no collisions at all until it reaches the low-clearance cells.**
+The mechanism:
+
+* the stopping governor already scales `v_stop` by **current** mu, so the
+  vehicle can always stop for the grip it currently has;
+* a kinematic bicycle **cannot skid** — low mu lengthens stopping distance, it
+  never causes loss of control (see "Ice understeers" above);
+* therefore mu only matters within about one stopping distance of geometry;
+* and that is exactly where `phi` — the first coefficient feature — is already
+  informative and the barrier is already active.
+
+The only residual gain would come from slowing *earlier than clearance warrants*,
+which costs reach everywhere else. That is the trade `w_coll` already exposes,
+more directly and without a sixth feature.
+
+**What would change this:** a dynamics where low mu causes loss of *control*
+rather than longer stopping — a dynamic bicycle with lateral slip, where
+entering a corner too fast on ice skids unrecoverably. The kinematic bicycle
+cannot represent that by construction. **Do not run a material-aware training
+campaign on this vehicle model**; build slip into the dynamics first, then the
+feature has something to predict that the geometry does not already say.
 
 **`grid` must be big enough to contain buildings.** `shrunk` scales the city's
 rects with the grid: fraction of random starts inside the barrier band is 0.00
@@ -428,6 +448,12 @@ Done and measured: all four knobs, on CPU, CUDA, and through the SWIG binding;
 
 Not done, and worth knowing before quoting this feature:
 
+- **mu-in-features cannot pay in this vehicle model — structural, not a tuning
+  failure.** See "Why mu cannot earn its keep" above: ice causes no collisions
+  until it reaches cells the clearance feature already flags, because the
+  governor scales stopping distance by current mu and a kinematic bicycle cannot
+  skid. Three worlds were built to test it. The prerequisite for material-aware
+  anticipation is a dynamics with lateral slip, not more training.
 - **mu-in-features is a working seam, not a demonstrated win.** The first
   attempt failed for a reason that turned out to be the *loss*, not the feature
   — see "The loss had to be rescaled" above — and rescaling it produced a real,
