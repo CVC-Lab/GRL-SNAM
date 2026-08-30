@@ -104,3 +104,10 @@ def test_penetration_is_far_rarer_than_a_margin_violation():
             overlap += int((phi < 0.5 * rr).sum())
             margin += int((phi < 1.5 * rr).sum())
     assert margin > 3 * overlap, f"expected a wide gap, got margin={margin} overlap={overlap}"
+
+
+def test_this_modules_penetration_is_looser_than_the_shipped_metric():
+    """FogScenario.body_penetration fires on ANY overlap; this module requires
+    overlap past half the radius. The direction of that inequality is the part
+    worth pinning -- if it ever inverts, one of the two moved."""
+    assert coef_eval.pen_threshold(0.15) < 0.0, "scenario's threshold is 0.0; ours must be below"
