@@ -169,6 +169,59 @@ at `n=32` and 0.31 at `n=96`. Below ~64 the barrier is identically zero, `alpha`
 scales nothing, its gradient is exactly 0, and training silently fits the goal
 spring alone — it looks like it is working and teaches nothing about walls.
 
+## Reporting these: every published metric is a reach metric
+
+**The refinements trade reach for safety, and the metrics this project reports
+are all reach metrics.** Quote reach alone and every one of them looks like a
+regression — the footprint costs 45% -> 35%, an anticipating policy costs more
+still. That is not the feature failing; it is the scoreboard measuring one side
+of a trade.
+
+Report all three, always:
+
+| metric | what it is | why alone it misleads |
+|---|---|---|
+| `reached` / reach rate | did the agent arrive within the budget | the side the trade SPENDS |
+| `body_penetration_steps` | ticks with any part of the BODY in truth | the side it BUYS |
+| `body_clearance_m` | metres from the body surface to the nearest static obstacle | the margin, which the boolean cannot show |
+
+`truth_penetration` is retained but is a **point test at the rear axle**. It
+cannot see a nose clipping a corner while that point stays clear — precisely the
+collision a body-shaped vehicle has and a disc-shaped one is assumed not to. A
+footprint measured with it posts an unchanged safety number and a worse reach
+number, i.e. reads as a pure loss. Existing recorded traces keep it so their
+numbers stay comparable; **new results should quote the body metrics.**
+
+`body_clearance_m` is the one to lead with in a deliverable. Two configurations
+can both post zero penetrations while one runs half the margin, and only the
+continuous metric shows it. A count answers "did we crash"; the margin answers
+"how close were we", which is the question a safety claim actually rests on.
+
+### The metric has a hard resolution requirement
+
+A bitmap carries **no sub-cell information**. Its distance field steps in whole
+cells — measured over a 200 m world:
+
+| grid | cell | signed distance approaching a wall |
+|---|---|---|
+| 96 | 2.105 m | 6.316, 4.211, 2.105, −2.105 |
+| 201 | 1.000 m | 3.0, 2.0, 1.0, −1.0 |
+| 601 | 0.333 m | 1.0, 0.667, 0.333, −0.333 |
+
+So a body of half-width ~0.21 m can only register an overlap once cells are at
+or below the body size. **Against the city story's 2.1 m cells,
+`body_penetration` is exactly `truth_penetration` under a different name** — it
+cannot resolve a 0.42 m-wide vehicle, and no method built on that bitmap can.
+
+`FogScenario.body_metric_resolvable()` answers this; **check it before quoting a
+body number.** A vehicle-scale lattice (≲ 0.2 m cells for this vehicle) is
+required, which is the same constraint the L-System export lattice hit — 0.5 m
+is about the coarsest grid on which a door exists at all.
+
+This is why the footprint has no adopted scenario yet: the worlds it would be
+demonstrated in cannot yet measure its benefit. A vehicle-scale story is the
+prerequisite, not the demo.
+
 ## Wiring into the navigator and squads
 
 The three *vehicle* parameters ride in `SdfNavigator.VEHICLE_DEFAULTS`, so a
@@ -260,13 +313,37 @@ Not done, and worth knowing before quoting this feature:
   with no effect, which says the loss is insensitive to these parameters rather
   than that the tuning is off; smaller lr just stays nearer the seed.
 
-  So the honest reading is that the collision penalty does **not** by itself
-  teach the policy to slow before a mu transition. Making it learn that probably
-  needs a term that rewards it directly — penalising speed carried into low mu —
-  rather than hoping the existing penalty finds it. The plumbing, the
-  equivalence proof and the training seam are all in place for whoever tries.
+  That table predates two later findings which together explain it, and both
+  matter more than the numbers above:
+
+  **1. The feature was blind.** It sampled mu at `o` — the surface underfoot,
+  never the one ahead — so it could not support anticipation even in principle.
+  It now probes toward the carrot. Re-running with the fixed feature changed
+  nothing on its own; the loss trace was bit-identical.
+
+  **2. The objective is the problem, and it is quantified.** A hand-written rule
+  using the same feature (`ga *= 1 + k(1−mu_ahead)`, no optimiser) cut
+  penetration **1.56 → 0.81, a 48% reduction** — so the feature carries real
+  signal and the metric can see it. What training could not do, three lines of
+  arithmetic could. The reason: at `w_coll=6` the collision term is **0.2–0.7%
+  of the loss**, so training was minimising goal distance alone — and slowing
+  for ice *costs* goal distance. It was correctly learning not to slow down.
+
+  | `w_coll` | reach | pen/agent | gap |
+  |---|---|---|---|
+  | seed | 14.6% | 1.56 | 3.524 |
+  | 6 (current default) | 18.8% | 1.74 | 3.843 |
+  | 300 | 18.8% | 1.49 | 3.819 |
+  | 1500 | 19.8% | **1.48** | 3.562 |
+
+  At `w_coll=1500` training becomes a Pareto improvement over the seed instead
+  of a regression. Single seed, single eval — **replicate before acting on it.**
+  The `w_coll` default is the first thing to settle before any training
+  campaign; it is wrong by roughly two orders of magnitude for this objective.
 - **The native binding is compile-validated, not runtime-validated** — see
   libcvc `docs/NAV_VEHICLE.md`. It ships when pycvc is next republished.
-- **No scenario turns the footprint on by default.** It is available, not
-  adopted; the `body_gain` table is the evidence you would need to justify
-  adopting it.
+- **No scenario turns the footprint on by default**, and the blocker is now
+  identified rather than merely noted: the worlds it would be demonstrated in
+  **cannot measure its benefit**. At 2.1 m cells the body metric degenerates to
+  the point test (see the resolution requirement above), so a vehicle-scale
+  lattice is the prerequisite for a footprint scenario — not the scenario.

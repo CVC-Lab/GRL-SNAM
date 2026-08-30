@@ -28,6 +28,7 @@ The loop each step:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -61,6 +62,17 @@ class StepRecord:
     mode: str
     rebuilt: bool
     truth_penetration: bool
+    #: Any part of the BODY inside truth, not just the reference point.
+    #: ``truth_penetration`` is a POINT test at the rear axle: it cannot see a
+    #: nose clipping a corner while that point stays clear, which is exactly the
+    #: collision a body-shaped vehicle has and a disc-shaped one is assumed not
+    #: to. Reporting only the point test makes a footprint look like it buys
+    #: nothing. Both are kept: the old field so recorded traces stay comparable,
+    #: this one so the safety half of the safety-for-reach trade is measurable.
+    body_penetration: bool
+    #: Metres from the body surface to the nearest STATIC obstacle;
+    #: negative overlaps. The continuous metric the boolean cannot give.
+    body_clearance_m: float
     belief_version: int
     goal_dist_m: float
 
@@ -71,6 +83,8 @@ class ScenarioResult:
     waypoints_reached: int = 0
     rebuilds: int = 0
     truth_penetration_steps: int = 0
+    #: Steps with ANY body point in truth (>= truth_penetration_steps).
+    body_penetration_steps: int = 0
 
     @property
     def positions(self) -> np.ndarray:
@@ -103,6 +117,7 @@ class FogScenario:
         use_planner: bool = True,
         route_lookahead_m: float = 14.0,
         inflate_m: float = 6.0,
+        body_probe_m=None,
         movers=(),
         moving_goal=None,
         material=None,
@@ -116,6 +131,12 @@ class FogScenario:
         self.truth_now = self.truth.copy()
         self.bounds = tuple(float(b) for b in bounds)
         self.scale = float(scale)
+        self.__truth_sdf = None  # lazy; see _truth_sdf_m
+        #: Override for the body-collision probe (metres along the heading
+        #: from the rear axle). None derives it from the wheelbase.
+        self._body_probe_override = (
+            None if body_probe_m is None else tuple(float(v) for v in body_probe_m)
+        )
         self.meta = meta
         self.model = model
         self.events = sorted(events or [], key=lambda e: e.step)
@@ -313,6 +334,110 @@ class FogScenario:
     def _truth_hit(self, pos_world) -> bool:
         r, c = self.belief.world_to_cell(pos_world[0], pos_world[1])
         return bool(self.belief.in_bounds(r, c) and self.truth_now[r, c])
+
+    @property
+    def _truth_sdf_m(self) -> np.ndarray:
+        """Signed distance to STATIC truth, in metres (+ outside, - inside).
+
+        Cell occupancy cannot resolve this vehicle at all: the body spans 0.70 m
+        against ~2.1 m cells, so probing several points against ``truth_now``
+        lands them in the SAME cell and reports exactly what the single point
+        test already did. Sub-cell geometry is the whole requirement, so the
+        body is measured against a distance field rather than a bitmap.
+
+        Static only, and cached: ``truth_now`` also carries stamped peers and
+        movers, which change every tick and would force an EDT rebuild per step
+        (the EDT is the kernel that used to be 83% of a step). Dynamic bodies
+        stay on the cell test in :meth:`_body_hit`, which is the right precision
+        for them anyway -- a peer IS about a cell across.
+        """
+        if self.__truth_sdf is None:
+            occ = np.asarray(self.truth) != 0
+            cell_w = (self.bounds[2] - self.bounds[0]) / (self.truth.shape[1] - 1)
+            self.__truth_sdf = (np.sqrt(sdf_nav._edt2(occ)) - np.sqrt(sdf_nav._edt2(~occ))) * cell_w
+        return self.__truth_sdf
+
+    def body_clearance_m(self, x: float, y: float, heading_rad: float) -> float:
+        """Metres from the BODY surface to the nearest static obstacle.
+
+        Negative means overlapping. This is the continuous safety metric the
+        boolean counts cannot express: a configuration that halves its margin
+        without ever crossing zero looks identical on a penetration count, and
+        that margin is exactly what a footprint or an anticipating policy buys.
+        """
+        half_w = self._body_half_width_m()
+        rows, cols = self.truth.shape
+        mnx, mny, mxx, mxy = self.bounds
+        ch, sh = math.cos(heading_rad), math.sin(heading_rad)
+        worst = float("inf")
+        for off in self._body_probe_m():
+            px, py = x + off * ch, y + off * sh
+            c = int(round((px - mnx) / (mxx - mnx) * (cols - 1)))
+            r = int(round((py - mny) / (mxy - mny) * (rows - 1)))
+            if not (0 <= r < rows and 0 <= c < cols):
+                continue
+            worst = min(worst, float(self._truth_sdf_m[r, c]) - half_w)
+        return 0.0 if worst == float("inf") else worst
+
+    def body_metric_resolvable(self) -> bool:
+        """Can this truth grid tell the BODY apart from its reference point?
+
+        Only if a cell is no larger than the body. A bitmap carries no sub-cell
+        information -- its distance field steps in whole cells (measured: 2.105,
+        1.000, 0.333 m at 96/201/601 cells over a 200 m world) -- so against a
+        2.1 m grid a 0.42 m-wide vehicle can never register an overlap its
+        reference point does not already have, and ``body_penetration`` is
+        exactly ``truth_penetration`` wearing a different name.
+
+        **Check this before quoting a body number.** The city story at n=96 is
+        NOT resolvable; a vehicle-scale lattice (<= ~0.2 m cells here) is. This
+        is the same constraint the L-System export lattice ran into: 0.5 m is
+        about the coarsest grid on which a door exists at all.
+        """
+        cell_w = (self.bounds[2] - self.bounds[0]) / (self.truth.shape[1] - 1)
+        return cell_w <= 2.0 * self._body_half_width_m()
+
+    def _body_half_width_m(self) -> float:
+        """Half the vehicle's width, in metres. A car is ~0.6 of its wheelbase
+        wide, so half-width is ~0.3 L."""
+        return 0.3 * float(self.nav._veh["L"]) / self.scale
+
+    def _body_probe_m(self) -> tuple[float, ...]:
+        """Longitudinal offsets (METRES, along the heading, from the rear axle)
+        at which the body is tested against truth.
+
+        Deliberately independent of the DRIVE's footprint (``body_offsets``):
+        this is where the vehicle physically IS, so it judges every
+        configuration by the same yardstick. Measuring the legacy rr-disc
+        vehicle with its own reference point and a footprint vehicle with its
+        own would compare two different questions and make the footprint look
+        free.
+
+        Defaults to rear axle / mid / nose from the vehicle wheelbase.
+        """
+        if self._body_probe_override is not None:
+            return self._body_probe_override
+        L_m = float(self.nav._veh["L"]) / self.scale
+        return (0.0, 0.5 * L_m, L_m)
+
+    def _body_hit(self, x: float, y: float, heading_rad: float) -> bool:
+        """True if ANY body point is inside truth.
+
+        A point test at one probe; the discs are far smaller than a cell at city
+        resolution (body half-width ~0.24 m against ~2 m cells), so what matters
+        is testing along the BODY rather than the disc radius. Uses
+        ``truth_now``, so stamped peers and movers count -- an EDT cached once
+        would go stale the moment a peer moved.
+        """
+        if self.body_clearance_m(x, y, heading_rad) < 0.0:
+            return True
+        # Dynamic bodies (stamped peers / movers) are not in the static field
+        # and are about a cell across, so the cell test is the right precision.
+        ch, sh = math.cos(heading_rad), math.sin(heading_rad)
+        for off in self._body_probe_m():
+            if self._truth_hit((x + off * ch, y + off * sh)):
+                return True
+        return False
 
     def _route_cost(self) -> np.ndarray | None:
         """The per-cell A* surcharge for this replan: the user's route_cost_fn
@@ -550,6 +675,8 @@ class FogScenario:
             self.nav.park()
 
         pen = self._truth_hit((m.x, m.y))
+        body_clr = self.body_clearance_m(m.x, m.y, m.heading_rad)
+        body_pen = pen or self._body_hit(m.x, m.y, m.heading_rad)
         return StepRecord(
             step=self.step_i,
             x=m.x,
@@ -561,6 +688,8 @@ class FogScenario:
             mode=m.mode,
             rebuilt=self._rebuilt,
             truth_penetration=pen,
+            body_penetration=body_pen,
+            body_clearance_m=body_clr,
             belief_version=self.belief.version,
             goal_dist_m=m.goal_dist_m,
         )
@@ -589,6 +718,8 @@ class FogScenario:
                 res.rebuilds += 1
             if rec.truth_penetration:
                 res.truth_penetration_steps += 1
+            if rec.body_penetration:
+                res.body_penetration_steps += 1
             if rec.reached_wp is not None:
                 reached.add(rec.reached_wp)
             if stop_when_done and self.done:

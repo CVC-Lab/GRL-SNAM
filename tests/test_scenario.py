@@ -3,6 +3,8 @@ stories run headlessly: a stale-map ghost, a blocker that appears mid-drive,
 and a transient unit. These are the tests that say "the Friday demo works"
 without a renderer in the loop."""
 
+import math
+
 import numpy as np
 import pytest
 
@@ -205,3 +207,78 @@ def test_pessimistic_policy_stays_inside_observed_space():
         r, c = sc.belief.world_to_cell(rec.x, rec.y)
         pv = 1.0 / (1.0 + np.exp(-float(sc.belief.logodds[r, c])))
         assert pv < 0.5, "agent stood on ground it had never confirmed free"
+
+
+def test_body_metric_is_honest_about_resolution():
+    """A bitmap has no sub-cell information: its distance field steps in whole
+    cells. So the body metric can only tell the body apart from its reference
+    point when a cell is no bigger than the body -- and the city story's 2.1 m
+    cells against a 0.42 m-wide vehicle cannot. The scenario must SAY so, or a
+    deliverable will quote `body_penetration` as if it measured something."""
+    truth = np.zeros((N, N), bool)
+    sc = FogScenario(truth, BOUNDS, SCALE, _model(), _meta(), waypoints=[(40.0, 0.0)]).start(
+        (-40.0, 0.0)
+    )
+    cell_w = (BOUNDS[2] - BOUNDS[0]) / (N - 1)
+    assert cell_w > 2 * sc._body_half_width_m()
+    assert not sc.body_metric_resolvable(), "n=96 must not claim to resolve a body"
+
+
+def _fine_scenario():
+    """A vehicle-scale lattice, where the body metric actually resolves."""
+    fine_n = 1001  # 0.2 m cells over the 200 m world
+    truth = np.zeros((fine_n, fine_n), bool)
+    truth[:, fine_n // 2 :] = True  # wall over the right half
+    sc = FogScenario(truth, BOUNDS, SCALE, _model(), _meta(), waypoints=[(40.0, 0.0)]).start(
+        (-40.0, 0.0)
+    )
+    wall_x = BOUNDS[0] + (fine_n // 2) / (fine_n - 1) * (BOUNDS[2] - BOUNDS[0])
+    return sc, wall_x
+
+
+def test_body_collision_sees_what_the_point_test_misses_at_vehicle_scale():
+    """The whole reason the metric exists, on a grid fine enough to show it.
+
+    Park the vehicle so the rear axle is in free space and the NOSE overlaps the
+    wall: the point test reports clean. That is exactly how a footprint's
+    benefit becomes invisible and a safety-for-reach trade reads as a pure loss.
+    """
+    sc, wall_x = _fine_scenario()
+    assert sc.body_metric_resolvable()
+    nose_m = max(sc._body_probe_m())
+    x = wall_x - 0.5 * nose_m  # rear axle clear, nose past the wall face
+
+    assert not sc._truth_hit((x, 0.0)), "the reference point should read clean"
+    assert sc._body_hit(x, 0.0, 0.0), "the nose is in the wall and was not seen"
+    assert sc.body_clearance_m(x, 0.0, 0.0) < 0.0
+
+    # Heading reversed the nose points away, so the body is clean again --
+    # this is a BODY test, not merely a fattened point.
+    assert not sc._body_hit(x, 0.0, math.pi)
+    assert sc.body_clearance_m(x, 0.0, math.pi) > 0.0
+
+
+def test_body_clearance_is_continuous_where_the_boolean_is_flat():
+    """The continuous metric is the point of this for deliverables: two
+    configurations can both post zero penetrations while one runs half the
+    margin, and only clearance shows it."""
+    sc, wall_x = _fine_scenario()
+    prev = None
+    for back in (2.0, 4.0, 8.0):
+        clr = sc.body_clearance_m(wall_x - back, 0.0, 0.0)
+        assert clr > 0.0, "well clear of the wall must not read as a collision"
+        if prev is not None:
+            assert clr > prev, "clearance must grow as the body backs away"
+        prev = clr
+
+
+def test_body_collision_is_a_superset_of_the_point_test():
+    """Anywhere the reference point is inside truth, the body is too. Without
+    this the two metrics could disagree in the direction that matters and a
+    'safer' configuration could post a WORSE body number for no real reason."""
+    sc, wall_x = _fine_scenario()
+    for dx in (1.0, 5.0, 20.0):
+        deep = wall_x + dx
+        assert sc._truth_hit((deep, 0.0))
+        for heading in (0.0, math.pi / 2, math.pi, -math.pi / 2):
+            assert sc._body_hit(deep, 0.0, heading)
