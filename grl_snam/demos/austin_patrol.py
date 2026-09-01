@@ -28,6 +28,8 @@ def setup() -> None:
     )
     from pycvc_gl.vehicle import VehiclePose
 
+    from grl_snam.route import cells_for_metres, plan_clearance_route
+
     bundle = os.environ.get("GRL_SNAM_SCENE_BUNDLE", os.path.expanduser("~/scenes/austin_south"))
     app = vrhost.app()
     lab = Lab(app=app, scene=vrhost.scene())
@@ -43,9 +45,21 @@ def setup() -> None:
         (r * math.cos(a), r * math.sin(a))
         for a in [0.0, math.pi / 3, 2 * math.pi / 3, math.pi, 4 * math.pi / 3, 5 * math.pi / 3]
     ]
-    route2d = resample_polyline(
-        plan_ground_route(occ, bounds, waypts, close_loop=True), spacing=4.0
+    # A patrol that threads the middle of the streets rather than clipping the
+    # corners: same standoff surcharge the learned demo routes through.
+    standoff_m = float(os.environ.get("GRL_SNAM_ROUTE_STANDOFF_M", "12"))
+    _loop = (
+        plan_clearance_route(
+            occ,
+            bounds,
+            waypts,
+            close_loop=True,
+            d_safe=cells_for_metres(bounds, occ.shape, standoff_m),
+        )
+        if standoff_m > 0
+        else plan_ground_route(occ, bounds, waypts, close_loop=True)
     )
+    route2d = resample_polyline(_loop, spacing=4.0)
     if len(route2d) < 2:
         route2d = [
             (r * math.cos(2 * math.pi * k / 240), r * math.sin(2 * math.pi * k / 240))

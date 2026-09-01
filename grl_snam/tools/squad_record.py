@@ -31,14 +31,19 @@ def record_squad(
     progress=None,
     truth_occ=None,
     prior_occ=None,
-    route_clearance: tuple[float, float] | None = None,
+    route_clearance: tuple[float, float] | None = (6.0, 1.5),
 ) -> Path:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     squad = Squad(story, agents, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ)
     # Bias each agent's global route toward obstacle standoff — the lever that
-    # lifts route-guided reach (the local policy is already near its ceiling).
+    # lifts route-guided reach (the local policy is already near its ceiling):
+    # ~0.80 -> ~0.90 on the procedural city squad, and visibly smoother paths.
+    # ON by default because every caller here is a RECORDING, where route quality
+    # is the product. Pass None for the shortest-path spine — which is what a
+    # fixed-tick-budget benchmark wants, since the standoff route is longer and
+    # can regress when there is no headroom to finish it.
     if route_clearance is not None:
         attach_clearance_routing(squad, *route_clearance)
     clock = WorldClock(fixed_dt=story.dt, mode="replay")

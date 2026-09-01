@@ -22,7 +22,7 @@ import sys
 import time
 
 
-def _run_once(grid: int, n: int, ticks: int, seed: int):
+def _run_once(grid: int, n: int, ticks: int, seed: int, route_clearance=None):
     import numpy as np
     import torch
 
@@ -50,6 +50,16 @@ def _run_once(grid: int, n: int, ticks: int, seed: int):
     torch.manual_seed(0)
     model = sdf_nav.CoefMLP().eval()
     squad = Squad(story, agents, model, truth_occ=truth, prior_occ=truth)
+    # OFF by default, and deliberately so: a per-cell route surcharge turns off
+    # A* batching (each agent's search becomes cost-specific), which is part of
+    # what this benchmark measures. Enabling it silently would make the native
+    # speedup look worse for a reason that has nothing to do with the backend.
+    # The flag exists so the cost of standoff routing can be measured on purpose
+    # -- it matters for a real-time demo.
+    if route_clearance is not None:
+        from grl_snam.squad import attach_clearance_routing
+
+        attach_clearance_routing(squad, *route_clearance)
 
     for _ in range(2):  # warmup: alloc + first replan
         squad.step()
@@ -66,10 +76,20 @@ def main(argv=None) -> None:
     ap.add_argument("--ticks", type=int, default=15)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--once", action="store_true", help="time the CURRENT backend only")
+    ap.add_argument(
+        "--route-clearance",
+        nargs="?",
+        const="6.0,1.5",
+        default=None,
+        metavar="D_SAFE,GAMMA",
+        help="time WITH clearance-weighted routing (default off: it disables A* "
+        "batching, which this benchmark measures)",
+    )
     args = ap.parse_args(argv)
 
+    rc = tuple(float(v) for v in args.route_clearance.split(",")) if args.route_clearance else None
     if args.once:
-        dt, enabled = _run_once(args.grid, args.n, args.ticks, args.seed)
+        dt, enabled = _run_once(args.grid, args.n, args.ticks, args.seed, rc)
         be = "native" if enabled else "python"
         print(f"[{be:6s}] grid={args.grid} n={args.n}: {dt*1000:8.1f} ms/tick  {1/dt:6.2f} Hz")
         return
