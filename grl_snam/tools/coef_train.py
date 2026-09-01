@@ -148,6 +148,7 @@ def train_bicycle(
     friction=None,
     veh=None,
     d_safe=None,
+    scene=None,
 ):
     """Fine-tune the coefficients through the VEHICLE, with grip in the dynamics.
 
@@ -208,6 +209,16 @@ def train_bicycle(
     Pick ``w_coll`` deliberately: it selects a point on a safety-for-reach curve,
     and every metric this project publishes measures only the reach side.
 
+    ``scene`` overrides the procedural city with any ``(field, meta, rand_on)``
+    triple, where ``rand_on(n, rng)`` returns ``(n, 2)`` normalized starts and
+    ``meta`` carries rr/d_hat/dt/vmax/region/scale. **Check ``d_hat`` against the
+    new map before trusting a run.** It is a distance in normalized units, not a
+    fraction: the city's 0.35 covers 98.7% of free space on the Austin SDF, so
+    the wall barrier never turns off there. (Measured: shrinking it does NOT
+    help -- route-less reach on Austin is ~3% at every d_hat because the failure
+    is stalling in local minima, not the barrier. That map needs a route spine,
+    not a tuning pass.)
+
     Pass a :func:`sdf_nav.widen_coef_mlp` copy as ``model`` together with
     ``friction`` so the net can SEE mu; a 5-input net trains fine here too, it
     just cannot anticipate -- it can only react once it is already sliding.
@@ -221,7 +232,11 @@ def train_bicycle(
     default unless you have checked that a smaller world still has walls in it.
     """
     torch.manual_seed(seed)
-    field, meta, rand_on = _scene(grid, seed)
+    # `scene` is the seam for training on real geometry -- an Austin
+    # nav_sdf.npz, a generated terrain, anything yielding (field, meta,
+    # rand_on). Without it this trainer can only see the procedural city,
+    # which is also the only world its published numbers describe.
+    field, meta, rand_on = _scene(grid, seed) if scene is None else scene
     rr, d_hat, dt, vmax = meta["rr"], meta["d_hat"], meta["dt"], meta["vmax"]
     kw = dict(L=0.035, delta_max=0.6, a_max=1.5, a_lat_max=1.0, k_steer=0.8, allow_reverse=True)
     kw.update(veh or {})
