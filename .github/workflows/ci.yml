@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+# Line-coverage gate (percent) for the grl_snam library, enforced by the
+# coverage step in the test job below — the Python analog of libcvc's
+# COVERAGE_MIN gate. Scope + exclusions live in pyproject.toml [tool.coverage]:
+# the maintained grl_snam package, minus demos / capture / benchmark scripts
+# (no headless-CI surface) and the flat-layout research modules.
+env:
+  COVERAGE_MIN: '80'
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -71,5 +79,32 @@ jobs:
           # libcvc-deps repo out into the workspace (for the cvcpkg source +
           # recipes); linting THIS repo must not sweep that checkout.
           "${PREFIX}/bin/ruff" check . --exclude _libcvc-deps
-          echo "== pytest =="
-          "${PY}" -m pytest -q
+          # coverage.py is a dev-only measurement tool, not a runtime dep, so it
+          # is not in the grl-snam cvcpkg closure. Install it into a throwaway
+          # dir on PYTHONPATH (never the hermetic prefix) — the same way the
+          # libcvc CI apt-installs its coverage tool (lcov) outside cvcpkg. If
+          # the team later prefers the catalog, a coverage-cp3XX recipe
+          # (libcvc-deps tools/gen_python_recipes.py SEED_PACKAGES, like
+          # pytest-cp3XX) drops in via the recipe's depends.build instead.
+          echo "== install coverage (dev tool, outside the cvcpkg closure) =="
+          "${PY}" -m ensurepip --upgrade >/dev/null 2>&1 || true  # prefix python ships pip; guard anyway
+          COVDIR="${RUNNER_TEMP}/covtools"
+          "${PY}" -m pip install --quiet --disable-pip-version-check --target "${COVDIR}" 'coverage>=7.4'
+          export PYTHONPATH="${COVDIR}:${PYTHONPATH}"
+
+          echo "== pytest (under coverage) =="
+          # Scope + omits are read from pyproject.toml [tool.coverage].
+          "${PY}" -m coverage run -m pytest -q
+
+          echo "== coverage gate (>= ${COVERAGE_MIN}%) =="
+          "${PY}" -m coverage report | tee "${RUNNER_TEMP}/cov.txt"
+          pct="$(awk '/^TOTAL/ { gsub(/%/,"",$NF); print $NF; exit }' "${RUNNER_TEMP}/cov.txt")"
+          if [ -z "${pct}" ]; then
+            echo "::error::Could not parse grl_snam coverage total from the report"; exit 1
+          fi
+          echo "grl_snam line coverage: ${pct}% (gate: >= ${COVERAGE_MIN}%)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          if awk -v p="${pct}" -v min="${COVERAGE_MIN}" 'BEGIN { exit !(p+0 < min+0) }'; then
+            echo "::error::grl_snam line coverage ${pct}% is below the required ${COVERAGE_MIN}%"
+            exit 1
+          fi
+          echo "grl_snam line coverage ${pct}% meets the ${COVERAGE_MIN}% gate."

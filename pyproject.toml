@@ -91,3 +91,47 @@ ignore = [
     "E741",  # ambiguous variable names tolerated in math-heavy research code
     "UP031", # printf-style %-format is idiomatic in the ported research/print code
 ]
+
+# -----------------------------------------------------------------------------
+# Coverage — the `grl_snam` library gate, enforced in CI at COVERAGE_MIN (the
+# Python analog of libcvc's coverage gate). Scope mirrors the lint boundary
+# (the maintained `grl_snam` package only). Omitted below is code with no
+# headless-CI surface — runnable GL/matplotlib demos, video-capture /
+# benchmark / one-off visualization scripts — plus trivial stubs and the thin
+# CLI entry point. The flat-layout research modules (sdf_nav.py, material_nav.py,
+# ...) sit outside `grl_snam` and, like lint, outside this gate. `pytest --cov`
+# and CI's `coverage run` both read this config, so the local and gated numbers
+# match. Current: ~85% of the in-scope surface (gate floor is 80).
+# -----------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["grl_snam"]
+omit = [
+    "grl_snam/demos/*",               # runnable GL / matplotlib demos
+    "grl_snam/tools/capture.py",      # video capture (renders frames)
+    "grl_snam/tools/*_capture.py",    # fog_ / squad_ / finale_ capture
+    "grl_snam/tools/*_bench.py",      # timing benchmarks
+    "grl_snam/tools/material_demo.py",
+    "grl_snam/tools/wall_vis.py",     # one-off visualizations
+    "grl_snam/tools/obstacles.py",
+    "grl_snam/tools/sdf.py",
+    "grl_snam/tools/pipeline.py",
+    "grl_snam/tools/train.py",
+    "grl_snam/tools/convoy_record.py",
+    "grl_snam/tools/pursuit_record.py",
+    "grl_snam/tools/squad_record.py",
+    "grl_snam/cli.py",                # thin click entry point
+    "grl_snam/selftest.py",           # smoke-test entry (imports + runs a demo)
+    "grl_snam/adaptation.py",         # stub
+    "grl_snam/network.py",            # stub
+    "grl_snam/utils/*",               # stub
+]
+
+[tool.coverage.report]
+precision = 1
+show_missing = true
+exclude_also = [
+    "def __del__",                    # best-effort finalizers
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+]
