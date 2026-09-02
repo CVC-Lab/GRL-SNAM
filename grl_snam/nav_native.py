@@ -464,6 +464,86 @@ class NativeSimWorld:
     def retarget(self, i, gx_n, gy_n):
         _pycvc.nav_sim_world_retarget(self._h, int(i), float(gx_n), float(gy_n))
 
+    # ── material (opt-in; the world is byte-unchanged until attached) ────────
+    @property
+    def planes(self):
+        """Belief-plane count M. Agents index their MATERIAL plane by the same
+        ``map_id`` as their belief plane, so this bounds :meth:`set_material`'s
+        ``planes``."""
+        return int(_pycvc.nav_sim_world_planes(self._h))
+
+    @property
+    def agent_planes(self):
+        """(n,) int32 per-agent plane id — size a grouped material stack by this."""
+        return _pycvc.nav_sim_world_agent_planes(self._h)
+
+    @property
+    def has_material(self):
+        return bool(_pycvc.nav_sim_world_has_material(self._h))
+
+    def set_material(
+        self,
+        risk,
+        hard,
+        *,
+        planes=1,
+        lam_soft=0.5,
+        lam_hard=1.0,
+        k_sharp=1.25,
+        d_hat_m=12.0,
+        sigma=1.0,
+        gate_enabled=True,
+        primitive_count=16,
+        horizon_cells=12,
+        hard_margin_m=-1.0,
+        improvement_margin=0.05,
+        material_trigger=0.45,
+        progress_slack_cells=0.5,
+    ):
+        """Attach material to the world: derives the planes, builds the gate
+        surface, and turns the feature on for every later :meth:`step`.
+
+        ``risk`` (f32) and ``hard`` (u8) hold ``planes*rows*cols`` elements —
+        ``(rows,cols)`` for one shared surface or ``(planes,rows,cols)`` grouped,
+        in which case every agent's ``map_id`` must be ``< planes``.
+        ``hard_margin_m <= 0`` means "2 grid cells".
+        """
+        if not HAS_MATERIAL_SIM_WORLD:
+            raise RuntimeError(
+                "pycvc lacks nav_sim_world_set_material — install a pycvc with the "
+                "sim_world material bindings."
+            )
+        _pycvc.nav_sim_world_set_material(
+            self._h,
+            np.ascontiguousarray(risk, np.float32),
+            np.ascontiguousarray(hard, np.uint8),
+            int(planes),
+            float(lam_soft),
+            float(lam_hard),
+            float(k_sharp),
+            float(d_hat_m),
+            float(sigma),
+            1 if gate_enabled else 0,
+            int(primitive_count),
+            int(horizon_cells),
+            float(hard_margin_m),
+            float(improvement_margin),
+            float(material_trigger),
+            float(progress_slack_cells),
+        )
+
+    def clear_material(self):
+        """Detach material; later steps are byte-identical to the plain drive."""
+        _pycvc.nav_sim_world_clear_material(self._h)
+
+    def material_gate_active(self):
+        """(n,) bool — last tick's per-agent witness-gate decision.
+
+        Raises unless material is attached: the buffer is only sized inside
+        :meth:`set_material`.
+        """
+        return _pycvc.nav_sim_world_material_gate_active(self._h)
+
 
 def sim_world_from_swarm(sw, weights_path, *, truth, freeze_sense=False, sense_every=4):
     """Build a :class:`NativeSimWorld` mirroring a shared-belief :class:`Swarm`'s
@@ -670,6 +750,11 @@ HAS_MATERIAL = AVAILABLE and hasattr(_pycvc, "nav_witness_gate")
 # (sample -> coef_feats -> coef_mlp -> bicycle_material) the Swarm's native
 # drive path calls under GRL_SNAM_NAV_DRIVE=native + a material grid.
 HAS_MATERIAL_ROLLOUT = AVAILABLE and hasattr(_pycvc, "nav_bicycle_rollout_material")
+# sim_world material: set/clear/gate-active plus the has_material/planes/
+# agent_planes getters that make it observable from Python.
+HAS_MATERIAL_SIM_WORLD = AVAILABLE and hasattr(_pycvc, "nav_sim_world_set_material")
+# Grouped (M>1) material planes reachable through the gate + sampler bindings.
+HAS_MATERIAL_GROUPED = AVAILABLE and hasattr(_pycvc, "nav_sim_world_has_material")
 HAS_MATERIAL_DRIVE = AVAILABLE and hasattr(_pycvc, "nav_drive_step_material")
 
 
