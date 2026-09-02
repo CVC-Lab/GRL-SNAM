@@ -112,3 +112,98 @@ def test_sim_world_retarget_reacts(tmp_path):
     p1, *_ = cw.snapshot()
     d1 = float(np.hypot(*(p1[0] - new_gw)))
     assert d1 < d0 - 1.0, (d0, d1)
+
+
+# ── sim_world material (P2b Python half) ────────────────────────────────────
+# These three bindings shipped in libcvc #271 and had no Python caller at all
+# until now — bound, then never touched. The contract they must honour:
+# attaching material is opt-in and observable, detaching restores the plain
+# drive byte-for-byte, and the gate-active buffer is only readable while
+# material is attached (it is sized inside set_material).
+
+_material_sim_world = pytest.mark.skipif(
+    not nav_native.HAS_MATERIAL_SIM_WORLD,
+    reason="pycvc lacks nav_sim_world_set_material",
+)
+
+
+def _flat_material(truth, *, risk_value=0.0):
+    """A uniform risk raster + an all-clear hard mask, shaped for one plane."""
+    risk = np.full(truth.shape, float(risk_value), np.float32)
+    hard = np.zeros(truth.shape, np.uint8)
+    return risk, hard
+
+
+@_material_sim_world
+def test_sim_world_material_attaches_and_detaches(tmp_path):
+    sw, truth, m = _swarm(n=200, grid=96)
+    wp = tmp_path / "coef.cvcnav"
+    coef_export.write_coef_mlp(m, str(wp))
+    cw = nav_native.sim_world_from_swarm(sw, wp, truth=truth, freeze_sense=True)
+
+    assert cw.has_material is False
+    assert cw.planes >= 1
+    assert np.asarray(cw.agent_planes).shape == (cw.n,)
+    # The gate buffer is sized inside set_material; reading it before must raise
+    # rather than walk off an empty vector.
+    with pytest.raises(Exception):
+        cw.material_gate_active()
+
+    risk, hard = _flat_material(truth, risk_value=0.3)
+    cw.set_material(risk, hard, planes=1)
+    assert cw.has_material is True
+    gate = np.asarray(cw.material_gate_active())
+    assert gate.shape == (cw.n,) and gate.dtype == bool
+
+    cw.step()
+    assert np.asarray(cw.material_gate_active()).shape == (cw.n,)
+
+    cw.clear_material()
+    assert cw.has_material is False
+    with pytest.raises(Exception):
+        cw.material_gate_active()
+
+
+@_material_sim_world
+def test_sim_world_zero_material_is_byte_identical_to_no_material(tmp_path):
+    """An all-zero risk raster with the gate off must not move a single agent —
+    the 'default off = byte-unchanged' contract, checked rather than assumed."""
+    sw, truth, m = _swarm(n=200, grid=96)
+    wp = tmp_path / "coef.cvcnav"
+    coef_export.write_coef_mlp(m, str(wp))
+
+    plain = nav_native.sim_world_from_swarm(sw, wp, truth=truth, freeze_sense=True)
+    for _ in range(25):
+        plain.step()
+    ref_pos, ref_hd, ref_sp, ref_md, ref_rc = plain.snapshot()
+
+    withmat = nav_native.sim_world_from_swarm(sw, wp, truth=truth, freeze_sense=True)
+    risk, hard = _flat_material(truth, risk_value=0.0)
+    withmat.set_material(risk, hard, planes=1, lam_soft=0.0, lam_hard=0.0, gate_enabled=False)
+    for _ in range(25):
+        withmat.step()
+    pos, hd, sp, md, rc = withmat.snapshot()
+
+    assert np.array_equal(pos, ref_pos)
+    assert np.array_equal(hd, ref_hd)
+    assert np.array_equal(sp, ref_sp)
+    assert np.array_equal(md, ref_md)
+    assert np.array_equal(rc, ref_rc)
+
+
+@_material_sim_world
+def test_sim_world_material_rejects_a_mismatched_plane_count(tmp_path):
+    """planes > the world's belief-plane count is a precondition the binding must
+    catch BEFORE releasing the GIL (a throw across it loses the GIL)."""
+    sw, truth, m = _swarm(n=64, grid=96)
+    wp = tmp_path / "coef.cvcnav"
+    coef_export.write_coef_mlp(m, str(wp))
+    cw = nav_native.sim_world_from_swarm(sw, wp, truth=truth, freeze_sense=True)
+
+    risk = np.zeros((2,) + truth.shape, np.float32)
+    hard = np.zeros((2,) + truth.shape, np.uint8)
+    # A shared-belief world has every map_id == 0, so planes=2 is well-formed;
+    # what must fail is a size mismatch between the raster and `planes`.
+    with pytest.raises(Exception):
+        cw.set_material(risk[:1], hard[:1], planes=2)  # raster holds 1 plane, claims 2
+    assert cw.has_material is False  # a rejected attach must not half-apply
