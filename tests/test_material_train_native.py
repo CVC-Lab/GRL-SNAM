@@ -167,3 +167,61 @@ def test_native_trainer_reduces_loss(tmp_path):
     trainer.save(out)
     assert out.stat().st_size > 0
     mtn.MaterialTrainer(out)  # loads without error
+
+
+@pytest.mark.skipif(
+    not mtn.HAS_MATERIAL_TRAINER_LOSS, reason="pycvc lacks nav_material_trainer_loss"
+)
+def test_forward_only_loss_does_not_train(tmp_path):
+    """`loss()` scores a batch without moving the weights — the validation path."""
+    ckpt = tmp_path / "init.cvcnm"
+    _write_random_cvcnm(ckpt, patch_size=16, seed=3)
+    trainer = mtn.MaterialTrainer(ckpt)
+    batch = _synthetic_batch(seed=11)
+
+    first = trainer.loss(batch)
+    again = trainer.loss(batch)
+    assert np.isfinite(first)
+    # No optimizer, no backward: scoring twice must be identical.
+    assert first == again, f"loss() moved the weights ({first} -> {again})"
+
+    # ...and it agrees with the loss step() reports for the same pre-update weights.
+    stepped = trainer.step(batch, lr=0.0)
+    assert abs(stepped - first) / (abs(first) + 1e-6) < 1e-6
+
+
+@pytest.mark.skipif(
+    not mtn.HAS_MATERIAL_TRAINER_CUDA, reason="pycvc lacks the material CUDA surface"
+)
+def test_cuda_request_is_honest_about_what_it_uses():
+    """`use_cuda` is a request; `cuda_active` reports the truth on this machine."""
+    assert mtn.cuda_max_horizon() >= 0
+    if not mtn.cuda_available():
+        # No device: asking for CUDA must still work, and must admit it is on CPU.
+        pytest.skip("no CUDA device on this machine")
+    assert mtn.cuda_max_horizon() > 0
+
+
+@pytest.mark.skipif(
+    not mtn.HAS_MATERIAL_TRAINER_CUDA, reason="pycvc lacks the material CUDA surface"
+)
+def test_cuda_and_cpu_training_agree(tmp_path):
+    """The GPU path must train, and track the CPU path it replaces."""
+    if not mtn.cuda_available():
+        pytest.skip("no CUDA device on this machine")
+    batch = _synthetic_batch(seed=5)
+    steps = 30
+    out = {}
+    for use_cuda in (False, True):
+        ckpt = tmp_path / f"init_{int(use_cuda)}.cvcnm"
+        _write_random_cvcnm(ckpt, patch_size=16, seed=2)  # same weights both runs
+        tr = mtn.MaterialTrainer(ckpt, use_cuda=use_cuda)
+        assert tr.cuda_active is use_cuda
+        losses = [tr.step(batch, lr=mtn.cosine_lr(1e-3, s, steps)) for s in range(steps)]
+        out[use_cuda] = (losses[0], losses[-1], tr.loss(batch))
+
+    (_, c1, cval), (g0, g1, gval) = out[False], out[True]
+    assert g1 < 0.9 * g0, f"GPU path did not train ({g0:.3f} -> {g1:.3f})"
+    # Float-equivalent ops compounded over `steps` optimizer updates.
+    assert abs(c1 - g1) / abs(c1) < 1e-3, f"CPU {c1:.6f} vs GPU {g1:.6f}"
+    assert abs(cval - gval) / abs(cval) < 1e-3
