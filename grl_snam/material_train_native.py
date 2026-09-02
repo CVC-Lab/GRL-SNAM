@@ -9,8 +9,14 @@ checkpoint to the ``.cvcnm`` container the forward / CUDA paths (and torch, via
 This is the deployment path for TACC training campaigns: build batches from the
 dataset in Python, run the fast torch-free step in C++. :data:`HAS_MATERIAL_TRAINER`
 is False (and constructing a :class:`MaterialTrainer` raises) until a pycvc with
-the ``nav_material_trainer_*`` binding is installed (libcvc PR #247 + a pycvc-gl
-rebuild).
+the ``nav_material_trainer_*`` binding is installed.
+
+Pass ``use_cuda=True`` to route the four heavy ops (model forward/backward and the
+surrogate rollout forward/VJP) onto the GPU; measured ~4x per step on a GTX 1650,
+agreeing with the CPU path to ~3e-6 after 30 optimizer steps. It is a REQUEST, not
+a guarantee — each op falls back to its host twin when the build has no CUDA, no
+device is present, or the batch exceeds a kernel's limits — so read
+:attr:`MaterialTrainer.cuda_active` for what is actually running.
 """
 
 from __future__ import annotations
@@ -23,6 +29,34 @@ from grl_snam import nav_native as _nn
 
 _pycvc = _nn._pycvc
 HAS_MATERIAL_TRAINER = _nn.AVAILABLE and hasattr(_pycvc, "nav_material_trainer_create")
+# The forward-only loss (validation) and the CUDA request/probe surface landed
+# after the first trainer binding, so they get their own capability flags.
+HAS_MATERIAL_TRAINER_LOSS = HAS_MATERIAL_TRAINER and hasattr(_pycvc, "nav_material_trainer_loss")
+HAS_MATERIAL_TRAINER_CUDA = HAS_MATERIAL_TRAINER and hasattr(
+    _pycvc, "nav_material_trainer_cuda_active"
+)
+
+
+def cuda_available() -> bool:
+    """True when this pycvc was built with CUDA and a device is present.
+
+    Independent of any trainer, so a caller can decide before building one.
+    """
+    if not HAS_MATERIAL_TRAINER_CUDA:
+        return False
+    return bool(_pycvc.nav_material_cuda_available())
+
+
+def cuda_max_horizon() -> int:
+    """Largest ``max(H)`` the device rollout VJP accepts (0 on a CPU-only build).
+
+    Above it that one op silently falls back to the host adjoint — the step still
+    runs and still matches the CPU, it just gives up the device for the backward.
+    """
+    if not HAS_MATERIAL_TRAINER_CUDA:
+        return 0
+    return int(_pycvc.nav_material_cuda_max_horizon())
+
 
 # The arrays nav_material_trainer_step expects, in order. Shapes (B agents,
 # N padded obstacles, P model patch, Hp*Wp rollout patch):
@@ -94,11 +128,18 @@ class MaterialTrainer:
         tau: float = 0.05,
         ms_h: int = 3,
         ms_dt_mult: float = 4.0,
+        use_cuda: bool = False,
     ):
         if not HAS_MATERIAL_TRAINER:
             raise RuntimeError(
                 "pycvc lacks nav_material_trainer_create — install a pycvc with the "
-                "material-trainer binding (libcvc #247 + a pycvc-gl rebuild)."
+                "material-trainer binding (libcvc #247 + a pycvc rebuild)."
+            )
+        if use_cuda and not HAS_MATERIAL_TRAINER_CUDA:
+            raise RuntimeError(
+                "use_cuda=True needs a pycvc built with CUDA support — this one lacks "
+                "nav_material_trainer_cuda_active. Rebuild with -DCVC_ENABLE_CUDA=ON, "
+                "or pass use_cuda=False."
             )
         self._h = _pycvc.nav_material_trainer_create(
             str(cvcnm_path),
@@ -123,18 +164,57 @@ class MaterialTrainer:
             float(tau),
             int(ms_h),
             float(ms_dt_mult),
+            int(bool(use_cuda)),
         )
+        self._requested_cuda = bool(use_cuda)
+
+    @property
+    def cuda_active(self) -> bool:
+        """Whether this trainer is ACTUALLY using the device, not merely asking.
+
+        ``use_cuda`` is a request: each heavy op falls back to its host twin when the
+        build has no CUDA, no device is present, or the batch exceeds a kernel's
+        limits (see :func:`cuda_max_horizon`). Log this, not the request.
+        """
+        if not HAS_MATERIAL_TRAINER_CUDA:
+            return False
+        return bool(_pycvc.nav_material_trainer_cuda_active(self._h))
+
+    def _pack(self, batch: Mapping[str, np.ndarray]) -> list:
+        out = []
+        for k in BATCH_KEYS:
+            dt = np.uint8 if k in _U8_KEYS else (np.int32 if k in _I32_KEYS else np.float32)
+            out.append(np.ascontiguousarray(batch[k], dtype=dt))
+        return out
 
     def step(self, batch: Mapping[str, np.ndarray], lr: float, num_threads: int = 0) -> float:
         """One training step over ``batch`` (keys :data:`BATCH_KEYS`) at learning rate ``lr``.
 
         Returns the scalar loss (computed on the pre-update weights, as in torch).
         """
-        args = []
-        for k in BATCH_KEYS:
-            dt = np.uint8 if k in _U8_KEYS else (np.int32 if k in _I32_KEYS else np.float32)
-            args.append(np.ascontiguousarray(batch[k], dtype=dt))
-        return float(_pycvc.nav_material_trainer_step(self._h, *args, float(lr), int(num_threads)))
+        return float(
+            _pycvc.nav_material_trainer_step(
+                self._h, *self._pack(batch), float(lr), int(num_threads)
+            )
+        )
+
+    def loss(
+        self,
+        batch: Mapping[str, np.ndarray],
+        frozen_eta: float = float("nan"),
+        num_threads: int = 0,
+    ) -> float:
+        """Forward-only loss — score a held-out batch without training on it.
+
+        Runs no backward and does not touch the optimizer, so the weights and the
+        Adam moments are unchanged. ``frozen_eta`` pins the detached CVaR quantile;
+        the default NaN computes it from this batch's own costs.
+        """
+        return float(
+            _pycvc.nav_material_trainer_loss(
+                self._h, *self._pack(batch), float(frozen_eta), int(num_threads)
+            )
+        )
 
     def save(self, path) -> None:
         """Write the trained weights to ``path`` as a ``.cvcnm``."""
