@@ -16,12 +16,14 @@ free space so every leg is actually reachable.
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 import torch
 
 import sdf_nav
 
+from . import nav_native as _native
 from .metrics import NavMetrics
 
 
@@ -100,6 +102,33 @@ class SdfNavigator:
         self.goal_index = 0
         self._parked = False
         self._reset_goal_state(1e9)
+
+        # ── native fused drive (opt-in: GRL_SNAM_NAV_DRIVE=native) ──────────────
+        # Route the drive tick through the torch-free C++ fused drive
+        # (nav_native.drive_step: sample -> coef_feats -> coef_mlp -> bicycle in one
+        # call) instead of the torch coef-net + rollout. OFF by default so every
+        # trajectory stays bit-for-bit torch; when on, it is float-equivalent
+        # (test_nav_native_drive) — the same wiring Swarm already uses. Eligible
+        # only for the plain-geometry bicycle path: a grip (friction) or material
+        # runtime is checked again at step() and falls back to torch (they enter the
+        # drive differently), so nothing is silently dropped. The policy weights are
+        # exported once to a temp ``.cvcnav`` the C++ CoefMLP loads.
+        self._native_drive = False
+        self._native_weights_path = None
+        if (
+            self._dyn == "bicycle"
+            and os.environ.get("GRL_SNAM_NAV_DRIVE", "torch").lower() == "native"
+            and getattr(_native, "HAS_DRIVE", False)
+        ):
+            import tempfile
+
+            from .tools.coef_export import write_coef_mlp
+
+            fd, path = tempfile.mkstemp(suffix=".cvcnav")
+            os.close(fd)
+            write_coef_mlp(self.model, path)
+            self._native_weights_path = path
+            self._native_drive = True
 
     # ── world <-> normalized ────────────────────────────────────────────────
     def w2n(self, p):
@@ -381,6 +410,15 @@ class SdfNavigator:
         pre-split loop); a Squad calls them separately so it can roll every
         agent forward in one batched rollout in between."""
         gt = self._plan_carrot()
+        # Native fused drive when opted in (see __init__): one C++ call replaces the
+        # torch coef-net + rollout for the plain-geometry bicycle path. The
+        # coefficients are computed in C++ and not returned, so the metrics'
+        # alpha/beta/gamma read 0 in this mode (a display field, never fed back).
+        if self._native_drive and self.material is None and self.friction is None:
+            self._native_drive_step(gt)
+            self.step_i += 1
+            z = torch.zeros(self.o.shape[0])
+            return self._metrics(z, z, z)
         # A grip-widened net (sdf_nav.widen_coef_mlp) takes mu as a 6th feature;
         # read the width off the MODEL rather than assuming, so a 5-input net
         # with a friction field attached still gets exactly its 5 features.
@@ -412,6 +450,41 @@ class SdfNavigator:
             )
         self.step_i += 1
         return self._metrics(al, be, ga)
+
+    def _native_drive_step(self, carrot: torch.Tensor) -> None:
+        """One drive tick through the torch-free C++ fused drive
+        (:func:`nav_native.drive_step`) instead of the torch coef-net + rollout,
+        updating ``o/th/sp/v`` in place. The field, poses and carrot cross to numpy
+        (f32) and the fresh poses come back; ``bounds/center/scale`` are read off the
+        ``SDFField``. Float-equivalent to the torch drive. Used only when opted in."""
+        f = self.field
+        carrot_np = carrot.detach().cpu().numpy() if torch.is_tensor(carrot) else np.asarray(carrot)
+        params = {**self.kw, **self._veh, "nsub": self.nsub}
+        o2, th2, sp2, _ = _native.drive_step(
+            f.field.detach().cpu().numpy(),
+            self.o.detach().cpu().numpy(),
+            self.th.detach().cpu().numpy(),
+            self.sp.detach().cpu().numpy(),
+            carrot_np,
+            self._native_weights_path,
+            bounds=(f.mnx, f.mny, f.mxx, f.mxy),
+            center=(f.cx, f.cy),
+            scale=f.S,
+            params=params,
+        )
+        self.o = torch.from_numpy(o2).float()
+        self.th = torch.from_numpy(th2).float()
+        self.sp = torch.from_numpy(sp2).float()
+        head = torch.stack([torch.cos(self.th), torch.sin(self.th)], -1)
+        self.v = self.sp.unsqueeze(-1) * head  # keep .v meaningful for callers
+
+    def __del__(self):
+        p = getattr(self, "_native_weights_path", None)
+        if p:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
     def drive_to_goal(self, max_steps: int = 1300, *, stop_at_reach: bool = True):
         """Run steps toward the current goal until reached / stuck / ``max_steps``.
