@@ -87,6 +87,21 @@ _U8_KEYS = frozenset({"obs_mask"})
 _I32_KEYS = frozenset({"H"})
 
 
+def pack_batch(batch: Mapping[str, np.ndarray]) -> list:
+    """Order and coerce a batch dict into the argument list the binding expects.
+
+    The C binding takes the 17 :data:`BATCH_KEYS` arrays positionally, each in an
+    exact dtype (``obs_mask`` u8, ``H`` i32, the rest f32) and C-contiguous — it
+    rejects anything else rather than converting. Module-level so the ordering and
+    the dtype contract can be tested without a live trainer handle.
+    """
+    out = []
+    for k in BATCH_KEYS:
+        dt = np.uint8 if k in _U8_KEYS else (np.int32 if k in _I32_KEYS else np.float32)
+        out.append(np.ascontiguousarray(batch[k], dtype=dt))
+    return out
+
+
 def cosine_lr(lr0: float, t: int, t_max: int, eta_min_frac: float = 0.1) -> float:
     """torch ``CosineAnnealingLR``: anneal ``lr0`` -> ``lr0*eta_min_frac`` over ``t_max`` steps."""
     import math
@@ -180,13 +195,6 @@ class MaterialTrainer:
             return False
         return bool(_pycvc.nav_material_trainer_cuda_active(self._h))
 
-    def _pack(self, batch: Mapping[str, np.ndarray]) -> list:
-        out = []
-        for k in BATCH_KEYS:
-            dt = np.uint8 if k in _U8_KEYS else (np.int32 if k in _I32_KEYS else np.float32)
-            out.append(np.ascontiguousarray(batch[k], dtype=dt))
-        return out
-
     def step(self, batch: Mapping[str, np.ndarray], lr: float, num_threads: int = 0) -> float:
         """One training step over ``batch`` (keys :data:`BATCH_KEYS`) at learning rate ``lr``.
 
@@ -194,7 +202,7 @@ class MaterialTrainer:
         """
         return float(
             _pycvc.nav_material_trainer_step(
-                self._h, *self._pack(batch), float(lr), int(num_threads)
+                self._h, *pack_batch(batch), float(lr), int(num_threads)
             )
         )
 
@@ -212,7 +220,7 @@ class MaterialTrainer:
         """
         return float(
             _pycvc.nav_material_trainer_loss(
-                self._h, *self._pack(batch), float(frozen_eta), int(num_threads)
+                self._h, *pack_batch(batch), float(frozen_eta), int(num_threads)
             )
         )
 
