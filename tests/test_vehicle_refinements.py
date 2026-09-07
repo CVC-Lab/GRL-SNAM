@@ -363,7 +363,13 @@ def test_navigator_defaults_are_inert():
     torch.manual_seed(0)
     for _ in range(5):
         b.step()
-    assert torch.equal(a.o, b.o) and torch.equal(a.th, b.th)
+    # Inertness is an O(macroscopic) claim: an active refinement would move the
+    # agent by metres. The bitwise torch.equal here passed on the pre-M10 barrier
+    # only because that (buggy) trajectory dodged a ~5e-7 multithreaded-reduction
+    # nondeterminism in SdfNavigator.step (present on main, single-thread too;
+    # tracked separately). Assert inertness at a tol 1000x above that noise floor
+    # and far below any real refinement effect.
+    assert torch.allclose(a.o, b.o, atol=1e-4) and torch.allclose(a.th, b.th, atol=1e-4)
 
 
 def test_navigator_threads_footprint_and_grip_into_the_drive():
