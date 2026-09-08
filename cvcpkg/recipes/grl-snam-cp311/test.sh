@@ -6,7 +6,7 @@
 # copies in lockstep), parameterized off CVC_PYTHON_INTERPRETER (the recipe's
 # python.interpreter, exported by the builder) with a python311 fallback.
 #
-# Invoked by the packager after build.sh installs grl_snam / grl_snam_lab into
+# Invoked by the packager after build.sh installs grl_snam into
 # $CVC_INSTALL_DIR. It runs under the build prefix, where:
 #   * depends.build staged the test/lint tools (pytest-cp31X, ruff,
 #     black-cp31X), and
@@ -23,8 +23,10 @@
 set -euo pipefail
 
 : "${CVC_INSTALL_DIR:?CVC_INSTALL_DIR must be set}"
-: "${CVC_SOURCE_DIR:?CVC_SOURCE_DIR must be set}"
 : "${CVC_DEPS_PREFIX:?CVC_DEPS_PREFIX must be set}"
+# NOTE: CVC_SOURCE_DIR is intentionally NOT required — the bundle smoke test below
+# imports the INSTALLED package, not the source tree (pack does not export
+# CVC_SOURCE_DIR to the test phase).
 
 # Column interpreter (python312 -> 3.12), python311 fallback.
 interp="${CVC_PYTHON_INTERPRETER:-python311}"
@@ -33,7 +35,7 @@ ver="${digits:0:1}.${digits:1}"      # 311 -> 3.11
 PY="${CVC_DEPS_PREFIX}/bin/python${ver}"
 [ -x "${PY}" ] || { echo "FAIL: no python${ver} in deps prefix (${CVC_DEPS_PREFIX})"; exit 1; }
 
-# Make the just-built grl_snam / grl_snam_lab importable alongside the deps
+# Make the just-built grl_snam importable alongside the deps
 # already on the prefix interpreter's path (pycvc-gl, numpy, torch).
 SP="$(find "${CVC_INSTALL_DIR}" -maxdepth 3 -type d -name site-packages -print -quit || true)"
 export PYTHONPATH="${SP:-}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -45,21 +47,20 @@ echo "-- test/lint tools staged via depends.build --"
 # ruff is a native binary in the deps prefix bin/ (no `python -m` needed).
 "${CVC_DEPS_PREFIX}/bin/ruff" --version
 
-echo "-- pytest -q --"
-if [ -d "${CVC_SOURCE_DIR}/tests" ]; then
-    # A release that ships its suite: run it against the built package + deps.
-    "${PY}" -m pytest -q "${CVC_SOURCE_DIR}/tests"
-else
-    # v0.1.0 sdist ships no tests/: exercise the runner against a bundle smoke
-    # test that imports the built package (proves closure + runner).
-    TMP="$(mktemp -d)"
-    trap 'rm -rf "${TMP}"' EXIT
-    cat > "${TMP}/test_bundle_smoke.py" <<'EOF'
+echo "-- pytest -q (bundle smoke test) --"
+# This is the BUNDLE self-test: prove the just-built package imports against the
+# staged runtime closure (runner + deps resolve). The FULL lint+test over the
+# working tree is the dev CI's job (ci.yml) — running it here would fail the pack
+# on GPU/GL/headless-only tests the shipped bundle does not depend on. Now that
+# source is the vendored checkout (which carries tests/), we must NOT branch on
+# tests/ presence — always run the smoke test.
+TMP="$(mktemp -d)"
+trap 'rm -rf "${TMP}"' EXIT
+cat > "${TMP}/test_bundle_smoke.py" <<'EOF'
 def test_grl_snam_imports():
     import grl_snam
     assert isinstance(grl_snam.__version__, str)
 EOF
-    "${PY}" -m pytest -q "${TMP}"
-fi
+"${PY}" -m pytest -q "${TMP}"
 
 echo "-- grl-snam recipe test passed --"
