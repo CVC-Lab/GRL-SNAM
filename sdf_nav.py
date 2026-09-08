@@ -407,6 +407,7 @@ def sdf_rollout(
     lam_hard=None,
     mat_k_sharp=5.0,
     mat_d_hat_m=3.0,
+    ext_force_fn=None,
 ):
     """Differentiable SDF surrogate rollout. ``al,be,ga`` are ``[B]`` coefficients.
     Returns ``(oT, vT, min_clearance[B])``. Substep (``nsub``>1) + ``vmax`` clamp at
@@ -415,7 +416,14 @@ def sdf_rollout(
 
     ``material`` (with ``[B]`` ``lam_soft``/``lam_hard``) adds the material-aware
     force term — see :func:`_material_force`. ``None`` (the default) is bit-for-bit
-    the pre-parameter behaviour; the golden traces stay valid."""
+    the pre-parameter behaviour; the golden traces stay valid.
+
+    ``ext_force_fn`` is a GENERIC external-force hook: a callable ``o -> [B,2]``
+    returning an extra force (accel units) at the current positions each substep,
+    summed into the acceleration alongside ``F_bar``/``F_goal``/``F_mat`` — the
+    physics-agnostic Python twin of ``cvc::nav``'s ``ext_force`` port. It carries
+    NO RF/comms vocabulary; a private consumer (DBG's comm force) supplies it.
+    ``None`` (the default) is additively inert and bit-for-bit unchanged."""
     hdt = dt / nsub
     minclr = torch.full((o.shape[0],), 9.9, device=o.device)
     for _ in range(steps):
@@ -430,6 +438,8 @@ def sdf_rollout(
                 a = F_bar + F_goal + F_mat - ga.unsqueeze(-1) * v
             else:
                 a = F_bar + F_goal - ga.unsqueeze(-1) * v
+            if ext_force_fn is not None:  # generic external force (e.g. DBG comm force)
+                a = a + ext_force_fn(o)
             v = v + hdt * a
             sp = v.norm(dim=-1, keepdim=True)
             v = torch.where(sp > vmax, v * vmax / sp, v)
@@ -469,6 +479,7 @@ def bicycle_rollout(
     body_gain=1.0,
     track_width=None,
     friction=None,
+    ext_force_fn=None,
 ):
     """Differentiable *kinematic bicycle* rollout over the same SDF barrier.
 
@@ -634,11 +645,17 @@ def bicycle_rollout(
                 a_max_e, a_lat_e = a_max * _mu, a_lat_max * _mu
 
             F_goal = -be.unsqueeze(-1) * (o - goal)
+            # Generic external force (e.g. DBG comm force). Evaluated once and, like
+            # F_mat, joins BOTH couplings — the longitudinal projection AND the
+            # steering bias below. None (default) is additively inert.
+            F_ext = ext_force_fn(o) if ext_force_fn is not None else None
             if material is not None:
                 F_mat = _material_force(material, o, lam_soft, lam_hard, mat_k_sharp, mat_d_hat_m)
                 F = F_bar + F_goal + F_mat
             else:
                 F = F_bar + F_goal
+            if F_ext is not None:
+                F = F + F_ext
 
             # longitudinal: project the virtual force onto the heading; damping
             # becomes drag on speed. Clamped to the actuator limit.
@@ -676,9 +693,12 @@ def bicycle_rollout(
             if body_offsets is None:  # multi-disc already summed F_rep per disc
                 F_rep = -(al * _ipc_dbdd(d, d_hat).clamp(max=0.0)).unsqueeze(-1) * nrm
             if material is not None:
-                delta = delta + k_steer * torch.tanh(((F_rep + F_mat) * left).sum(-1))
+                _steer = F_rep + F_mat
             else:
-                delta = delta + k_steer * torch.tanh((F_rep * left).sum(-1))
+                _steer = F_rep
+            if F_ext is not None:  # the external force steers too, like F_mat
+                _steer = _steer + F_ext
+            delta = delta + k_steer * torch.tanh((_steer * left).sum(-1))
             delta = delta.clamp(-delta_max, delta_max)
 
             # corner speed limit from the lateral-acceleration cap.
