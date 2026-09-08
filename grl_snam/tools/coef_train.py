@@ -365,7 +365,11 @@ def train_native(out, *, grid=96, steps=400, rollout="surrogate", use_cuda=False
     story = shrunk(STORIES["city"], n=grid, max_steps=100)
     meta = story.meta()
     if lr is None:
-        lr = 1e-5 if str(rollout).lower() == "bicycle" else 2e-4
+        # Mirror the C++ coef_trainer defaults (libcvc cvc/nav/coef_train.h). M10:
+        # the corrected (steeper) IPC barrier made the old surrogate lr 2e-4 overshoot
+        # and DEGRADE the policy (city seed-0 trained reach 71%->26%); retuned to 5e-5
+        # (1e-4..1e-5 all recover; 5e-5 sits mid-band). The bicycle keeps its own 1e-5.
+        lr = 1e-5 if str(rollout).lower() == "bicycle" else 5e-5
     return nav_native.train_coef_mlp(
         story.truth_grid().astype(np.uint8),
         out,
