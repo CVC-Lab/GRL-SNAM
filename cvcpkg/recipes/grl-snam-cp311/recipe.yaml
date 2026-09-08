@@ -2,7 +2,7 @@ schema_version: 1
 
 recipe:
   name: grl-snam-cp311
-  upstream_version: "0.2.0"
+  upstream_version: "0.2.1"
   # cvc_revision 1 of the per-interpreter columns, which supersede the published
   # bare `grl-snam` package (that recipe targeted python311 only).
   # Bumped 1 -> 2: complete the declared PyPI closure — click (the
@@ -129,7 +129,7 @@ package:
   files:
     - lib/python3.11/site-packages/grl_snam/
     - lib/python3.11/site-packages/grl_snam_lab/
-    - lib/python3.11/site-packages/grl_snam-0.2.0.dist-info/
+    - lib/python3.11/site-packages/grl_snam-0.2.1.dist-info/
     - lib/python3.11/site-packages/scripts/
     - lib/python3.11/site-packages/experiments/
     - lib/python3.11/site-packages/src/
