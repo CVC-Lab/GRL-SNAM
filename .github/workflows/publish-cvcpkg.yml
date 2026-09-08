@@ -174,10 +174,12 @@ jobs:
             echo "::error::CVCPKG_TOKEN secret is required to publish"
             exit 1
           fi
-          cvcpkg publish grl-snam-cp${{ matrix.py }} \
+          # Publish by archive PATH, not recipe name: publish's recipe-name matching
+          # derives arch from the host (any/x86_64) and cannot find the NOARCH archive
+          # pack produces (any/noarch), and there is no --arch to override it. Passing
+          # the path reads the archive's own manifest and uploads it.
+          archive="$(ls dist/grl-snam-cp${{ matrix.py }}-*-any-noarch-release-shared.tar.gz)"
+          cvcpkg publish "$archive" \
             --server "$CVCPKG_SERVER" \
             --org "$CVCPKG_ORG" \
-            --platform any \
-            --config release \
-            --output-dir dist \
             --token "$CVCPKG_TOKEN"
