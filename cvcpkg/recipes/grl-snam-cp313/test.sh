@@ -4,7 +4,8 @@
 #
 # Column-generic: byte-identical across grl-snam-cp311/cp312/cp313 (keep the
 # copies in lockstep), parameterized off CVC_PYTHON_INTERPRETER (the recipe's
-# python.interpreter, exported by the builder) with a python311 fallback.
+# python.interpreter) when the packager exports it, else off the one python3.X
+# the column's deps closure staged into the prefix (see the resolve block below).
 #
 # Invoked by the packager after build.sh installs grl_snam into
 # $CVC_INSTALL_DIR. It runs under the build prefix, where:
@@ -28,12 +29,21 @@ set -euo pipefail
 # imports the INSTALLED package, not the source tree (pack does not export
 # CVC_SOURCE_DIR to the test phase).
 
-# Column interpreter (python312 -> 3.12), python311 fallback.
-interp="${CVC_PYTHON_INTERPRETER:-python311}"
-digits="${interp#python}"            # python311 -> 311
-ver="${digits:0:1}.${digits:1}"      # 311 -> 3.11
-PY="${CVC_DEPS_PREFIX}/bin/python${ver}"
-[ -x "${PY}" ] || { echo "FAIL: no python${ver} in deps prefix (${CVC_DEPS_PREFIX})"; exit 1; }
+# Column interpreter. `cvcpkg pack` exports CVC_PYTHON_INTERPRETER to the BUILD
+# phase but NOT to this TEST phase, so the old env fallback to python311 silently
+# ran the cp312/cp313 tests against a python3.11 that is NOT in their deps prefix
+# (only cp311 happened to match) -> "FAIL: no python3.11 in deps prefix". Resolve
+# it robustly: honour CVC_PYTHON_INTERPRETER when present, else discover the one
+# python3.X the column's deps closure staged into the prefix.
+if [ -n "${CVC_PYTHON_INTERPRETER:-}" ]; then
+  digits="${CVC_PYTHON_INTERPRETER#python}" # python312 -> 312
+  ver="${digits:0:1}.${digits:1}"           # 312 -> 3.12
+  PY="${CVC_DEPS_PREFIX}/bin/python${ver}"
+else
+  PY="$(ls "${CVC_DEPS_PREFIX}"/bin/python3.1? 2>/dev/null | sort -V | tail -1 || true)"
+  ver="$(basename "${PY:-python?}" | sed 's/^python//')"
+fi
+[ -n "${PY:-}" ] && [ -x "${PY}" ] || { echo "FAIL: no python3.X in deps prefix (${CVC_DEPS_PREFIX})"; exit 1; }
 
 # Make the just-built grl_snam importable alongside the deps
 # already on the prefix interpreter's path (pycvc-gl, numpy, torch).
