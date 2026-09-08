@@ -179,6 +179,5 @@ jobs:
             --org "$CVCPKG_ORG" \
             --platform any \
             --config release \
-            --recipes-dir cvcpkg/recipes \
             --output-dir dist \
             --token "$CVCPKG_TOKEN"
