@@ -364,7 +364,7 @@ class BatchedSDFField:
 def _ipc_dbdd(d: torch.Tensor, d_hat: float) -> torch.Tensor:
     """IPC barrier derivative (matches surrogate_robust's piecewise form)."""
     d = d.clamp_min(1e-6)
-    val = (d_hat - d) * (2 * torch.log(d / d_hat) - d_hat / d) + 1.0
+    val = -(2 * (d - d_hat) * torch.log(d / d_hat) + (d - d_hat) ** 2 / d)  # M10: analytic derivative of b (was +（d-dh)+1, an attraction band); verified vs autograd
     return torch.where(d < d_hat, val, torch.zeros_like(d))
 
 

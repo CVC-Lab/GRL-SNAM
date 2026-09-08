@@ -355,7 +355,8 @@ def _manual_step(o, v, kw, dt=0.01):
     n_hat = diff / r
     d = r - r_eff
     if d < d_hat:
-        dbdd = (d_hat - d) * (2.0 * math.log(max(d, 1e-9) / d_hat) - d_hat / d) + 1.0
+        _ds = max(d, 1e-9)  # M10: oracle re-derived to the true derivative of b (no +（d-dh)+1)
+        dbdd = -(2.0 * (d - d_hat) * math.log(_ds / d_hat) + (d - d_hat) ** 2 / _ds)
         dbdd = min(max(dbdd, -200.0), 200.0)
     else:
         dbdd = 0.0

@@ -545,7 +545,7 @@ class IPCBarrier:
         dh = d.new_tensor(self.d_hat)
         safe = torch.clamp(d, min=self.eps)
         b_in = -(d - dh) ** 2 * torch.log(safe / dh)
-        dbdd_in = (dh - d) * (2.0 * torch.log(safe / dh) - dh / safe) + 1.0
+        dbdd_in = -(2.0 * (d - dh) * torch.log(safe / dh) + (d - dh) ** 2 / safe)  # M10: analytic derivative of b (was +（d-dh)+1, an attraction band); verified vs autograd
 
         b = torch.where(d <= self.eps, self.vp, torch.where(d < dh, b_in, torch.zeros_like(d)))
         dbdd = torch.where(d <= self.eps, self.vp, torch.where(d < dh, dbdd_in, torch.zeros_like(d)))

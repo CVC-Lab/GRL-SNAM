@@ -339,6 +339,15 @@ def _navigator(**vehicle):
         nsub=2,
         bounds=BOUNDS,
     )
+    # Seed the policy init: ``CoefMLP()`` draws its weights from the global RNG,
+    # so two bare ``_navigator()`` calls would otherwise get DIFFERENT random
+    # policies. Every test here compares two navigators (defaults-vs-defaults, or
+    # plain-vs-refined) and wants the *drive* to be the only variable, so both
+    # must carry identical weights. This is also what lets
+    # ``test_navigator_defaults_are_inert`` assert bit-for-bit equality: the
+    # ~5e-7 divergence once blamed on "multithreaded-reduction nondeterminism"
+    # was just these two policies differing (SdfNavigator.step is deterministic).
+    torch.manual_seed(0)
     model = sdf_nav.CoefMLP()
     nav = SdfNavigator(
         _field(_wall_at_col(150)), model, meta, dynamics="bicycle", vehicle=vehicle or None
@@ -357,12 +366,20 @@ def test_navigator_defaults_are_inert():
     assert SdfNavigator.VEHICLE_DEFAULTS["track_width"] is None
     a, b = _navigator(), _navigator()
     assert a.friction is None
-    torch.manual_seed(0)
     for _ in range(5):
         a.step()
-    torch.manual_seed(0)
     for _ in range(5):
         b.step()
+    # Bit-for-bit: SdfNavigator.step is fully deterministic (verified under
+    # torch.use_deterministic_algorithms(True), and identical single- vs
+    # multi-threaded and across processes), and _navigator() seeds the CoefMLP
+    # init so both agents carry identical policy weights. The earlier
+    # allclose(atol=1e-4) stopgap blamed a ~5e-7 divergence on a
+    # "multithreaded-reduction nondeterminism" in step(); it was never that --
+    # the two navigators were simply built with different random weights
+    # (unseeded CoefMLP), and the corrected M10 barrier is coefficient-sensitive
+    # enough to surface that where the pre-M10 barrier happened to mask it. With
+    # the weights pinned, inertness holds exactly, not just to O(metres).
     assert torch.equal(a.o, b.o) and torch.equal(a.th, b.th)
 
 

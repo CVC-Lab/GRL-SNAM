@@ -109,7 +109,7 @@ def ipc_piecewise(d: torch.Tensor, d_hat: torch.Tensor | float, vp: float = -5e2
 
     safe = torch.clamp(d, min=float(eps))
     b_in = -(d - dh) ** 2 * torch.log(safe / dh)
-    dbdd_in = (dh - d) * (2.0 * torch.log(safe / dh) - dh / safe) + 1.0
+    dbdd_in = -(2.0 * (d - dh) * torch.log(safe / dh) + (d - dh) ** 2 / safe)  # M10: analytic derivative of b (was +（d-dh)+1, an attraction band); verified vs autograd
     b = torch.where(d <= eps, d.new_tensor(vp), torch.where(d < dh, b_in, torch.zeros_like(d)))
     dbdd = torch.where(d <= eps, d.new_tensor(vp), torch.where(d < dh, dbdd_in, torch.zeros_like(d)))
     b = torch.clamp(b, 0.0, float(max_b))
