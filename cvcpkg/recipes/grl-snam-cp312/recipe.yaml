@@ -128,7 +128,6 @@ test:
 package:
   files:
     - lib/python3.12/site-packages/grl_snam/
-    - lib/python3.12/site-packages/grl_snam_lab/
     - lib/python3.12/site-packages/grl_snam-0.2.1.dist-info/
     - lib/python3.12/site-packages/scripts/
     - lib/python3.12/site-packages/experiments/

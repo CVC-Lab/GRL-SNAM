@@ -87,9 +87,6 @@ if [ ! -x "${CVC_INSTALL_DIR}/bin/grl-snam" ]; then
 fi
 
 PYTHONPATH="${libdir}${PYTHONPATH:+:${PYTHONPATH}}" "${py}" -c "
-import grl_snam, grl_snam_lab
-for fn in ('Lab', 'terrain_mesh'):
-    assert hasattr(grl_snam_lab, fn), 'grl_snam_lab missing ' + fn
-print('grl_snam', getattr(grl_snam, '__version__', '(no __version__)'),
-      '| grl_snam_lab', grl_snam_lab.__version__, 'from', grl_snam_lab.__file__)
+import grl_snam
+print('grl_snam', getattr(grl_snam, '__version__', '(no __version__)'), 'from', grl_snam.__file__)
 "

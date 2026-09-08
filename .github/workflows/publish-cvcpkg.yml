@@ -153,6 +153,7 @@ jobs:
             --platform any \
             --config release \
             --local \
+            --prefix "${{ steps.deps.outputs.path }}" \
             --cvc-revision ${{ needs.compute-revision.outputs.rev }} \
             --output-dir dist
 
