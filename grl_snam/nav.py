@@ -87,6 +87,14 @@ class SdfNavigator:
         # Optional ``(x_world, y_world) -> (dx, dy)`` in world metres, applied
         # to the steering carrot each step. See :meth:`step`.
         self.carrot_bias_fn = None
+        # Optional generic external FORCE hook threaded into the rollout's
+        # integrator (sdf_nav.{sdf,bicycle}_rollout's ``ext_force_fn``): a callable
+        # ``o[B,2] -> [B,2]`` returning an extra acceleration (rollout/normalized
+        # frame) summed alongside F_bar/F_goal each substep. Unlike carrot_bias_fn
+        # (which nudges the pure-pursuit carrot), this enters the force law itself
+        # — the seam the DBG comm force uses as a genuine force term. ``None``
+        # (default) is additively inert and bit-for-bit unchanged.
+        self.ext_force_fn = None
         # Optional material-aware runtime (grl_snam.material.MaterialRuntime).
         # When set, every step evaluates the witness gate against the current
         # target and threads the material force into the rollout. Unset (the
@@ -414,7 +422,15 @@ class SdfNavigator:
         # torch coef-net + rollout for the plain-geometry bicycle path. The
         # coefficients are computed in C++ and not returned, so the metrics'
         # alpha/beta/gamma read 0 in this mode (a display field, never fed back).
-        if self._native_drive and self.material is None and self.friction is None:
+        # The C++ drive_step has no ext_force_fn plumbing, so fall back to the
+        # torch rollout whenever a force hook is set (same pattern as material/
+        # friction) — otherwise the force would be silently dropped.
+        if (
+            self._native_drive
+            and self.material is None
+            and self.friction is None
+            and self.ext_force_fn is None
+        ):
             self._native_drive_step(gt)
             self.step_i += 1
             z = torch.zeros(self.o.shape[0])
@@ -441,12 +457,24 @@ class SdfNavigator:
                 **self.kw,
                 **self._veh,
                 **mat_kw,
+                ext_force_fn=self.ext_force_fn,
             )
             head = torch.stack([torch.cos(self.th), torch.sin(self.th)], -1)
             self.v = self.sp.unsqueeze(-1) * head  # keep .v meaningful for callers
         else:
             self.o, self.v, _ = sdf_nav.sdf_rollout(
-                self.field, self.o, self.v, gt, al, be, ga, 1, nsub=self.nsub, **self.kw, **mat_kw
+                self.field,
+                self.o,
+                self.v,
+                gt,
+                al,
+                be,
+                ga,
+                1,
+                nsub=self.nsub,
+                **self.kw,
+                **mat_kw,
+                ext_force_fn=self.ext_force_fn,
             )
         self.step_i += 1
         return self._metrics(al, be, ga)
