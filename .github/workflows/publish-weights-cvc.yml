@@ -1,0 +1,72 @@
+name: publish-weights-cvc
+
+# Publish the grl-snam-weights data package (base GRL-SNAM nav coefficients — the
+# research tier, NO RF-comm forces) to the PUBLIC `cvc` org on cvcpkg.org, using
+# this repo's CVCPKG_TOKEN (the cvc-org publisher) — the same token that ships the
+# grl-snam-cpXXX columns. Kept separate from publish-cvcpkg.yml (the interpreter
+# matrix) because the weights are a single noarch data package with no py column.
+#
+# Org packages belong in their own repo's recipes, never in libcvc-deps: this
+# recipe lives here, in cvcpkg/recipes/grl-snam-weights. The DBG comm-aware weights
+# are the SEPARATE private cvc-dbg-weights on the utdbg org — the research/
+# development seam is the org boundary; this workflow only ever targets --org cvc.
+#
+#   workflow_dispatch: dry_run=true (default) packs only; dry_run=false publishes.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Pack only; skip the publish to cvc.'
+        default: 'true'
+
+concurrency:
+  group: publish-weights-cvc-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CVCPKG_SERVER: https://cvcpkg.org
+  CVCPKG_ORG: cvc
+
+jobs:
+  publish:
+    name: publish grl-snam-weights → cvc (public)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install cvcpkg
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip >/dev/null
+          python3 -m pip install 'git+https://github.com/transfix/libcvc-deps@master'
+          cvcpkg --version
+
+      - name: Pack + publish grl-snam-weights
+        env:
+          CVCPKG_TOKEN: ${{ secrets.CVCPKG_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CVCPKG_TOKEN:-}" ]; then
+            echo "::error::CVCPKG_TOKEN secret is required to publish"; exit 1
+          fi
+          rm -rf dist && mkdir -p dist
+
+          # --bump packs above whatever is published for cvc (or the recipe floor on
+          # a first publish), so re-runs never 409.
+          cvcpkg pack cvcpkg/recipes/grl-snam-weights --bump \
+            --server "$CVCPKG_SERVER" --org "$CVCPKG_ORG" --token "$CVCPKG_TOKEN" \
+            --output-dir dist
+          ls -l dist
+
+          if [ "${{ github.event.inputs.dry_run }}" = "false" ]; then
+            archive="$(ls dist/grl-snam-weights-*-any-noarch-release-shared.tar.gz)"
+            cvcpkg publish "$archive" \
+              --server "$CVCPKG_SERVER" --org "$CVCPKG_ORG" --token "$CVCPKG_TOKEN"
+            echo "published grl-snam-weights → $CVCPKG_ORG (public)"
+          else
+            echo "DRY RUN — packed only, did not publish."
+          fi

@@ -1,0 +1,38 @@
+schema_version: 1
+
+recipe:
+  name: grl-snam-weights
+  upstream_version: "1.0.0"
+  # BUMP cvc_revision on ANY change to the staged bytes (a new checkpoint/blob, or
+  # an edited PROVENANCE.md that ships under share/) — a same-revision re-push
+  # silently no-ops against the already-published artifact.
+  cvc_revision: 1
+  kind: data
+  maintainer: "cvcpkg group"
+  maintainer_email: "info@cvcpkg.org"
+  homepage: https://github.com/CVC-Lab/GRL-SNAM
+  license: MIT
+  tags: [data, grl-snam, weights, nav]
+  description: >-
+    Pretrained base GRL-SNAM navigation coefficients (no RF-comm forces): the
+    self-supervised SDF CoefMLP that predicts (alpha, beta, gamma) for the
+    differentiable SDF navigator. Ships BOTH the native CVNV blob
+    (coef_sdf.cvcnav, for the C++ cvc::nav forward) and the torch checkpoint
+    (coef_sdf.pt, for grl_snam / sdf_nav.CoefMLP), so downstream users get
+    working nav weights without a training run. Installs to share/grl-snam-weights/.
+
+source:
+  # Data-only: the weights are committed under the recipe (payload/) and staged by
+  # build.sh from CVC_RECIPE_DIR. No upstream to fetch.
+  type: none
+
+build:
+  matrix:
+    - platform: any
+      script: build.sh
+
+package:
+  files:
+    - share/grl-snam-weights/coef_sdf.cvcnav
+    - share/grl-snam-weights/coef_sdf.pt
+    - share/grl-snam-weights/PROVENANCE.md
