@@ -1,0 +1,3 @@
+# The trained torch checkpoint is a deliberate, versioned package payload,
+# not a stray training artifact — re-include it past the repo-wide *.pt ignore.
+!coef_sdf.pt
