@@ -104,7 +104,17 @@ def main(argv=None):
     ckpt, out = argv
     model = sdf_nav.CoefMLP()
     state = torch.load(ckpt, map_location="cpu")
-    model.load_state_dict(state.get("model", state) if isinstance(state, dict) else state)
+    # Unwrap the state dict from whichever checkpoint format we were given:
+    #   * `grl-snam train` (tools/train.py) saves {"model_state_dict", "meta"}
+    #   * older checkpoints saved {"model": ...}
+    #   * a bare state_dict has neither key.
+    # The old code only knew "model", so it fed the whole {"model_state_dict",
+    # "meta"} dict to load_state_dict and crashed on every `grl-snam train` output.
+    if isinstance(state, dict):
+        sd = state.get("model_state_dict") or state.get("model") or state
+    else:
+        sd = state
+    model.load_state_dict(sd)
     write_coef_mlp(model, out)
     print(f"wrote {out}")
 
