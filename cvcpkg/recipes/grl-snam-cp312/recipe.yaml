@@ -22,7 +22,7 @@ recipe:
   # checkout, and every source change required re-cutting the release asset.
   # Reset 4 -> 1 for the 0.2.0 upstream version: cvc_revision counts
   # revisions OF an upstream version, so a version bump restarts it.
-  cvc_revision: 1
+  cvc_revision: 2
   maintainer: "cvcpkg group"
   maintainer_email: "info@cvcpkg.org"
   maintainer_url: "https://cvcpkg.org"
