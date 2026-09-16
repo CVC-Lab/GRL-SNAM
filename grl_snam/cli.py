@@ -341,9 +341,26 @@ def pipeline(bundle, source, steps, minutes, drive, out_dir) -> None:
 @click.argument("name", required=False)
 @click.option("--bundle", default=None, help="scene bundle (sets GRL_SNAM_SCENE_BUNDLE)")
 @click.option("--checkpoint", default=None, help="trained .pt (sets GRL_SNAM_CHECKPOINT)")
+@click.option(
+    "--standalone",
+    is_flag=True,
+    help="run in a standalone pycvc_gl window (no VolRover3) — needs a display",
+)
+@click.option("--width", default=1280, show_default=True, help="standalone window width")
+@click.option("--height", default=800, show_default=True, help="standalone window height")
 @click.option("--list", "list_", is_flag=True, help="list available demos")
-def demo(name: str | None, bundle: str | None, checkpoint: str | None, list_: bool) -> None:
-    """Run a demo live inside VolRover3 (shells out to `volrover3 --run-job`).
+def demo(
+    name: str | None,
+    bundle: str | None,
+    checkpoint: str | None,
+    standalone: bool,
+    width: int,
+    height: int,
+    list_: bool,
+) -> None:
+    """Run a demo live. By default it launches inside VolRover3 (shells out to
+    `volrover3 --run-job`); with --standalone it runs in-process in its own
+    pycvc_gl window (no VolRover3 — just `cvcpkg install`ed bindings + a display).
 
     Set VOLROVER3_BIN if `volrover3` is not on PATH. NAME is one of the registered
     demos (see `--list`)."""
@@ -354,19 +371,32 @@ def demo(name: str | None, bundle: str | None, checkpoint: str | None, list_: bo
         for key, desc in demos.registry().items():
             click.echo(f"  {key:18s} {desc}")
         return
+
+    # Bundle / checkpoint overrides apply to BOTH paths through the environment
+    # (the demos read GRL_SNAM_SCENE_BUNDLE / GRL_SNAM_CHECKPOINT at setup()).
+    if bundle:
+        os.environ["GRL_SNAM_SCENE_BUNDLE"] = bundle
+    if checkpoint:
+        os.environ["GRL_SNAM_CHECKPOINT"] = checkpoint
+
+    if standalone:
+        module = demos.demo_module(name)
+        if module is None:
+            raise click.ClickException(f"unknown demo {name!r}; try `grl-snam demo --list`")
+        from .demos._common import run_standalone
+
+        click.echo(f"running {name} standalone (pycvc_gl window; no VolRover3) — close it to quit")
+        run_standalone(module, width=width, height=height)
+        return
+
     path = demos.demo_path(name)
     if path is None:
         raise click.ClickException(f"unknown demo {name!r}; try `grl-snam demo --list`")
-    env = os.environ.copy()
-    if bundle:
-        env["GRL_SNAM_SCENE_BUNDLE"] = bundle
-    if checkpoint:
-        env["GRL_SNAM_CHECKPOINT"] = checkpoint
     binary = os.environ.get("VOLROVER3_BIN", "volrover3")
     click.echo(f"launching: {binary} --run-job {path}")
     import subprocess
 
-    raise SystemExit(subprocess.call([binary, "--run-job", path], env=env))
+    raise SystemExit(subprocess.call([binary, "--run-job", path], env=os.environ.copy()))
 
 
 # ── legacy CoefEnergyNet trainer/evaluator (kept; future real-time HUD source) ─

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import torch
 
-from grl_snam.demos._common import CameraDriver, require_host
+from grl_snam.demos._common import current_host
 from grl_snam.demos.lab import TERRAIN_BOUNDS, _terrain_heights, terrain_height
 from grl_snam.dynamics import integrate_surrogate_v2
 
@@ -98,9 +98,8 @@ def _obstacle_actor(x, y, r, height=40.0):
 
 
 def setup() -> None:
-    pycvc, vrhost = require_host()
+    host = current_host()
     from pycvc_gl.camera import ChaseCamera
-    from pycvc_gl.lab import Lab
 
     path2d, clear = plan_path()
     print(
@@ -108,8 +107,7 @@ def setup() -> None:
         % (len(path2d), clear),
         flush=True,
     )
-    app = vrhost.app()
-    lab = Lab(app=app, scene=vrhost.scene())
+    lab = host.make_lab()
     lab.add_terrain(_terrain_heights(), bounds=TERRAIN_BOUNDS, color=(0.32, 0.40, 0.27))
     for i, (ox, oy, r) in enumerate(OBSTACLES):
         actor, b = _obstacle_actor(ox, oy, r)
@@ -134,7 +132,7 @@ def setup() -> None:
         lab=lab,
         path=path2d,
         chase=chase,
-        cam=CameraDriver(app, pycvc, fov=55.0),
+        cam=host.camera(fov=55.0),
         t=0.0,
         speed=28.0,
         t_end=(len(path2d) - 1) / 28.0,

@@ -3,7 +3,9 @@
 the trained SDF surrogate drives locally within the street corridor, accepted while it
 stays out of footprints, else nudged along the clean spine — robust for adversarial
 start/goal pairs where a pure potential field would stall. Live metrics publish each
-step. Prep + env are the same as ``austin_freedrive`` (build-sdf + train).
+step. Like ``austin_freedrive`` it runs off cvcpkg with no training run — the published
+`grl-snam-weights` coefficients + `scene-austin-south` geometry by default; see that
+module for the optional GRL_SNAM_CHECKPOINT / GRL_SNAM_SCENE_BUNDLE overrides.
 """
 
 from __future__ import annotations
@@ -14,16 +16,20 @@ import numpy as np
 import torch
 
 import sdf_nav
-from grl_snam.demos._common import CameraDriver, MetricsPublisher, require_host, vehicle_box_mesh
+from grl_snam.demos._common import (
+    current_host,
+    default_nav_weights_pt,
+    default_scene_bundle,
+    vehicle_box_mesh,
+)
 from grl_snam.metrics import NavMetrics
 
 _S: dict = {}
 
 
 def setup() -> None:
-    pycvc, vrhost = require_host()
+    host = current_host()
     from pycvc_gl.camera import ChaseCamera
-    from pycvc_gl.lab import Lab
     from pycvc_gl.scenes import (
         building_occupancy,
         load_geometry_bundle,
@@ -35,8 +41,8 @@ def setup() -> None:
 
     from grl_snam.route import cells_for_metres, plan_clearance_route
 
-    bundle = os.environ.get("GRL_SNAM_SCENE_BUNDLE", os.path.expanduser("~/scenes/austin_south"))
-    ckpt = os.environ.get("GRL_SNAM_CHECKPOINT", "checkpoints/coef_sdf.pt")
+    bundle = default_scene_bundle()
+    ckpt = default_nav_weights_pt()
     torch.set_num_threads(2)
     ck = torch.load(ckpt, map_location="cpu")
     meta = ck["meta"]
@@ -54,8 +60,7 @@ def setup() -> None:
     )
     nsub = int(meta["nsub"])
 
-    app = vrhost.app()
-    lab = Lab(app=app, scene=vrhost.scene())
+    lab = host.make_lab()
     lab.set_axis_visible(False)
     sample = load_geometry_bundle(lab, bundle)
     bounds = terrain_grid(os.path.join(bundle, "terrain.json"))[1]
@@ -129,8 +134,8 @@ def setup() -> None:
         sample=sample,
         vpose=vpose,
         chase=chase,
-        cam=CameraDriver(app, pycvc),
-        metrics=MetricsPublisher(app, pycvc),
+        cam=host.camera(),
+        metrics=host.metrics(),
         o=o,
         v=torch.zeros(1, 2),
         ri=0,

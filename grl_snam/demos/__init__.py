@@ -44,3 +44,17 @@ def demo_path(name: str) -> str | None:
         return None
     spec = importlib.util.find_spec(entry[0])
     return spec.origin if spec and spec.origin else None
+
+
+def demo_module(name: str):
+    """Import and return a demo module by registry name (or ``None`` if unknown).
+
+    Unlike :func:`demo_path`, this imports the module — so the host bindings
+    (``pycvc_gl`` etc.) must be importable. Used by ``grl-snam demo --standalone``
+    to run a demo in-process (own ``pycvc_gl`` window, no VolRover3)."""
+    entry = _DEMOS.get(name)
+    if entry is None:
+        return None
+    import importlib
+
+    return importlib.import_module(entry[0])
