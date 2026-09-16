@@ -516,7 +516,7 @@ build:
 
 ```bash
 cvcpkg install cvcgl-examples --prefix ./demos
-./demos/bin/nav_city_swarm      # also nav_fog_ghost, nav_finale, nav_city_drive, lsystem_forest
+./demos/bin/nav_city_swarm      # also nav_fog_ghost, nav_finale, nav_city_drive
 ```
 
 Every demo runs with zero args on a synthetic city; point the swarm/drive ones at

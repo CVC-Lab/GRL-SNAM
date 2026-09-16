@@ -126,9 +126,9 @@ GRL_SNAM_CHECKPOINT=checkpoints/coef_sdf.pt grl-snam demo austin-freedrive
 ### Native C++ nav demos (no Python)
 
 The pure-C++ demos (`nav_city_swarm`, `nav_fog_ghost`, `nav_finale`,
-`nav_city_drive`, `lsystem_forest`, …) are the **`cvcgl-examples`** cvcpkg
-package — **no Python, no torch, no pycvc**. Just the C++ GL stack (libcvc + VTK
-+ boost + imgui). Three ways in:
+`nav_city_drive`, …) are the **`cvcgl-examples`** cvcpkg package — **no Python,
+no torch, no pycvc**. Just the C++ GL stack (libcvc + VTK + boost + imgui). Three
+ways in:
 
 **Run the prebuilt binaries (no build):**
 ```sh
@@ -136,7 +136,6 @@ cvcpkg install cvcgl-examples --prefix ./demos
 ./demos/bin/nav_city_swarm     # reactive cvc::nav swarm on a synthetic city
 ./demos/bin/nav_fog_ghost      # fog-of-war "ghost" story (top-down map)
 ./demos/bin/nav_finale         # 2-act pursuit; auto-finds the Austin bundle if present
-./demos/bin/lsystem_forest     # procedural island
 ```
 Every demo runs with zero args (RPATH is baked in — no `LD_LIBRARY_PATH`). To
 drive the *real* Austin scene + trained policy, install the data and point the
@@ -163,13 +162,12 @@ cmake -G Ninja -S src/cvcGL -B build \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
   -DCVC_BUILD_EXAMPLES=ON -DCGAL_Boost_USE_STATIC_LIBS=OFF \
   -DCMAKE_PREFIX_PATH="$PWD/deps"
-cmake --build build -j --target nav_city_swarm   # or nav_city_drive / nav_fog_ghost / nav_finale / lsystem_forest
+cmake --build build -j --target nav_city_swarm   # or nav_city_drive / nav_fog_ghost / nav_finale
 ./build/examples/nav_city_swarm
 ```
 `-DBUILD_SHARED_LIBS=OFF` static-links cvcGL into each binary; `-DCGAL_Boost_USE_STATIC_LIBS=OFF`
 is required so `find_package(Boost)` accepts cvcpkg's shared Boost. Targets:
-`nav_city_swarm`, `nav_city_drive`, `nav_fog_ghost`, `nav_finale`,
-`lsystem_forest`, `terrain_lab`, `bunny_shadow`, …
+`nav_city_swarm`, `nav_city_drive`, `nav_fog_ghost`, `nav_finale`, `terrain_lab`.
 
 ### wasm (browser)
 
@@ -177,10 +175,11 @@ is required so `find_package(Boost)` accepts cvcpkg's shared Boost. Targets:
 <https://transfix.github.io/libcvc/> — e.g. `/nav_city_swarm/`, `/nav_city_drive/`,
 `/nav_fog_ghost/`.
 
-**Prebuilt, run locally:** the cvcpkg wasm package ships the `lsystem_forest`
-demo plus a launcher that serves it cross-origin-isolated:
+**Prebuilt, run locally:** the cvcpkg `cvcgl-examples` wasm package ships the
+same threaded nav gallery, plus the `cvcgl-examples-web` launcher that serves it
+with the COOP/COEP headers wasm threading needs:
 ```sh
-cvcpkg install cvcgl-examples --platform wasm --arch wasm32 --link static --prefix ./demos
+cvcpkg install cvcgl-examples --platform wasm-mt --arch wasm32 --link static --prefix ./demos
 ./demos/bin/cvcgl-examples-web          # serves http://localhost:8811 and opens a browser
 ```
 
