@@ -27,12 +27,18 @@ import torch
 
 import sdf_nav
 from grl_snam.demos._common import (
+    SimPacer,
     current_host,
     default_nav_weights_pt,
     default_scene_bundle,
     vehicle_box_mesh,
 )
 from grl_snam.nav import SdfNavigator
+
+# Sim playback rate relative to the world clock: 1.0 == real time (the drive takes
+# as many wall seconds as it does sim seconds), matching the native cvc::nav demos.
+# Raise it for a faster-to-watch pace without ever re-coupling to the frame rate.
+SIM_SPEED = 1.0
 
 _S: dict = {}
 
@@ -106,7 +112,14 @@ def setup() -> None:
         chase=chase,
         cam=cam,
         metrics=metrics,
-        steps_per_frame=3,
+        # Fixed-timestep sim pacing off the world clock. One nav.step() advances
+        # meta["dt"] seconds of sim time, so ticking it at that wall rate is
+        # real time — not once per drawn frame (which ran ~10x fast on a quick
+        # display and varied with the frame rate).
+        pacer=SimPacer(),
+        sim_dt=float(nav.dt),
+        speed=SIM_SPEED,
+        last_m=None,
     )
 
 
@@ -114,9 +127,14 @@ def step(dt: float) -> None:
     if not _S:
         setup()
     nav = _S["nav"]
-    m = None
-    for _ in range(_S["steps_per_frame"]):
+    # Run the navigator a whole number of fixed sim ticks for the real time this
+    # frame took (0 on a fast frame, more on a slow one), not once per frame.
+    m = _S["last_m"]
+    for _ in range(_S["pacer"].ticks(dt, _S["sim_dt"], _S["speed"])):
         m = nav.step()
+    if m is None:
+        m = nav.step()  # first frame: guarantee a pose to draw
+    _S["last_m"] = m
     x, y = m.x, m.y
     _S["lab"].node("agent0").setTransform(_S["vpose"].update(x, y, dt))
     eye, tgt, up = _S["chase"].update((x, y, _S["sample"](x, y)), dt)

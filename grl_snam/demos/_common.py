@@ -185,6 +185,33 @@ def vehicle_box_mesh(length=4.6, width=2.0, height=1.6):
     return v, t
 
 
+class SimPacer:
+    """Wall-clock -> fixed-dt sim pacing — the Python twin of the native demos'
+    ``SimPacer`` (libcvc ``src/cvcGL/examples/nav_common.h``).
+
+    Accumulate real seconds (times an optional ``speed``) and hand back the whole
+    number of fixed ``sim_dt`` ticks to run this frame, so the sim advances at a
+    fixed rate on ANY display rate. Stepping the navigator a fixed N times per
+    render frame instead made the same drive run faster the faster the window drew
+    (and much faster than real time on an unthrottled display) — this keeps world
+    time honest, exactly like the native cvc::nav demos' world clock."""
+
+    def __init__(self):
+        self.carry = 0.0
+
+    def ticks(self, wall_dt: float, sim_dt: float, speed: float = 1.0, cap: int = 8) -> int:
+        if not (wall_dt > 0.0) or not (sim_dt > 0.0):
+            return 0
+        self.carry += wall_dt * speed
+        n = int(self.carry / sim_dt)
+        if n > cap:
+            n = cap  # a stall drops the backlog, never a tick burst that fast-forwards
+            self.carry = 0.0
+        else:
+            self.carry -= n * sim_dt
+        return n
+
+
 class CameraDriver:
     """Write the VolRover3 camera each frame through the state tree (`volrover3.camera.*`)."""
 

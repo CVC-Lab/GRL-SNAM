@@ -16,6 +16,14 @@ from __future__ import annotations
 
 import math
 
+# `grl-snam demo lab` runs this module's setup()/step(), which build the scene
+# through VolRover3's live host (`vrhost`) — there is no standalone window path
+# for the animated job (unlike the austin_* demos). Flag it so `grl-snam demo`
+# stops with a clear "use --volrover3" message instead of an opaque ImportError
+# when vrhost isn't present. (The static `grl-snam lab-demo` command still runs
+# standalone via run_standalone() below.)
+REQUIRES_VOLROVER3 = True
+
 TERRAIN_BOUNDS = (-100.0, -100.0, 100.0, 100.0)
 TRACK_RADIUS = 70.0
 LOOP_SECONDS = 22.0

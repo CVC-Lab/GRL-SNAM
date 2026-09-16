@@ -17,12 +17,17 @@ import torch
 
 import sdf_nav
 from grl_snam.demos._common import (
+    SimPacer,
     current_host,
     default_nav_weights_pt,
     default_scene_bundle,
     vehicle_box_mesh,
 )
 from grl_snam.metrics import NavMetrics
+
+# Sim playback rate relative to the world clock: 1.0 == real time, matching the
+# native cvc::nav demos. Raise for a faster pace without re-coupling to framerate.
+SIM_SPEED = 1.0
 
 _S: dict = {}
 
@@ -144,6 +149,13 @@ def setup() -> None:
         corr=0.35 / scale,
         look=8,
         init=len(route),
+        # Fixed-timestep sim pacing off the world clock: one _nav_step() advances
+        # kw["dt"] (== meta["dt"]) seconds of sim time, so tick it at that wall rate
+        # for real time instead of a fixed count per drawn frame.
+        pacer=SimPacer(),
+        sim_dt=float(kw["dt"]),
+        speed=SIM_SPEED,
+        last_m=None,
     )
     lab.node("agent0").setTransform(vpose.update(start[0], start[1], 1.0 / 30.0))
     lab.pump()
@@ -225,9 +237,15 @@ def _nav_step() -> NavMetrics:
 def step(dt: float) -> None:
     if not _S:
         setup()
-    m = None
-    for _ in range(3):
+    # Advance the corridor follower a whole number of fixed sim ticks for the real
+    # time this frame took, not a fixed count per frame (which ran fast + varied
+    # with the display rate).
+    m = _S["last_m"]
+    for _ in range(_S["pacer"].ticks(dt, _S["sim_dt"], _S["speed"])):
         m = _nav_step()
+    if m is None:
+        m = _nav_step()  # first frame: guarantee a pose to draw
+    _S["last_m"] = m
     _S["lab"].node("agent0").setTransform(_S["vpose"].update(m.x, m.y, dt))
     eye, tgt, up = _S["chase"].update((m.x, m.y, _S["sample"](m.x, m.y)), dt)
     _S["cam"].look(eye, tgt, up)
