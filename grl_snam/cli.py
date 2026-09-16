@@ -11,7 +11,7 @@ One entry point for every workflow, from the world model to a running demo:
   grl-snam pipeline    BUNDLE            world model -> SDF -> train -> video (all)
   grl-snam fog list|record|capture|play|all   fog-of-war demo: record -> replay
   grl-snam finale     BUNDLE            8 vehicles on real city geometry, in 3-D
-  grl-snam demo        NAME              run a demo live inside VolRover3
+  grl-snam demo        NAME              run a demo live (standalone window; --volrover3 to embed)
   grl-snam lab-demo    [PNG]             standalone lab visualization
   grl-snam eval        [args...]         CoefEnergyNet visual eval (legacy trainer)
   grl-snam train-coef  [args...]         CoefEnergyNet dataset training (legacy)
@@ -342,9 +342,9 @@ def pipeline(bundle, source, steps, minutes, drive, out_dir) -> None:
 @click.option("--bundle", default=None, help="scene bundle (sets GRL_SNAM_SCENE_BUNDLE)")
 @click.option("--checkpoint", default=None, help="trained .pt (sets GRL_SNAM_CHECKPOINT)")
 @click.option(
-    "--standalone",
-    is_flag=True,
-    help="run in a standalone pycvc_gl window (no VolRover3) — needs a display",
+    "--standalone/--volrover3",
+    default=True,
+    help="standalone pycvc_gl window (default; needs a display) vs. inside VolRover3",
 )
 @click.option("--width", default=1280, show_default=True, help="standalone window width")
 @click.option("--height", default=800, show_default=True, help="standalone window height")
@@ -358,12 +358,12 @@ def demo(
     height: int,
     list_: bool,
 ) -> None:
-    """Run a demo live. By default it launches inside VolRover3 (shells out to
-    `volrover3 --run-job`); with --standalone it runs in-process in its own
-    pycvc_gl window (no VolRover3 — just `cvcpkg install`ed bindings + a display).
+    """Run a demo live. By default it runs standalone in its own pycvc_gl window
+    (no VolRover3 — just `cvcpkg install`ed bindings + a display). Pass --volrover3
+    to launch it inside VolRover3 instead (shells out to `volrover3 --run-job`; set
+    VOLROVER3_BIN if `volrover3` is not on PATH).
 
-    Set VOLROVER3_BIN if `volrover3` is not on PATH. NAME is one of the registered
-    demos (see `--list`)."""
+    NAME is one of the registered demos (see `--list`)."""
     from . import demos
 
     if list_ or not name:
