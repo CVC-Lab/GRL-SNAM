@@ -22,7 +22,7 @@ recipe:
   # checkout, and every source change required re-cutting the release asset.
   # Reset 4 -> 1 for the 0.2.0 upstream version: cvc_revision counts
   # revisions OF an upstream version, so a version bump restarts it.
-  cvc_revision: 2
+  cvc_revision: 3
   maintainer: "cvcpkg group"
   maintainer_email: "info@cvcpkg.org"
   maintainer_url: "https://cvcpkg.org"
@@ -107,6 +107,16 @@ depends:
     # their cvcpkg columns exist now, completing the declared closure.
     - name: matplotlib-cp313
     - name: imageio-cp313
+    # Live-demo data, so a bare `cvcpkg install grl-snam-cp31X` is enough to run
+    # `grl-snam demo NAME --standalone` — no separate data step: the pretrained
+    # nav coefficients (grl-snam-weights -> share/grl-snam-weights) + the Austin
+    # geometry (scene-austin-south -> share/cvc-scenes/austin_south) + the Humvee
+    # mesh that bundle references. The demos resolve these from the prefix; the
+    # GRL_SNAM_CHECKPOINT / GRL_SNAM_SCENE_BUNDLE overrides still win. Data-only
+    # (platform any), so they never constrain the interpreter column.
+    - name: grl-snam-weights
+    - name: scene-austin-south
+    - name: vehicle-humvee
 
 build:
   # Pure Python: built once, valid everywhere (platform: any / noarch).
