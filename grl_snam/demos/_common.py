@@ -15,8 +15,90 @@ a HUD panel reads) and prints a compact line.
 from __future__ import annotations
 
 import math
+import os
+import sys
 
 from grl_snam.metrics import NavMetrics, hud_lines
+
+
+# ── cvcpkg-installed data (weights + scene bundle) ───────────────────────────────
+# The demos ship no data of their own: the pretrained nav coefficients come from the
+# `grl-snam-weights` cvcpkg bundle (share/grl-snam-weights/coef_sdf.pt) and the Austin
+# geometry from `scene-austin-south` (share/cvc-scenes/austin_south). Resolve those
+# from the active prefix so a developer who has `cvcpkg install`ed them can just run
+# the demo — no training run, no hand-placed files — while keeping env overrides and a
+# local-dev fallback.
+def _candidate_prefixes():
+    """Prefixes to search for installed share/ data, most specific first."""
+    roots = []
+    for env in ("GRL_SNAM_PREFIX", "CVC_PREFIX", "CVCPKG_PREFIX", "CONDA_PREFIX", "VIRTUAL_ENV"):
+        v = os.environ.get(env)
+        if v:
+            roots.append(v)
+    roots.append(sys.prefix)  # the (embedded) interpreter's own prefix
+    # …and relative to an installed host package: pycvc/grl_snam live under
+    # <prefix>/lib/pythonX.Y/site-packages, so an ancestor with a share/ sibling is the
+    # prefix. Covers relocated cvcpkg installs whose sys.prefix is the system python.
+    for mod in ("pycvc", "grl_snam"):
+        try:
+            f = getattr(__import__(mod), "__file__", None)
+        except Exception:
+            f = None
+        if not f:
+            continue
+        p = os.path.abspath(f)
+        for _ in range(6):
+            p = os.path.dirname(p)
+            if os.path.isdir(os.path.join(p, "share")):
+                roots.append(p)
+                break
+    seen, out = set(), []
+    for r in roots:
+        if r and r not in seen:
+            seen.add(r)
+            out.append(r)
+    return out
+
+
+def resolve_installed(relpath, *, env=None, fallback=None):
+    """Resolve a cvcpkg-installed data path (e.g. ``share/grl-snam-weights/coef_sdf.pt``).
+
+    Order: explicit ``env`` override → ``<prefix>/relpath`` for each candidate prefix →
+    ``fallback`` (a local-dev path). Returns the first existing path, else ``fallback``
+    so the caller's own load error names the missing file.
+    """
+    if env:
+        v = os.environ.get(env)
+        if v:
+            return v
+    for root in _candidate_prefixes():
+        p = os.path.join(root, relpath)
+        if os.path.exists(p):
+            return p
+    return fallback
+
+
+def default_nav_weights_pt():
+    """Pretrained torch checkpoint for ``sdf_nav.CoefMLP`` — the installed
+    ``grl-snam-weights`` bundle (``share/grl-snam-weights/coef_sdf.pt``), overridable
+    with ``GRL_SNAM_CHECKPOINT``; falls back to a locally-trained
+    ``checkpoints/coef_sdf.pt``."""
+    return resolve_installed(
+        "share/grl-snam-weights/coef_sdf.pt",
+        env="GRL_SNAM_CHECKPOINT",
+        fallback="checkpoints/coef_sdf.pt",
+    )
+
+
+def default_scene_bundle():
+    """Austin South geometry — the installed ``scene-austin-south`` bundle
+    (``share/cvc-scenes/austin_south``), overridable with ``GRL_SNAM_SCENE_BUNDLE``;
+    falls back to ``~/scenes/austin_south``."""
+    return resolve_installed(
+        "share/cvc-scenes/austin_south",
+        env="GRL_SNAM_SCENE_BUNDLE",
+        fallback=os.path.expanduser("~/scenes/austin_south"),
+    )
 
 
 def require_host():

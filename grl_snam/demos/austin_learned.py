@@ -3,7 +3,9 @@
 the trained SDF surrogate drives locally within the street corridor, accepted while it
 stays out of footprints, else nudged along the clean spine — robust for adversarial
 start/goal pairs where a pure potential field would stall. Live metrics publish each
-step. Prep + env are the same as ``austin_freedrive`` (build-sdf + train).
+step. Like ``austin_freedrive`` it runs off cvcpkg with no training run — the published
+`grl-snam-weights` coefficients + `scene-austin-south` geometry by default; see that
+module for the optional GRL_SNAM_CHECKPOINT / GRL_SNAM_SCENE_BUNDLE overrides.
 """
 
 from __future__ import annotations
@@ -14,7 +16,14 @@ import numpy as np
 import torch
 
 import sdf_nav
-from grl_snam.demos._common import CameraDriver, MetricsPublisher, require_host, vehicle_box_mesh
+from grl_snam.demos._common import (
+    CameraDriver,
+    MetricsPublisher,
+    default_nav_weights_pt,
+    default_scene_bundle,
+    require_host,
+    vehicle_box_mesh,
+)
 from grl_snam.metrics import NavMetrics
 
 _S: dict = {}
@@ -35,8 +44,8 @@ def setup() -> None:
 
     from grl_snam.route import cells_for_metres, plan_clearance_route
 
-    bundle = os.environ.get("GRL_SNAM_SCENE_BUNDLE", os.path.expanduser("~/scenes/austin_south"))
-    ckpt = os.environ.get("GRL_SNAM_CHECKPOINT", "checkpoints/coef_sdf.pt")
+    bundle = default_scene_bundle()
+    ckpt = default_nav_weights_pt()
     torch.set_num_threads(2)
     ck = torch.load(ckpt, map_location="cpu")
     meta = ck["meta"]

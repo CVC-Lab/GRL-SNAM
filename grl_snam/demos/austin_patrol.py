@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import os
 
-from grl_snam.demos._common import CameraDriver, require_host, vehicle_box_mesh
+from grl_snam.demos._common import CameraDriver, default_scene_bundle, require_host, vehicle_box_mesh
 
 _S: dict = {}
 
@@ -30,7 +30,7 @@ def setup() -> None:
 
     from grl_snam.route import cells_for_metres, plan_clearance_route
 
-    bundle = os.environ.get("GRL_SNAM_SCENE_BUNDLE", os.path.expanduser("~/scenes/austin_south"))
+    bundle = default_scene_bundle()
     app = vrhost.app()
     lab = Lab(app=app, scene=vrhost.scene())
     lab.set_axis_visible(False)

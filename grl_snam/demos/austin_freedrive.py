@@ -4,14 +4,18 @@ the buildings through the SDF (a moving carrot toward the goal + the wall barrie
 with a bug-style wall-follow escape for potential-field dead-ends. Live metrics (the
 network's coefficients, clearance, mode) publish to the state tree + console every step.
 
-Prep once, then run inside VolRover3 (Jobs tab -> Load Script, or `grl-snam demo
-austin-freedrive`):
-    grl-snam build-sdf <bundle>
-    grl-snam train <bundle>/nav_sdf.npz -o checkpoints/coef_sdf.pt
+Runs out of the box off cvcpkg — no training run: it uses the published pretrained
+coefficients (`grl-snam-weights` → share/grl-snam-weights/coef_sdf.pt) and the published
+Austin geometry (`scene-austin-south` → share/cvc-scenes/austin_south), both discovered
+from the active prefix. So: `cvcpkg install grl-snam-weights scene-austin-south` (plus
+the demo host), then run inside VolRover3 (Jobs tab -> Load Script, or `grl-snam demo
+austin-freedrive`).
 
-Env: GRL_SNAM_SCENE_BUNDLE (bundle dir), GRL_SNAM_CHECKPOINT (.pt), GRL_SNAM_SDF
-(prebuilt nav_sdf.npz; else built from occupancy), GRL_SNAM_START / GRL_SNAM_GOAL
-("x,y"; defaults are a navigable pair on austin_south).
+Overrides (all optional): GRL_SNAM_CHECKPOINT — a .pt to use instead of the published
+weights, e.g. from your own `grl-snam build-sdf <bundle>` + `grl-snam train
+<bundle>/nav_sdf.npz -o checkpoints/coef_sdf.pt`; GRL_SNAM_SCENE_BUNDLE (bundle dir);
+GRL_SNAM_SDF (prebuilt nav_sdf.npz; else built from occupancy); GRL_SNAM_START /
+GRL_SNAM_GOAL ("x,y"; defaults are a navigable pair on austin_south).
 """
 
 from __future__ import annotations
@@ -22,7 +26,14 @@ import numpy as np
 import torch
 
 import sdf_nav
-from grl_snam.demos._common import CameraDriver, MetricsPublisher, require_host, vehicle_box_mesh
+from grl_snam.demos._common import (
+    CameraDriver,
+    MetricsPublisher,
+    default_nav_weights_pt,
+    default_scene_bundle,
+    require_host,
+    vehicle_box_mesh,
+)
 from grl_snam.nav import SdfNavigator
 
 _S: dict = {}
@@ -43,8 +54,8 @@ def setup() -> None:
     from pycvc_gl.scenes import building_occupancy, load_geometry_bundle, terrain_grid
     from pycvc_gl.vehicle import VehiclePose
 
-    bundle = os.environ.get("GRL_SNAM_SCENE_BUNDLE", os.path.expanduser("~/scenes/austin_south"))
-    ckpt = os.environ.get("GRL_SNAM_CHECKPOINT", "checkpoints/coef_sdf.pt")
+    bundle = default_scene_bundle()
+    ckpt = default_nav_weights_pt()
     torch.set_num_threads(2)
     ck = torch.load(ckpt, map_location="cpu")
     meta = ck["meta"]
