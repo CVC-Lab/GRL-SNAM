@@ -383,6 +383,20 @@ def demo(
         module = demos.demo_module(name)
         if module is None:
             raise click.ClickException(f"unknown demo {name!r}; try `grl-snam demo --list`")
+        # Some demos build their scene through VolRover3's live host (the `vrhost`
+        # module — VolRover3's embedded Python and entry point into the running
+        # app) and have no standalone path. Stop with a clear pointer to
+        # --volrover3 instead of an opaque ImportError from deep inside setup().
+        import importlib.util as _ilu
+
+        if getattr(module, "REQUIRES_VOLROVER3", False) and _ilu.find_spec("vrhost") is None:
+            raise click.ClickException(
+                f"the {name!r} demo runs only inside VolRover3: it needs `vrhost` "
+                f"(VolRover3's host module and entry point into the running app), "
+                f"which isn't importable here.\n"
+                f"Launch it in VolRover3 instead:\n"
+                f"    grl-snam demo {name} --volrover3"
+            )
         from .demos._common import run_standalone
 
         click.echo(f"running {name} standalone (pycvc_gl window; no VolRover3) — close it to quit")
