@@ -244,3 +244,181 @@ class MetricsPublisher:
                 self._pycvc.state_set(self._app, f"{self._base}.{k}", str(v))
         if self._print_every and self._n % self._print_every == 1:
             print("  |  ".join(hud_lines(m)), flush=True)
+
+
+# ── demo host: embedded in VolRover3, or a standalone pycvc_gl window ─────────
+# The Austin demos are host-agnostic setup()/step(dt) pairs. By default they run
+# EMBEDDED in VolRover3 (adopt vrhost's live app+scene; camera+metrics flow
+# through the state tree — the original path, unchanged). `run_standalone()`
+# swaps in a host that owns its OWN pycvc_gl window and drives a live animation
+# loop, so the demos run straight off cvcpkg with no VolRover3 at all.
+#
+# The standalone loop mirrors the cvc::nav NATIVE demos (nav_city_drive.cpp):
+# a non-blocking `pycvc_gl.SceneRenderer` (render()/processUIEvents()/
+# windowClosed()/setCamera()) driven by a caller-owned `while not
+# windowClosed()` loop — NOT a blocking `show()` (which owns the loop and so
+# cannot be stepped by the sim). Same primitive the native/wasm demos use.
+
+_STANDALONE = None  # a _StandaloneHost while a standalone run is active, else None
+
+
+class _Vr3Host:
+    """Embedded in VolRover3: adopt the running app+scene; camera+metrics through
+    the state tree. This is the original behaviour, unchanged."""
+
+    def __init__(self):
+        self._pycvc, self._vrhost = require_host()
+        self._app = self._vrhost.app()
+
+    def make_lab(self):
+        from pycvc_gl.lab import Lab
+
+        return Lab(app=self._app, scene=self._vrhost.scene())
+
+    def camera(self, fov=60.0):
+        return CameraDriver(self._app, self._pycvc, fov=fov)
+
+    def metrics(self):
+        return MetricsPublisher(self._app, self._pycvc)
+
+    def run(self, step) -> None:
+        # VolRover3 owns the render loop and calls step(dt) itself — nothing to do.
+        pass
+
+
+class _DirectCamera:
+    """Standalone camera driver: aim the live pycvc_gl window's camera each frame
+    (no state tree). Mirrors :class:`CameraDriver`'s ``look()`` so the demos call
+    it identically — the difference is a direct ``SceneRenderer.setCamera`` (the
+    native demos' scripted-camera path) instead of a state-tree write."""
+
+    def __init__(self, host, fov=60.0):
+        self._host = host
+        self._fov = float(fov)
+
+    def look(self, eye, target, up=(0.0, 0.0, 1.0)):
+        view = self._host.view()
+        if view is None:
+            return
+        view.setCamera(
+            float(eye[0]),
+            float(eye[1]),
+            float(eye[2]),
+            float(target[0]),
+            float(target[1]),
+            float(target[2]),
+            float(up[0]),
+            float(up[1]),
+            float(up[2]),
+            self._fov,
+        )
+
+
+class _PrintMetrics:
+    """Standalone metrics: print the live HUD line (no state tree). Same on-screen
+    ground-speed derivation as :class:`MetricsPublisher`."""
+
+    def __init__(self, print_every=30):
+        self._n = 0
+        self._prev = None
+        self._print_every = print_every
+
+    def publish(self, m: NavMetrics, dt: float | None = None) -> None:
+        if dt and dt > 0 and self._prev is not None:
+            dx, dy = m.x - self._prev[0], m.y - self._prev[1]
+            m.speed_mps = (dx * dx + dy * dy) ** 0.5 / dt
+        self._prev = (m.x, m.y)
+        self._n += 1
+        if self._print_every and self._n % self._print_every == 1:
+            print("  |  ".join(hud_lines(m)), flush=True)
+
+
+class _StandaloneHost:
+    """No VolRover3: own a pycvc_gl ``Lab()`` and a live, non-blocking window.
+
+    The ``SceneRenderer`` is created lazily in :meth:`run` — AFTER the demo's
+    ``setup()`` has populated the scene — mirroring the native demos, which build
+    the scene first and then attach one renderer to it."""
+
+    def __init__(self, title="grl-snam demo", width=1280, height=800, fps=60.0):
+        self._title = str(title)
+        self._w = int(width)
+        self._h = int(height)
+        self._fps = max(1.0, float(fps))
+        self._lab = None
+        self._view = None
+
+    def make_lab(self):
+        import pycvc_gl
+        from pycvc_gl.lab import Lab
+
+        self._lab = Lab()  # standalone: builds its own app + SceneGraph
+        # Attach ONE non-blocking on-screen renderer NOW, before the demo adds its
+        # nodes — mirroring the embedded case, where the host's renderer is already
+        # present as setup() populates the scene (so add_*/setTransform land on a
+        # live renderer). offscreen=False opens a real window and needs a display.
+        self._view = pycvc_gl.SceneRenderer(self._lab._scene, self._w, self._h, False, "main")
+        return self._lab
+
+    def camera(self, fov=60.0):
+        return _DirectCamera(self, fov=fov)
+
+    def metrics(self):
+        return _PrintMetrics()
+
+    def view(self):
+        return self._view
+
+    def run(self, step) -> None:
+        import time
+
+        view = self._view
+        if view is None:  # setup() never built a Lab through this host
+            raise RuntimeError("standalone demo did not create a Lab via the host")
+        view.resetCamera()  # sane first frame until step() aims the chase camera
+        view.render()
+
+        min_dt, max_dt = 1.0 / 240.0, 0.25
+        prev = None
+        # Caller-owned loop (the native-demo shape): pump UI, step the sim, draw —
+        # until the user closes the window. dt from a wall clock, clamped so the
+        # first frame and any hitch can't spike the integrator.
+        while not view.windowClosed():
+            now = time.monotonic()
+            dt = (now - prev) if prev is not None else (1.0 / 60.0)
+            prev = now
+            if dt < min_dt or dt > max_dt:
+                dt = 1.0 / 60.0
+            view.processUIEvents()
+            step(dt)
+            view.render()
+        view.close()
+
+
+def current_host():
+    """The active demo host: the standalone window while a :func:`run_standalone`
+    is in progress, else the VolRover3 embedded host (built lazily so importing a
+    demo never needs the running host)."""
+    if _STANDALONE is not None:
+        return _STANDALONE
+    return _Vr3Host()
+
+
+def run_standalone(module, *, title=None, width=1280, height=800, fps=60.0) -> None:
+    """Run a demo *module* (a ``setup()`` + ``step(dt)`` pair) in a standalone
+    pycvc_gl window — no VolRover3. Backs ``grl-snam demo NAME --standalone``.
+
+    The module's own ``setup()``/``step`` are used verbatim: switching the module
+    global :data:`_STANDALONE` makes :func:`current_host` hand the demo a
+    standalone host instead of the VolRover3 one, so the demo code is identical in
+    both worlds."""
+    global _STANDALONE
+    name = getattr(module, "__name__", "demo").rsplit(".", 1)[-1].replace("_", "-")
+    host = _StandaloneHost(title=title or f"grl-snam: {name}", width=width, height=height, fps=fps)
+    _STANDALONE = host
+    try:
+        if hasattr(module, "setup"):
+            module.setup()
+        host.run(module.step)
+    finally:
+        _STANDALONE = None

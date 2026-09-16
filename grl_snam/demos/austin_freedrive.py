@@ -27,11 +27,9 @@ import torch
 
 import sdf_nav
 from grl_snam.demos._common import (
-    CameraDriver,
-    MetricsPublisher,
+    current_host,
     default_nav_weights_pt,
     default_scene_bundle,
-    require_host,
     vehicle_box_mesh,
 )
 from grl_snam.nav import SdfNavigator
@@ -48,9 +46,8 @@ def _xy(env, default):
 
 
 def setup() -> None:
-    pycvc, vrhost = require_host()
+    host = current_host()
     from pycvc_gl.camera import ChaseCamera
-    from pycvc_gl.lab import Lab
     from pycvc_gl.scenes import building_occupancy, load_geometry_bundle, terrain_grid
     from pycvc_gl.vehicle import VehiclePose
 
@@ -63,8 +60,7 @@ def setup() -> None:
     model.load_state_dict(ck["model_state_dict"])
     model.eval()
 
-    app = vrhost.app()
-    lab = Lab(app=app, scene=vrhost.scene())
+    lab = host.make_lab()
     lab.set_axis_visible(False)
     sample = load_geometry_bundle(lab, bundle)
     bounds = terrain_grid(os.path.join(bundle, "terrain.json"))[1]
@@ -92,8 +88,8 @@ def setup() -> None:
     lab.add_mesh("agent0", vv, vt, color=(0.90, 0.12, 0.12))
     vpose = VehiclePose(sample, lift=0.25)
     chase = ChaseCamera(back=34.0, height=13.0, look_up=2.5, up=(0.0, 0.0, 1.0))
-    cam = CameraDriver(app, pycvc)
-    metrics = MetricsPublisher(app, pycvc)
+    cam = host.camera()
+    metrics = host.metrics()
 
     lab.node("agent0").setTransform(vpose.update(start[0], start[1], 1.0 / 30.0))
     lab.pump()

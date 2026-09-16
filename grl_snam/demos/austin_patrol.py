@@ -10,15 +10,14 @@ from __future__ import annotations
 import math
 import os
 
-from grl_snam.demos._common import CameraDriver, default_scene_bundle, require_host, vehicle_box_mesh
+from grl_snam.demos._common import current_host, default_scene_bundle, vehicle_box_mesh
 
 _S: dict = {}
 
 
 def setup() -> None:
-    pycvc, vrhost = require_host()
+    host = current_host()
     from pycvc_gl.camera import ChaseCamera
-    from pycvc_gl.lab import Lab
     from pycvc_gl.scenes import (
         building_occupancy,
         load_geometry_bundle,
@@ -31,8 +30,7 @@ def setup() -> None:
     from grl_snam.route import cells_for_metres, plan_clearance_route
 
     bundle = default_scene_bundle()
-    app = vrhost.app()
-    lab = Lab(app=app, scene=vrhost.scene())
+    lab = host.make_lab()
     lab.set_axis_visible(False)
     sample = load_geometry_bundle(lab, bundle)
     bounds = terrain_grid(os.path.join(bundle, "terrain.json"))[1]
@@ -82,7 +80,7 @@ def setup() -> None:
         sample=sample,
         vpose=vpose,
         chase=chase,
-        cam=CameraDriver(app, pycvc),
+        cam=host.camera(),
         t=0.0,
         pps=3.0,
     )
