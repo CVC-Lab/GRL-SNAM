@@ -72,6 +72,18 @@ jobs:
           # "libcvc.so.3: cannot open shared object file".
           export LD_LIBRARY_PATH="${PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
+          # black (from the cvcpkg closure) imports mypy_extensions at startup, but that
+          # runtime dep is not in the black-cp3XX recipe closure yet, so `black --check`
+          # dies with ModuleNotFoundError before it checks a single file. Install it as a
+          # dev tool into a throwaway dir on PYTHONPATH (same pattern as coverage below).
+          # TODO: add mypy_extensions to the black-cp3XX recipe depends in libcvc-deps and
+          # drop this.
+          echo "== install black's mypy_extensions dep (outside the cvcpkg closure) =="
+          BLACKDEPS="${RUNNER_TEMP}/blackdeps"
+          "${PY}" -m pip install --quiet --disable-pip-version-check --target "${BLACKDEPS}" \
+            mypy_extensions
+          export PYTHONPATH="${BLACKDEPS}:${PYTHONPATH}"
+
           echo "== black --check =="
           "${PY}" -m black --check grl_snam tests
           echo "== ruff check =="
