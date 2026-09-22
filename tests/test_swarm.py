@@ -23,7 +23,9 @@ torch = pytest.importorskip("torch")
 import sdf_nav  # noqa: E402
 from grl_snam import planner  # noqa: E402
 from grl_snam.fog_stories import STORIES, shrunk  # noqa: E402
+from grl_snam.metrics import NavStats  # noqa: E402
 from grl_snam.nav import SdfNavigator  # noqa: E402
+from grl_snam.scorecard import aggregate_nav  # noqa: E402
 from grl_snam.sim_thread import Pause, RetargetGoal, SimThread  # noqa: E402
 from grl_snam.squad import AgentSpec  # noqa: E402
 from grl_snam.swarm import Swarm  # noqa: E402
@@ -115,6 +117,151 @@ def test_swarm_matches_serial_navigators_to_float32():
     # float32 batched-reduction drift, exactly the Squad(batched_drive) tier.
     assert max_pos_err < 5e-3, f"position drift {max_pos_err:.2e} m exceeds float32 tolerance"
     assert max_th_err < 5e-3, f"heading drift {max_th_err:.2e} rad exceeds float32 tolerance"
+
+
+def test_swarm_navstats_match_serial_navigators():
+    """The opt-in base collector is a faithful vectorization: Swarm(collect_stats=True)
+    accumulates the SAME per-agent NavStats as N serial SdfNavigators fed NavMetrics over
+    the same field/model/goals — the collector is the batched twin of nav._metrics."""
+    story = _story(96)
+    truth = story.truth_grid()
+    specs = _free_specs(story, truth, 20, seed=3)
+    m = _model()
+
+    sw = Swarm(
+        story, specs, model=m, truth_occ=truth, prior_occ=truth, sense_every=1, collect_stats=True
+    )
+    sw._sense_shared = lambda: None  # freeze the field -> pure FSM + drive parity
+    field = sw.field
+
+    navs = []
+    for sp in specs:
+        nv = SdfNavigator(field, m, sw.meta, reach_tol=sw.reach_tol, dynamics="bicycle")
+        nv.start(sp.start, sp.goal)
+        navs.append(nv)
+
+    STEPS = 150
+    ref = [NavStats() for _ in specs]
+    parked = [False] * len(specs)
+    ref_arrival = [None] * len(specs)  # tick each serial ref parked (for boundary gating)
+    for t in range(STEPS):
+        for i, nv in enumerate(navs):
+            metric = nv.step()
+            # mirror the collector's `active & ~parked` gate: collect through the arriving
+            # tick, then freeze (the swarm still drives parked agents, but does not collect).
+            if not parked[i]:
+                ref[i].update(metric)
+                if nv.reached:
+                    nv.park()
+                    parked[i] = True
+                    ref_arrival[i] = t
+            else:
+                nv.park()
+        sw.step()
+
+    for i in range(len(specs)):
+        a, b = sw._sc_stats[i], ref[i]
+        # Arrival timing matches to the same float32 tier the position parity test asserts,
+        # so step counts agree to at most a boundary tick.
+        assert abs(a.steps - b.steps) <= 1, f"agent {i} steps {a.steps} vs {b.steps}"
+        # goals_reached is exact EXCEPT when an arrival lands on the truncation boundary (the
+        # ref could park at STEPS-1 while the swarm crosses one tick later, outside the window,
+        # or vice-versa) — skip that ambiguous case, consistent with the steps<=1 slack.
+        near_edge = ref_arrival[i] is not None and ref_arrival[i] >= STEPS - 2
+        if not near_edge:
+            assert a.goals_reached == b.goals_reached, f"agent {i} goals_reached"
+        # a ~5e-3 m position band can shift BOTH the entry and exit boundary tick of a
+        # penetration stretch, so allow +-2 (usually 0 for free-component starts/goals).
+        assert abs(a.penetration_steps - b.penetration_steps) <= 2, f"agent {i} penetration"
+        # Accumulated economy fields: float32 batched-reduction drift over ~150 steps.
+        assert abs(a.total_path_m - b.total_path_m) <= 1e-2 * max(1.0, b.total_path_m)
+        assert abs(a.turn_total_rad - b.turn_total_rad) <= 1e-2 * max(1.0, b.turn_total_rad) + 1e-3
+        assert abs(a.fuel_used - b.fuel_used) <= 1e-2 * max(1.0, b.fuel_used) + 1e-3
+        # min clearance is a min at a possibly steep-gradient cell; float32 drift there is
+        # larger than the per-step position tolerance, so allow a small relative band.
+        assert abs(a.min_clearance_m - b.min_clearance_m) <= 5e-2 * max(
+            1.0, abs(b.min_clearance_m)
+        ), f"agent {i} min_clearance {a.min_clearance_m} vs {b.min_clearance_m}"
+
+
+def test_swarm_episode_stats_reduces_via_scorecard():
+    """episode_stats() feeds the collected per-agent NavStats through the SAME
+    scorecard reducer (from_nav_stats/aggregate_nav) the C++ hand-value contract test uses."""
+    story = _story(96)
+    truth = story.truth_grid()
+    specs = _free_specs(story, truth, 12, seed=7)
+    sw = Swarm(
+        story,
+        specs,
+        model=_model(),
+        truth_occ=truth,
+        prior_occ=truth,
+        sense_every=1,
+        collect_stats=True,
+    )
+    for _ in range(200):
+        sw.step()
+
+    ep = sw.episode_stats()
+    assert len(ep.per_vehicle) == len(specs)
+    for i, sp in enumerate(specs):
+        v = ep.per_vehicle[i]
+        assert math.isclose(
+            v.straight_m,
+            math.hypot(sp.goal[0] - sp.start[0], sp.goal[1] - sp.start[1]),
+            rel_tol=1e-5,
+        )
+        assert v.arrived == (sw._sc_stats[i].goals_reached >= 1)
+        if v.arrived:
+            assert v.time_to_goal_s > 0.0
+        else:
+            assert v.time_to_goal_s == -1.0
+    assert ep.success == all(v.arrived for v in ep.per_vehicle)
+    # corpus reduction end-to-end (Swarm -> scorecard), no training touched.
+    sc = aggregate_nav([ep], "ckpt-A")
+    assert sc.n_vehicle_runs == len(specs)
+    assert 0.0 <= sc.arrival_rate <= 1.0
+    # path ratio is an aggregate sanity check, not >= 1: NavStats.total_path_m (like the C++
+    # collector's Python twin) drops the first segment (prev is None on the first update), so a
+    # near-straight arriver's individual ratio can dip just below 1.
+    assert sc.mean_path_ratio > 0.5
+
+
+def test_swarm_collect_off_is_inert():
+    """Default (collect_stats off) allocates no collector state and refuses episode_stats,
+    so the render/thousands-of-agents hot path pays nothing."""
+    story = _story(96)
+    truth = story.truth_grid()
+    sw = Swarm(story, _free_specs(story, truth, 6, seed=1), model=_model(), truth_occ=truth)
+    sw.step()
+    assert not hasattr(sw, "_sc_stats")
+    with pytest.raises(RuntimeError):
+        sw.episode_stats()
+
+
+def test_swarm_contacts_and_min_sep():
+    """With a contact radius set, two agents launched from (nearly) the same cell register
+    vehicle contacts and a finite min separation."""
+    story = _story(96)
+    truth = story.truth_grid()
+    base = _free_specs(story, truth, 1, seed=5)[0]
+    # two agents at the same start, same goal -> they ride together (separation ~ 0).
+    specs = [AgentSpec("a0", base.start, base.goal), AgentSpec("a1", base.start, base.goal)]
+    sw = Swarm(
+        story,
+        specs,
+        model=_model(),
+        truth_occ=truth,
+        prior_occ=truth,
+        sense_every=1,
+        collect_stats=True,
+        contact_radius_m=50.0,
+    )
+    for _ in range(30):
+        sw.step()
+    ep = sw.episode_stats()
+    assert ep.min_sep_m < 50.0  # they were within the contact radius
+    assert sum(v.veh_contacts for v in ep.per_vehicle) > 0
 
 
 def test_agents_drive_toward_goals():
