@@ -54,7 +54,7 @@ class NavStats:
 
     steps: int = 0
     penetration_steps: int = 0
-    min_clearance_m: float = field(default=1e9)
+    min_clearance_m: float = field(default=1e30)  # "unmeasured" sentinel; matches C++ veh_nav_stats
     total_path_m: float = 0.0
     # Economy signals for the base scorecard (grl_snam.scorecard), accumulated the same
     # way the C++ nav_stats collector does: total heading change and a Sigma|dSpeed| fuel

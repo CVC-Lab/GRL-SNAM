@@ -96,10 +96,18 @@ def test_episode_from_nav_stats():
     v0 = drive([(0.0, 5.0), (0.0, 5.0)], reached_goal=True)
     v1 = drive([(0.0, 5.0), (0.0, 5.0)], reached_goal=False)
     ep = EpisodeStats.from_nav_stats(
-        [v0, v1], straights_m=[50.0, 50.0], arrival_times_s=[12.0, -1.0], min_sep_m=8.0
+        [v0, v1],
+        straights_m=[50.0, 50.0],
+        arrival_times_s=[12.0, -1.0],
+        veh_contacts=[0, 2],
+        min_sep_m=8.0,
     )
     assert ep.per_vehicle[0].arrived and not ep.per_vehicle[1].arrived
     assert not ep.success  # not all arrived
     assert math.isclose(ep.min_sep_m, 8.0)
+    # veh_contacts flows through the builder (NavStats doesn't carry it), so the
+    # scorecard sees real contacts instead of a silent 0.
+    assert ep.per_vehicle[1].veh_contacts == 2
     sc = aggregate_nav([ep], "c")
     assert math.isclose(sc.arrival_rate, 0.5)
+    assert math.isclose(sc.veh_contacts_per_run, 1.0)  # (0 + 2) / 2 runs
