@@ -81,10 +81,13 @@ jobs:
           # pinned to the closure's 26.5.1 (the repo is clean against it). ruff (a
           # self-contained binary) is unaffected.
           # TODO: fix the black-cp3XX / pytest-cp3XX / sympy recipe closures in libcvc-deps.
-          echo "== install dev tools black + pytest + sympy's mpmath (closure ones broken) =="
+          # (cp313's closure is more broken still: torch can't import for lack of
+          # typing_extensions, erroring test collection, so supply torch's import-time deps
+          # too.)
+          echo "== install dev tools black + pytest + missing closure deps =="
           DEVTOOLS="${RUNNER_TEMP}/devtools"
           "${PY}" -m pip install --quiet --disable-pip-version-check --target "${DEVTOOLS}" \
-            'black==26.5.1' pytest mpmath
+            'black==26.5.1' pytest mpmath typing_extensions filelock networkx jinja2 fsspec
           export PYTHONPATH="${DEVTOOLS}:${PYTHONPATH}"
 
           echo "== black --check =="
