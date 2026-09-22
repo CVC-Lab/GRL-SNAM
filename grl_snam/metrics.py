@@ -66,6 +66,16 @@ class NavStats:
     _prev_speed: float | None = None
     _reached: set = field(default_factory=set)
 
+    def seed_start(self, x0: float, y0: float) -> None:
+        """Prime the path accumulator with the true START pose, so the first ``update()``
+        counts the start -> first-step segment. This matches the C++ ``cvc::nav`` nav_stats
+        collector, which seeds ``prev_pos`` to the start (``total_path_m`` includes that
+        first leg). Turn/fuel still skip the first sample — ``_prev_head``/``_prev_speed``
+        stay ``None`` — exactly as the C++ collector skips turn/accel on the first step.
+        Call once, before the first ``update()``; without it the first segment is dropped
+        (the prior behavior, kept for callers that don't know the start, e.g. the HUD)."""
+        self._prev = (float(x0), float(y0))
+
     def update(self, m: NavMetrics) -> None:
         self.steps += 1
         if m.inside_building:

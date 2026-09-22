@@ -298,6 +298,12 @@ class Swarm:
         N = self.N
         self._sc_stats = [NavStats() for _ in range(N)]
         self._sc_prev_world = self.n2w(self.o)  # seed = start world poses (first step_world honest)
+        # Seed each accumulator with the true start pose so total_path_m includes the
+        # start->first-step leg, matching the C++ cvc::nav collector (turn/fuel still skip
+        # the first sample). _sc_prev_world is the start world pose at build time.
+        sw0 = self._sc_prev_world.tolist()
+        for i in range(N):
+            self._sc_stats[i].seed_start(sw0[i][0], sw0[i][1])
         self._sc_arrival_tick = torch.full((N,), -1, dtype=torch.int64, device=self.dev)
         self._sc_contacts = torch.zeros(N, dtype=torch.int64, device=self.dev)
         self._sc_min_sep = float("inf")

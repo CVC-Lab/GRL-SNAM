@@ -81,6 +81,22 @@ def test_navstats_accumulates_turn_and_fuel():
     assert math.isclose(ns.fuel_used, 10.0, abs_tol=1e-9)
 
 
+def test_navstats_seed_start_counts_first_segment():
+    # C++ parity: seeding the start pose makes the first update count the start->first-step
+    # leg in total_path_m, while turn/fuel still skip the first sample (prev_head None). Without
+    # the seed the first segment is dropped (the prior, HUD-compatible behavior).
+    seeded, plain = NavStats(), NavStats()
+    seeded.seed_start(0.0, 0.0)
+    for ns in (seeded, plain):
+        ns.update(NavMetrics(x=3.0, y=0.0, heading_rad=0.0, speed_mps=5.0))
+        ns.update(NavMetrics(x=3.0, y=4.0, heading_rad=0.0, speed_mps=5.0))
+    assert math.isclose(seeded.total_path_m, 7.0)  # 3 (start->m0) + 4 (m0->m1)
+    assert math.isclose(plain.total_path_m, 4.0)  # first leg dropped
+    # turn/fuel skip the first sample either way — seeding only affects the path.
+    assert seeded.turn_total_rad == plain.turn_total_rad == 0.0
+    assert seeded.fuel_used == plain.fuel_used == 0.0
+
+
 def test_episode_from_nav_stats():
     # Two vehicles driven; both reach a goal. from_nav_stats maps NavStats -> EpisodeStats.
     def drive(path_headings, reached_goal):
