@@ -72,6 +72,24 @@ jobs:
           # "libcvc.so.3: cannot open shared object file".
           export LD_LIBRARY_PATH="${PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
+          # The cvcpkg dev-tool + runtime closure is missing a chain of transitive deps:
+          # black-cp3XX lacks its runtime deps (mypy_extensions/pathspec/platformdirs/
+          # pytokens) and is absent on cp313; pytest-cp3XX lacks pluggy; and the sympy in
+          # the closure lacks mpmath, so the torch/sympy-using tests raise ImportError.
+          # Supply a working black + pytest (full dep trees) plus mpmath as dev tools into a
+          # throwaway dir on PYTHONPATH (the same pattern coverage uses below); black is
+          # pinned to the closure's 26.5.1 (the repo is clean against it). ruff (a
+          # self-contained binary) is unaffected.
+          # TODO: fix the black-cp3XX / pytest-cp3XX / sympy recipe closures in libcvc-deps.
+          # (cp313's closure is more broken still: torch can't import for lack of
+          # typing_extensions, erroring test collection, so supply torch's import-time deps
+          # too.)
+          echo "== install dev tools black + pytest + missing closure deps =="
+          DEVTOOLS="${RUNNER_TEMP}/devtools"
+          "${PY}" -m pip install --quiet --disable-pip-version-check --target "${DEVTOOLS}" \
+            'black==26.5.1' pytest mpmath typing_extensions filelock networkx jinja2 fsspec
+          export PYTHONPATH="${DEVTOOLS}:${PYTHONPATH}"
+
           echo "== black --check =="
           "${PY}" -m black --check grl_snam tests
           echo "== ruff check =="

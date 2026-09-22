@@ -14,6 +14,7 @@ exactly the signals a HUD (still being designed) should surface in real time.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 
@@ -55,7 +56,14 @@ class NavStats:
     penetration_steps: int = 0
     min_clearance_m: float = field(default=1e9)
     total_path_m: float = 0.0
+    # Economy signals for the base scorecard (grl_snam.scorecard), accumulated the same
+    # way the C++ nav_stats collector does: total heading change and a Sigma|dSpeed| fuel
+    # proxy. Zero until the drive feeds a second NavMetrics.
+    turn_total_rad: float = 0.0
+    fuel_used: float = 0.0
     _prev: tuple | None = None
+    _prev_head: float | None = None
+    _prev_speed: float | None = None
     _reached: set = field(default_factory=set)
 
     def update(self, m: NavMetrics) -> None:
@@ -68,7 +76,17 @@ class NavStats:
         if self._prev is not None:
             dx, dy = m.x - self._prev[0], m.y - self._prev[1]
             self.total_path_m += (dx * dx + dy * dy) ** 0.5
+        if self._prev_head is not None:
+            dh = m.heading_rad - self._prev_head
+            while dh > math.pi:
+                dh -= 2.0 * math.pi
+            while dh <= -math.pi:
+                dh += 2.0 * math.pi
+            self.turn_total_rad += abs(dh)
+            self.fuel_used += abs(m.speed_mps - self._prev_speed)
         self._prev = (m.x, m.y)
+        self._prev_head = m.heading_rad
+        self._prev_speed = m.speed_mps
 
     @property
     def penetration_pct(self) -> float:
