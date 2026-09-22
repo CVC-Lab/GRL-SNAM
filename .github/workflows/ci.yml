@@ -72,18 +72,19 @@ jobs:
           # "libcvc.so.3: cannot open shared object file".
           export LD_LIBRARY_PATH="${PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-          # The cvcpkg dev-tool closure is broken: black-cp3XX is missing its runtime deps
-          # (mypy_extensions/pathspec/platformdirs/pytokens) and is absent entirely on
-          # cp313, and pytest-cp3XX is missing pluggy — so `black --check` and `pytest`
-          # both die with ModuleNotFoundError. Install a working black + pytest with their
-          # full dep trees as dev tools into a throwaway dir on PYTHONPATH (the same
-          # pattern coverage uses below); black is pinned to the closure's 26.5.1 (the repo
-          # is clean against it). ruff (a self-contained binary) is unaffected.
-          # TODO: fix the black-cp3XX / pytest-cp3XX recipe closures in libcvc-deps.
-          echo "== install dev tools black + pytest (cvcpkg closure ones are broken) =="
+          # The cvcpkg dev-tool + runtime closure is missing a chain of transitive deps:
+          # black-cp3XX lacks its runtime deps (mypy_extensions/pathspec/platformdirs/
+          # pytokens) and is absent on cp313; pytest-cp3XX lacks pluggy; and the sympy in
+          # the closure lacks mpmath, so the torch/sympy-using tests raise ImportError.
+          # Supply a working black + pytest (full dep trees) plus mpmath as dev tools into a
+          # throwaway dir on PYTHONPATH (the same pattern coverage uses below); black is
+          # pinned to the closure's 26.5.1 (the repo is clean against it). ruff (a
+          # self-contained binary) is unaffected.
+          # TODO: fix the black-cp3XX / pytest-cp3XX / sympy recipe closures in libcvc-deps.
+          echo "== install dev tools black + pytest + sympy's mpmath (closure ones broken) =="
           DEVTOOLS="${RUNNER_TEMP}/devtools"
           "${PY}" -m pip install --quiet --disable-pip-version-check --target "${DEVTOOLS}" \
-            'black==26.5.1' pytest
+            'black==26.5.1' pytest mpmath
           export PYTHONPATH="${DEVTOOLS}:${PYTHONPATH}"
 
           echo "== black --check =="
