@@ -441,6 +441,10 @@ def drive_step(
 
 
 HAS_SIM_WORLD = AVAILABLE and hasattr(_pycvc, "nav_sim_world_create")
+# The sim_world's INTERNAL base nav_stats collector (libcvc #402) — gates
+# NativeSimWorld.begin_nav_stats/episode_stats so this module stays import-safe on a
+# pycvc built before the bindings shipped.
+HAS_SIM_WORLD_NAVSTATS = AVAILABLE and hasattr(_pycvc, "nav_sim_world_begin_nav_stats")
 
 
 class NativeSimWorld:
@@ -543,6 +547,86 @@ class NativeSimWorld:
         :meth:`set_material`.
         """
         return _pycvc.nav_sim_world_material_gate_active(self._h)
+
+    # ── base nav_stats (opt-in internal C++ collector) ──────────────────────
+    def begin_nav_stats(
+        self,
+        *,
+        scene_id="",
+        seed=0,
+        checkpoint="",
+        contact_r=0.0,
+        speed_eps_mps=0.10,
+        turn_event_rad=0.20,
+        clear_safety_m=2.0,
+        time_budget_s=0.0,
+        eta_multiple=0.0,
+        speed_ref_mps=0.0,
+        fuel_budget=0.0,
+    ):
+        """Arm the world's INTERNAL base nav_stats collector. Captures the CURRENT
+        pose as the episode start, so call RIGHT AFTER build, before the first
+        :meth:`step`. ``contact_r`` (WORLD metres) is the pairwise contact gate
+        (0=off). Owner-thread only: do not call while a :class:`NativeSimThread`
+        worker is running (arm before ``.start()``, read after ``.stop()``)."""
+        if not HAS_SIM_WORLD_NAVSTATS:
+            raise RuntimeError(
+                "pycvc lacks nav_sim_world_begin_nav_stats — install a pycvc with the "
+                "sim_world nav_stats bindings."
+            )
+        _pycvc.nav_sim_world_begin_nav_stats(
+            self._h,
+            float(speed_eps_mps),
+            float(turn_event_rad),
+            float(clear_safety_m),
+            float(contact_r),
+            float(time_budget_s),
+            float(eta_multiple),
+            float(speed_ref_mps),
+            float(fuel_budget),
+            str(scene_id),
+            int(seed),
+            str(checkpoint),
+        )
+
+    def nav_stats(self):
+        """Finish the internal collector -> the base episode record as a dict
+        (``json.loads`` of ``episode_nav_stats::to_json``). Raises if unarmed.
+        Owner-thread only (after the step loop / after NativeSimThread.stop())."""
+        import json
+
+        return json.loads(_pycvc.nav_sim_world_nav_stats(self._h))
+
+    def episode_stats(self):
+        """Map the native episode record into a scorecard ``EpisodeStats``, mirroring
+        :meth:`grl_snam.swarm.Swarm.episode_stats` — the 3rd base-stats source after
+        the pure-Python SdfNavigator and the vectorized Swarm."""
+        from types import SimpleNamespace
+
+        from .scorecard import EpisodeStats
+
+        ep = self.nav_stats()
+        pv = ep["per_vehicle"]
+        vehicles = [
+            SimpleNamespace(
+                goals_reached=v["goals_reached"],
+                total_path_m=v["total_path_m"],
+                turn_total_rad=v["turn_total_rad"],
+                fuel_used=v["fuel_used"],
+                penetration_steps=v["penetration_steps"],
+                steps=ep["ticks"],  # every vehicle ran `ticks` steps
+            )
+            for v in pv
+        ]
+        msep = ep["min_sep_m"]
+        return EpisodeStats.from_nav_stats(
+            vehicles,
+            straights_m=[v["straight_m"] for v in pv],
+            arrival_times_s=[v["time_to_goal_s"] for v in pv],
+            veh_contacts=[v["veh_contacts"] for v in pv],
+            # to_json emits null (n==1 / never lowered) -> None; coerce like Swarm does.
+            min_sep_m=(msep if msep is not None else 1e30),
+        )
 
 
 def sim_world_from_swarm(sw, weights_path, *, truth, freeze_sense=False, sense_every=4):
