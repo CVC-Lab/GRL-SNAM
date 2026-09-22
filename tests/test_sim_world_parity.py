@@ -76,6 +76,46 @@ def test_sim_world_tracks_torch_swarm_frozen_sense(tmp_path):
     assert max_err < 0.10, max_err
 
 
+@pytest.mark.skipif(
+    not nav_native.HAS_SIM_WORLD_NAVSTATS,
+    reason="pycvc build lacks nav_sim_world_begin_nav_stats",
+)
+def test_sim_world_base_nav_stats(tmp_path):
+    """The native path's base-stats collection (libcvc #402): arm the sim_world's own
+    internal nav_stats collector, step, and reduce to a scorecard EpisodeStats — the 3rd
+    base-stats source after the pure-Python SdfNavigator and the vectorized Swarm."""
+    from grl_snam.scorecard import EpisodeStats, aggregate_nav
+
+    sw, truth, m = _swarm(n=64, grid=96)
+    sw._sense_shared = lambda: None
+    wp = tmp_path / "coef.cvcnav"
+    coef_export.write_coef_mlp(m, str(wp))
+    cw = nav_native.sim_world_from_swarm(sw, wp, truth=truth, freeze_sense=True)
+
+    with pytest.raises(Exception):  # unarmed
+        cw.nav_stats()
+
+    cw.begin_nav_stats(scene_id="parity", seed=7, checkpoint="ckpt-native", contact_r=5.0)
+    N = sw.N
+    for _ in range(120):
+        cw.step()
+    ep = cw.episode_stats()
+
+    assert isinstance(ep, EpisodeStats)
+    assert len(ep.per_vehicle) == N
+    assert isinstance(ep.success, bool)
+    assert 0.0 <= ep.penetration_pct <= 100.0
+    assert np.isfinite(ep.min_sep_m) or ep.min_sep_m == 1e30
+    for v in ep.per_vehicle:
+        assert v.straight_m > 0.0
+        assert v.total_path_m >= 0.0
+        assert (v.time_to_goal_s > 0.0) if v.arrived else (v.time_to_goal_s == -1.0)
+    # corpus reduction end-to-end (native -> scorecard), no training touched.
+    sc = aggregate_nav([ep], "ckpt-native")
+    assert sc.n_vehicle_runs == N
+    assert 0.0 <= sc.arrival_rate <= 1.0
+
+
 def test_sim_world_live_sense_runs_and_agents_progress(tmp_path):
     """With the live sense/rebuild path on, the C++ swarm runs and makes progress
     (agents close on goals, at least some reach)."""
