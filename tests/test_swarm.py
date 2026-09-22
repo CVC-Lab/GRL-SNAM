@@ -141,7 +141,11 @@ def test_swarm_navstats_match_serial_navigators():
         navs.append(nv)
 
     STEPS = 150
+    # seed each reference with its start pose, exactly as the Swarm collector does, so both
+    # count the start->first-step leg (the C++-parity behavior) and still match.
     ref = [NavStats() for _ in specs]
+    for i, sp in enumerate(specs):
+        ref[i].seed_start(sp.start[0], sp.start[1])
     parked = [False] * len(specs)
     ref_arrival = [None] * len(specs)  # tick each serial ref parked (for boundary gating)
     for t in range(STEPS):
