@@ -56,12 +56,15 @@ class EpisodeStats:
         *,
         straights_m: list[float] | None = None,
         arrival_times_s: list[float] | None = None,
+        veh_contacts: list[int] | None = None,
         min_sep_m: float = 1e30,
     ) -> EpisodeStats:
         """Build an EpisodeStats from a list of per-vehicle ``grl_snam.metrics.NavStats``.
-        ``straights_m`` / ``arrival_times_s`` (per vehicle) supply the fields NavStats
-        does not itself carry; a vehicle counts as arrived when it reached >= 1 goal.
-        (NavStats.turn_total_rad / fuel_used are read when present — see metrics.py.)"""
+        ``straights_m`` / ``arrival_times_s`` / ``veh_contacts`` (per vehicle) supply the
+        fields NavStats does not itself carry — ``veh_contacts[i]`` is agent i's frame count
+        within the contact radius, the pairwise quantity the episode owns (like ``min_sep_m``),
+        so ``veh_contacts_per_run`` is non-zero on collisions. A vehicle counts as arrived when
+        it reached >= 1 goal. (NavStats.turn_total_rad / fuel_used are read when present.)"""
         per = []
         for i, ns in enumerate(vehicles):
             arrived = getattr(ns, "goals_reached", 0) >= 1
@@ -73,6 +76,7 @@ class EpisodeStats:
                     straight_m=(straights_m[i] if straights_m else 0.0),
                     turn_total_rad=getattr(ns, "turn_total_rad", 0.0),
                     fuel_used=getattr(ns, "fuel_used", 0.0),
+                    veh_contacts=(veh_contacts[i] if veh_contacts else 0),
                     penetration_steps=getattr(ns, "penetration_steps", 0),
                 )
             )
