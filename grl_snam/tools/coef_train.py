@@ -391,6 +391,61 @@ def reach_rate(model, grid=96, n=400, ticks=200, seed=123):
     return float(sw.reached.float().mean())
 
 
+@torch.no_grad()
+def eval_risk_exposure(model, *, grid=64, lam_soft=0.4, seed=999, n=256, horizon=60, reach_tol=0.8):
+    """Direct bicycle-rollout eval for a (possibly risk-widened) net: mean terrain-risk
+    exposure and reach fraction over ``n`` random start->goal drives on the city's
+    material scene. This is the reproducible harness behind the docs/NAV_STATS.md smoke
+    table and the way to measure a widened net (the Swarm drive / scorecard_eval are
+    base-5-feature only). ``model`` may be a plain 5-feature net or an
+    :func:`sdf_nav.add_risk_feature` net (its risk column is fed automatically). The
+    material reroute force is active (``lam_soft``) for BOTH so w_risk's effect is what
+    an A/B isolates. Returns ``(risk_exposure, reach)``."""
+    from grl_snam.material import city_material_grid
+
+    field, meta, rand_on = _scene(grid, seed)
+    rr, d_hat, dt, vmax = meta["rr"], meta["d_hat"], meta["dt"], meta["vmax"]
+    story = shrunk(STORIES["city"], n=grid, max_steps=100)
+    mgrid, _ = city_material_grid(
+        story.truth_grid(), story.bounds, meta["center"], meta["scale"], seed=0
+    )
+    mf = mgrid.field()
+    kw = dict(L=0.035, delta_max=0.6, a_max=1.5, a_lat_max=1.0, k_steer=0.8, allow_reverse=True)
+    wants_risk = getattr(model, "use_risk", False)
+    rng = np.random.default_rng(seed)
+    o = torch.from_numpy(rand_on(n, rng))
+    goal = torch.from_numpy(rand_on(n, rng))
+    th = torch.from_numpy(rng.uniform(-np.pi, np.pi, n).astype(np.float32))
+    sp = torch.zeros(n)
+    lam_s, lam_h = torch.full((n,), float(lam_soft)), torch.zeros(n)
+    risk_sum = 0.0
+    for _ in range(horizon):
+        feat = sdf_nav.coef_feats(field, o, goal, material=mf if wants_risk else None)
+        al, be, ga = model(feat)
+        o, th, sp, _ = sdf_nav.bicycle_rollout(
+            field,
+            o,
+            th,
+            sp,
+            goal,
+            al,
+            be,
+            ga,
+            1,
+            rr=rr,
+            d_hat=d_hat,
+            dt=dt,
+            vmax=vmax,
+            material=mf,
+            lam_soft=lam_s,
+            lam_hard=lam_h,
+            **kw,
+        )
+        risk_sum += float(mf.sample(o)[0].mean())
+    reach = float(((goal - o).norm(dim=1) < reach_tol).float().mean())
+    return risk_sum / horizon, reach
+
+
 def train_native(out, *, grid=96, steps=400, rollout="surrogate", use_cuda=False, lr=None, seed=0):
     """Train via the pure-C++ ``cvc::nav`` trainer (NO torch) on the SAME city scene
     the torch path uses, writing the ``.cvcnav`` to ``out``. This is what

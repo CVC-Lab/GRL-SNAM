@@ -93,9 +93,11 @@ Smoke measurement (grid 64, 40 steps, `lam_soft=0.4`, 2 seeds — indicative, no
 | `w_risk=0` | 0.108 | 0.166 |
 | `w_risk=8` | **0.082** (−24%) | 0.172 |
 
-Both seeds show the drop; reach is not hurt — a Pareto improvement. A proper 3-seed, longer-horizon
-study on a stable/GPU box (the BPTT graph is CPU-fragile) is the validation of record, in the style of
-the `w_coll` operating-point table in `coef_train.train_bicycle`.
+Reproduce with `coef_train.eval_risk_exposure(model, grid=64)` after training each arm. The exposure
+drop is consistent across both seeds; the reach delta (+0.006) is within run-to-run noise, so the fair
+read is "exposure down, reach not measurably changed" rather than a proven Pareto win — a proper
+3-seed, longer-horizon study on a stable/GPU box (the BPTT graph is CPU-fragile) is the validation of
+record, in the style of the `w_coll` operating-point table in `coef_train.train_bicycle`.
 
 ## Parity
 

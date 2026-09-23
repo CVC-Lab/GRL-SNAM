@@ -9,6 +9,7 @@ established by an offline table, not an assertion.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import torch
 
@@ -42,17 +43,49 @@ def test_risk_feature_appends_and_default_is_byte_identical():
 
 
 def test_risk_feature_is_max_ahead_and_differentiable():
-    field, grid = _scene()
+    from grl_snam.material import MaterialGrid
+
+    # A hand-built scene: clear UNDERFOOT, a risk band strictly AHEAD along +x. A correct
+    # max-ahead probe must report the ahead risk, not the (zero) risk underfoot — a
+    # degenerate lookahead (reach=0 / o-only) would fail the strict assertion below.
+    story = shrunk(STORIES["city"], n=64, max_steps=100)
+    truth = story.truth_grid()
+    meta = story.meta()
+    phi, nxg, nyg = sdf_nav.build_sdf(truth, story.bounds, meta["scale"])
+    field = sdf_nav.SDFField(phi, nxg, nyg, story.bounds, meta["center"], meta["scale"])
+    ny, nx = truth.shape
+    risk_raw = np.zeros((ny, nx), np.float32)
+    risk_raw[:, nx // 2 :] = 1.0  # right half (world +x) is risky, left half clear
+    grid = MaterialGrid(
+        risk_raw, np.zeros_like(truth, bool), story.bounds, meta["center"], meta["scale"]
+    )
     mf = grid.field()
-    # a point whose carrot points into higher risk should read the risk AHEAD (max),
-    # not the (possibly clear) risk underfoot.
-    o = torch.zeros(1, 2, requires_grad=True)
-    # sample risk along +x vs -x; the feature is the MAX along the carrot ray
-    fwd = sdf_nav.coef_feats(field, o, torch.tensor([[2.0, 0.0]]), material=mf)[0, 5]
+
+    mnx, _, mxx, _ = story.bounds
+    S, (cx, _cy) = meta["scale"], meta["center"]
+    # place o just LEFT of the divide (clear), carrot pointing +x into the risk band
+    wx0 = mnx + (nx // 2 - 4) / (nx - 1) * (mxx - mnx)
+    o = torch.tensor([[(wx0 - cx) * S, 0.0]], dtype=torch.float32, requires_grad=True)
+    goal = torch.tensor([[(mxx - cx) * S, 0.0]], dtype=torch.float32)  # far +x
+
     here = float(mf.sample(o.detach())[0][0])
-    assert fwd.detach().item() >= here - 1e-6  # never below underfoot (max includes o)
+    fwd = sdf_nav.coef_feats(field, o, goal, material=mf, risk_lookahead=1.0, risk_probes=4)[0, 5]
+    assert here < 0.1  # underfoot is clear
+    assert fwd.detach().item() > here + 0.2  # STRICT: the probe sees the risk band ahead
     fwd.backward()
     assert o.grad is not None and bool((o.grad.abs() > 0).any())  # differentiable wrt pose
+
+
+def test_eval_risk_exposure_runs_on_base_and_risk_nets():
+    # the reproducible harness behind the smoke table: works on a plain net and a
+    # risk-widened net (feeds the risk column automatically), returns sane ranges.
+    rexp5, reach5 = coef_train.eval_risk_exposure(sdf_nav.CoefMLP(), grid=64, n=48, horizon=20)
+    rexpr, reachr = coef_train.eval_risk_exposure(
+        sdf_nav.add_risk_feature(sdf_nav.CoefMLP()), grid=64, n=48, horizon=20
+    )
+    for rexp, reach in ((rexp5, reach5), (rexpr, reachr)):
+        assert rexp >= 0.0
+        assert 0.0 <= reach <= 1.0
 
 
 def test_add_risk_feature_output_identical_and_flags():
