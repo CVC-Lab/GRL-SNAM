@@ -279,11 +279,15 @@ def train_bicycle(
         raise ValueError(
             "a risk model needs material= (a grl_snam.material.MaterialGrid) for its risk column"
         )
-    # Terrain-risk drive: the material force (grl_snam.material) reroutes AROUND risk when
-    # lam_soft>0; the risk-lookahead feature (coef_feats material=) lets the coefficients
-    # SEE it; the w_risk term penalizes dwelling in it. All three default off/zero, so a
-    # plain call is byte-identical to the geometry-only trainer. lam_soft/lam_hard are the
-    # FIXED reroute strengths here — a learned lam head is a separate follow-up.
+    wants_lam = getattr(model, "use_lam", False)
+    if wants_lam and material is None:
+        raise ValueError("a lam-head model needs material= (it learns the reroute strength)")
+    # Terrain-risk drive: the material force (grl_snam.material) reroutes AROUND risk; the
+    # risk-lookahead feature (coef_feats material=) lets the coefficients SEE it; the w_risk
+    # term penalizes dwelling in it. All default off/zero, so a plain call is byte-identical
+    # to the geometry-only trainer. The reroute strength lam_soft is the FIXED --lam-soft dial
+    # UNLESS the net has a lam head (wants_lam), in which case it is LEARNED per agent per step
+    # (coeffs_and_lam) — the deployable reroute lever.
     mfield = material.field() if material is not None else None
     lam_s = torch.full((n,), float(lam_soft)) if mfield is not None else None
     lam_h = torch.full((n,), float(lam_hard)) if mfield is not None else None
@@ -321,7 +325,10 @@ def train_bicycle(
                 material=mfield if wants_risk else None,
                 risk_lookahead=risk_lookahead,
             )
-            al, be, ga = model(feat)
+            if wants_lam:
+                al, be, ga, lam_s = model.coeffs_and_lam(feat)  # LEARNED per-agent reroute
+            else:
+                al, be, ga = model(feat)
             o, th, sp, _ = sdf_nav.bicycle_rollout(
                 field,
                 o,
@@ -432,6 +439,7 @@ def eval_risk_exposure(model, *, grid=64, lam_soft=0.4, seed=999, n=256, horizon
     mf = mgrid.field()
     kw = dict(L=0.035, delta_max=0.6, a_max=1.5, a_lat_max=1.0, k_steer=0.8, allow_reverse=True)
     wants_risk = getattr(model, "use_risk", False)
+    wants_lam = getattr(model, "use_lam", False)
     rng = np.random.default_rng(seed)
     o = torch.from_numpy(rand_on(n, rng))
     goal = torch.from_numpy(rand_on(n, rng))
@@ -441,7 +449,10 @@ def eval_risk_exposure(model, *, grid=64, lam_soft=0.4, seed=999, n=256, horizon
     risk_sum = 0.0
     for _ in range(horizon):
         feat = sdf_nav.coef_feats(field, o, goal, material=mf if wants_risk else None)
-        al, be, ga = model(feat)
+        if wants_lam:
+            al, be, ga, lam_s = model.coeffs_and_lam(feat)  # LEARNED reroute strength
+        else:
+            al, be, ga = model(feat)
         o, th, sp, _ = sdf_nav.bicycle_rollout(
             field,
             o,
@@ -560,6 +571,12 @@ def main(argv=None):
         "--lam-hard", type=float, default=0.0, help="--w-risk: hard-hazard force strength"
     )
     ap.add_argument(
+        "--learned-lam",
+        action="store_true",
+        help="--w-risk: give the net a lam head so it LEARNS the per-position reroute strength "
+        "(deployable lever) instead of the fixed --lam-soft dial; --lam-soft becomes the init.",
+    )
+    ap.add_argument(
         "--risk-lookahead",
         type=float,
         default=0.3,
@@ -631,6 +648,11 @@ def main(argv=None):
                 story.truth_grid(), story.bounds, meta["center"], meta["scale"], seed=args.seed
             )
             risk_model = sdf_nav.add_risk_feature(sdf_nav.CoefMLP())
+            if args.learned_lam:
+                # LEARNED reroute: the net outputs lam_soft per position instead of the fixed
+                # --lam-soft dial — the deployable reroute lever (needs the C++ coef_mlp/drive
+                # update before a risk .cvcnav can run on the pure-C++ host).
+                risk_model = sdf_nav.add_lam_head(risk_model, lam_init=args.lam_soft)
         curriculum = None
         if args.curriculum:
             from grl_snam.curriculum import build_city_curriculum
@@ -657,12 +679,13 @@ def main(argv=None):
     else:
         model = train(args.steps, args.horizon, args.n, args.lr, args.seed)
     write_coef_mlp(model, args.out)
-    if getattr(model, "use_risk", False):
+    if getattr(model, "use_risk", False) or getattr(model, "use_lam", False):
+        extra = f", out_dim={model.out_dim} (lam head)" if getattr(model, "use_lam", False) else ""
         print(
-            f"wrote {args.out}  (risk model, in_dim={model.in_dim}) — NOTE: this is a torch "
+            f"wrote {args.out}  (risk model, in_dim={model.in_dim}{extra}) — NOTE: this is a torch "
             "research artifact. The pure-C++ host's coef_feats does not build the risk-lookahead "
-            "column yet, so do NOT deploy this over share/cvc/nav/coef_mlp.cvcnav until the "
-            "coordinated cvc::nav coef_feats/forward update lands."
+            "column, and its coef_mlp/drive do not read a lam output, so do NOT deploy this over "
+            "share/cvc/nav/coef_mlp.cvcnav until the coordinated cvc::nav update lands."
         )
     else:
         print(f"wrote {args.out}   reach_rate={reach_rate(model):.2%}")

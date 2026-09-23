@@ -76,7 +76,7 @@ def test_base_net_drive_unchanged_by_material_stats():
 
 def test_risk_net_requires_material_to_score():
     risk = sdf_nav.add_risk_feature(sdf_nav.CoefMLP())
-    with pytest.raises(ValueError, match="use_risk net needs material"):
+    with pytest.raises(ValueError, match="needs material"):
         evaluate(risk, scenes=1, agents=8, steps=20, material=False)
 
 

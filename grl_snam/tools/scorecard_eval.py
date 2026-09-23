@@ -93,9 +93,11 @@ def evaluate(
     risk column source and cannot be scored)."""
     from ..material import city_material_grid, city_material_ids
 
-    use_risk = getattr(model, "use_risk", False)
-    if use_risk and not material:
-        raise ValueError("scoring a use_risk net needs material=True (its risk column source)")
+    # A risk net needs the material grid for its risk column; a lam-head net needs it for the
+    # reroute force it learned to modulate. Either way the drive requires a material grid.
+    needs_grid = getattr(model, "use_risk", False) or getattr(model, "use_lam", False)
+    if needs_grid and not material:
+        raise ValueError("scoring a use_risk/use_lam net needs material=True (its drive source)")
 
     episodes = []
     for seed in range(scenes):
@@ -103,8 +105,8 @@ def evaluate(
         mids = mgrid = None
         if material:
             meta = story.meta()
-            if use_risk:
-                # matched grid (drive force + risk feature) + id raster (stats), same terrain
+            if needs_grid:
+                # matched grid (drive force + risk feature/lam) + id raster (stats), same terrain
                 mgrid, mids = city_material_grid(
                     truth, story.bounds, meta["center"], meta["scale"], seed=seed
                 )

@@ -869,7 +869,16 @@ class CoefMLP(nn.Module):
     known-good navigating regime (``bias``) so the self-supervised optimizer starts
     in — and stays near — the stable basin."""
 
-    def __init__(self, hidden=64, bias=(1.0, 3.0, 4.0), in_dim=5, use_mu=False, use_risk=False):
+    def __init__(
+        self,
+        hidden=64,
+        bias=(1.0, 3.0, 4.0),
+        in_dim=5,
+        use_mu=False,
+        use_risk=False,
+        use_lam=False,
+        lam_init=0.4,
+    ):
         super().__init__()
         #: 5 = the original [phi, goal_dist, gdir_x, gdir_y, align]; then the OPTIONAL
         #: probe features append in a fixed order: mu (grip) if use_mu, then risk
@@ -880,19 +889,48 @@ class CoefMLP(nn.Module):
         self.in_dim = int(in_dim)
         self.use_mu = bool(use_mu)
         self.use_risk = bool(use_risk)
+        #: ``use_lam`` adds a 4th OUTPUT, the learned material-reroute strength lam_soft
+        #: (see :meth:`coeffs_and_lam`). The output stack stays a single uniform
+        #: ``softplus(net + log(expm1(out_bias)))`` so the exporter and the C++ forward
+        #: need no special case — only the drive reads output[3] as lam_soft.
+        self.use_lam = bool(use_lam)
+        self.out_dim = 3 + (1 if self.use_lam else 0)
         self.net = nn.Sequential(
             nn.Linear(self.in_dim, hidden),
             nn.SiLU(),
             nn.Linear(hidden, hidden),
             nn.SiLU(),
-            nn.Linear(hidden, 3),
+            nn.Linear(hidden, self.out_dim),
         )
-        self.register_buffer("bias", torch.tensor(bias))
+        self.register_buffer("bias", torch.tensor(bias))  # abg raw bias (unchanged)
+        if self.use_lam:
+            # lam_soft init: softplus(0 + log(expm1(lam_init))) == lam_init at the zero column
+            self.register_buffer("lam_raw_bias", torch.tensor(float(lam_init)))
+
+    def full_out_bias(self) -> torch.Tensor:
+        """The (out_dim,) RAW pre-softplus bias vector — abg bias, plus lam_init for a lam
+        head. The exporter writes this and the C++ folds log(expm1) at load, so the whole
+        output stack is one uniform softplus."""
+        if self.use_lam:
+            return torch.cat([self.bias, self.lam_raw_bias.reshape(1)])
+        return self.bias
+
+    def _outputs(self, feat):
+        raw = self.net(feat) + torch.log(torch.expm1(self.full_out_bias())).unsqueeze(0)
+        return F.softplus(raw)  # [N, out_dim]
 
     def forward(self, feat):
-        raw = self.net(feat) + torch.log(torch.expm1(self.bias)).unsqueeze(0)
-        c = F.softplus(raw)
+        c = self._outputs(feat)
         return c[:, 0], c[:, 1], c[:, 2]
+
+    def coeffs_and_lam(self, feat):
+        """``(alpha, beta, gamma, lam_soft)`` — lam_soft is the LEARNED per-agent material
+        reroute strength (F_soft = -lam_soft * grad risk), the deployable replacement for the
+        fixed ``lam_soft`` dial. Requires ``use_lam``."""
+        if not self.use_lam:
+            raise RuntimeError("this CoefMLP has no lam head (use_lam=False)")
+        c = self._outputs(feat)
+        return c[:, 0], c[:, 1], c[:, 2], c[:, 3]
 
 
 def coef_feats(
@@ -1030,5 +1068,39 @@ def add_risk_feature(model: CoefMLP) -> CoefMLP:
         for i in (2, 4):
             out.net[i].weight.copy_(model.net[i].weight)
             out.net[i].bias.copy_(model.net[i].bias)
+        out.bias.copy_(model.bias)
+    return out
+
+
+def add_lam_head(model: CoefMLP, lam_init: float = 0.4) -> CoefMLP:
+    """Lift a trained ``CoefMLP`` into one that also OUTPUTS the material-reroute strength
+    lam_soft — the learned, deployable replacement for the fixed ``lam_soft`` dial. Appends
+    ONE output column (the last), zero in the final layer, so lam_soft starts at the constant
+    ``lam_init`` and the (alpha,beta,gamma) outputs are bit-for-bit unchanged — only fine-
+    tuning can discover a use for a position-dependent lam. Preserves the input feature flags
+    (typically a risk net, so the net can see risk to decide lam). Returns a new model."""
+    if getattr(model, "use_lam", False):
+        raise ValueError("add_lam_head: model already has a lam head")
+    first = model.net[0]
+    hidden = first.out_features
+    out = CoefMLP(
+        hidden=hidden,
+        bias=tuple(model.bias.tolist()),
+        in_dim=model.in_dim,
+        use_mu=getattr(model, "use_mu", False),
+        use_risk=getattr(model, "use_risk", False),
+        use_lam=True,
+        lam_init=lam_init,
+    )
+    with torch.no_grad():
+        out.net[0].weight.copy_(first.weight)
+        out.net[0].bias.copy_(first.bias)
+        out.net[2].weight.copy_(model.net[2].weight)
+        out.net[2].bias.copy_(model.net[2].bias)
+        # final layer: rows 0..2 = the abg head (copied), row 3 = lam (ZERO -> lam == lam_init)
+        out.net[4].weight.zero_()
+        out.net[4].bias.zero_()
+        out.net[4].weight[:3].copy_(model.net[4].weight)
+        out.net[4].bias[:3].copy_(model.net[4].bias)
         out.bias.copy_(model.bias)
     return out

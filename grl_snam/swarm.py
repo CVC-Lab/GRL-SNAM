@@ -244,9 +244,14 @@ class Swarm:
         # coef_feats / train_bicycle defaults so eval-time features == train-time).
         self._risk_lookahead = 0.3
         self._risk_probes = 3
-        # A widened net (grip/risk) can only be driven by the torch path: the native
-        # coef_feats builds the base-5 vector only, so force torch for those models.
-        _widened = getattr(self.model, "use_mu", False) or getattr(self.model, "use_risk", False)
+        # A widened net (grip/risk feature, or a lam OUTPUT head) can only be driven by the
+        # torch path: the native coef_feats builds the base-5 vector and the native coef_mlp
+        # returns 3 outputs, so force torch for those models.
+        _widened = (
+            getattr(self.model, "use_mu", False)
+            or getattr(self.model, "use_risk", False)
+            or getattr(self.model, "use_lam", False)
+        )
         if _widened:
             want_native_drive = False
         if want_native_drive and _native.HAS_DRIVE:
@@ -534,7 +539,15 @@ class Swarm:
             self._native_drive_step(carrot)
         else:
             feat = self._coef_feats(phi, nrm, carrot)
-            al, be, ga = self.model(feat)
+            mkw = self._material_kw()
+            if getattr(self.model, "use_lam", False):
+                # Deployable learned reroute: the net outputs lam_soft per agent; drive with
+                # it (as trained) instead of the fixed MaterialParams lam_soft.
+                al, be, ga, lam_soft = self.model.coeffs_and_lam(feat)
+                if mkw:
+                    mkw = dict(mkw, lam_soft=lam_soft)
+            else:
+                al, be, ga = self.model(feat)
             self.o, self.th, self.sp, _ = sdf_nav.bicycle_rollout(
                 self.field,
                 self.o,
@@ -548,7 +561,7 @@ class Swarm:
                 nsub=self.nsub,
                 **self.kw,
                 **self.veh,
-                **self._material_kw(),
+                **mkw,
             )
 
         # 5. METRICS + WAYPOINT — a reached agent parks (single-goal swarm).

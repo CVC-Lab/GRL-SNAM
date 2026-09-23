@@ -74,9 +74,14 @@ trainer):
 - **Risk-lookahead feature** — `coef_feats(..., material=…)` appends the WORST terrain risk between
   the vehicle and its carrot (the terrain twin of the grip μ-probe; `add_risk_feature(model)` widens a
   trained net to see it, output-identical at init). The coefficients can now *see* risk ahead.
-- **Reroute force** — the material force `F_soft = -lam_soft·∇risk` (`--lam-soft`, fixed here) steers
-  the trajectory around risk. This is the lever that actually reroutes; a *learned* `lam` head is a
-  planned follow-up.
+- **Reroute force** — the material force `F_soft = -lam_soft·∇risk` steers the trajectory around risk.
+  This is the lever that actually reroutes. `--lam-soft` sets a **fixed** strength; `--learned-lam`
+  instead gives the net a 4th output (`add_lam_head`) so it **learns the per-position reroute strength**
+  — the deployable lever. `add_lam_head` is identity-preserving (α/β/γ bit-unchanged, `lam` starts at
+  `--lam-soft`), and the output stack stays one uniform `softplus(net + log(expm1(out_bias)))` so the
+  `.cvcnav` just carries a 4th output (a risk `.cvcnav` still needs the C++ `coef_mlp`/drive update
+  before it runs on the pure-C++ host). Smoke (grid 64, 40 steps, 2 seeds): learned `lam` trims exposure
+  a further ~3% over the fixed dial (0.082→0.079) at equal reach.
 - **Risk-exposure loss** — `w_risk · Σ risk(pose)` over the rollout, differentiable through the
   trajectory, penalizes dwelling in risk. Reported as the third `last_loss_terms` summand.
 
