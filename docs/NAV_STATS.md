@@ -38,6 +38,24 @@ reduces a list of per-vehicle `NavStats` (plus the fields `NavStats` doesn't car
 record; `aggregate_nav(episodes, checkpoint)` reduces a corpus into a single `NavScorecard` — the
 RF-free fitness row (arrival, economy, safety, material). Mirrors C++ `cvc::nav::nav_scorecard`.
 
+## Material & terrain-risk buckets
+
+The scorecard's material dimension is **discrete**, mirroring C++ `veh_nav_stats`: each vehicle's
+`NavStats` carries `time_over_material_s[13]` and `dist_over_material_m[13]`, indexed by the shared
+13-class palette (`grl_snam.material_palette`, positional with `cvc::nav::kNumMaterials` and the
+`cvc::dbg` `MATERIAL_TABLE`). `aggregate_nav` reduces the time buckets into
+`NavScorecard.material_time_share[13]`, and `terrain_risk_share(...)` sums the traversable
+terrain-risk classes (foliage/soil/water/rock) into the single **"time in terrain-risk areas"**
+number the eval CLI prints as `risk-time%`.
+
+The id source is a `grl_snam.material.MaterialIdRaster` — a nearest-cell per-agent sampler, the twin
+of C++ `nav_samplers.material_id(x,y)`. It is **stats-only**: attaching it (`Swarm(...,
+material_ids=…)`, `SdfNavigator.material_ids`, or `scorecard_eval` by default) classifies what each
+vehicle drives over and populates the buckets **without changing navigation** — the arrival/economy/
+safety numbers are bit-identical with or without it. `city_material_ids(truth, …)` builds a corpus
+raster (buildings→concrete, free→open_air, deterministic terrain-risk disks). With no raster attached
+every bucket stays zero, so a non-material drive is byte-identical.
+
 ## Consuming it — eval and training
 
 - **Eval CLI:** `python -m grl_snam.tools.scorecard_eval [--checkpoint run/coef.pt] [--scenes N] [--json card.json]`
@@ -51,4 +69,6 @@ RF-free fitness row (arrival, economy, safety, material). Mirrors C++ `cvc::nav:
 
 `tests/test_scorecard.py` pins the reducer to the SAME hand-computed corpus as libcvc's
 `nav_stats_test.cpp` and cvcdbg's `tests/nav_stats_test.cpp` (the shared-schema contract);
-`tests/test_swarm.py` checks the `Swarm` collector against N serial `SdfNavigator`s to float32.
+`tests/test_swarm.py` checks the `Swarm` collector against N serial `SdfNavigator`s to float32;
+`tests/test_material_buckets.py` hand-computes the material buckets (the time/dist-per-id contract
+mirrored from `nav_stats_test.cpp`), the id-raster sampler, and the byte-identical no-material default.

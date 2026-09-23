@@ -20,8 +20,7 @@ import json
 import math
 from dataclasses import dataclass, field
 
-# Dense material palette id space, matching cvc::dbg kNumMaterials (channel.cpp table).
-NUM_MATERIALS = 13
+from .material_palette import NUM_MATERIALS  # 13 == cvc::dbg kNumMaterials (channel.cpp table)
 
 
 @dataclass
@@ -37,6 +36,7 @@ class VehStats:
     veh_contacts: int = 0
     penetration_steps: int = 0
     time_over_material_s: list[float] = field(default_factory=lambda: [0.0] * NUM_MATERIALS)
+    dist_over_material_m: list[float] = field(default_factory=lambda: [0.0] * NUM_MATERIALS)
 
 
 @dataclass
@@ -65,6 +65,7 @@ class EpisodeStats:
         within the contact radius, the pairwise quantity the episode owns (like ``min_sep_m``),
         so ``veh_contacts_per_run`` is non-zero on collisions. A vehicle counts as arrived when
         it reached >= 1 goal. (NavStats.turn_total_rad / fuel_used are read when present.)"""
+        zeros = [0.0] * NUM_MATERIALS
         per = []
         for i, ns in enumerate(vehicles):
             arrived = getattr(ns, "goals_reached", 0) >= 1
@@ -78,6 +79,10 @@ class EpisodeStats:
                     fuel_used=getattr(ns, "fuel_used", 0.0),
                     veh_contacts=(veh_contacts[i] if veh_contacts else 0),
                     penetration_steps=getattr(ns, "penetration_steps", 0),
+                    # Per-material buckets the accumulator carries (all-zero when no
+                    # material id was ever supplied); copied so VehStats owns its lists.
+                    time_over_material_s=list(getattr(ns, "time_over_material_s", zeros)),
+                    dist_over_material_m=list(getattr(ns, "dist_over_material_m", zeros)),
                 )
             )
         arrived_all = bool(per) and all(v.arrived for v in per)
