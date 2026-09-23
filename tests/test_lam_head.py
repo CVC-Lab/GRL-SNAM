@@ -53,6 +53,33 @@ def test_add_lam_head_identity_and_flags():
         sdf_nav.add_lam_head(lam)
 
 
+def test_nonpositive_lam_init_is_rejected():
+    # lam_init <= 0 would fold to softplus bias -inf (dead, zero-gradient lam) or NaN — guard it.
+    with pytest.raises(ValueError, match="lam_init > 0"):
+        sdf_nav.CoefMLP(use_lam=True, lam_init=0.0)
+    with pytest.raises(ValueError, match="lam_init > 0"):
+        sdf_nav.CoefMLP(use_lam=True, lam_init=-0.1)
+    with pytest.raises(ValueError, match="lam_init > 0"):
+        sdf_nav.add_lam_head(sdf_nav.add_risk_feature(sdf_nav.CoefMLP()), lam_init=0.0)
+
+
+def test_cli_rejects_learned_lam_with_nonpositive_init():
+    with pytest.raises(SystemExit, match="lam-soft > 0"):
+        coef_train.main(
+            [
+                "--rollout",
+                "bicycle",
+                "--w-risk",
+                "1",
+                "--learned-lam",
+                "--lam-soft",
+                "0",
+                "--steps",
+                "1",
+            ]
+        )
+
+
 def test_coeffs_and_lam_requires_head():
     field, grid = _scene()
     feat = sdf_nav.coef_feats(field, torch.zeros(1, 2), torch.ones(1, 2))

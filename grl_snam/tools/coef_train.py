@@ -651,7 +651,13 @@ def main(argv=None):
             if args.learned_lam:
                 # LEARNED reroute: the net outputs lam_soft per position instead of the fixed
                 # --lam-soft dial — the deployable reroute lever (needs the C++ coef_mlp/drive
-                # update before a risk .cvcnav can run on the pure-C++ host).
+                # update before a risk .cvcnav can run on the pure-C++ host). --lam-soft is the
+                # INIT here and must be > 0 (0 is a valid FIXED-mode value but a dead learned init).
+                if args.lam_soft <= 0.0:
+                    raise SystemExit(
+                        "--learned-lam needs --lam-soft > 0 (it seeds the lam head; 0 would freeze "
+                        "it with a dead gradient). Use a small positive init, e.g. --lam-soft 0.4."
+                    )
                 risk_model = sdf_nav.add_lam_head(risk_model, lam_init=args.lam_soft)
         curriculum = None
         if args.curriculum:

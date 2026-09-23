@@ -904,7 +904,14 @@ class CoefMLP(nn.Module):
         )
         self.register_buffer("bias", torch.tensor(bias))  # abg raw bias (unchanged)
         if self.use_lam:
-            # lam_soft init: softplus(0 + log(expm1(lam_init))) == lam_init at the zero column
+            # lam_soft init: softplus(0 + log(expm1(lam_init))) == lam_init at the zero column.
+            # Requires lam_init > 0: log(expm1(0)) is -inf (a DEAD lam head — 0 with zero
+            # gradient forever), and log(expm1(<0)) is NaN (poisons the drive/loss/.cvcnav).
+            if not (float(lam_init) > 0.0):
+                raise ValueError(
+                    f"use_lam requires lam_init > 0 (softplus init is -inf at 0, NaN below); "
+                    f"got {lam_init!r}"
+                )
             self.register_buffer("lam_raw_bias", torch.tensor(float(lam_init)))
 
     def full_out_bias(self) -> torch.Tensor:
