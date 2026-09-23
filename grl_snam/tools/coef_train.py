@@ -154,6 +154,7 @@ def train_bicycle(
     lam_soft=0.0,
     lam_hard=0.0,
     risk_lookahead=0.3,
+    curriculum=None,
 ):
     """Fine-tune the coefficients through the VEHICLE, with grip in the dynamics.
 
@@ -291,7 +292,15 @@ def train_bicycle(
     rng = np.random.default_rng(seed)
     last = (0.0, 0.0, 0.0)
     for step in range(steps):
-        o = torch.from_numpy(rand_on(n, rng))
+        # Curriculum (opt-in): draw STARTS from the hard/risky-region sampler instead of
+        # uniform; goals stay uniform. start_bins lets us attribute this batch's difficulty
+        # back to the bins the agents started in (curriculum.update below).
+        if curriculum is not None:
+            o_np, start_bins = curriculum.sample_starts(n, rng)
+            o = torch.from_numpy(o_np)
+        else:
+            o = torch.from_numpy(rand_on(n, rng))
+            start_bins = None
         goal = torch.from_numpy(rand_on(n, rng))
         th = torch.from_numpy(rng.uniform(-np.pi, np.pi, n).astype(np.float32))
         # A spread of starting speeds, not rest: training only from standstill
@@ -299,6 +308,8 @@ def train_bicycle(
         # against the actuator clamp, rather than to the cruising regime the
         # vehicle spends its time in.
         sp = torch.from_numpy(rng.uniform(0.0, float(vmax), n).astype(np.float32))
+        init_dist = (goal - o).norm(dim=1).clamp_min(1e-6).detach()  # for the curriculum shortfall
+        risk_agent = torch.zeros(n)  # per-agent risk exposure (detached; curriculum difficulty)
         coll = torch.zeros(())
         risk = torch.zeros(())
         for t in range(horizon):
@@ -337,7 +348,9 @@ def train_bicycle(
             # Risk exposure: mean terrain risk underfoot, integrated over the rollout —
             # the "time in terrain-risk areas" the loss should shrink (0 without material).
             if mfield is not None:
-                risk = risk + mfield.sample(o)[0].mean()
+                risk_here = mfield.sample(o)[0]
+                risk = risk + risk_here.mean()
+                risk_agent = risk_agent + risk_here.detach()  # per-agent, for the curriculum
             if (t + 1) % window == 0 or t == horizon - 1:
                 goal_loss = (goal - o).norm(dim=1).mean() / region_n
                 loss = goal_loss + w_coll * coll / window + w_risk * risk / window
@@ -354,6 +367,13 @@ def train_bicycle(
                 )
                 o, th, sp = o.detach(), th.detach(), sp.detach()
                 coll, risk = torch.zeros(()), torch.zeros(())
+        if curriculum is not None:
+            # Difficulty this batch = how far each agent still is from its goal (0 = reached,
+            # 1 = no progress) PLUS its mean terrain-risk exposure — so the curriculum mines
+            # regions that are hard to clear AND risky. Attributed to the START bins.
+            shortfall = ((goal - o).norm(dim=1) / init_dist).clamp(0.0, 1.0).detach()
+            difficulty = shortfall.cpu().numpy() + (risk_agent / horizon).cpu().numpy()
+            curriculum.update(start_bins, difficulty)
         if step % 50 == 0 or step == steps - 1:
             print(
                 f"  step {step:4d}: goal_dist {last[0]:6.3f}  coll {last[1]:6.3f}  risk {last[2]:6.3f}"
@@ -546,6 +566,20 @@ def main(argv=None):
         help="--w-risk: how far ahead (normalized) the risk-lookahead feature probes",
     )
     ap.add_argument(
+        "--curriculum",
+        action="store_true",
+        help="bicycle rollout only: bias start sampling toward the regions the policy handles "
+        "worst (hard-to-reach + high terrain-risk), refreshed from each batch's own outcomes. "
+        "Off (default) = uniform start sampling, byte-identical.",
+    )
+    ap.add_argument("--curriculum-bins", type=int, default=6, help="--curriculum: bins per axis")
+    ap.add_argument(
+        "--curriculum-eps",
+        type=float,
+        default=0.15,
+        help="--curriculum: uniform-sampling floor mixed in so no region starves (0..1)",
+    )
+    ap.add_argument(
         "--score",
         action="store_true",
         help="after training, score the checkpoint with the base NavScorecard "
@@ -597,6 +631,13 @@ def main(argv=None):
                 story.truth_grid(), story.bounds, meta["center"], meta["scale"], seed=args.seed
             )
             risk_model = sdf_nav.add_risk_feature(sdf_nav.CoefMLP())
+        curriculum = None
+        if args.curriculum:
+            from grl_snam.curriculum import build_city_curriculum
+
+            curriculum = build_city_curriculum(
+                args.grid, bins=args.curriculum_bins, eps=args.curriculum_eps
+            )
         model = train_bicycle(
             args.steps,
             args.horizon,
@@ -611,6 +652,7 @@ def main(argv=None):
             lam_soft=args.lam_soft,
             lam_hard=args.lam_hard,
             risk_lookahead=args.risk_lookahead,
+            curriculum=curriculum,
         )
     else:
         model = train(args.steps, args.horizon, args.n, args.lr, args.seed)
