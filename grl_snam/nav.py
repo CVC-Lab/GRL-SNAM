@@ -106,6 +106,11 @@ class SdfNavigator:
         # consumes it, since a holonomic point has no actuator envelope to
         # limit. Unset (the default) leaves every trajectory bit-for-bit.
         self.friction = None
+        # Optional discrete material-id raster (grl_snam.material.MaterialIdRaster) for
+        # the per-material nav-stats buckets. STATS-ONLY — classifies what the vehicle
+        # drives over for _metrics.material_id; it never touches the rollout, so setting
+        # it leaves every trajectory bit-for-bit. Unset (default) => material_id == -1.
+        self.material_ids = None
         self.step_i = 0
         self.goal_index = 0
         self._parked = False
@@ -392,6 +397,11 @@ class SdfNavigator:
                 bool(self.material.last_gate.active)
                 if self.material is not None and self.material.last_gate is not None
                 else False
+            ),
+            material_id=(
+                int(self.material_ids.ids_at_norm(self.o)[0])
+                if self.material_ids is not None
+                else -1
             ),
         )
 

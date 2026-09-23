@@ -26,6 +26,7 @@ import torch
 import sdf_nav
 from grl_snam import planner
 from grl_snam.fog_stories import STORIES, shrunk
+from grl_snam.material_palette import terrain_risk_share
 from grl_snam.scorecard import aggregate_nav
 from grl_snam.squad import AgentSpec
 from grl_snam.swarm import Swarm
@@ -76,13 +77,25 @@ def evaluate(
     grid: int = 96,
     contact_r: float = 0.0,
     checkpoint_label: str = "",
+    material: bool = True,
 ):
     """Run ``model`` over ``scenes`` city scenes (seeds ``0..scenes-1``), collecting one
     base ``EpisodeStats`` per scene via the Swarm collector, and aggregate them into a
-    ``NavScorecard``. Each scene runs to ``all_reached`` or ``steps``, whichever first."""
+    ``NavScorecard``. Each scene runs to ``all_reached`` or ``steps``, whichever first.
+
+    ``material`` (default on) attaches a per-scene discrete material-id raster so the
+    ``material_time_share`` / terrain-risk buckets are populated. It is a stats-only
+    classifier — it does NOT change navigation — so the arrival/economy/safety numbers
+    are unaffected; pass ``material=False`` for a corpus with no material terrain."""
+    from ..material import city_material_ids
+
     episodes = []
     for seed in range(scenes):
         story, truth, specs = scene_specs(grid, seed, agents)
+        mids = None
+        if material:
+            meta = story.meta()
+            mids = city_material_ids(truth, story.bounds, meta["center"], meta["scale"], seed=seed)
         sw = Swarm(
             story,
             specs,
@@ -91,6 +104,7 @@ def evaluate(
             prior_occ=truth,
             collect_stats=True,
             contact_radius_m=contact_r,
+            material_ids=mids,
         )
         for _ in range(steps):
             sw.step()
@@ -144,7 +158,8 @@ def main(argv=None):
         f"[{label}] scenes={args.scenes} runs={d['n_vehicle_runs']} "
         f"success={d['success_rate']:.3f} arrival={d['arrival_rate']:.3f} "
         f"path_ratio={d['mean_path_ratio']:.3f} pen%={d['mean_penetration_pct']:.3f} "
-        f"contacts/run={d['veh_contacts_per_run']:.3f}"
+        f"contacts/run={d['veh_contacts_per_run']:.3f} "
+        f"risk-time%={100.0 * terrain_risk_share(d['material_time_share']):.1f}"
     )
     print(json.dumps(d, indent=2))
     if args.json:

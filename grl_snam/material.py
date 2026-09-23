@@ -52,6 +52,7 @@ import torch.nn.functional as F
 import sdf_nav
 
 from . import nav_native as _native
+from .material_palette import MATERIAL_ID, OPEN_AIR_ID, RISK_MATERIAL_IDS
 
 # The 16 gate ray directions (row, col) = (sin th, cos th), th = 2*pi*k/16,
 # as exact float64 constants shared verbatim with the C++ twin — keeping libm
@@ -398,6 +399,88 @@ class FrictionField:
         return F.grid_sample(
             self.field, grid, mode="bilinear", align_corners=True, padding_mode="border"
         )[0, 0, 0, :]
+
+
+# ---------------------------------------------------------------------------
+# Discrete material-id raster (nav-stats material buckets)
+# ---------------------------------------------------------------------------
+
+
+class MaterialIdRaster:
+    """Discrete per-cell material id (0..NUM_MATERIALS-1, or -1 unknown) with a
+    nearest-cell per-agent sampler — the Python twin of ``cvc::nav``
+    ``nav_samplers.material_id`` (a ``std::function<int(double,double)>``).
+
+    It is a STATS-ONLY classifier of what a vehicle is driving OVER, deliberately
+    decoupled from the drive's :class:`MaterialGrid`/risk force: attaching one to a
+    collector changes telemetry only (the ``time_over_material_s`` /
+    ``dist_over_material_m`` buckets), never navigation. The coordinate chain matches
+    :meth:`SDFField.sample` / :meth:`MaterialField.sample` (normalized -> world ->
+    cell, ``align_corners``) so the bucketed id is the class at the exact geometry the
+    drive sees. Nearest (not bilinear) because ids are categorical."""
+
+    def __init__(self, ids: np.ndarray, bounds, center, scale: float):
+        self.ids = np.ascontiguousarray(ids, dtype=np.int16)
+        if self.ids.ndim != 2:
+            raise ValueError(f"material id raster must be 2-D [ny,nx], got {self.ids.shape}")
+        self.ny, self.nx = self.ids.shape
+        self.mnx, self.mny, self.mxx, self.mxy = (float(b) for b in bounds)
+        self.cx, self.cy = float(center[0]), float(center[1])
+        self.S = float(scale)
+
+    def ids_at_world(self, wx, wy) -> np.ndarray:
+        """Nearest-cell ids for world-metre coordinates; out-of-bounds -> -1."""
+        wx = np.asarray(wx, np.float64)
+        wy = np.asarray(wy, np.float64)
+        col = np.round((wx - self.mnx) / (self.mxx - self.mnx) * (self.nx - 1)).astype(np.int64)
+        row = np.round((wy - self.mny) / (self.mxy - self.mny) * (self.ny - 1)).astype(np.int64)
+        inb = (col >= 0) & (col < self.nx) & (row >= 0) & (row < self.ny)
+        out = np.full(col.shape, -1, dtype=np.int32)
+        out[inb] = self.ids[row[inb], col[inb]]
+        return out
+
+    def ids_at_norm(self, on) -> np.ndarray:
+        """Nearest-cell ids for ``[B,2]`` normalized positions (torch or numpy)."""
+        arr = on.detach().cpu().numpy() if hasattr(on, "detach") else np.asarray(on, np.float64)
+        arr = np.atleast_2d(np.asarray(arr, np.float64))
+        return self.ids_at_world(arr[:, 0] / self.S + self.cx, arr[:, 1] / self.S + self.cy)
+
+
+def city_material_ids(
+    truth,
+    bounds,
+    center,
+    scale: float,
+    *,
+    seed: int = 0,
+    n_blobs: int = 6,
+    blob_radius_frac: float = 0.10,
+) -> MaterialIdRaster:
+    """Build a stats material-id raster over a city scene: occupied cells ->
+    ``reinforced_concrete`` (buildings are occupancy, not driven through), free cells
+    -> ``open_air``, with a handful of deterministic-per-``seed`` terrain-risk disks
+    (:data:`RISK_MATERIAL_IDS`) painted on free cells so drives actually traverse
+    material and the buckets are non-zero. Blobs are localized (not full bands) so a
+    later risk-aware policy has something to route AROUND. Building cells are never
+    overwritten."""
+    truth = np.asarray(truth, bool)
+    ny, nx = truth.shape
+    ids = np.where(
+        truth, np.int16(MATERIAL_ID["reinforced_concrete"]), np.int16(OPEN_AIR_ID)
+    ).astype(np.int16)
+    free = ~truth
+    fr, fc = np.nonzero(free)
+    if len(fr) and n_blobs > 0:
+        rng = np.random.default_rng(seed)
+        rad = max(1, int(blob_radius_frac * min(ny, nx)))
+        yy, xx = np.ogrid[:ny, :nx]
+        for k in range(n_blobs):
+            j = int(rng.integers(0, len(fr)))
+            r0, c0 = int(fr[j]), int(fc[j])
+            mat = int(RISK_MATERIAL_IDS[k % len(RISK_MATERIAL_IDS)])
+            paint = ((yy - r0) ** 2 + (xx - c0) ** 2 <= rad * rad) & free
+            ids[paint] = np.int16(mat)
+    return MaterialIdRaster(ids, bounds, center, scale)
 
 
 # ---------------------------------------------------------------------------

@@ -110,6 +110,7 @@ class Swarm:
         material=None,
         collect_stats: bool = False,
         contact_radius_m: float = 0.0,
+        material_ids=None,
     ):
         if not specs:
             raise ValueError("a swarm needs at least one agent")
@@ -125,6 +126,11 @@ class Swarm:
         # and every existing parity test unchanged). See _collect_step / episode_stats.
         self._collect_stats = bool(collect_stats)
         self._contact_r = float(contact_radius_m)
+        # Optional discrete material-id raster (grl_snam.material.MaterialIdRaster) for
+        # the per-material nav-stats buckets. STATS-ONLY: it classifies what each agent
+        # drives over and never touches the drive (that is `material=`). None => buckets
+        # stay zero and the drive/collect path is byte-identical.
+        self._material_ids = material_ids
 
         # One template FogScenario gives us the whole shared world — meta,
         # bounds/scale, the truth raster, and (the objects we actually share) a
@@ -330,6 +336,9 @@ class Swarm:
         stw = step_world.tolist()
         rch = self.reached.tolist()
         col = collectible.tolist()
+        # Discrete material id per agent at the post-drive pose (stats-only; -1 when no
+        # raster). One vectorized nearest-cell lookup, the twin of C++ material_id(x,y).
+        mids = self._material_ids.ids_at_norm(self.o).tolist() if self._material_ids else None
         for i in range(self.N):
             if not col[i]:
                 continue
@@ -344,7 +353,9 @@ class Swarm:
                     inside_building=phi_i < 0.0,
                     reached=bool(rch[i]),
                     goal_index=0,
-                )
+                    material_id=(int(mids[i]) if mids is not None else -1),
+                ),
+                dt=self.dt,
             )
         # arrival tick (ticks taken, incl. this one) — stamped once, on the transition.
         self._sc_arrival_tick[newly] = self.gstep + 1
