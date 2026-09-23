@@ -682,7 +682,7 @@ def test_bicycle_training_loop_puts_grip_in_the_dynamics():
 def test_bicycle_training_rejects_a_blind_model_asked_to_use_grip():
     from grl_snam.tools import coef_train
 
-    with pytest.raises(ValueError, match="6-feature model needs friction"):
+    with pytest.raises(ValueError, match="grip .mu. model needs friction"):
         coef_train.train_bicycle(
             steps=1,
             horizon=2,
@@ -749,7 +749,8 @@ def test_the_two_loss_terms_are_comparable_in_size():
     from grl_snam.tools import coef_train
 
     m = coef_train.train_bicycle(steps=1, n=128, horizon=6, window=6, grid=96, seed=0)
-    goal_term, coll_term = m.last_loss_terms
+    goal_term, coll_term, risk_term = m.last_loss_terms
+    assert risk_term == 0.0  # no material attached -> the risk summand is inert
 
     share = coll_term / (goal_term + coll_term)
     assert 0.05 < share < 0.95, (

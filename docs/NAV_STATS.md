@@ -65,6 +65,40 @@ every bucket stays zero, so a non-material drive is byte-identical.
   scores the freshly-trained checkpoint with the base scorecard (arrival/economy/safety) instead of
   raw reach — the single fitness signal a campaign ranks on.
 
+## Training against terrain risk (opt-in `--w-risk`)
+
+`coef_train --rollout bicycle --w-risk W` trains the policy to spend less time in terrain-risk
+areas. Three pieces combine (all default off → the objective is byte-identical to the geometry-only
+trainer):
+
+- **Risk-lookahead feature** — `coef_feats(..., material=…)` appends the WORST terrain risk between
+  the vehicle and its carrot (the terrain twin of the grip μ-probe; `add_risk_feature(model)` widens a
+  trained net to see it, output-identical at init). The coefficients can now *see* risk ahead.
+- **Reroute force** — the material force `F_soft = -lam_soft·∇risk` (`--lam-soft`, fixed here) steers
+  the trajectory around risk. This is the lever that actually reroutes; a *learned* `lam` head is a
+  planned follow-up.
+- **Risk-exposure loss** — `w_risk · Σ risk(pose)` over the rollout, differentiable through the
+  trajectory, penalizes dwelling in risk. Reported as the third `last_loss_terms` summand.
+
+Only the **bicycle** rollout can learn this (the holonomic surrogate never sees material); the trainer
+raises if a risk net is used without `material=`. A widened net is a torch research artifact — the
+pure-C++ host's `coef_feats` does not build the risk column yet, so a risk `.cvcnav` is not deployable
+until the coordinated `cvc::nav` update lands (and `--score` skips widened nets, since the Swarm drive
+is base-5-feature).
+
+Smoke measurement (grid 64, 40 steps, `lam_soft=0.4`, 2 seeds — indicative, not the full study):
+
+| arm | risk exposure | reach |
+|---|---|---|
+| `w_risk=0` | 0.108 | 0.166 |
+| `w_risk=8` | **0.082** (−24%) | 0.172 |
+
+Reproduce with `coef_train.eval_risk_exposure(model, grid=64)` after training each arm. The exposure
+drop is consistent across both seeds; the reach delta (+0.006) is within run-to-run noise, so the fair
+read is "exposure down, reach not measurably changed" rather than a proven Pareto win — a proper
+3-seed, longer-horizon study on a stable/GPU box (the BPTT graph is CPU-fragile) is the validation of
+record, in the style of the `w_coll` operating-point table in `coef_train.train_bicycle`.
+
 ## Parity
 
 `tests/test_scorecard.py` pins the reducer to the SAME hand-computed corpus as libcvc's

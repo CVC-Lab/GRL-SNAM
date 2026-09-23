@@ -483,6 +483,35 @@ def city_material_ids(
     return MaterialIdRaster(ids, bounds, center, scale)
 
 
+def city_material_grid(
+    truth,
+    bounds,
+    center,
+    scale: float,
+    *,
+    seed: int = 0,
+    n_blobs: int = 6,
+    blob_radius_frac: float = 0.10,
+    risk_value: float = 1.0,
+):
+    """Build a matched (:class:`MaterialGrid`, :class:`MaterialIdRaster`) pair for a
+    training/eval scene: the id raster (:func:`city_material_ids`) drives the discrete
+    nav-stats buckets, and the grid's CONTINUOUS ``risk`` plane is ``risk_value`` exactly
+    on the terrain-risk cells (blurred by the grid's sigma) and 0 elsewhere — so the
+    differentiable risk force / risk-lookahead feature / risk-exposure loss and the
+    reported buckets see the SAME terrain. Returns ``(grid, id_raster)``. ``hard`` is
+    empty (terrain risk here is soft, routable ground, not a lethal hazard)."""
+    idr = city_material_ids(
+        truth, bounds, center, scale, seed=seed, n_blobs=n_blobs, blob_radius_frac=blob_radius_frac
+    )
+    risk_raw = (
+        np.isin(idr.ids, np.asarray(RISK_MATERIAL_IDS, np.int16)).astype(np.float32) * risk_value
+    )
+    hard = np.zeros(idr.ids.shape, dtype=bool)
+    grid = MaterialGrid(risk_raw, hard, bounds, center, scale)
+    return grid, idr
+
+
 # ---------------------------------------------------------------------------
 # Witness gate — Layer-B normative reference (float64 end-to-end)
 # ---------------------------------------------------------------------------
