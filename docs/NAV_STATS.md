@@ -99,10 +99,27 @@ read is "exposure down, reach not measurably changed" rather than a proven Paret
 3-seed, longer-horizon study on a stable/GPU box (the BPTT graph is CPU-fragile) is the validation of
 record, in the style of the `w_coll` operating-point table in `coef_train.train_bicycle`.
 
+## Scorecard-driven curriculum (opt-in `--curriculum`)
+
+Uniform start sampling spends most of the gradient on easy open corridors. `--curriculum`
+(`grl_snam.curriculum.RegionCurriculum`) instead biases *where drives start* toward the regions the
+current policy handles worst. It partitions the free space into a coarse bin grid and tracks a per-bin
+difficulty EMA fed from **each batch's own outcomes** — goal shortfall + terrain-risk exposure, the
+scorecard axes a campaign ranks on — with no extra eval pass. A uniform floor (`--curriculum-eps`) keeps
+any bin from starving, a cap keeps one bin from dominating, and a uniform cold start prevents early noise
+from locking it. Default off → uniform sampling, byte-identical.
+
+Smoke (grid 64, 60 steps, `w_risk=6`, `lam_soft=0.4`, 6×6 bins): the learned start weights correlate
+**+0.97** with per-bin terrain risk — riskier-than-median bins draw 0.030 of the mass vs 0.025 for the
+rest (uniform 0.028) — so the curriculum concentrates training exactly on the hard, risky ground while
+the floor keeps coverage everywhere. Magnitude scales with `--curriculum-eps`/bin count.
+
 ## Parity
 
 `tests/test_scorecard.py` pins the reducer to the SAME hand-computed corpus as libcvc's
 `nav_stats_test.cpp` and cvcdbg's `tests/nav_stats_test.cpp` (the shared-schema contract);
 `tests/test_swarm.py` checks the `Swarm` collector against N serial `SdfNavigator`s to float32;
 `tests/test_material_buckets.py` hand-computes the material buckets (the time/dist-per-id contract
-mirrored from `nav_stats_test.cpp`), the id-raster sampler, and the byte-identical no-material default.
+mirrored from `nav_stats_test.cpp`), the id-raster sampler, and the byte-identical no-material default;
+`tests/test_risk_lever.py` pins the risk feature + `w_risk` loss wiring; `tests/test_curriculum.py`
+pins the difficulty reweighting (floor, cap, cold start, hard-bin bias).
