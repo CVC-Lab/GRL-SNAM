@@ -70,7 +70,11 @@ def write_coef_mlp(model, path, meta: bytes = b""):
     layers = _layers(model)
     in_f = int(layers[0][0].shape[1])
     out_f = int(layers[-1][0].shape[0])
-    out_bias = model.bias.detach().cpu().numpy().astype(np.float32)  # the (1,3,4) buffer
+    # The RAW pre-softplus bias, one entry per output: (1,3,4) for abg, plus lam_init for a
+    # lam head. full_out_bias() keeps the whole output stack a single uniform softplus, so
+    # out_bias_len == out_f and the C++ forward needs no per-output special case.
+    _ob = model.full_out_bias() if hasattr(model, "full_out_bias") else model.bias
+    out_bias = _ob.detach().cpu().numpy().astype(np.float32)
     shape_act = []
     for w, _b, act in layers:
         shape_act += [int(w.shape[0]), int(w.shape[1]), int(act)]
