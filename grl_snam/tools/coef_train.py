@@ -421,6 +421,17 @@ def main(argv=None):
         "selects an operating point -- it is not a hyperparameter to tune away.",
     )
     ap.add_argument("--cuda", action="store_true", help="native backend: use the GPU trainer")
+    ap.add_argument(
+        "--score",
+        action="store_true",
+        help="after training, score the checkpoint with the base NavScorecard "
+        "(arrival/economy/safety over a scene corpus) instead of just reach — the "
+        "single fitness row a campaign ranks on (tools.scorecard_eval).",
+    )
+    ap.add_argument("--score-scenes", type=int, default=6, help="--score: scene-corpus size")
+    ap.add_argument(
+        "--score-json", type=str, default="", help="--score: also write the scorecard JSON here"
+    )
     args = ap.parse_args(argv)
 
     if args.backend == "native":
@@ -435,6 +446,12 @@ def main(argv=None):
             seed=args.seed,
         )
         print(f"wrote {args.out} (native cvc::nav)")
+        if args.score:
+            print(
+                "--score: the native .cvcnav scores through the sim_world collector "
+                "(nav_native.NativeSimWorld.begin_nav_stats / episode_stats), not the torch "
+                "Swarm; --score reports the base scorecard on the torch backend for now."
+            )
         return
 
     print(f"training ({args.rollout}, {args.steps} steps)...")
@@ -450,6 +467,30 @@ def main(argv=None):
         model = train(args.steps, args.horizon, args.n, args.lr, args.seed)
     write_coef_mlp(model, args.out)
     print(f"wrote {args.out}   reach_rate={reach_rate(model):.2%}")
+    if args.score:
+        _report_scorecard(model, args)
+
+
+def _report_scorecard(model, args) -> None:
+    """Score a freshly-trained torch CoefMLP with the base NavScorecard — the fitness
+    row (arrival/economy/safety) a training campaign ranks on, replacing the raw
+    reach_rate as the signal of record. Reuses tools.scorecard_eval so the number
+    matches a standalone `scorecard_eval --checkpoint` and the C++/native collectors."""
+    from .scorecard_eval import evaluate as _score
+
+    card = _score(model, scenes=args.score_scenes, checkpoint_label=args.out)
+    d = card.to_dict()
+    print(
+        f"base scorecard [{args.out}] scenes={args.score_scenes} runs={d['n_vehicle_runs']} "
+        f"success={d['success_rate']:.3f} arrival={d['arrival_rate']:.3f} "
+        f"path_ratio={d['mean_path_ratio']:.3f} pen%={d['mean_penetration_pct']:.3f} "
+        f"contacts/run={d['veh_contacts_per_run']:.3f}"
+    )
+    if args.score_json:
+        import pathlib
+
+        pathlib.Path(args.score_json).write_text(card.to_json())
+        print(f"wrote scorecard {args.score_json}")
 
 
 if __name__ == "__main__":
