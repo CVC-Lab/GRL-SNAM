@@ -40,6 +40,11 @@ class RegionCurriculum:
     ):
         if not (0.0 <= eps <= 1.0):
             raise ValueError(f"eps must be in [0,1], got {eps}")
+        if cap < 1.0:
+            # cap is the max multiple of the uniform share a bin may take; < 1 is
+            # infeasible (B bins each <= cap/B sum to cap < 1) and would silently
+            # renormalize back over the ceiling.
+            raise ValueError(f"cap must be >= 1 (a multiple of the uniform share), got {cap}")
         self.ny, self.nx = int(grid_shape[0]), int(grid_shape[1])
         self.mnx, self.mny, self.mxx, self.mxy = (float(b) for b in bounds)
         self.cx, self.cy = float(center[0]), float(center[1])
@@ -114,21 +119,25 @@ class RegionCurriculum:
         uniform = 1.0 / self.B
         w = (1.0 - self.eps) * score + self.eps * uniform  # already sums to 1
         # Cap each bin's FINAL probability at cap x its uniform share, redistributing the
-        # excess to the uncapped bins (water-filling) so the cap actually binds — a plain
-        # clip+renormalize would re-inflate the capped bin above the ceiling.
+        # excess to the below-cap bins (water-filling). Capped bins are FROZEN so mass never
+        # sloshes back onto them (a plain clip+renormalize, or redistributing by value, would
+        # re-inflate a just-capped bin above the ceiling). cap >= 1 (enforced) keeps this
+        # feasible, so it settles within B passes with every bin <= ceil.
         ceil = self.cap * uniform
-        if ceil < 1.0:
+        if ceil < 1.0:  # cap < B: the ceiling can actually bind
+            frozen = np.zeros(self.B, dtype=bool)
             for _ in range(self.B):
-                over = w > ceil + 1e-12
+                over = (~frozen) & (w > ceil + 1e-12)
                 if not over.any():
                     break
                 excess = float((w[over] - ceil).sum())
                 w[over] = ceil
-                under = ~over
-                us = float(w[under].sum())
-                if us <= 0.0:
+                frozen |= over
+                free = ~frozen
+                fs = float(w[free].sum())
+                if fs <= 0.0:
                     break
-                w[under] += excess * (w[under] / us)
+                w[free] += excess * (w[free] / fs)
         self.weights = w / w.sum()
 
 

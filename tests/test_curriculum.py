@@ -117,3 +117,31 @@ def test_curriculum_none_is_the_default_uniform_path():
 def test_eps_out_of_range_rejected():
     with pytest.raises(ValueError, match="eps"):
         _grid_curriculum(eps=1.5)
+
+
+def test_cap_binds_with_multiple_over_bins():
+    # the case a single-over-bin test misses: several bins want to exceed a tight cap, so
+    # the water-fill must FREEZE each capped bin or the excess sloshes back over the ceiling.
+    c = _grid_curriculum(bins=3, eps=0.05, cap=1.5)  # B=9, ceil=1.5/9
+    uniform = 1.0 / c.B
+    c.diff = np.full(c.B, 0.01)
+    c.diff[:4] = np.array([120.0, 90.0, 60.0, 30.0])  # four bins want well over the cap
+    c._seen[:] = True
+    c._recompute_weights()
+    assert c.weights.max() <= c.cap * uniform + 1e-9  # cap actually enforced
+    assert (c.weights > 0).all()
+    assert abs(c.weights.sum() - 1.0) < 1e-9
+
+
+def test_cap_below_one_rejected():
+    with pytest.raises(ValueError, match="cap"):
+        _grid_curriculum(cap=0.5)
+
+
+def test_cap_one_converges_to_uniform():
+    # cap == 1 permits no concentration: the only feasible capped distribution is uniform.
+    c = _grid_curriculum(bins=3, eps=0.0, cap=1.0)
+    c.diff = np.arange(1.0, c.B + 1.0)  # skewed
+    c._seen[:] = True
+    c._recompute_weights()
+    assert np.allclose(c.weights, 1.0 / c.B, atol=1e-6)
