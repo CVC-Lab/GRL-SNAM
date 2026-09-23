@@ -240,6 +240,15 @@ class Swarm:
                     stacklevel=2,
                 )
                 want_native_drive = False
+        # Risk-lookahead feature config for driving a use_risk net (matches the
+        # coef_feats / train_bicycle defaults so eval-time features == train-time).
+        self._risk_lookahead = 0.3
+        self._risk_probes = 3
+        # A widened net (grip/risk) can only be driven by the torch path: the native
+        # coef_feats builds the base-5 vector only, so force torch for those models.
+        _widened = getattr(self.model, "use_mu", False) or getattr(self.model, "use_risk", False)
+        if _widened:
+            want_native_drive = False
         if want_native_drive and _native.HAS_DRIVE:
             import tempfile
 
@@ -790,12 +799,36 @@ class Swarm:
     ) -> torch.Tensor:
         """``sdf_nav.coef_feats`` reusing the already-taken sample (the serial
         path re-samples; the values are identical since it samples at the same
-        ``o``). Features are taken toward the CARROT, exactly as the drive."""
+        ``o``). Features are taken toward the CARROT, exactly as the drive.
+
+        A widened net gets its extra columns appended in the same order
+        :func:`sdf_nav.coef_feats` uses: risk (terrain-risk lookahead) when the model
+        declares ``use_risk`` and a material grid is attached, so ``scorecard_eval`` can
+        drive/score a risk-trained net. Grip (``use_mu``) is not supported here (the Swarm
+        carries no friction field)."""
         dg = carrot - self.o
         gd = dg.norm(dim=-1, keepdim=True)
         gdir = dg / (gd + 1e-6)
         align = (gdir * nrm).sum(-1, keepdim=True)
-        return torch.cat([phi.unsqueeze(-1), gd, gdir, align], -1)
+        cols = [phi.unsqueeze(-1), gd, gdir, align]
+        if getattr(self.model, "use_mu", False):
+            raise RuntimeError(
+                "Swarm drive cannot feed a grip (use_mu) model — no friction field is attached"
+            )
+        if getattr(self.model, "use_risk", False):
+            if self._material is None:
+                raise RuntimeError(
+                    "a use_risk model needs a material grid attached to the Swarm (material=)"
+                )
+            mf = self._material.field
+            reach = gd.clamp(max=self._risk_lookahead)  # WORST risk toward the carrot (MAX)
+            probes = [mf.sample(self.o)[0].unsqueeze(-1)]
+            for k in range(1, self._risk_probes + 1):
+                probes.append(
+                    mf.sample(self.o + (k / self._risk_probes) * reach * gdir)[0].unsqueeze(-1)
+                )
+            cols.append(torch.cat(probes, -1).max(dim=-1).values.unsqueeze(-1))
+        return torch.cat(cols, -1)
 
     # ── live-scene commands (used by SimThread; safe to call standalone) ──────
     def retarget(self, i: int, goal_world) -> None:
