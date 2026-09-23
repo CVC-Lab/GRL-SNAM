@@ -37,3 +37,44 @@ def test_export_from_legacy_model_key(tmp_path):
 def test_export_from_bare_state_dict(tmp_path):
     m = sdf_nav.CoefMLP()
     _export_and_check(tmp_path, m.state_dict(), "bare")
+
+
+def _read_header(path):
+    import struct
+
+    with open(path, "rb") as f:
+        assert f.read(4) == b"CVNV"
+        ver, flags, in_f, out_f, nl = struct.unpack("<IIIII", f.read(20))
+    return flags, in_f, out_f
+
+
+def test_exported_flags_encode_the_feature_layout(tmp_path):
+    # The .cvcnav flags byte must tell the C++ drive which feature columns to build (a bare
+    # 6-in net is grip; the risk flag disambiguates), matching cvc::nav coef_mlp kFlagFeat*.
+    F = coef_export
+
+    def flags_of(model):
+        p = tmp_path / "m.cvcnav"
+        coef_export.write_coef_mlp(model, str(p))
+        fl, in_f, out_f = _read_header(str(p))
+        return fl, in_f, out_f
+
+    base = flags_of(sdf_nav.CoefMLP())
+    assert base[0] == F.FLAG_SOFTPLUS_LOG_EXPM1  # softplus only, no feature flags
+    assert base[1] == 5
+
+    mu = flags_of(sdf_nav.widen_coef_mlp(sdf_nav.CoefMLP()))
+    assert mu[0] & F.FLAG_FEAT_MU and not (mu[0] & F.FLAG_FEAT_RISK)
+    assert mu[1] == 6
+
+    risk = flags_of(sdf_nav.add_risk_feature(sdf_nav.CoefMLP()))
+    assert risk[0] & F.FLAG_FEAT_RISK and not (risk[0] & F.FLAG_FEAT_MU)
+    assert risk[1] == 6
+
+    lam = flags_of(sdf_nav.add_lam_head(sdf_nav.add_risk_feature(sdf_nav.CoefMLP())))
+    assert lam[0] & F.FLAG_FEAT_RISK  # risk feature flagged
+    assert lam[2] == 4  # lam head signalled by out_features, no flag needed
+
+    mu_risk = flags_of(sdf_nav.add_risk_feature(sdf_nav.widen_coef_mlp(sdf_nav.CoefMLP())))
+    assert mu_risk[0] & F.FLAG_FEAT_MU and mu_risk[0] & F.FLAG_FEAT_RISK
+    assert mu_risk[1] == 7
