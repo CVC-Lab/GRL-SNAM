@@ -26,6 +26,11 @@ import numpy as np
 
 FORMAT_VERSION = 1
 FLAG_SOFTPLUS_LOG_EXPM1 = 1 << 0
+# Input-feature-layout flags (must match cvc::nav::coef_mlp kFlagFeatMu/kFlagFeatRisk): a
+# 6-input net is ambiguous (grip mu vs terrain-risk), so the C++ drive reads the layout from
+# these flags rather than in_features(). Set from CoefMLP.use_mu / use_risk.
+FLAG_FEAT_MU = 1 << 1
+FLAG_FEAT_RISK = 1 << 2
 _ACT_IDENTITY, _ACT_SILU = 0, 1
 _U64 = (1 << 64) - 1
 
@@ -79,12 +84,18 @@ def write_coef_mlp(model, path, meta: bytes = b""):
     for w, _b, act in layers:
         shape_act += [int(w.shape[0]), int(w.shape[1]), int(act)]
     ah = arch_hash(in_f, out_f, shape_act)
+    # Encode the input-feature layout so the C++ drive builds the right columns for a widened
+    # net (a bare 6-in net is grip; the risk flag disambiguates it). out_f already signals the
+    # lam head (out>=4), so it needs no flag.
+    flags = FLAG_SOFTPLUS_LOG_EXPM1
+    if getattr(model, "use_mu", False):
+        flags |= FLAG_FEAT_MU
+    if getattr(model, "use_risk", False):
+        flags |= FLAG_FEAT_RISK
 
     with open(path, "wb") as f:
         f.write(b"CVNV")
-        f.write(
-            struct.pack("<IIIII", FORMAT_VERSION, FLAG_SOFTPLUS_LOG_EXPM1, in_f, out_f, len(layers))
-        )
+        f.write(struct.pack("<IIIII", FORMAT_VERSION, flags, in_f, out_f, len(layers)))
         f.write(struct.pack("<Q", ah))
         for w, b, act in layers:
             f.write(struct.pack("<III", int(w.shape[0]), int(w.shape[1]), int(act)))
