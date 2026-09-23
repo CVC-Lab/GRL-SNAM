@@ -364,7 +364,9 @@ class BatchedSDFField:
 def _ipc_dbdd(d: torch.Tensor, d_hat: float) -> torch.Tensor:
     """IPC barrier derivative (matches surrogate_robust's piecewise form)."""
     d = d.clamp_min(1e-6)
-    val = -(2 * (d - d_hat) * torch.log(d / d_hat) + (d - d_hat) ** 2 / d)  # M10: analytic derivative of b (was +（d-dh)+1, an attraction band); verified vs autograd
+    val = -(
+        2 * (d - d_hat) * torch.log(d / d_hat) + (d - d_hat) ** 2 / d
+    )  # M10: analytic derivative of b (was +（d-dh)+1, an attraction band); verified vs autograd
     return torch.where(d < d_hat, val, torch.zeros_like(d))
 
 
@@ -867,12 +869,17 @@ class CoefMLP(nn.Module):
     known-good navigating regime (``bias``) so the self-supervised optimizer starts
     in — and stays near — the stable basin."""
 
-    def __init__(self, hidden=64, bias=(1.0, 3.0, 4.0), in_dim=5):
+    def __init__(self, hidden=64, bias=(1.0, 3.0, 4.0), in_dim=5, use_mu=False, use_risk=False):
         super().__init__()
-        #: 5 = the original [phi, goal_dist, gdir_x, gdir_y, align]; 6 adds the
-        #: sampled grip mu (see :func:`coef_feats`). Stored so the exporter and
-        #: the C++ twin can read the stride off the model instead of assuming.
+        #: 5 = the original [phi, goal_dist, gdir_x, gdir_y, align]; then the OPTIONAL
+        #: probe features append in a fixed order: mu (grip) if use_mu, then risk
+        #: (terrain-risk lookahead) if use_risk (see :func:`coef_feats`). Stored so the
+        #: exporter and the C++ twin can read the stride off the model instead of
+        #: assuming. use_mu/use_risk disambiguate which optional column an in_dim==6 net
+        #: carries (a bare 6-in net is grip, the historical widen_coef_mlp output).
         self.in_dim = int(in_dim)
+        self.use_mu = bool(use_mu)
+        self.use_risk = bool(use_risk)
         self.net = nn.Sequential(
             nn.Linear(self.in_dim, hidden),
             nn.SiLU(),
@@ -888,22 +895,40 @@ class CoefMLP(nn.Module):
         return c[:, 0], c[:, 1], c[:, 2]
 
 
-def coef_feats(field: SDFField, o, goal, friction=None, mu_lookahead=0.3, mu_probes=3):
+def coef_feats(
+    field: SDFField,
+    o,
+    goal,
+    friction=None,
+    mu_lookahead=0.3,
+    mu_probes=3,
+    material=None,
+    risk_lookahead=0.3,
+    risk_probes=3,
+):
     """Local features for ``CoefMLP``: ``[phi, goal_dist, goal_dir_x, goal_dir_y,
     goal·wall_normal]`` — the last says whether a wall stands between agent and goal.
 
     ``friction`` (a :class:`grl_snam.material.FrictionField`) appends the sampled
-    grip ``mu`` as a SIXTH feature. Without it the drive discovers ice only by
+    grip ``mu`` as the next feature. Without it the drive discovers ice only by
     standing on it — the stopping governor has already budgeted for grip it no
     longer has — so anticipation has to come through the coefficients, and they
     cannot anticipate what they cannot see.
 
-    ``None`` (the default) returns the 5-feature vector bit-for-bit, so every
-    trained ``.cvcnav`` weight file stays loadable. A 6-feature net is NOT a
-    retrain from scratch: :func:`widen_coef_mlp` lifts a trained 5-feature net
-    into one whose mu column is zero, which is output-identical at init and
-    therefore starts fine-tuning inside the known-good basin rather than in the
-    collapsed one a fresh init lands in.
+    ``material`` (a :class:`grl_snam.material.MaterialField`) appends the WORST
+    terrain risk ``r~`` between here and the carrot as the next feature (after mu
+    when both are given) — the terrain-risk analogue of the grip probe. Like grip,
+    the drive otherwise only reacts to risk it is already standing in (the material
+    force pushes down-gradient at the current cell); the lookahead is what lets the
+    coefficients see risky ground *ahead* and act before entering it. MAX along the
+    ray (not min), because a risk patch you are about to cross should read as risky.
+
+    ``None`` for both (the default) returns the 5-feature vector bit-for-bit, so every
+    trained ``.cvcnav`` weight file stays loadable and the C++/native ``coef_feats``
+    twin agrees. A widened net is NOT a retrain from scratch: :func:`widen_coef_mlp`
+    (grip) / :func:`add_risk_feature` (risk) lift a trained net into one whose new
+    column is zero — output-identical at init — so fine-tuning starts inside the
+    known-good basin rather than the collapsed one a fresh init lands in.
     """
     phi, nrm = field.sample(o)
     dg = goal - o
@@ -930,10 +955,25 @@ def coef_feats(field: SDFField, o, goal, friction=None, mu_lookahead=0.3, mu_pro
         for k in range(1, int(mu_probes) + 1):
             probes.append(friction.sample(o + (k / float(mu_probes)) * reach * gdir))
         cols.append(torch.stack(probes, -1).min(dim=-1).values.unsqueeze(-1))
+    if material is not None:
+        # The WORST terrain risk between here and the carrot -- the mirror of the mu
+        # probe, but MAX not MIN, because a risk patch ahead should read as risky, not
+        # averaged away. material.sample(o) -> (risk, phi_m, grad_r, grad_phi); we take
+        # risk[..,0]. Probe out to ``risk_lookahead`` along the carrot (never past it),
+        # include o so uniform ground gives the underfoot value and the feature degrades
+        # gracefully. grid_sample is autograd-friendly, so this is differentiable through
+        # the trajectory -- the seam a risk-exposure loss needs.
+        reach = gd.clamp(max=float(risk_lookahead))
+        rprobes = [material.sample(o)[0].unsqueeze(-1)]
+        for k in range(1, int(risk_probes) + 1):
+            rprobes.append(
+                material.sample(o + (k / float(risk_probes)) * reach * gdir)[0].unsqueeze(-1)
+            )
+        cols.append(torch.cat(rprobes, -1).max(dim=-1).values.unsqueeze(-1))
     return torch.cat(cols, -1)
 
 
-def widen_coef_mlp(model: "CoefMLP") -> "CoefMLP":
+def widen_coef_mlp(model: CoefMLP) -> CoefMLP:
     """Lift a trained 5-feature ``CoefMLP`` to a 6-feature one that sees grip.
 
     The new mu column of the first layer is ZERO, so the widened net computes
@@ -950,10 +990,42 @@ def widen_coef_mlp(model: "CoefMLP") -> "CoefMLP":
         raise ValueError(f"expected a 5-feature CoefMLP, got in_dim={model.in_dim}")
     first = model.net[0]
     hidden = first.out_features
-    out = CoefMLP(hidden=hidden, bias=tuple(model.bias.tolist()), in_dim=6)
+    out = CoefMLP(hidden=hidden, bias=tuple(model.bias.tolist()), in_dim=6, use_mu=True)
     with torch.no_grad():
         out.net[0].weight.zero_()
         out.net[0].weight[:, :5].copy_(first.weight)
+        out.net[0].bias.copy_(first.bias)
+        for i in (2, 4):
+            out.net[i].weight.copy_(model.net[i].weight)
+            out.net[i].bias.copy_(model.net[i].bias)
+        out.bias.copy_(model.bias)
+    return out
+
+
+def add_risk_feature(model: CoefMLP) -> CoefMLP:
+    """Lift a trained ``CoefMLP`` into one that sees a terrain-risk lookahead — the
+    risk twin of :func:`widen_coef_mlp`. Appends ONE input column (the last), zero in
+    the first layer, so the new net computes exactly the same function of the original
+    features — bit-for-bit identical outputs on any input whose leading columns match —
+    and only fine-tuning can discover a use for the risk feature, from inside the basin
+    that already works. Works on a 5-feature net (-> 6, base+risk) or a grip-widened
+    6-feature net (-> 7, base+mu+risk); ``use_mu`` is preserved. Returns a new model.
+    """
+    if getattr(model, "use_risk", False):
+        raise ValueError("add_risk_feature: model already has the risk feature")
+    n = model.in_dim
+    first = model.net[0]
+    hidden = first.out_features
+    out = CoefMLP(
+        hidden=hidden,
+        bias=tuple(model.bias.tolist()),
+        in_dim=n + 1,
+        use_mu=getattr(model, "use_mu", False),
+        use_risk=True,
+    )
+    with torch.no_grad():
+        out.net[0].weight.zero_()
+        out.net[0].weight[:, :n].copy_(first.weight)  # risk column stays 0
         out.net[0].bias.copy_(first.bias)
         for i in (2, 4):
             out.net[i].weight.copy_(model.net[i].weight)

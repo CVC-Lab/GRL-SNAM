@@ -149,6 +149,11 @@ def train_bicycle(
     veh=None,
     d_safe=None,
     scene=None,
+    material=None,
+    w_risk=0.0,
+    lam_soft=0.0,
+    lam_hard=0.0,
+    risk_lookahead=0.3,
 ):
     """Fine-tune the coefficients through the VEHICLE, with grip in the dynamics.
 
@@ -262,13 +267,29 @@ def train_bicycle(
         return worst
 
     model = sdf_nav.CoefMLP() if model is None else model
-    wants_mu = getattr(model, "in_dim", 5) == 6
+    wants_risk = getattr(model, "use_risk", False)
+    # A 6-feature net is grip UNLESS it explicitly declares the risk column.
+    wants_mu = getattr(model, "use_mu", False) or (
+        getattr(model, "in_dim", 5) == 6 and not wants_risk
+    )
     if wants_mu and friction is None:
-        raise ValueError("a 6-feature model needs friction= to supply its mu column")
+        raise ValueError("a grip (mu) model needs friction= to supply its mu column")
+    if wants_risk and material is None:
+        raise ValueError(
+            "a risk model needs material= (a grl_snam.material.MaterialGrid) for its risk column"
+        )
+    # Terrain-risk drive: the material force (grl_snam.material) reroutes AROUND risk when
+    # lam_soft>0; the risk-lookahead feature (coef_feats material=) lets the coefficients
+    # SEE it; the w_risk term penalizes dwelling in it. All three default off/zero, so a
+    # plain call is byte-identical to the geometry-only trainer. lam_soft/lam_hard are the
+    # FIXED reroute strengths here — a learned lam head is a separate follow-up.
+    mfield = material.field() if material is not None else None
+    lam_s = torch.full((n,), float(lam_soft)) if mfield is not None else None
+    lam_h = torch.full((n,), float(lam_hard)) if mfield is not None else None
     model.train()
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     rng = np.random.default_rng(seed)
-    last = (0.0, 0.0)
+    last = (0.0, 0.0, 0.0)
     for step in range(steps):
         o = torch.from_numpy(rand_on(n, rng))
         goal = torch.from_numpy(rand_on(n, rng))
@@ -279,8 +300,16 @@ def train_bicycle(
         # vehicle spends its time in.
         sp = torch.from_numpy(rng.uniform(0.0, float(vmax), n).astype(np.float32))
         coll = torch.zeros(())
+        risk = torch.zeros(())
         for t in range(horizon):
-            feat = sdf_nav.coef_feats(field, o, goal, friction=friction if wants_mu else None)
+            feat = sdf_nav.coef_feats(
+                field,
+                o,
+                goal,
+                friction=friction if wants_mu else None,
+                material=mfield if wants_risk else None,
+                risk_lookahead=risk_lookahead,
+            )
             al, be, ga = model(feat)
             o, th, sp, _ = sdf_nav.bicycle_rollout(
                 field,
@@ -297,24 +326,38 @@ def train_bicycle(
                 dt=dt,
                 vmax=vmax,
                 friction=friction,
+                material=mfield,
+                lam_soft=lam_s,
+                lam_hard=lam_h,
                 **kw,
             )
             # Margin shortfall, not breach depth: nonzero for any agent within
             # d_safe of geometry, which is where the signal has to live.
             coll = coll + (torch.relu(d_safe - _clearance(o, th)) / d_safe).mean()
+            # Risk exposure: mean terrain risk underfoot, integrated over the rollout —
+            # the "time in terrain-risk areas" the loss should shrink (0 without material).
+            if mfield is not None:
+                risk = risk + mfield.sample(o)[0].mean()
             if (t + 1) % window == 0 or t == horizon - 1:
                 goal_loss = (goal - o).norm(dim=1).mean() / region_n
-                loss = goal_loss + w_coll * coll / window
+                loss = goal_loss + w_coll * coll / window + w_risk * risk / window
                 opt.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 opt.step()
-                # The two summands AS APPLIED, so a caller can check the
-                # objective is balanced without scraping stdout.
-                last = (goal_loss.item(), float(w_coll * coll.detach() / window))
-                o, th, sp, coll = o.detach(), th.detach(), sp.detach(), torch.zeros(())
+                # The three summands AS APPLIED, so a caller can check the objective is
+                # balanced (risk is 0.0 when w_risk==0 or no material) without scraping stdout.
+                last = (
+                    goal_loss.item(),
+                    float(w_coll * coll.detach() / window),
+                    float(w_risk * risk.detach() / window),
+                )
+                o, th, sp = o.detach(), th.detach(), sp.detach()
+                coll, risk = torch.zeros(()), torch.zeros(())
         if step % 50 == 0 or step == steps - 1:
-            print(f"  step {step:4d}: goal_dist {last[0]:6.3f}  coll {last[1]:6.3f}")
+            print(
+                f"  step {step:4d}: goal_dist {last[0]:6.3f}  coll {last[1]:6.3f}  risk {last[2]:6.3f}"
+            )
     model.eval()
     model.last_loss_terms = last
     return model
@@ -396,6 +439,7 @@ def main(argv=None):
     ap.add_argument("--n", type=int, default=192)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--grid", type=int, default=96, help="scene grid resolution")
     ap.add_argument("--out", type=str, default="coef_mlp.cvcnav")
     # Feature flag: which trainer runs. `torch` (canonical) or `native` (the
     # torch-free libcvc cvc::nav trainer, via pycvc). Env default lets a whole
@@ -421,6 +465,31 @@ def main(argv=None):
         "selects an operating point -- it is not a hyperparameter to tune away.",
     )
     ap.add_argument("--cuda", action="store_true", help="native backend: use the GPU trainer")
+    ap.add_argument(
+        "--w-risk",
+        type=float,
+        default=0.0,
+        help="bicycle rollout only: terrain-risk exposure weight. >0 attaches a material "
+        "grid, widens the net with a risk-lookahead feature, and adds a w_risk*risk term to "
+        "the loss. 0 (default) = the geometry-only objective, byte-identical.",
+    )
+    ap.add_argument(
+        "--lam-soft",
+        type=float,
+        default=0.4,
+        help="--w-risk: FIXED strength of the material reroute force (F_soft = -lam_soft*grad "
+        "risk) that steers around terrain risk. This is the reroute lever; a LEARNED lam head "
+        "is a separate follow-up. 0 = feature+penalty only (the net can slow but not reroute).",
+    )
+    ap.add_argument(
+        "--lam-hard", type=float, default=0.0, help="--w-risk: hard-hazard force strength"
+    )
+    ap.add_argument(
+        "--risk-lookahead",
+        type=float,
+        default=0.3,
+        help="--w-risk: how far ahead (normalized) the risk-lookahead feature probes",
+    )
     ap.add_argument(
         "--score",
         action="store_true",
@@ -460,13 +529,46 @@ def main(argv=None):
         # surrogate, so this is the path that can learn about either. Pass a
         # FrictionField or a footprint programmatically -- there is no flag for
         # them because both need a world, not a scalar.
+        material = risk_model = None
+        if args.w_risk > 0.0:
+            # Terrain-risk training: a material grid aligned with the SAME city truth
+            # train_bicycle's _scene(grid) builds (deterministic per grid), and a
+            # risk-lookahead-featured net so the coefficients can see risk ahead.
+            from grl_snam.material import city_material_grid
+
+            story = shrunk(STORIES["city"], n=args.grid, max_steps=100)
+            meta = story.meta()
+            material, _ = city_material_grid(
+                story.truth_grid(), story.bounds, meta["center"], meta["scale"], seed=args.seed
+            )
+            risk_model = sdf_nav.add_risk_feature(sdf_nav.CoefMLP())
         model = train_bicycle(
-            args.steps, args.horizon, args.n, args.lr, args.seed, w_coll=args.w_coll
+            args.steps,
+            args.horizon,
+            args.n,
+            args.lr,
+            args.seed,
+            grid=args.grid,
+            w_coll=args.w_coll,
+            model=risk_model,
+            material=material,
+            w_risk=args.w_risk,
+            lam_soft=args.lam_soft,
+            lam_hard=args.lam_hard,
+            risk_lookahead=args.risk_lookahead,
         )
     else:
         model = train(args.steps, args.horizon, args.n, args.lr, args.seed)
     write_coef_mlp(model, args.out)
-    print(f"wrote {args.out}   reach_rate={reach_rate(model):.2%}")
+    if getattr(model, "use_risk", False):
+        print(
+            f"wrote {args.out}  (risk model, in_dim={model.in_dim}) — NOTE: this is a torch "
+            "research artifact. The pure-C++ host's coef_feats does not build the risk-lookahead "
+            "column yet, so do NOT deploy this over share/cvc/nav/coef_mlp.cvcnav until the "
+            "coordinated cvc::nav coef_feats/forward update lands."
+        )
+    else:
+        print(f"wrote {args.out}   reach_rate={reach_rate(model):.2%}")
     if args.score:
         _report_scorecard(model, args)
 
@@ -476,15 +578,26 @@ def _report_scorecard(model, args) -> None:
     row (arrival/economy/safety) a training campaign ranks on, replacing the raw
     reach_rate as the signal of record. Reuses tools.scorecard_eval so the number
     matches a standalone `scorecard_eval --checkpoint` and the C++/native collectors."""
+    from ..material_palette import terrain_risk_share
     from .scorecard_eval import evaluate as _score
 
+    if getattr(model, "in_dim", 5) != 5:
+        print(
+            "--score: scorecard_eval drives the base 5-feature policy through the Swarm, which "
+            "does not build the grip/risk lookahead columns yet, so a widened net "
+            f"(in_dim={getattr(model, 'in_dim', 5)}) is not Swarm-scorable — skipping the "
+            "scorecard. (Making the Swarm drive material-aware is a follow-up; measure a risk "
+            "model with a direct bicycle-rollout eval for now.)"
+        )
+        return
     card = _score(model, scenes=args.score_scenes, checkpoint_label=args.out)
     d = card.to_dict()
     print(
         f"base scorecard [{args.out}] scenes={args.score_scenes} runs={d['n_vehicle_runs']} "
         f"success={d['success_rate']:.3f} arrival={d['arrival_rate']:.3f} "
         f"path_ratio={d['mean_path_ratio']:.3f} pen%={d['mean_penetration_pct']:.3f} "
-        f"contacts/run={d['veh_contacts_per_run']:.3f}"
+        f"contacts/run={d['veh_contacts_per_run']:.3f} "
+        f"risk-time%={100.0 * terrain_risk_share(d['material_time_share']):.1f}"
     )
     if args.score_json:
         import pathlib
