@@ -678,15 +678,14 @@ def _report_scorecard(model, args) -> None:
     from ..material_palette import terrain_risk_share
     from .scorecard_eval import evaluate as _score
 
-    if getattr(model, "in_dim", 5) != 5:
+    if getattr(model, "use_mu", False):
         print(
-            "--score: scorecard_eval drives the base 5-feature policy through the Swarm, which "
-            "does not build the grip/risk lookahead columns yet, so a widened net "
-            f"(in_dim={getattr(model, 'in_dim', 5)}) is not Swarm-scorable — skipping the "
-            "scorecard. (Making the Swarm drive material-aware is a follow-up; measure a risk "
-            "model with a direct bicycle-rollout eval for now.)"
+            "--score: the Swarm drive carries no friction field, so a grip (use_mu) net is not "
+            "Swarm-scorable — skipping the scorecard. (Measure it with a direct bicycle eval.)"
         )
         return
+    # A use_risk net IS scored: scorecard_eval attaches the matching material grid so the
+    # Swarm drives it as trained (risk feature + reroute force).
     card = _score(model, scenes=args.score_scenes, checkpoint_label=args.out)
     d = card.to_dict()
     print(

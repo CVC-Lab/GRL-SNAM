@@ -84,18 +84,34 @@ def evaluate(
     ``NavScorecard``. Each scene runs to ``all_reached`` or ``steps``, whichever first.
 
     ``material`` (default on) attaches a per-scene discrete material-id raster so the
-    ``material_time_share`` / terrain-risk buckets are populated. It is a stats-only
-    classifier — it does NOT change navigation — so the arrival/economy/safety numbers
-    are unaffected; pass ``material=False`` for a corpus with no material terrain."""
-    from ..material import city_material_ids
+    ``material_time_share`` / terrain-risk buckets are populated. For a BASE net this is a
+    stats-only classifier — it does NOT change navigation, so arrival/economy/safety are
+    unaffected. For a **risk net** (``model.use_risk``) the matching continuous material
+    grid is ALSO attached (``material=`` on the Swarm) so the drive builds the risk feature
+    and applies the reroute force it was trained with — i.e. the net is scored as deployed.
+    Pass ``material=False`` for a corpus with no material terrain (a risk net then has no
+    risk column source and cannot be scored)."""
+    from ..material import city_material_grid, city_material_ids
+
+    use_risk = getattr(model, "use_risk", False)
+    if use_risk and not material:
+        raise ValueError("scoring a use_risk net needs material=True (its risk column source)")
 
     episodes = []
     for seed in range(scenes):
         story, truth, specs = scene_specs(grid, seed, agents)
-        mids = None
+        mids = mgrid = None
         if material:
             meta = story.meta()
-            mids = city_material_ids(truth, story.bounds, meta["center"], meta["scale"], seed=seed)
+            if use_risk:
+                # matched grid (drive force + risk feature) + id raster (stats), same terrain
+                mgrid, mids = city_material_grid(
+                    truth, story.bounds, meta["center"], meta["scale"], seed=seed
+                )
+            else:
+                mids = city_material_ids(
+                    truth, story.bounds, meta["center"], meta["scale"], seed=seed
+                )
         sw = Swarm(
             story,
             specs,
@@ -105,6 +121,7 @@ def evaluate(
             collect_stats=True,
             contact_radius_m=contact_r,
             material_ids=mids,
+            material=mgrid,
         )
         for _ in range(steps):
             sw.step()
