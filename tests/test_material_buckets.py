@@ -189,3 +189,79 @@ def test_swarm_without_material_ids_has_zero_buckets():
     for v in ep.per_vehicle:
         assert v.time_over_material_s == [0.0] * NUM_MATERIALS
         assert v.dist_over_material_m == [0.0] * NUM_MATERIALS
+
+
+def _city_specs(story, truth, n, seed):
+    from grl_snam.squad import AgentSpec
+
+    mnx, mny, mxx, mxy = story.bounds
+    ny, nx = truth.shape
+    fr, fc = np.nonzero(~truth)
+    rng = np.random.default_rng(seed)
+
+    def w(r, c):
+        return (mnx + c / (nx - 1) * (mxx - mnx), mny + r / (ny - 1) * (mxy - mny))
+
+    out = []
+    for i in range(n):
+        s = rng.integers(0, len(fr))
+        g = rng.integers(0, len(fr))
+        out.append(AgentSpec(f"a{i}", w(fr[s], fc[s]), w(fr[g], fc[g])))
+    return out
+
+
+def test_attaching_material_does_not_change_the_drive():
+    """The central invariance: a MaterialIdRaster is stats-only. Same scene, specs, and
+    seed with vs without the raster must yield byte-identical trajectories (per-vehicle
+    path + goals), while the material buckets differ. Guards against a future in-place
+    read of self.o or reordering the material lookup relative to the drive step."""
+    from grl_snam.fog_stories import STORIES, shrunk
+    from grl_snam.material import city_material_ids
+    from grl_snam.swarm import Swarm
+
+    story = shrunk(STORIES["city"], n=64, max_steps=10_000_000)
+    truth = story.truth_grid()
+    meta = story.meta()
+    specs = _city_specs(story, truth, 16, seed=3)
+    mids = city_material_ids(truth, story.bounds, meta["center"], meta["scale"], seed=0)
+
+    def run(material_ids):
+        sw = Swarm(
+            story,
+            specs,
+            truth_occ=truth,
+            prior_occ=truth,
+            collect_stats=True,
+            material_ids=material_ids,
+            seed=7,
+        )
+        for _ in range(60):
+            sw.step()
+        return sw.episode_stats()
+
+    plain = run(None)
+    withmat = run(mids)
+
+    for a, b in zip(plain.per_vehicle, withmat.per_vehicle):
+        assert a.total_path_m == b.total_path_m  # exact: the drive is untouched
+        assert a.arrived == b.arrived
+        assert a.turn_total_rad == b.turn_total_rad
+    # ... yet the material dimension is populated only in the with-material run
+    assert sum(sum(v.time_over_material_s) for v in plain.per_vehicle) == 0.0
+    assert sum(sum(v.time_over_material_s) for v in withmat.per_vehicle) > 0.0
+
+
+def test_eval_corpus_actually_surfaces_terrain_risk():
+    """End-to-end guard against the silent no-op the metric was warned about: a real
+    scorecard_eval corpus with material attached must report non-zero terrain-risk time
+    (drives cross the painted risk terrain), and zero without it."""
+    from grl_snam.tools.scorecard_eval import evaluate, load_model
+
+    model = load_model(None)
+    on = evaluate(model, scenes=2, agents=24, steps=120, material=True)
+    off = evaluate(model, scenes=2, agents=24, steps=120, material=False)
+    assert terrain_risk_share(on.material_time_share) > 0.0  # risk terrain is traversed
+    assert terrain_risk_share(off.material_time_share) == 0.0
+    # stats-only: the fitness numbers are identical whether or not material is attached
+    assert on.arrival_rate == off.arrival_rate
+    assert on.mean_path_ratio == off.mean_path_ratio
