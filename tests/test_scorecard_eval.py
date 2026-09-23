@@ -40,3 +40,27 @@ def test_scene_specs_are_distinct_per_seed():
     _, _, b = scorecard_eval.scene_specs(96, 1, 8)
     assert len(a) == len(b) == 8
     assert [s.start for s in a] != [s.start for s in b]  # different seeds -> different corpus
+
+
+def test_coef_train_score_reports_base_scorecard(monkeypatch, capsys):
+    """`coef_train --score` routes the trained model through the base scorecard
+    (tools.scorecard_eval.evaluate) and reports the fitness row, not just reach."""
+    import types
+
+    from grl_snam.scorecard import NavScorecard
+    from grl_snam.tools import coef_train
+
+    called = {}
+
+    def fake_eval(model, *, scenes, checkpoint_label):
+        called["scenes"] = scenes
+        called["label"] = checkpoint_label
+        return NavScorecard(checkpoint=checkpoint_label, n_vehicle_runs=10, arrival_rate=0.5)
+
+    monkeypatch.setattr("grl_snam.tools.scorecard_eval.evaluate", fake_eval)
+    args = types.SimpleNamespace(out="ckpt.cvcnav", score_scenes=3, score_json="")
+    coef_train._report_scorecard(object(), args)
+
+    out = capsys.readouterr().out
+    assert "base scorecard" in out and "arrival=0.500" in out
+    assert called == {"scenes": 3, "label": "ckpt.cvcnav"}
