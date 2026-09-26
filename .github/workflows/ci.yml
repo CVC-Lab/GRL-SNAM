@@ -72,23 +72,25 @@ jobs:
           # "libcvc.so.3: cannot open shared object file".
           export LD_LIBRARY_PATH="${PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-          # The cvcpkg dev-tool + runtime closure is missing a chain of transitive deps:
-          # black-cp3XX lacks its runtime deps (mypy_extensions/pathspec/platformdirs/
-          # pytokens) and is absent on cp313; pytest-cp3XX lacks pluggy; and the sympy in
-          # the closure lacks mpmath, so the torch/sympy-using tests raise ImportError.
-          # Supply a working black + pytest (full dep trees) plus mpmath as dev tools into a
-          # throwaway dir on PYTHONPATH (the same pattern coverage uses below); black is
-          # pinned to the closure's 26.5.1 (the repo is clean against it). ruff (a
-          # self-contained binary) is unaffected.
-          # TODO: fix the black-cp3XX / pytest-cp3XX / sympy recipe closures in libcvc-deps.
-          # (cp313's closure is more broken still: torch can't import for lack of
-          # typing_extensions, erroring test collection, so supply torch's import-time deps
-          # too.)
-          echo "== install dev tools black + pytest + missing closure deps =="
-          DEVTOOLS="${RUNNER_TEMP}/devtools"
-          "${PY}" -m pip install --quiet --disable-pip-version-check --target "${DEVTOOLS}" \
-            'black==26.5.1' pytest mpmath typing_extensions filelock networkx jinja2 fsspec
-          export PYTHONPATH="${DEVTOOLS}:${PYTHONPATH}"
+          # HERMETIC on cp311/cp312: the black/pytest/sympy/torch cvcpkg columns were republished
+          # (cy-pca/cvcpkg) carrying their declared transitive deps, so `install-deps grl-snam-cpXXX`
+          # now pulls mpmath/pluggy/pathspec/typing_extensions/... — no pip workaround needed.
+          #
+          # cp313 ONLY: the entire cp313 pure-Python column ecosystem is currently mis-installed to
+          # lib/python3.13t/site-packages (the free-threaded python313t leaked a bin/python3.13 that
+          # shadowed the non-t interpreter in the fleet's shared build prefix). ROOT CAUSE FIXED at the
+          # source (cy-pca/cvcpkg: build-python.sh strips the non-t names from a free-threaded column;
+          # python313t cvc.7 verified leak-free), but propagating it is an ecosystem-wide cp313 rebuild
+          # (dozens of columns incl. compiled torch/numpy) tracked as a fleet-ops batch. Until that
+          # lands, cp313 falls back to a pip-supplied dev-tool tree so CI stays green.
+          # TODO(cp313-ecosystem-rebuild): drop this branch once the mislaid cp313 columns are rebuilt.
+          if [ "${PY_DIGITS}" = "313" ]; then
+            echo "== cp313 pip dev-tool fallback (cp313 cvcpkg closure mislaid; see TODO) =="
+            DEVTOOLS="${RUNNER_TEMP}/devtools"
+            "${PY}" -m pip install --quiet --disable-pip-version-check --target "${DEVTOOLS}" \
+              'black==26.5.1' pytest 'mpmath<1.4' typing_extensions filelock networkx jinja2 fsspec
+            export PYTHONPATH="${DEVTOOLS}:${PYTHONPATH}"
+          fi
 
           echo "== black --check =="
           "${PY}" -m black --check grl_snam tests
