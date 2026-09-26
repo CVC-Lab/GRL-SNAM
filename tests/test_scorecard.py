@@ -1,7 +1,7 @@
-"""Base nav scorecard — aggregator parity with the C++ cvc::dbg::nav_scorecard.
+"""Base nav scorecard — aggregator parity with the C++ cvc::nav::nav_scorecard.
 
-The corpus + every expected value here is byte-identical to CVC-DBG/cvcdbg
-tests/nav_stats_test.cpp::test_scorecard, so the two languages produce the same base
+The corpus + every expected value here is byte-identical to transfix/libcvc
+src/cvc/tests/nav_stats_test.cpp, so the two languages produce the same base
 scorecard from the same inputs (the shared-schema contract, gated like the other
 grl-snam <-> cvc::nav parity tests).
 """
@@ -9,7 +9,13 @@ grl-snam <-> cvc::nav parity tests).
 import math
 
 from grl_snam.metrics import NavMetrics, NavStats
-from grl_snam.scorecard import EpisodeStats, VehStats, aggregate_nav
+from grl_snam.scorecard import (
+    EpisodeStats,
+    NavCoverage,
+    VehStats,
+    aggregate_nav,
+    compute_coverage,
+)
 
 
 def _v(arrived, ttg, path, straight, turn, fuel, contacts):
@@ -127,3 +133,114 @@ def test_episode_from_nav_stats():
     sc = aggregate_nav([ep], "c")
     assert math.isclose(sc.arrival_rate, 0.5)
     assert math.isclose(sc.veh_contacts_per_run, 1.0)  # (0 + 2) / 2 runs
+
+
+# --- Track 1 parity: the same corpora + values as the C++ nav_stats_test feature-ON cases ---
+
+
+def test_formation_scorecard_matches_cpp():
+    # Mirrors nav_stats_test.cpp::FormationSlotAndScorecard (scorecard half): convoy 0, anchor arrived,
+    # one follower. e0 follower in-slot (slot_error 1.5), e1 follower out (slot_error 20, not arrived).
+    def anchor():
+        return VehStats(arrived=True, convoy_id=0, formation_parent=-1)
+
+    def follower(arrived_slot, slot_err):
+        return VehStats(
+            convoy_id=0,
+            formation_parent=0,
+            formation_arrived=arrived_slot,
+            slot_error_mean_m=slot_err,
+        )
+
+    e0 = EpisodeStats(per_vehicle=[anchor(), follower(True, 1.5)])
+    e1 = EpisodeStats(per_vehicle=[anchor(), follower(False, 20.0)])
+    s = aggregate_nav([e0, e1], "ckpt-F")
+    assert math.isclose(s.form_arrival_rate, 0.5)  # 1 of 2 followers in-slot
+    assert math.isclose(s.form_mission_rate, 0.5)  # e0 ok, e1 not
+    assert math.isclose(s.mean_slot_error_m, 10.75)  # (1.5 + 20)/2
+
+
+def test_progress_scorecard_matches_cpp():
+    # Mirrors ProgressStallAndClosestApproach (scorecard half): closest 0/4, stall 2/6.
+    e0 = EpisodeStats(per_vehicle=[VehStats(closest_approach_m=0.0, stall_steps=2)])
+    e1 = EpisodeStats(per_vehicle=[VehStats(closest_approach_m=4.0, stall_steps=6)])
+    s = aggregate_nav([e0, e1], "ckpt-P")
+    assert math.isclose(s.mean_stall_steps, 4.0)  # (2+6)/2
+    assert math.isclose(s.mean_closest_approach_m, 2.0)  # (0+4)/2
+
+
+def test_compute_coverage_matches_cpp():
+    # Mirrors CoverageReducerAndSenseFlips (reducer half): 2 planes x 2x2 grid.
+    truth = [0, 1, 0, 0]
+    belief = [0, 1, 1, 0, 0, 0, 0, 1]  # plane0 then plane1
+    everseen = [1, 1, 1, 0, 1, 1, 0, 0]  # 5 of 8
+    lastvis = [1, 0, 0, 0, 1, 0, 0, 0]  # 2 of 8
+    cov = compute_coverage(truth, belief, everseen, lastvis, planes=2, cells=4)
+    assert math.isclose(cov.explored_frac, 0.625)  # 5/8
+    assert math.isclose(cov.visible_frac, 0.25)  # 2/8
+    assert math.isclose(cov.believed_free_frac, 0.625)  # 5 belief==0 cells / 8
+    assert math.isclose(cov.phantom_frac, 0.25)  # 2/8 believed-occ where truth free
+    # bad-arg guard -> all zero
+    off = compute_coverage(None, belief, everseen, lastvis, 2, 4)
+    assert off.explored_frac == 0.0 and off.phantom_frac == 0.0
+
+
+def test_coverage_and_sense_flips_scorecard_matches_cpp():
+    # Mirrors CoverageReducerAndSenseFlips (scorecard half): mean_coverage 0.5 each, mean_sense_flips 5.
+    e0 = EpisodeStats(
+        coverage=NavCoverage(0.625, 0.25, 0.625, 0.25), per_vehicle=[VehStats(sense_flips=8)]
+    )
+    e1 = EpisodeStats(
+        coverage=NavCoverage(0.375, 0.75, 0.375, 0.75),
+        per_vehicle=[VehStats(arrived=True, sense_flips=2)],
+    )
+    s = aggregate_nav([e0, e1], "ckpt-C")
+    assert math.isclose(s.mean_coverage.explored_frac, 0.5)  # (0.625+0.375)/2
+    assert math.isclose(s.mean_coverage.visible_frac, 0.5)  # (0.25+0.75)/2
+    assert math.isclose(s.mean_coverage.believed_free_frac, 0.5)
+    assert math.isclose(s.mean_coverage.phantom_frac, 0.5)
+    assert math.isclose(s.mean_sense_flips, 5.0)  # (8+2)/2
+
+
+def test_drive_telemetry_scorecard_matches_cpp():
+    # Mirrors DriveTelemetryReduction (scorecard half): one drive-carrying run.
+    v = VehStats(
+        drive_steps=3,
+        alpha_mean=2.0,
+        beta_mean=4.0,
+        gamma_mean=2.0,
+        mu_mean=0.5,
+        mrisk_mean=0.5,
+        ext_force_mean=2.0,
+    )
+    s = aggregate_nav([EpisodeStats(per_vehicle=[v])], "ckpt-D")
+    assert math.isclose(s.mean_alpha, 2.0)
+    assert math.isclose(s.mean_beta, 4.0)
+    assert math.isclose(s.mean_gamma, 2.0)
+    assert math.isclose(s.mean_mu, 0.5)
+    assert math.isclose(s.mean_mrisk, 0.5)
+    assert math.isclose(s.mean_ext_force, 2.0)
+
+
+def test_scorecard_json_has_track1_keys():
+    s = aggregate_nav([EpisodeStats(success=True, per_vehicle=[VehStats(arrived=True)])], "c")
+    d = s.to_dict()
+    for k in (
+        "form_arrival_rate",
+        "form_mission_rate",
+        "mean_slot_error_m",
+        "mean_closest_approach_m",
+        "mean_stall_steps",
+        "mean_coverage",
+        "mean_sense_flips",
+        "mean_alpha",
+        "mean_mu",
+        "mean_ext_force",
+    ):
+        assert k in d
+    assert set(d["mean_coverage"]) == {
+        "explored_frac",
+        "visible_frac",
+        "believed_free_frac",
+        "phantom_frac",
+    }
