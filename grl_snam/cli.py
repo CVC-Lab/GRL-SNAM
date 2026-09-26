@@ -6,6 +6,7 @@ One entry point for every workflow, from the world model to a running demo:
   grl-snam selftest                      numerical correctness check (no data)
   grl-snam obstacles   BUNDLE            world model -> circular obstacles (.npz)
   grl-snam build-sdf   BUNDLE            world model -> navigation SDF (.npz)
+  grl-snam material-raster BUNDLE        satellite -> material.json (id grid + grip/risk)
   grl-snam train       SDF.npz           self-supervised SDF-coefficient training
   grl-snam capture drive|multigoal ...   drive the policy -> mp4 (offscreen, HUD)
   grl-snam pipeline    BUNDLE            world model -> SDF -> train -> video (all)
@@ -96,6 +97,71 @@ def build_sdf(bundle: str, source: str, region: float, grid: int, out: str | Non
     from .tools import sdf as _sdf
 
     _sdf.build(bundle, source=source, region=region, grid=grid, out=out)
+
+
+@main.command("material-raster")
+@click.argument("bundle", required=False, type=click.Path(exists=True, file_okay=False))
+@click.option(
+    "--satellite",
+    type=click.Path(exists=True, dir_okay=False),
+    help="orthophoto to segment (default: <BUNDLE>/satellite.png)",
+)
+@click.option(
+    "--rows", type=int, default=None, help="grid rows (default: from <BUNDLE>/terrain.json)"
+)
+@click.option(
+    "--cols", type=int, default=None, help="grid cols (default: from <BUNDLE>/terrain.json)"
+)
+@click.option(
+    "--bounds",
+    nargs=4,
+    type=float,
+    default=None,
+    metavar="MIN_X MIN_Y MAX_X MAX_Y",
+    help="world extent (default: from terrain.json)",
+)
+@click.option(
+    "-o", "--out", default=None, help="output material.json (default: <BUNDLE>/material.json)"
+)
+@click.option("--preview", default=None, help="also write a color-coded tag-map PNG for review")
+def material_raster(
+    bundle: str | None,
+    satellite: str | None,
+    rows: int | None,
+    cols: int | None,
+    bounds,
+    out: str | None,
+    preview: str | None,
+) -> None:
+    """Satellite orthophoto -> scene material.json (material-id grid + grip/risk).
+
+    \b
+    Classifies a north-up orthophoto into the shared 13-class material palette on the world grid and
+    derives per-material grip (mu) + terrain risk — the material input the nav-stats scorecard buckets
+    time by and the drive reads for grip/reroute. Give a scene BUNDLE (a dir with terrain.json +
+    satellite.png) to take the grid + bounds + image from it, or drop BUNDLE and pass --satellite +
+    --rows + --cols + --bounds to segment any other satellite data.
+    """
+    import json as _json
+    import os as _os
+
+    from .tools import material_raster as _mr
+
+    terr = _json.load(open(_os.path.join(bundle, "terrain.json"))) if bundle else None
+    sat = satellite or (_os.path.join(bundle, "satellite.png") if bundle else None)
+    R = rows if rows is not None else (int(terr["rows"]) if terr else None)
+    C = cols if cols is not None else (int(terr["cols"]) if terr else None)
+    bnds = bounds if bounds else (terr["bounds"] if terr else None)
+    op = out or (_os.path.join(bundle, "material.json") if bundle else None)
+    if not (sat and R and C and bnds and op):
+        raise click.UsageError(
+            "provide a BUNDLE (terrain.json + satellite.png), or --satellite + --rows + --cols + "
+            "--bounds + --out"
+        )
+    dist = _mr.generate(sat, R, C, bnds, op, preview)
+    click.echo(f"wrote {op}  ({R}x{C} grid)")
+    for name, frac in dist.items():
+        click.echo(f"  {name:20s} {100 * frac:5.1f}%")
 
 
 # ── training ─────────────────────────────────────────────────────────────────
