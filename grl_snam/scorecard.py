@@ -1,7 +1,7 @@
 """Base navigation SCORECARD — aggregate a corpus of episodes into one fitness row.
 
-This is the Python twin of the C++ ``cvc::dbg::nav_scorecard`` (CVC-DBG/cvcdbg
-``inc/cvc/dbg/nav_stats.h``): the RF-free nav-fitness row grl-snam uses to rank its
+This is the Python twin of the C++ ``cvc::nav::nav_scorecard`` (transfix/libcvc
+``inc/cvc/nav/nav_stats.h``): the RF-free nav-fitness row grl-snam uses to rank its
 OWN base-policy checkpoints over a scene corpus. The DBG campaign layers an
 ``rf_scorecard`` on top; the base half here is shared, so a grl-snam training run and
 a cvcdbg ``dbg_arrival_check3 --episodes`` run report identical base numbers (the
@@ -24,8 +24,20 @@ from .material_palette import NUM_MATERIALS  # 13 == cvc::dbg kNumMaterials (cha
 
 
 @dataclass
+class NavCoverage:
+    """Fleet belief-coverage fractions over an episode's belief planes — the Python twin of
+    C++ ``cvc::nav::nav_coverage``. Each is a fraction in [0,1] of the (planes x cells) entries."""
+
+    explored_frac: float = 0.0
+    visible_frac: float = 0.0
+    believed_free_frac: float = 0.0
+    phantom_frac: float = 0.0
+
+
+@dataclass
 class VehStats:
-    """One vehicle's per-episode outcome — the fields the base scorecard reduces."""
+    """One vehicle's per-episode outcome — the fields the base scorecard reduces. Field-for-field
+    with the reduced subset of C++ ``cvc::nav::veh_nav_stats``."""
 
     arrived: bool = False
     time_to_goal_s: float = -1.0  # < 0 = never
@@ -37,6 +49,28 @@ class VehStats:
     penetration_steps: int = 0
     time_over_material_s: list[float] = field(default_factory=lambda: [0.0] * NUM_MATERIALS)
     dist_over_material_m: list[float] = field(default_factory=lambda: [0.0] * NUM_MATERIALS)
+    # identity / formation linkage (convoy_id + formation_parent key the per-episode form-mission;
+    # -1 parent = the objective/anchor, or formation off). convoy_id must be >= 0 — the shared contract
+    # the C++ side relies on (it keys the form-mission by a vector index; negative ids are undefined).
+    convoy_id: int = 0
+    formation_parent: int = -1
+    # formation holding (0/off unless a formation_slot feed was used)
+    slot_error_mean_m: float = 0.0
+    formation_arrived: bool = False
+    # progress toward goal (closest_approach seeded to straight_m by the collector; 1e30 = unmeasured)
+    stall_steps: int = 0
+    closest_approach_m: float = 1e30
+    # epistemic churn
+    sense_flips: int = 0
+    # drive telemetry — per-vehicle reductions (0/off unless a drive feed was used). drive_steps is the
+    # tick count the means average over.
+    drive_steps: int = 0
+    alpha_mean: float = 0.0
+    beta_mean: float = 0.0
+    gamma_mean: float = 0.0
+    mu_mean: float = 0.0
+    mrisk_mean: float = 0.0
+    ext_force_mean: float = 0.0
 
 
 @dataclass
@@ -48,6 +82,9 @@ class EpisodeStats:
     makespan_s: float = 0.0  # max arrival time over the fleet
     penetration_pct: float = 0.0  # fleet penetration steps / total steps * 100
     min_sep_m: float = 1e30  # smallest inter-vehicle distance over the run
+    coverage: NavCoverage = field(
+        default_factory=NavCoverage
+    )  # fleet belief coverage (0 unless fed)
     per_vehicle: list[VehStats] = field(default_factory=list)
 
     @staticmethod
@@ -102,7 +139,7 @@ class EpisodeStats:
 @dataclass
 class NavScorecard:
     """One fitness row for a checkpoint's eval run over a corpus. Field names + JSON
-    keys are identical to the C++ ``cvc::dbg::nav_scorecard``."""
+    keys are identical to the C++ ``cvc::nav::nav_scorecard``."""
 
     checkpoint: str = ""
     n_episodes: int = 0
@@ -118,7 +155,27 @@ class NavScorecard:
     mean_penetration_pct: float = 0.0
     veh_contacts_per_run: float = 0.0
     mean_min_sep_m: float = 0.0
+    # progress (mean_closest_approach over runs with a finite value; 0 when none — matches C++ /
+    # mean_min_sep_m). mean_stall_steps over ALL vehicle-runs.
+    mean_closest_approach_m: float = 0.0
+    mean_stall_steps: float = 0.0
     material_time_share: list[float] = field(default_factory=lambda: [0.0] * NUM_MATERIALS)
+    # formation holding (0 unless a formation feed was used)
+    form_arrival_rate: float = 0.0
+    form_mission_rate: float = 0.0
+    mean_slot_error_m: float = 0.0
+    # epistemic. mean_coverage divides by ALL n_episodes and mean_sense_flips by ALL vehicle-runs
+    # (feature-off = 0 contributions still counted) — the divide-by-total convention the C++ side pins,
+    # distinct from the finite-only mean_min_sep/closest rule.
+    mean_coverage: NavCoverage = field(default_factory=NavCoverage)
+    mean_sense_flips: float = 0.0
+    # drive telemetry, averaged over the vehicle-runs that carried a drive feed (drive_steps > 0)
+    mean_alpha: float = 0.0
+    mean_beta: float = 0.0
+    mean_gamma: float = 0.0
+    mean_mu: float = 0.0
+    mean_mrisk: float = 0.0
+    mean_ext_force: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -136,7 +193,25 @@ class NavScorecard:
             "mean_penetration_pct": self.mean_penetration_pct,
             "veh_contacts_per_run": self.veh_contacts_per_run,
             "mean_min_sep_m": self.mean_min_sep_m,
+            "mean_closest_approach_m": self.mean_closest_approach_m,
+            "mean_stall_steps": self.mean_stall_steps,
             "material_time_share": self.material_time_share,
+            "form_arrival_rate": self.form_arrival_rate,
+            "form_mission_rate": self.form_mission_rate,
+            "mean_slot_error_m": self.mean_slot_error_m,
+            "mean_coverage": {
+                "explored_frac": self.mean_coverage.explored_frac,
+                "visible_frac": self.mean_coverage.visible_frac,
+                "believed_free_frac": self.mean_coverage.believed_free_frac,
+                "phantom_frac": self.mean_coverage.phantom_frac,
+            },
+            "mean_sense_flips": self.mean_sense_flips,
+            "mean_alpha": self.mean_alpha,
+            "mean_beta": self.mean_beta,
+            "mean_gamma": self.mean_gamma,
+            "mean_mu": self.mean_mu,
+            "mean_mrisk": self.mean_mrisk,
+            "mean_ext_force": self.mean_ext_force,
         }
 
     def to_json(self) -> str:
@@ -153,12 +228,46 @@ def aggregate_nav(episodes: list[EpisodeStats], checkpoint: str = "") -> NavScor
     mat_sum = [0.0] * NUM_MATERIALS
     mat_total = 0.0
     ttgs: list[float] = []
+    # formation holding (followers = formation_parent >= 0; anchors = -1)
+    foll_runs = foll_arr = form_episodes = form_mission_ok = 0
+    slot_sum = 0.0
+    # progress (closest-approach over runs with a finite value only)
+    approach_n = 0
+    approach_sum = 0.0
+    stall_sum = 0
+    # epistemic (coverage over episodes; sense_flips over vehicle-runs)
+    cov_sum = NavCoverage()
+    flips_sum = 0
+    # drive telemetry (over vehicle-runs that carried a drive feed, drive_steps > 0)
+    drive_runs = 0
+    al_sum = be_sum = ga_sum = dmu_sum = dmrisk_sum = dext_sum = 0.0
     for e in episodes:
         makespan_sum += e.makespan_s
         pen_sum += e.penetration_pct
+        cov_sum.explored_frac += e.coverage.explored_frac
+        cov_sum.visible_frac += e.coverage.visible_frac
+        cov_sum.believed_free_frac += e.coverage.believed_free_frac
+        cov_sum.phantom_frac += e.coverage.phantom_frac
         if e.min_sep_m < 1e29:
             sep_sum += e.min_sep_m
             sep_n += 1
+        # per-episode formation mission: every convoy that has followers has its anchor arrived AND all
+        # its followers in-slot. Keyed by convoy_id.
+        conv_has_foll: dict[int, bool] = {}
+        conv_ok: dict[int, bool] = {}
+        for v in e.per_vehicle:
+            conv_ok.setdefault(v.convoy_id, True)
+            if v.formation_parent >= 0:  # follower
+                conv_has_foll[v.convoy_id] = True
+                if not v.formation_arrived:
+                    conv_ok[v.convoy_id] = False
+            elif not v.arrived:  # anchor/lead must reach the objective
+                conv_ok[v.convoy_id] = False
+        any_formation = any(conv_has_foll.values())
+        if any_formation:
+            form_episodes += 1
+            if all(conv_ok[c] for c in conv_has_foll if conv_has_foll[c]):
+                form_mission_ok += 1
         for v in e.per_vehicle:
             runs += 1
             if v.arrived:
@@ -171,9 +280,27 @@ def aggregate_nav(episodes: list[EpisodeStats], checkpoint: str = "") -> NavScor
             turn_sum += v.turn_total_rad
             fuel_sum += v.fuel_used
             contacts += v.veh_contacts
+            stall_sum += v.stall_steps
+            flips_sum += v.sense_flips
+            if v.drive_steps > 0:
+                drive_runs += 1
+                al_sum += v.alpha_mean
+                be_sum += v.beta_mean
+                ga_sum += v.gamma_mean
+                dmu_sum += v.mu_mean
+                dmrisk_sum += v.mrisk_mean
+                dext_sum += v.ext_force_mean
+            if v.closest_approach_m < 1e29:
+                approach_sum += v.closest_approach_m
+                approach_n += 1
             for m in range(NUM_MATERIALS):
                 mat_sum[m] += v.time_over_material_s[m]
                 mat_total += v.time_over_material_s[m]
+            if v.formation_parent >= 0:  # followers only (the anchor has no slot)
+                foll_runs += 1
+                if v.formation_arrived:
+                    foll_arr += 1
+                slot_sum += v.slot_error_mean_m
     s.n_vehicle_runs = runs
     s.success_rate = sum(1 for e in episodes if e.success) / len(episodes) if episodes else 0.0
     s.arrival_rate = arrived / runs if runs else 0.0
@@ -191,4 +318,60 @@ def aggregate_nav(episodes: list[EpisodeStats], checkpoint: str = "") -> NavScor
     s.mean_min_sep_m = sep_sum / sep_n if sep_n else 0.0
     if mat_total > 0:
         s.material_time_share = [mat_sum[m] / mat_total for m in range(NUM_MATERIALS)]
+    s.mean_closest_approach_m = approach_sum / approach_n if approach_n else 0.0
+    s.mean_stall_steps = stall_sum / runs if runs else 0.0
+    s.form_arrival_rate = foll_arr / foll_runs if foll_runs else 0.0
+    s.form_mission_rate = form_mission_ok / form_episodes if form_episodes else 0.0
+    s.mean_slot_error_m = slot_sum / foll_runs if foll_runs else 0.0
+    if episodes:
+        n = len(episodes)
+        s.mean_coverage = NavCoverage(
+            explored_frac=cov_sum.explored_frac / n,
+            visible_frac=cov_sum.visible_frac / n,
+            believed_free_frac=cov_sum.believed_free_frac / n,
+            phantom_frac=cov_sum.phantom_frac / n,
+        )
+    s.mean_sense_flips = flips_sum / runs if runs else 0.0
+    if drive_runs:
+        s.mean_alpha = al_sum / drive_runs
+        s.mean_beta = be_sum / drive_runs
+        s.mean_gamma = ga_sum / drive_runs
+        s.mean_mu = dmu_sum / drive_runs
+        s.mean_mrisk = dmrisk_sum / drive_runs
+        s.mean_ext_force = dext_sum / drive_runs
     return s
+
+
+def compute_coverage(truth, belief, everseen, lastvis, planes: int, cells: int) -> NavCoverage:
+    """Fleet belief coverage over one episode's rasters — the Python twin of C++
+    ``cvc::nav::compute_coverage``. ``belief``/``everseen``/``lastvis`` are length ``planes*cells``
+    flattened PLANE-MAJOR (plane m at ``m*cells``, C-order within a plane); ``truth`` is length
+    ``cells`` — ONE shared plane, BROADCAST across every belief plane (indexed by the in-plane cell).
+    ``belief`` is the BINARY ``to_occupancy`` output (0 = free, nonzero = occupied); to match C++ both
+    sides must binarize with the SAME p_thresh 0.5 / band 0.15 / optimistic policy. Fractions are over
+    ``planes*cells``: explored = everseen set, visible = lastvis set, believed_free = belief == 0,
+    phantom = belief != 0 AND truth == 0. Any missing input or non-positive size yields all zero."""
+    cov = NavCoverage()
+    if truth is None or belief is None or everseen is None or lastvis is None:
+        return cov
+    if planes <= 0 or cells <= 0:
+        return cov
+    explored = visible = free = phantom = 0
+    for m in range(planes):
+        base = m * cells
+        for c in range(cells):
+            idx = base + c
+            if everseen[idx]:
+                explored += 1
+            if lastvis[idx]:
+                visible += 1
+            if belief[idx] == 0:
+                free += 1
+            elif truth[c] == 0:  # believed occupied where truth is free -> a phantom obstacle
+                phantom += 1
+    total = float(planes * cells)
+    cov.explored_frac = explored / total
+    cov.visible_frac = visible / total
+    cov.believed_free_frac = free / total
+    cov.phantom_frac = phantom / total
+    return cov
