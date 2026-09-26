@@ -90,9 +90,7 @@ def composite_fitness(card: NavScorecard, weights: FitnessWeights | None = None)
     )
 
 
-def rank(
-    cards: list[NavScorecard], weights: FitnessWeights | None = None
-) -> list[NavScorecard]:
+def rank(cards: list[NavScorecard], weights: FitnessWeights | None = None) -> list[NavScorecard]:
     """Cards sorted best-first by :func:`composite_fitness` (stable; ties keep input order)."""
     w = weights or FitnessWeights()
     return sorted(cards, key=lambda c: composite_fitness(c, w), reverse=True)
@@ -116,12 +114,14 @@ def _main(argv: list[str] | None = None) -> int:
     (``from_json``) row is where the formation/coverage/grip fields are actually non-zero."""
     import argparse
 
-    ap = argparse.ArgumentParser(description="Rank nav scorecards by composite fitness (SELECTION).")
+    ap = argparse.ArgumentParser(
+        description="Rank nav scorecards by composite fitness (SELECTION)."
+    )
     ap.add_argument("cards", nargs="+", help="scorecard JSON files")
     ap.add_argument(
         "--weights",
         default="",
-        help='JSON object of FitnessWeights overrides, e.g. \'{"w_form_arrival":1.0}\'',
+        help="JSON object of FitnessWeights overrides, e.g. '{\"w_form_arrival\":1.0}'",
     )
     args = ap.parse_args(argv)
     w = FitnessWeights(**json.loads(args.weights)) if args.weights else FitnessWeights()
