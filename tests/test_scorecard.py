@@ -8,10 +8,12 @@ grl-snam <-> cvc::nav parity tests).
 
 import math
 
+from grl_snam.material_palette import NUM_MATERIALS
 from grl_snam.metrics import NavMetrics, NavStats
 from grl_snam.scorecard import (
     EpisodeStats,
     NavCoverage,
+    NavScorecard,
     VehStats,
     aggregate_nav,
     compute_coverage,
@@ -244,3 +246,63 @@ def test_scorecard_json_has_track1_keys():
         "believed_free_frac",
         "phantom_frac",
     }
+
+
+# --- Track 4 Phase 0: the scorecard reader (inverse of to_dict/to_json; loads C++ scorecard_json) ---
+
+
+def test_scorecard_reader_round_trips():
+    # A fully-populated scorecard (all Track-1 field families non-default) survives to_dict->from_dict
+    # and to_json->from_json unchanged. Since to_dict's keys are field-for-field the C++
+    # cvc::nav::scorecard_json keys, this is also the guarantee that a recorded C++ scorecard row loads.
+    e0 = EpisodeStats(
+        success=True,
+        makespan_s=20,
+        penetration_pct=3,
+        min_sep_m=5,
+        coverage=NavCoverage(0.6, 0.3, 0.6, 0.2),
+        per_vehicle=[
+            VehStats(
+                arrived=True,
+                convoy_id=0,
+                formation_parent=-1,
+                sense_flips=4,
+                drive_steps=2,
+                alpha_mean=1.0,
+                beta_mean=2.0,
+                gamma_mean=1.0,
+                mu_mean=0.5,
+                mrisk_mean=0.25,
+                ext_force_mean=1.5,
+            ),
+            VehStats(
+                arrived=True,
+                convoy_id=0,
+                formation_parent=0,
+                formation_arrived=True,
+                slot_error_mean_m=1.5,
+                closest_approach_m=3.0,
+                stall_steps=2,
+            ),
+        ],
+    )
+    sc = aggregate_nav([e0], "ckpt-RT")
+    d = sc.to_dict()
+    assert NavScorecard.from_dict(d).to_dict() == d  # dict round-trip is the exact inverse
+    assert NavScorecard.from_json(sc.to_json()).to_dict() == d  # JSON round-trip too
+
+
+def test_scorecard_reader_tolerates_partial_and_ignores_rf():
+    # A partial producer (missing keys) loads with dataclass defaults; an embedded "rf" sub-object
+    # (the DBG scorecard_json shape) is ignored by the base reader.
+    sc = NavScorecard.from_dict(
+        {"checkpoint": "x", "success_rate": 0.5, "rf": {"outage_rate": 0.9}}
+    )
+    assert sc.checkpoint == "x"
+    assert math.isclose(sc.success_rate, 0.5)
+    assert sc.n_episodes == 0  # missing scalar -> default
+    assert math.isclose(sc.form_arrival_rate, 0.0)  # missing Track-1 field -> default
+    assert math.isclose(sc.mean_coverage.phantom_frac, 0.0)  # missing nested -> default
+    # missing list field -> the length-NUM_MATERIALS zero default, NOT [] (so share[m] never IndexErrors)
+    assert sc.material_time_share == [0.0] * NUM_MATERIALS
+    assert not hasattr(sc, "rf")  # rf sub-object dropped, not smuggled onto the base row

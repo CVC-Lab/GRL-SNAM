@@ -217,6 +217,67 @@ class NavScorecard:
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
 
+    @classmethod
+    def from_dict(cls, d: dict) -> NavScorecard:
+        """Parse a scorecard dict back into a ``NavScorecard`` — the inverse of :meth:`to_dict`, and
+        the reader for the C++ ``cvc::nav::scorecard_json`` output (the keys are field-for-field the
+        same, so a ``dbg_arrival_check3 --episodes`` / ``scorecard_json`` row loads directly). This is
+        the plumbing a selection/loss stage reads a recorded corpus fitness from; nothing consumes it
+        yet (Track 4 Phase 1+ wires it into training).
+
+        Tolerant of a partial producer: any missing key keeps the dataclass default, so an older or
+        newer writer (or one that omits zero fields) still loads. An ``rf`` sub-object, if present
+        (the DBG ``scorecard_json`` embeds one), is ignored here — the base reader is RF-free; the DBG
+        side reads the RF scorecard separately.
+        """
+        cov = d.get("mean_coverage") or {}
+        return cls(
+            checkpoint=str(d.get("checkpoint", "")),
+            n_episodes=int(d.get("n_episodes", 0)),
+            n_vehicle_runs=int(d.get("n_vehicle_runs", 0)),
+            success_rate=float(d.get("success_rate", 0.0)),
+            arrival_rate=float(d.get("arrival_rate", 0.0)),
+            mean_time_to_goal_s=float(d.get("mean_time_to_goal_s", 0.0)),
+            p95_time_to_goal_s=float(d.get("p95_time_to_goal_s", 0.0)),
+            mean_makespan_s=float(d.get("mean_makespan_s", 0.0)),
+            mean_path_ratio=float(d.get("mean_path_ratio", 0.0)),
+            mean_turn_total_rad=float(d.get("mean_turn_total_rad", 0.0)),
+            mean_fuel=float(d.get("mean_fuel", 0.0)),
+            mean_penetration_pct=float(d.get("mean_penetration_pct", 0.0)),
+            veh_contacts_per_run=float(d.get("veh_contacts_per_run", 0.0)),
+            mean_min_sep_m=float(d.get("mean_min_sep_m", 0.0)),
+            mean_closest_approach_m=float(d.get("mean_closest_approach_m", 0.0)),
+            mean_stall_steps=float(d.get("mean_stall_steps", 0.0)),
+            # missing/null -> the 13-zero default (NOT []), matching the dataclass default so a
+            # partial producer that drops the all-zero share still loads a length-NUM_MATERIALS list
+            # (a downstream `share[m]` never IndexErrors).
+            material_time_share=[
+                float(x) for x in (d.get("material_time_share") or [0.0] * NUM_MATERIALS)
+            ],
+            form_arrival_rate=float(d.get("form_arrival_rate", 0.0)),
+            form_mission_rate=float(d.get("form_mission_rate", 0.0)),
+            mean_slot_error_m=float(d.get("mean_slot_error_m", 0.0)),
+            mean_coverage=NavCoverage(
+                explored_frac=float(cov.get("explored_frac", 0.0)),
+                visible_frac=float(cov.get("visible_frac", 0.0)),
+                believed_free_frac=float(cov.get("believed_free_frac", 0.0)),
+                phantom_frac=float(cov.get("phantom_frac", 0.0)),
+            ),
+            mean_sense_flips=float(d.get("mean_sense_flips", 0.0)),
+            mean_alpha=float(d.get("mean_alpha", 0.0)),
+            mean_beta=float(d.get("mean_beta", 0.0)),
+            mean_gamma=float(d.get("mean_gamma", 0.0)),
+            mean_mu=float(d.get("mean_mu", 0.0)),
+            mean_mrisk=float(d.get("mean_mrisk", 0.0)),
+            mean_ext_force=float(d.get("mean_ext_force", 0.0)),
+        )
+
+    @classmethod
+    def from_json(cls, s: str) -> NavScorecard:
+        """Parse a scorecard JSON string (``to_json`` / C++ ``scorecard_json``) into a
+        ``NavScorecard``. See :meth:`from_dict`."""
+        return cls.from_dict(json.loads(s))
+
 
 def aggregate_nav(episodes: list[EpisodeStats], checkpoint: str = "") -> NavScorecard:
     """Reduce a corpus of episodes into one base scorecard row. Same reduction as the
