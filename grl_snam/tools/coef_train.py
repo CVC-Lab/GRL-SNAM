@@ -650,9 +650,9 @@ def main(argv=None):
             risk_model = sdf_nav.add_risk_feature(sdf_nav.CoefMLP())
             if args.learned_lam:
                 # LEARNED reroute: the net outputs lam_soft per position instead of the fixed
-                # --lam-soft dial — the deployable reroute lever (needs the C++ coef_mlp/drive
-                # update before a risk .cvcnav can run on the pure-C++ host). --lam-soft is the
-                # INIT here and must be > 0 (0 is a valid FIXED-mode value but a dead learned init).
+                # --lam-soft dial — the deployable reroute lever (drive_step_material reads the 4th
+                # output as per-agent lam_soft since libcvc #413). --lam-soft is the INIT here and
+                # must be > 0 (0 is a valid FIXED-mode value but a dead learned init).
                 if args.lam_soft <= 0.0:
                     raise SystemExit(
                         "--learned-lam needs --lam-soft > 0 (it seeds the lam head; 0 would freeze "
@@ -688,10 +688,12 @@ def main(argv=None):
     if getattr(model, "use_risk", False) or getattr(model, "use_lam", False):
         extra = f", out_dim={model.out_dim} (lam head)" if getattr(model, "use_lam", False) else ""
         print(
-            f"wrote {args.out}  (risk model, in_dim={model.in_dim}{extra}) — NOTE: this is a torch "
-            "research artifact. The pure-C++ host's coef_feats does not build the risk-lookahead "
-            "column, and its coef_mlp/drive do not read a lam output, so do NOT deploy this over "
-            "share/cvc/nav/coef_mlp.cvcnav until the coordinated cvc::nav update lands."
+            f"wrote {args.out}  (grip/risk model, in_dim={model.in_dim}{extra}) — DEPLOYABLE on a "
+            "libcvc host at or past the risk-lookahead/learned-lam drive update (transfix/libcvc "
+            "#413): coef_feats builds the risk-lookahead column and drive_step_material reads the "
+            "lam output. Drive it through the MATERIAL path (drive_step_material / "
+            "drive_step_material_ext), with a material stack + grip attached — the plain drive_step "
+            "rejects a risk net. Round-trip + drive verified by libcvc nav_material_deploy_test."
         )
     else:
         print(f"wrote {args.out}   reach_rate={reach_rate(model):.2%}")
