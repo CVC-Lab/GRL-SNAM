@@ -81,3 +81,34 @@ def test_stale_arch_hash_is_rejected(tmp_path):
     bad.write_bytes(raw)
     with pytest.raises(Exception):
         nav_native.coef_mlp_forward(str(bad), np.zeros((1, 5), np.float32))
+
+
+def test_two_head_sigmoid_matches_torch(tmp_path):
+    # The paper's two-head reroute (format v2): the C++ coef_mlp forward of the exported .cvcnav
+    # must match torch on ALL 5 columns (abg softplus + lam_soft/lam_hard = max*sigmoid), the
+    # in-process byte+numeric cross-check for the v2 loader. Skips until pycvc is rebuilt on v2.
+    torch.manual_seed(2)
+    two = sdf_nav.add_lam_heads(sdf_nav.add_risk_feature(sdf_nav.CoefMLP()), 2.0, 4.0)
+    with torch.no_grad():
+        two.net[-1].weight[3:].normal_(0, 0.5)  # position-dependent lam heads
+    path = tmp_path / "two.cvcnav"
+    coef_export.write_coef_mlp(two, str(path))
+    feats = np.random.default_rng(0).standard_normal((2000, two.in_dim)).astype(np.float32)
+    feats[0] = 50.0  # push the sigmoid + softplus tails
+    feats[1] = -50.0
+    with torch.no_grad():
+        ref = two._outputs(torch.from_numpy(feats)).numpy()  # (N,5)
+    try:
+        got = nav_native.coef_mlp_forward(str(path), feats)
+    except RuntimeError as e:
+        # The installed pycvc still links a pre-v2 libcvc, which rejects the v2 .cvcnav
+        # ("unsupported .cvcnav format version"). This in-process round-trip runs once pycvc is
+        # rebuilt on the v2 libcvc (deploy step 9); until then the pure-numpy decoder in
+        # test_lam_head already proves the v2 byte layout + forward math, so skip rather than fail.
+        if "format version" in str(e):
+            pytest.skip(f"installed pycvc predates .cvcnav v2 (rebuild on v2 libcvc): {e}")
+        raise
+    assert got.shape == (2000, 5)
+    assert np.allclose(got, ref, rtol=1e-4, atol=1e-5), np.abs(got - ref).max()
+    assert (got[:, 3] >= 0).all() and (got[:, 3] <= 5.0 + 1e-4).all()  # lam_soft bounded
+    assert (got[:, 4] >= 0).all() and (got[:, 4] <= 10.0 + 1e-4).all()  # lam_hard bounded
