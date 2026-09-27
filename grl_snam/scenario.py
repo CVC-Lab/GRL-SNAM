@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 
 from .belief import BeliefGrid, DynamicLayer, composite_occupancy
 from .nav import SdfNavigator

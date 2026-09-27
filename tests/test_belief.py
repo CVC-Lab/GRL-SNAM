@@ -167,7 +167,7 @@ def test_composite_merges_belief_and_dynamic():
 
 def test_belief_occupancy_feeds_build_sdf():
     torch = __import__("pytest").importorskip("torch")  # noqa: F841
-    import sdf_nav
+    import grl_snam.sdf_nav as sdf_nav
 
     b = BeliefGrid((N, N), BOUNDS)
     truth = _wall_truth(col=40)

@@ -7,7 +7,7 @@ toward the obstacle. This fails if that regresses.
 
 import torch
 
-from train_coef_energy import ipc_piecewise
+from grl_snam.train_coef_energy import ipc_piecewise
 
 
 def test_dbdd_is_the_autograd_derivative_of_b():

@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 from grl_snam.fog_stories import STORIES, shrunk
 from grl_snam.material import city_material_grid
 from grl_snam.scorecard import NavScorecard

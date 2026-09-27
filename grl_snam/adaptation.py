@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from eval_coef_energy import HistSecantController, OnlineFinetuner  # noqa: F401
+from grl_snam.eval_coef_energy import HistSecantController, OnlineFinetuner  # noqa: F401
 
 __all__ = ["HistSecantController", "OnlineFinetuner"]

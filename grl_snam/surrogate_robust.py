@@ -5,7 +5,7 @@ robustness penalty that samples feasible starts near obstacles.
 
 Drop-in usage in train_coef_energy.py (pseudo):
 ------------------------------------------------
-from surrogate_robust import integrate_surrogate_v2, multi_start_penalty
+from grl_snam.surrogate_robust import integrate_surrogate_v2, multi_start_penalty
 
 # in Trainer.step_batch(...):
 oT, vT, clr = integrate_surrogate_v2(o0, v0, goal, C, R, mask,
@@ -31,7 +31,7 @@ import torch.nn.functional as F
 
 # You can import from train_coef_energy if available; otherwise include a local copy
 try:
-    from train_coef_energy import ipc_piecewise
+    from grl_snam.train_coef_energy import ipc_piecewise
 except Exception:
     def ipc_piecewise(d: torch.Tensor, d_hat: torch.Tensor | float, vp: float = -5e2, eps: float = 1e-9,
                       max_grad: float = 200.0, max_b: float = 200.0):

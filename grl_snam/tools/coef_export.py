@@ -111,7 +111,7 @@ def write_coef_mlp(model, path, meta: bytes = b""):
 def main(argv=None):
     import torch
 
-    import sdf_nav
+    import grl_snam.sdf_nav as sdf_nav
 
     argv = list(sys.argv[1:] if argv is None else argv)
     if len(argv) != 2:

@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 
 
 def train_sdf(

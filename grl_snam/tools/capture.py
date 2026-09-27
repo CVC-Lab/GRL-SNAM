@@ -23,7 +23,7 @@ import subprocess
 import numpy as np
 import torch
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 
 from ..metrics import NavStats, hud_lines
 from ..nav import SdfNavigator, select_reachable_goals

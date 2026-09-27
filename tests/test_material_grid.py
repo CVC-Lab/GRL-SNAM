@@ -16,7 +16,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import sdf_nav  # noqa: E402
+import grl_snam.sdf_nav as sdf_nav  # noqa: E402
 from grl_snam.material import (  # noqa: E402
     MaterialGrid,
     MaterialParams,
@@ -198,7 +198,7 @@ def test_barrier_scale_oracle_phi_in_metres():
     """The k/S rescale trap: phi stays in metres so at phi == d_hat_sdf_m the
     barrier factor is EXACTLY -sigmoid(0) = -0.5, and one metre to either side
     is sigmoid(+-k_sharp)."""
-    from sdf_nav import _material_force
+    from grl_snam.sdf_nav import _material_force
 
     class _Flat:
         def __init__(self, phi_m):

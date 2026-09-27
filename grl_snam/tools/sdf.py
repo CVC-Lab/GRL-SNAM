@@ -15,7 +15,7 @@ import os
 
 import numpy as np
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 
 TARGET_EXTENT = 10.0  # the surrogate's normalized working scale (~10 units across the region)
 

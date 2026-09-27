@@ -34,10 +34,10 @@ import torch.nn.functional as F
 import imageio.v3 as iio
 
 # --- project imports (adjust if paths differ)
-from train_coef_energy import CoefEnergyNet  # new model
+from grl_snam.train_coef_energy import CoefEnergyNet  # new model
 import scripts.ring_dataset_maxmin as gen
 import scripts.spline_stagewise6 as ssi
-from surrogate_robust import integrate_surrogate_v2
+from grl_snam.surrogate_robust import integrate_surrogate_v2
 
 # ---- paste near top of your eval file, after imports ----
 class HistSecantController:

@@ -64,7 +64,7 @@ def test_composite_occupancy_bit_identical(unknown):
 def test_composite_feeds_bit_identical_field():
     """The whole point: the C++ occupancy must produce the SAME SDF field as the
     numpy occupancy (the fidelity boundary is the built field)."""
-    import sdf_nav
+    import grl_snam.sdf_nav as sdf_nav
 
     b, dyn = _evolved_belief()
     story = shrunk(STORIES["city"], n=192, max_steps=100)

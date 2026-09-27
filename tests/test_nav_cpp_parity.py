@@ -16,7 +16,7 @@ pycvc = pytest.importorskip("pycvc")
 if not hasattr(pycvc, "nav_astar"):
     pytest.skip("pycvc build has no cvc::nav kernels", allow_module_level=True)
 
-import sdf_nav  # noqa: E402
+import grl_snam.sdf_nav as sdf_nav  # noqa: E402
 from grl_snam import nav_native, planner  # noqa: E402
 
 _SIZES = [3, 5, 8, 13, 16, 24, 33, 48, 64, 96, 128]

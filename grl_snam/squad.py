@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 
 from . import nav_native as _native
 from .fog_stories import Story, build_scenario

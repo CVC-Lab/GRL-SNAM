@@ -57,7 +57,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from surrogate_robust import integrate_surrogate_v2, multi_start_penalty
+from grl_snam.surrogate_robust import integrate_surrogate_v2, multi_start_penalty
 
 
 import numpy as np

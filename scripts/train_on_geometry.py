@@ -41,9 +41,9 @@ import torch
 for _m in ["imageio", "imageio.v3", "scripts.ring_dataset_maxmin", "scripts.spline_stagewise6"]:
     sys.modules.setdefault(_m, types.ModuleType(_m))
 
-from eval_coef_energy import build_local_feats  # noqa: E402
-from surrogate_robust import integrate_surrogate_v2  # noqa: E402
-from train_coef_energy import CoefEnergyNet  # noqa: E402
+from grl_snam.eval_coef_energy import build_local_feats  # noqa: E402
+from grl_snam.surrogate_robust import integrate_surrogate_v2  # noqa: E402
+from grl_snam.train_coef_energy import CoefEnergyNet  # noqa: E402
 
 TARGET_EXTENT = 10.0  # normalize a working region to ~10 units (the tuned regime)
 

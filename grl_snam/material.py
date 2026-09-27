@@ -49,7 +49,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 
 from . import nav_native as _native
 from .material_palette import MATERIAL_ID, OPEN_AIR_ID, RISK_MATERIAL_IDS

@@ -20,7 +20,7 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("pycvc")
 
-import material_nav  # noqa: E402
+import grl_snam.material_nav as material_nav  # noqa: E402
 from grl_snam import nav_native  # noqa: E402
 
 pytestmark = pytest.mark.skipif(

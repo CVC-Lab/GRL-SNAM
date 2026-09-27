@@ -12,7 +12,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import sdf_nav  # noqa: E402
+import grl_snam.sdf_nav as sdf_nav  # noqa: E402
 from grl_snam.material import MaterialGrid, MaterialParams  # noqa: E402
 from grl_snam.scenario import FogScenario  # noqa: E402
 

@@ -51,7 +51,7 @@ import argparse
 import numpy as np
 import torch
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 from grl_snam import planner
 from grl_snam.fog_stories import STORIES, shrunk
 from grl_snam.material import FrictionField

@@ -26,7 +26,7 @@ def _run_once(grid: int, n: int, ticks: int, seed: int, route_clearance=None):
     import numpy as np
     import torch
 
-    import sdf_nav
+    import grl_snam.sdf_nav as sdf_nav
     from grl_snam import nav_native, planner
     from grl_snam.fog_stories import STORIES, shrunk
     from grl_snam.squad import AgentSpec, Squad
