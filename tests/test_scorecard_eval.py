@@ -7,7 +7,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import sdf_nav  # noqa: E402
+import grl_snam.sdf_nav as sdf_nav  # noqa: E402
 from grl_snam.scorecard import NavScorecard  # noqa: E402
 from grl_snam.tools import scorecard_eval  # noqa: E402
 

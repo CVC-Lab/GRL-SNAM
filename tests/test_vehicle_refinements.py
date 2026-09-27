@@ -17,7 +17,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import sdf_nav  # noqa: E402
+import grl_snam.sdf_nav as sdf_nav  # noqa: E402
 from grl_snam.material import FrictionField  # noqa: E402
 
 RR, DHAT, DT, VMAX = 0.15, 0.35, 0.06, 0.9

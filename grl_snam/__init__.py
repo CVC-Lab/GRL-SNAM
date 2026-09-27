@@ -35,7 +35,7 @@ __all__ = [
 def __getattr__(name: str):
     """Lazy attribute access so heavy imports (torch) happen on demand."""
     if name in {"CoefEnergyNet", "integrate_surrogate"}:
-        from train_coef_energy import CoefEnergyNet, integrate_surrogate  # noqa: PLC0415
+        from grl_snam.train_coef_energy import CoefEnergyNet, integrate_surrogate  # noqa: PLC0415
 
         return {"CoefEnergyNet": CoefEnergyNet, "integrate_surrogate": integrate_surrogate}[name]
     raise AttributeError(f"module 'grl_snam' has no attribute {name!r}")

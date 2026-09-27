@@ -20,7 +20,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import sdf_nav  # noqa: E402
+import grl_snam.sdf_nav as sdf_nav  # noqa: E402
 from grl_snam import planner  # noqa: E402
 from grl_snam.fog_stories import STORIES, shrunk  # noqa: E402
 from grl_snam.metrics import NavStats  # noqa: E402

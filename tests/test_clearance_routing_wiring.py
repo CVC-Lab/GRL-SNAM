@@ -2,7 +2,7 @@
 
 import numpy as np
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 from grl_snam import planner
 from grl_snam.route import cells_for_metres, plan_clearance_route
 

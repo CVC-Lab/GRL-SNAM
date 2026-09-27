@@ -28,7 +28,7 @@ try:
 except ImportError:  # pragma: no cover
     raise SystemExit("coef_train needs torch")
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 
 from .. import planner
 from ..fog_stories import STORIES, shrunk

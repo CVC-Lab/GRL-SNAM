@@ -10,7 +10,7 @@ path.
 import numpy as np
 import torch
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 from grl_snam.nav import SdfNavigator
 
 

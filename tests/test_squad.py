@@ -237,7 +237,7 @@ def test_stagger_assigns_distinct_phases():
 
 # ── stage-2: batched vehicle rollout (bit-identical to serial) ───────────────
 
-import sdf_nav  # noqa: E402
+import grl_snam.sdf_nav as sdf_nav  # noqa: E402
 
 
 def _shared_model():

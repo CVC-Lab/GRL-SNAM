@@ -5,7 +5,7 @@ path length for standoff, which the local drive follows far more reliably."""
 
 import numpy as np
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 from grl_snam import planner
 
 

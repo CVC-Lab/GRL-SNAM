@@ -7,7 +7,7 @@ without touching the flat layout.
 
 from __future__ import annotations
 
-from surrogate_robust import (  # noqa: F401
+from grl_snam.surrogate_robust import (  # noqa: F401
     integrate_surrogate_v2,
     multi_start_penalty,
 )

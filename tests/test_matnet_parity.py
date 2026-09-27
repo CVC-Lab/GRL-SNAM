@@ -24,7 +24,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import material_nav  # noqa: E402
+import grl_snam.material_nav as material_nav  # noqa: E402
 from grl_snam import nav_native  # noqa: E402
 from grl_snam.tools.matnet_export import (  # noqa: E402
     matnet_forward_numpy,
