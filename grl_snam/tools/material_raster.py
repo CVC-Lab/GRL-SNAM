@@ -117,13 +117,17 @@ def to_material_json(material_id: np.ndarray, bounds) -> dict:
 
 
 def write_preview(material_id: np.ndarray, path: str, scale: int = 3) -> None:
-    """Write a color-coded tag map (nearest-neighbor upscaled) for visual review."""
+    """Write a color-coded tag map (nearest-neighbor upscaled) for visual review, rendered NORTH-UP
+    (image top row == max_y) so it matches the satellite / a human map. The material_id DATA stays
+    sim-oriented (row 0 == world min_y, aligned with sim_world/nav_samplers occupancy); ONLY this
+    review image is flipped for display."""
     import imageio.v3 as iio
 
     rows, cols = material_id.shape
+    disp = material_id[::-1]  # sim row 0 == min_y (south) -> flip so image top == max_y (north)
     vis = np.zeros((rows, cols, 3), dtype=np.uint8)
     for mid, col in _PREVIEW_COL.items():
-        vis[material_id == mid] = col
+        vis[disp == mid] = col
     vis = np.repeat(np.repeat(vis, scale, axis=0), scale, axis=1)
     iio.imwrite(path, vis)
 
