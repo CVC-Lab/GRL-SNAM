@@ -74,9 +74,10 @@ target-version = ["py310", "py311", "py312"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-# Only lint the new packaging shim, tests, and src/. The legacy flat-layout
-# research modules (experiments/, scripts/, train_*.py, eval_*.py, etc.) are
-# kept out of CI lint to avoid churn on imported third-party / generated code.
+# Lint the whole grl_snam package + tests. The research core moved in from the repo
+# root (sdf_nav / material_nav / train_coef_energy / eval_coef_energy /
+# surrogate_robust) is now under grl_snam/ and held to the package lint standard
+# (black + ruff), like the rest of it. experiments/ and scripts/ stay unlinted.
 include = ["grl_snam/**/*.py", "tests/**/*.py"]
 extend-exclude = ["build", "dist", "__pycache__", ".venv", "data"]
 
