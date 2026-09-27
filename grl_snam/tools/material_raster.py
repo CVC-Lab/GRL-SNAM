@@ -103,7 +103,7 @@ def to_material_json(material_id: np.ndarray, bounds) -> dict:
     ids = sorted(int(v) for v in np.unique(material_id))
     return {
         "schema": "cvc-scene-material/1",
-        "provenance": "satellite-derived land cover (grl-snam material-raster); ids = cvc::dbg MATERIAL_TABLE",
+        "provenance": "scene land cover (grl-snam material-raster: masks if present, else satellite); ids = cvc::dbg MATERIAL_TABLE",
         "rows": rows,
         "cols": cols,
         "bounds": _bounds_dict(bounds),
@@ -139,15 +139,7 @@ def distribution(material_id: np.ndarray) -> dict:
     return out
 
 
-def generate(
-    satellite: str, rows: int, cols: int, bounds, out: str, preview: str | None = None
-) -> dict:
-    """Segment ``satellite`` over an ``rows x cols`` grid spanning ``bounds`` and write ``out``
-    (``material.json``). ``bounds`` is a dict (min_x/min_y/max_x/max_y) or a 4-tuple. Returns the
-    class distribution."""
-    import imageio.v3 as iio
-
-    material_id = classify(iio.imread(satellite), rows, cols)
+def _write(material_id: np.ndarray, bounds, out: str, preview: str | None) -> dict:
     doc = to_material_json(material_id, bounds)
     with open(out, "w") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -156,19 +148,89 @@ def generate(
     return distribution(material_id)
 
 
+def generate(
+    satellite: str, rows: int, cols: int, bounds, out: str, preview: str | None = None
+) -> dict:
+    """Segment ``satellite`` over an ``rows x cols`` grid spanning ``bounds`` and write ``out``
+    (``material.json``). ``bounds`` is a dict (min_x/min_y/max_x/max_y) or a 4-tuple. Returns the
+    class distribution."""
+    import imageio.v3 as iio
+
+    return _write(classify(iio.imread(satellite), rows, cols), bounds, out, preview)
+
+
+# foliage_mask.png land classes (the scene pipeline's unet-efficientnet segmentation) -> palette id.
+# 0 = none (defer to the other masks); 1 tree / 2 grass / 4 shrub -> foliage; 3 rock; 5 bare -> soil.
+_FOLIAGE_CLASS = {1: FOLIAGE, 2: FOLIAGE, 4: FOLIAGE, 3: ROCK, 5: SOIL}
+
+
+def segment_from_masks(bundle: str, rows: int, cols: int):
+    """Build the material_id grid from a full bundle's AUTHORITATIVE land-cover masks — the scene
+    pipeline's OSM + ML (unet) segmentation, higher quality than the satellite color heuristic:
+    ``foliage_mask.png`` (per-pixel land class 0..5), ``roads.png`` / ``water.png`` /
+    ``open_fields.png`` (alpha masks). Returns None if the masks are absent (a lean bundle) so the
+    caller falls back to :func:`classify`. Priority, later wins: open_air default -> open_fields=soil
+    -> foliage classes -> water -> roads=open_air (you drive on roads, even through vegetation/fields).
+    Downsampled to the grid by MAJORITY class, then flipped to row 0 == world min_y."""
+    import os
+
+    import imageio.v3 as iio
+
+    fol_p = os.path.join(bundle, "foliage_mask.png")
+    if not os.path.exists(fol_p):
+        return None
+
+    def alpha_mask(name: str):
+        p = os.path.join(bundle, name)
+        if not os.path.exists(p):
+            return None
+        im = np.asarray(iio.imread(p))
+        return (im[..., 3] > 0) if (im.ndim == 3 and im.shape[2] == 4) else (im > 0)
+
+    fol = np.asarray(iio.imread(fol_p))
+    if fol.ndim == 3:
+        fol = fol[..., 0]
+    h, w = fol.shape
+    pix = np.full((h, w), OPEN_AIR_ID, dtype=np.int32)
+    of = alpha_mask("open_fields.png")
+    if of is not None:
+        pix[of] = SOIL
+    for v, mid_id in _FOLIAGE_CLASS.items():
+        pix[fol == v] = mid_id
+    wa = alpha_mask("water.png")
+    if wa is not None:
+        pix[wa] = WATER
+    rd = alpha_mask("roads.png")
+    if rd is not None:
+        pix[rd] = OPEN_AIR_ID
+
+    ph, pw = h // rows, w // cols
+    if ph < 1 or pw < 1:
+        raise ValueError(f"masks {w}x{h} smaller than the {cols}x{rows} grid")
+    pix = pix[: rows * ph, : cols * pw]
+    best = np.zeros((rows, cols))
+    mid = np.full((rows, cols), OPEN_AIR_ID, dtype=np.int32)
+    for m in (OPEN_AIR_ID, SOIL, FOLIAGE, WATER, ROCK):
+        frac = (pix == m).reshape(rows, ph, cols, pw).mean((1, 3))
+        take = frac > best
+        mid[take] = m
+        best[take] = frac[take]
+    return mid[::-1].copy()
+
+
 def from_bundle(
     bundle: str, out: str | None = None, preview: str | None = None
 ) -> tuple[str, dict]:
-    """Convenience: read a cvc scene bundle's ``terrain.json`` (rows/cols/bounds) + ``satellite.png``,
-    segment, and write ``<bundle>/material.json`` (or ``out``). Returns (out_path, distribution)."""
+    """Read a cvc scene bundle's ``terrain.json`` (rows/cols/bounds), build the material raster from
+    its authoritative land-cover MASKS if present (:func:`segment_from_masks`) and otherwise by
+    classifying ``satellite.png`` (:func:`classify`), and write ``<bundle>/material.json`` (or
+    ``out``). Returns (out_path, distribution)."""
+    import imageio.v3 as iio
+
     terr = json.load(open(os.path.join(bundle, "terrain.json")))
+    rows, cols, bounds = int(terr["rows"]), int(terr["cols"]), terr["bounds"]
     out = out or os.path.join(bundle, "material.json")
-    dist = generate(
-        os.path.join(bundle, "satellite.png"),
-        int(terr["rows"]),
-        int(terr["cols"]),
-        terr["bounds"],
-        out,
-        preview,
-    )
-    return out, dist
+    material_id = segment_from_masks(bundle, rows, cols)
+    if material_id is None:
+        material_id = classify(iio.imread(os.path.join(bundle, "satellite.png")), rows, cols)
+    return out, _write(material_id, bounds, out, preview)
