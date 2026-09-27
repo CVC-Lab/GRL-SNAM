@@ -49,6 +49,38 @@ RISK_MATERIAL_IDS = (
 
 OPEN_AIR_ID = MATERIAL_ID["open_air"]
 
+#: Per-material dry GRIP mu (1.0 = full grip) and mobility RISK (0..1) — the physical reading of the
+#: palette that mobility scoring uses (the drive's grip friction_field + the material risk plane).
+#: Keyed by material id; only the drivable-surface classes differ from the neutral baseline. open_air
+#: is the safe full-grip / no-risk surface (roads, pavement, developed ground — the palette has no
+#: dedicated pavement class), and the building materials never underlie a driven cell, so anything not
+#: listed defaults to mu=1 / risk=0 via :func:`grip_mu` / :func:`terrain_risk`. The risk-bearing ids
+#: (mu<1, risk>0) are exactly :data:`RISK_MATERIAL_IDS`.
+GRIP_MU = {
+    OPEN_AIR_ID: 1.0,
+    MATERIAL_ID["foliage"]: 0.65,
+    MATERIAL_ID["soil"]: 0.55,
+    MATERIAL_ID["rock"]: 0.50,
+    MATERIAL_ID["water"]: 0.30,
+}
+TERRAIN_RISK = {
+    OPEN_AIR_ID: 0.0,
+    MATERIAL_ID["foliage"]: 0.30,
+    MATERIAL_ID["soil"]: 0.50,
+    MATERIAL_ID["rock"]: 0.80,
+    MATERIAL_ID["water"]: 1.0,
+}
+
+
+def grip_mu(material_id: int) -> float:
+    """Dry grip mu for a material id (1.0 = full grip); unlisted ids (building materials, unknowns) -> 1.0."""
+    return GRIP_MU.get(material_id, 1.0)
+
+
+def terrain_risk(material_id: int) -> float:
+    """Mobility risk (0..1) for a material id; unlisted ids -> 0.0."""
+    return TERRAIN_RISK.get(material_id, 0.0)
+
 
 def terrain_risk_share(material_time_share) -> float:
     """Fraction of fleet time spent over terrain-risk materials — the "how often the
