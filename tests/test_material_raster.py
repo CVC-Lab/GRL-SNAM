@@ -95,3 +95,58 @@ def test_from_bundle_reads_terrain_and_satellite(tmp_path):
     doc = json.loads((tmp_path / "material.json").read_text())
     assert doc["rows"] == 4 and doc["bounds"]["max_y"] == 8.0
     assert "water" in dist
+
+
+def _rgba_mask(rows, cols, cells):
+    import numpy as np
+
+    a = np.zeros((rows, cols, 4), dtype=np.uint8)
+    for r, c in cells:
+        a[r, c] = (10, 10, 10, 255)
+    return a
+
+
+def test_segment_from_masks_mapping_priority_and_flip(tmp_path):
+    import imageio.v3 as iio
+    import numpy as np
+
+    from grl_snam.tools import material_raster as mr
+
+    # 2x2 grid, 1px/cell. foliage_mask: [[tree, none],[bare, none]]; roads over the (1,1) cell;
+    # water over (0,1). Priority: roads/water win; foliage 1->foliage, 5->soil.
+    fol = np.array([[1, 0], [5, 0]], dtype=np.uint8)  # top row north (max_y), bottom south (min_y)
+    iio.imwrite(tmp_path / "foliage_mask.png", fol)
+    iio.imwrite(tmp_path / "water.png", _rgba_mask(2, 2, [(0, 1)]))
+    iio.imwrite(tmp_path / "roads.png", _rgba_mask(2, 2, [(1, 1)]))
+    mid = mr.segment_from_masks(str(tmp_path), 2, 2)
+    assert mid is not None
+    # flipped so row 0 == min_y == image bottom row: [bare->soil, roads->open_air]
+    assert mid[0, 0] == mr.SOIL
+    assert mid[0, 1] == mr.OPEN_AIR_ID  # roads win over nothing here
+    # row 1 == image top row: [tree->foliage, water->open? no: water over (0,1)]
+    assert mid[1, 0] == mr.FOLIAGE
+    assert mid[1, 1] == mr.WATER  # water mask over the else-empty cell
+
+
+def test_segment_from_masks_absent_returns_none(tmp_path):
+    from grl_snam.tools import material_raster as mr
+
+    assert mr.segment_from_masks(str(tmp_path), 4, 4) is None  # no foliage_mask.png -> fallback
+
+
+def test_from_bundle_falls_back_to_satellite_without_masks(tmp_path):
+    import json as _json
+
+    import imageio.v3 as iio
+    import numpy as np
+
+    from grl_snam.tools import material_raster as mr
+
+    (tmp_path / "terrain.json").write_text(
+        _json.dumps(
+            {"rows": 4, "cols": 4, "bounds": {"min_x": -8, "min_y": -8, "max_x": 8, "max_y": 8}}
+        )
+    )
+    iio.imwrite(tmp_path / "satellite.png", np.full((4, 4, 3), (150, 150, 150), dtype=np.uint8))
+    out, dist = mr.from_bundle(str(tmp_path))  # no masks -> satellite classify
+    assert "open_air" in dist
