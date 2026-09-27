@@ -14,7 +14,13 @@ Format (little-endian):
     u32 format_version, u32 flags, u32 in, u32 out, u32 num_layers, u64 arch_hash
     per layer: u32 rows, u32 cols, u32 act(0=identity,1=SiLU), f32 w[rows*cols], f32 b[rows]
     u32 out_bias_len, f32 out_bias[...]        (raw bias; log(expm1) folded at load)
+    [v2 only, FLAG_LAM_SIGMOID] f32 lam_soft_max, f32 lam_hard_max   (sigmoid ceilings)
     u32 meta_len, char meta[meta_len]          (optional provenance)
+
+A two-head sigmoid net (CoefMLP.lam_sigmoid, i.e. use_lam_hard) writes format v2: out_bias_len
+is 3 (the abg columns only; the lam heads' init lives in the last Linear bias), the two sigmoid
+ceilings follow the out_bias block, and FLAG_LAM_SIGMOID is set so the C++ loader reads the lam
+columns as lam_max*sigmoid(raw). A plain / single-softplus-lam net stays v1, byte-unchanged.
 """
 
 from __future__ import annotations
@@ -25,12 +31,16 @@ import sys
 import numpy as np
 
 FORMAT_VERSION = 1
+FORMAT_VERSION_V2 = 2  # two-head sigmoid reroute (lam_soft, lam_hard) — see FLAG_LAM_SIGMOID
 FLAG_SOFTPLUS_LOG_EXPM1 = 1 << 0
 # Input-feature-layout flags (must match cvc::nav::coef_mlp kFlagFeatMu/kFlagFeatRisk): a
 # 6-input net is ambiguous (grip mu vs terrain-risk), so the C++ drive reads the layout from
 # these flags rather than in_features(). Set from CoefMLP.use_mu / use_risk.
 FLAG_FEAT_MU = 1 << 1
 FLAG_FEAT_RISK = 1 << 2
+# The lam OUTPUT columns (>= 3) are lam_max*sigmoid(raw), not softplus (matches
+# cvc::nav::coef_mlp kFlagLamSigmoid). Set from CoefMLP.lam_sigmoid (use_lam_hard).
+FLAG_LAM_SIGMOID = 1 << 3
 _ACT_IDENTITY, _ACT_SILU = 0, 1
 _U64 = (1 << 64) - 1
 
@@ -75,9 +85,11 @@ def write_coef_mlp(model, path, meta: bytes = b""):
     layers = _layers(model)
     in_f = int(layers[0][0].shape[1])
     out_f = int(layers[-1][0].shape[0])
-    # The RAW pre-softplus bias, one entry per output: (1,3,4) for abg, plus lam_init for a
-    # lam head. full_out_bias() keeps the whole output stack a single uniform softplus, so
-    # out_bias_len == out_f and the C++ forward needs no per-output special case.
+    # A two-head sigmoid net is format v2: the lam columns are lam_max*sigmoid(raw), not softplus.
+    sigmoid_lam = bool(getattr(model, "lam_sigmoid", False))
+    # The RAW pre-softplus bias. For v1 this is one entry per output (abg + lam_init) so the whole
+    # stack is a single uniform softplus. For v2 full_out_bias() returns the 3 abg biases only —
+    # the lam heads' init lives in the last Linear bias, and the C++ folds log(expm1) for abg only.
     _ob = model.full_out_bias() if hasattr(model, "full_out_bias") else model.bias
     out_bias = _ob.detach().cpu().numpy().astype(np.float32)
     shape_act = []
@@ -86,16 +98,19 @@ def write_coef_mlp(model, path, meta: bytes = b""):
     ah = arch_hash(in_f, out_f, shape_act)
     # Encode the input-feature layout so the C++ drive builds the right columns for a widened
     # net (a bare 6-in net is grip; the risk flag disambiguates it). out_f already signals the
-    # lam head (out>=4), so it needs no flag.
+    # lam head (out>=4), so it needs no flag; FLAG_LAM_SIGMOID marks the sigmoid two-head form.
     flags = FLAG_SOFTPLUS_LOG_EXPM1
     if getattr(model, "use_mu", False):
         flags |= FLAG_FEAT_MU
     if getattr(model, "use_risk", False):
         flags |= FLAG_FEAT_RISK
+    if sigmoid_lam:
+        flags |= FLAG_LAM_SIGMOID
+    version = FORMAT_VERSION_V2 if sigmoid_lam else FORMAT_VERSION
 
     with open(path, "wb") as f:
         f.write(b"CVNV")
-        f.write(struct.pack("<IIIII", FORMAT_VERSION, flags, in_f, out_f, len(layers)))
+        f.write(struct.pack("<IIIII", version, flags, in_f, out_f, len(layers)))
         f.write(struct.pack("<Q", ah))
         for w, b, act in layers:
             f.write(struct.pack("<III", int(w.shape[0]), int(w.shape[1]), int(act)))
@@ -103,6 +118,9 @@ def write_coef_mlp(model, path, meta: bytes = b""):
             f.write(np.ascontiguousarray(b, np.float32).tobytes())
         f.write(struct.pack("<I", out_bias.shape[0]))
         f.write(np.ascontiguousarray(out_bias, np.float32).tobytes())
+        if sigmoid_lam:
+            # v2 trailer: the sigmoid ceilings, right after the out_bias block (before meta).
+            f.write(struct.pack("<ff", float(model.lam_soft_max), float(model.lam_hard_max)))
         f.write(struct.pack("<I", len(meta)))
         f.write(meta)
     return path

@@ -280,6 +280,7 @@ def train_bicycle(
             "a risk model needs material= (a grl_snam.material.MaterialGrid) for its risk column"
         )
     wants_lam = getattr(model, "use_lam", False)
+    wants_lam_hard = getattr(model, "use_lam_hard", False)
     if wants_lam and material is None:
         raise ValueError("a lam-head model needs material= (it learns the reroute strength)")
     # Terrain-risk drive: the material force (grl_snam.material) reroutes AROUND risk; the
@@ -325,8 +326,11 @@ def train_bicycle(
                 material=mfield if wants_risk else None,
                 risk_lookahead=risk_lookahead,
             )
-            if wants_lam:
-                al, be, ga, lam_s = model.coeffs_and_lam(feat)  # LEARNED per-agent reroute
+            if wants_lam_hard:
+                # TWO-head: both reroute strengths are LEARNED per agent (paper App A.4).
+                al, be, ga, lam_s, lam_h = model.coeffs_and_lam(feat)
+            elif wants_lam:
+                al, be, ga, lam_s = model.coeffs_and_lam(feat)  # LEARNED per-agent lam_soft
             else:
                 al, be, ga = model(feat)
             o, th, sp, _ = sdf_nav.bicycle_rollout(
@@ -440,6 +444,7 @@ def eval_risk_exposure(model, *, grid=64, lam_soft=0.4, seed=999, n=256, horizon
     kw = dict(L=0.035, delta_max=0.6, a_max=1.5, a_lat_max=1.0, k_steer=0.8, allow_reverse=True)
     wants_risk = getattr(model, "use_risk", False)
     wants_lam = getattr(model, "use_lam", False)
+    wants_lam_hard = getattr(model, "use_lam_hard", False)
     rng = np.random.default_rng(seed)
     o = torch.from_numpy(rand_on(n, rng))
     goal = torch.from_numpy(rand_on(n, rng))
@@ -449,7 +454,9 @@ def eval_risk_exposure(model, *, grid=64, lam_soft=0.4, seed=999, n=256, horizon
     risk_sum = 0.0
     for _ in range(horizon):
         feat = sdf_nav.coef_feats(field, o, goal, material=mf if wants_risk else None)
-        if wants_lam:
+        if wants_lam_hard:
+            al, be, ga, lam_s, lam_h = model.coeffs_and_lam(feat)  # LEARNED two-head reroute
+        elif wants_lam:
             al, be, ga, lam_s = model.coeffs_and_lam(feat)  # LEARNED reroute strength
         else:
             al, be, ga = model(feat)
@@ -577,6 +584,20 @@ def main(argv=None):
         "(deployable lever) instead of the fixed --lam-soft dial; --lam-soft becomes the init.",
     )
     ap.add_argument(
+        "--learned-lam-hard",
+        action="store_true",
+        help="--w-risk: the paper's TWO-head reroute — also LEARN the hard-hazard strength "
+        "lam_hard (5th output, lam_hard_max*sigmoid). Implies --learned-lam; both lam columns "
+        "become sigmoid-bounded, so the exported .cvcnav is format v2 (needs a v2 libcvc host).",
+    )
+    ap.add_argument(
+        "--lam-hard-init",
+        type=float,
+        default=1.0,
+        help="--learned-lam-hard: initial hard-hazard reroute strength (the sigmoid head starts "
+        "here). Must be > 0 (and < lam_hard_max=10); seeds the head, not a frozen dial.",
+    )
+    ap.add_argument(
         "--risk-lookahead",
         type=float,
         default=0.3,
@@ -648,7 +669,7 @@ def main(argv=None):
                 story.truth_grid(), story.bounds, meta["center"], meta["scale"], seed=args.seed
             )
             risk_model = sdf_nav.add_risk_feature(sdf_nav.CoefMLP())
-            if args.learned_lam:
+            if args.learned_lam or args.learned_lam_hard:
                 # LEARNED reroute: the net outputs lam_soft per position instead of the fixed
                 # --lam-soft dial — the deployable reroute lever (drive_step_material reads the 4th
                 # output as per-agent lam_soft since libcvc #413). --lam-soft is the INIT here and
@@ -658,7 +679,20 @@ def main(argv=None):
                         "--learned-lam needs --lam-soft > 0 (it seeds the lam head; 0 would freeze "
                         "it with a dead gradient). Use a small positive init, e.g. --lam-soft 0.4."
                     )
-                risk_model = sdf_nav.add_lam_head(risk_model, lam_init=args.lam_soft)
+                if args.learned_lam_hard:
+                    # TWO-head (paper form): also learn lam_hard. Both lam columns become sigmoid-
+                    # bounded (format v2). --lam-soft / --lam-hard-init seed the two heads and must
+                    # be strictly inside (0, max) so logit(init/max) is finite.
+                    if args.lam_hard_init <= 0.0:
+                        raise SystemExit(
+                            "--learned-lam-hard needs --lam-hard-init > 0 (it seeds the lam_hard "
+                            "head; 0 folds to a +/-inf logit). Use e.g. --lam-hard-init 1.0."
+                        )
+                    risk_model = sdf_nav.add_lam_heads(
+                        risk_model, soft_init=args.lam_soft, hard_init=args.lam_hard_init
+                    )
+                else:
+                    risk_model = sdf_nav.add_lam_head(risk_model, lam_init=args.lam_soft)
         curriculum = None
         if args.curriculum:
             from grl_snam.curriculum import build_city_curriculum
@@ -686,12 +720,32 @@ def main(argv=None):
         model = train(args.steps, args.horizon, args.n, args.lr, args.seed)
     write_coef_mlp(model, args.out)
     if getattr(model, "use_risk", False) or getattr(model, "use_lam", False):
-        extra = f", out_dim={model.out_dim} (lam head)" if getattr(model, "use_lam", False) else ""
+        if getattr(model, "use_lam_hard", False):
+            extra = (
+                f", out_dim={model.out_dim} (TWO-head sigmoid lam_soft+lam_hard, .cvcnav v2; "
+                f"maxes {model.lam_soft_max}/{model.lam_hard_max})"
+            )
+            host = (
+                "a libcvc host at or past the two-head sigmoid drive update (.cvcnav format v2 — "
+                "coef_mlp::has_lam_hard / kFlagLamSigmoid). A v2 blob HARD-FAILS to load on a "
+                "pre-v2 host, so land the host first"
+            )
+        elif getattr(model, "use_lam", False):
+            extra = f", out_dim={model.out_dim} (lam head)"
+            host = (
+                "a libcvc host at or past the risk-lookahead/learned-lam drive update "
+                "(transfix/libcvc #413)"
+            )
+        else:
+            extra = ""
+            host = (
+                "a libcvc host at or past the risk-lookahead/learned-lam drive update "
+                "(transfix/libcvc #413)"
+            )
         print(
-            f"wrote {args.out}  (grip/risk model, in_dim={model.in_dim}{extra}) — DEPLOYABLE on a "
-            "libcvc host at or past the risk-lookahead/learned-lam drive update (transfix/libcvc "
-            "#413): coef_feats builds the risk-lookahead column and drive_step_material reads the "
-            "lam output. Drive it through the MATERIAL path (drive_step_material / "
+            f"wrote {args.out}  (grip/risk model, in_dim={model.in_dim}{extra}) — DEPLOYABLE on "
+            f"{host}: coef_feats builds the risk-lookahead column and drive_step_material reads "
+            "the lam output(s). Drive it through the MATERIAL path (drive_step_material / "
             "drive_step_material_ext), with a material stack + grip attached — the plain drive_step "
             "rejects a risk net. Round-trip + drive verified by libcvc nav_material_deploy_test."
         )

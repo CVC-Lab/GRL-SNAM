@@ -864,6 +864,12 @@ def ackermann_delta_max(L: float, delta_max: float, track_width: float) -> float
     return math.atan(L / (L / math.tan(delta_max) + 0.5 * float(track_width)))
 
 
+def _logit(x: float) -> float:
+    """Inverse of sigmoid: the last-layer bias that makes a sigmoid lam head start at ``x*max``.
+    Caller guarantees 0 < x < 1 (see CoefMLP._check_sigmoid_init)."""
+    return math.log(x / (1.0 - x))
+
+
 class CoefMLP(nn.Module):
     """Predict ``(alpha, beta, gamma)`` from local SDF features, biased toward the
     known-good navigating regime (``bias``) so the self-supervised optimizer starts
@@ -878,6 +884,11 @@ class CoefMLP(nn.Module):
         use_risk=False,
         use_lam=False,
         lam_init=0.4,
+        use_lam_hard=False,
+        lam_hard_init=1.0,
+        lam_sigmoid=False,
+        lam_soft_max=5.0,
+        lam_hard_max=10.0,
     ):
         super().__init__()
         #: 5 = the original [phi, goal_dist, gdir_x, gdir_y, align]; then the OPTIONAL
@@ -890,11 +901,20 @@ class CoefMLP(nn.Module):
         self.use_mu = bool(use_mu)
         self.use_risk = bool(use_risk)
         #: ``use_lam`` adds a 4th OUTPUT, the learned material-reroute strength lam_soft
-        #: (see :meth:`coeffs_and_lam`). The output stack stays a single uniform
-        #: ``softplus(net + log(expm1(out_bias)))`` so the exporter and the C++ forward
-        #: need no special case — only the drive reads output[3] as lam_soft.
+        #: (see :meth:`coeffs_and_lam`). ``use_lam_hard`` adds a 5th, lam_hard — the paper's
+        #: two-head reroute (App A.4). A two-head net is always ``lam_sigmoid`` (the paper form
+        #: lam = lam_max*sigmoid(head), material_nav.py:175-176), which the exporter writes as
+        #: .cvcnav format v2. A lone lam_soft (``use_lam`` only, no sigmoid) keeps the historical
+        #: single uniform ``softplus(net + log(expm1(out_bias)))`` (v1) so old blobs are unchanged.
         self.use_lam = bool(use_lam)
-        self.out_dim = 3 + (1 if self.use_lam else 0)
+        self.use_lam_hard = bool(use_lam_hard)
+        if self.use_lam_hard and not self.use_lam:
+            raise ValueError("use_lam_hard requires use_lam (lam_hard is the 5th output, col 4)")
+        #: A two-head net is the paper's sigmoid form; a single lam_soft can opt in explicitly.
+        self.lam_sigmoid = bool(lam_sigmoid) or self.use_lam_hard
+        self.lam_soft_max = float(lam_soft_max)
+        self.lam_hard_max = float(lam_hard_max)
+        self.out_dim = 3 + (1 if self.use_lam else 0) + (1 if self.use_lam_hard else 0)
         self.net = nn.Sequential(
             nn.Linear(self.in_dim, hidden),
             nn.SiLU(),
@@ -903,40 +923,77 @@ class CoefMLP(nn.Module):
             nn.Linear(hidden, self.out_dim),
         )
         self.register_buffer("bias", torch.tensor(bias))  # abg raw bias (unchanged)
-        if self.use_lam:
-            # lam_soft init: softplus(0 + log(expm1(lam_init))) == lam_init at the zero column.
-            # Requires lam_init > 0: log(expm1(0)) is -inf (a DEAD lam head — 0 with zero
-            # gradient forever), and log(expm1(<0)) is NaN (poisons the drive/loss/.cvcnav).
+        if self.use_lam and not self.lam_sigmoid:
+            # v1 single-softplus lam_soft: softplus(0 + log(expm1(lam_init))) == lam_init at the
+            # zero column. Requires lam_init > 0: log(expm1(0)) is -inf (a DEAD lam head — 0 with
+            # zero gradient), and log(expm1(<0)) is NaN (poisons the drive/loss/.cvcnav).
             if not (float(lam_init) > 0.0):
                 raise ValueError(
                     f"use_lam requires lam_init > 0 (softplus init is -inf at 0, NaN below); "
                     f"got {lam_init!r}"
                 )
             self.register_buffer("lam_raw_bias", torch.tensor(float(lam_init)))
+        if self.lam_sigmoid:
+            # Sigmoid lam heads: lam = lam_max*sigmoid(head), so the init bias lives in the LAST
+            # Linear layer's bias (logit(init/max)), NOT the softplus-fold buffer. Requires
+            # 0 < init < max (logit is +/-inf otherwise). A freshly-built net thus starts at the
+            # requested init (add_lam_heads re-asserts these when lifting a trained net).
+            self._check_sigmoid_init(float(lam_init), self.lam_soft_max, "lam_init/--lam-soft")
+            with torch.no_grad():
+                self.net[-1].bias[3] = _logit(float(lam_init) / self.lam_soft_max)
+                if self.use_lam_hard:
+                    self._check_sigmoid_init(
+                        float(lam_hard_init), self.lam_hard_max, "lam_hard_init/--lam-hard-init"
+                    )
+                    self.net[-1].bias[4] = _logit(float(lam_hard_init) / self.lam_hard_max)
+
+    @staticmethod
+    def _check_sigmoid_init(init, mx, name):
+        if not (0.0 < init < mx):
+            raise ValueError(
+                f"a sigmoid lam head needs 0 < {name} < its max ({mx}); got {init!r} "
+                f"(logit(init/max) is +/-inf outside that range)"
+            )
 
     def full_out_bias(self) -> torch.Tensor:
-        """The (out_dim,) RAW pre-softplus bias vector — abg bias, plus lam_init for a lam
-        head. The exporter writes this and the C++ folds log(expm1) at load, so the whole
-        output stack is one uniform softplus."""
+        """The RAW pre-softplus bias the exporter writes as ``out_bias``. For a sigmoid net
+        (v2) it is the 3 abg biases only — the lam heads' init is carried in the last Linear
+        layer's bias, not here. For a v1 single-softplus lam net it is abg + lam_init, so the
+        whole output stack is one uniform softplus the C++ folds log(expm1) at load."""
+        if self.lam_sigmoid:
+            return self.bias
         if self.use_lam:
             return torch.cat([self.bias, self.lam_raw_bias.reshape(1)])
         return self.bias
 
     def _outputs(self, feat):
-        raw = self.net(feat) + torch.log(torch.expm1(self.full_out_bias())).unsqueeze(0)
-        return F.softplus(raw)  # [N, out_dim]
+        net_out = self.net(feat)  # [N, out_dim]
+        if not self.lam_sigmoid:
+            raw = net_out + torch.log(torch.expm1(self.full_out_bias())).unsqueeze(0)
+            return F.softplus(raw)
+        # Two-head sigmoid (v2): abg keep the softplus(log(expm1)) fold; the lam columns are
+        # lam_max*sigmoid(head) (the head bias is already in net[-1].bias). Byte-parity with the
+        # C++ coef_mlp forward (kFlagLamSigmoid) and material_nav.py:175-176.
+        abg = F.softplus(net_out[:, :3] + torch.log(torch.expm1(self.bias)).unsqueeze(0))
+        cols = [abg, self.lam_soft_max * torch.sigmoid(net_out[:, 3:4])]
+        if self.use_lam_hard:
+            cols.append(self.lam_hard_max * torch.sigmoid(net_out[:, 4:5]))
+        return torch.cat(cols, dim=1)
 
     def forward(self, feat):
         c = self._outputs(feat)
         return c[:, 0], c[:, 1], c[:, 2]
 
     def coeffs_and_lam(self, feat):
-        """``(alpha, beta, gamma, lam_soft)`` — lam_soft is the LEARNED per-agent material
-        reroute strength (F_soft = -lam_soft * grad risk), the deployable replacement for the
-        fixed ``lam_soft`` dial. Requires ``use_lam``."""
+        """``(alpha, beta, gamma, lam_soft)`` — or ``(..., lam_soft, lam_hard)`` for a two-head
+        net (``use_lam_hard``). lam_soft/lam_hard are the LEARNED per-agent reroute strengths
+        (F_soft = -lam_soft*grad risk, F_hard = -lam_hard*db*grad phi), the deployable
+        replacement for the fixed ``--lam-soft`` / ``--lam-hard`` dials. Requires ``use_lam``."""
         if not self.use_lam:
             raise RuntimeError("this CoefMLP has no lam head (use_lam=False)")
         c = self._outputs(feat)
+        if self.use_lam_hard:
+            return c[:, 0], c[:, 1], c[:, 2], c[:, 3], c[:, 4]
         return c[:, 0], c[:, 1], c[:, 2], c[:, 3]
 
 
@@ -1109,5 +1166,55 @@ def add_lam_head(model: CoefMLP, lam_init: float = 0.4) -> CoefMLP:
         out.net[4].bias.zero_()
         out.net[4].weight[:3].copy_(model.net[4].weight)
         out.net[4].bias[:3].copy_(model.net[4].bias)
+        out.bias.copy_(model.bias)
+    return out
+
+
+def add_lam_heads(
+    model: CoefMLP,
+    soft_init: float = 0.4,
+    hard_init: float = 1.0,
+    lam_soft_max: float = 5.0,
+    lam_hard_max: float = 10.0,
+) -> CoefMLP:
+    """Lift a trained ``CoefMLP`` into the paper's TWO-head sigmoid-bounded reroute net (the
+    deployable .cvcnav format v2): appends BOTH lam_soft (col 3) and lam_hard (col 4) as
+    ``lam_max*sigmoid(head)`` outputs (material_nav.py:175-176). Mirrors :func:`add_lam_head`
+    but basin-preserving for TWO heads: the appended final-layer weight rows are zeroed and
+    their biases set to ``logit(init/max)``, so each lam starts at its constant init; the
+    (alpha,beta,gamma) rows are copied verbatim so abg is bit-for-bit unchanged at init. Unlike
+    the v1 single-softplus :func:`add_lam_head`, the lam columns are sigmoid-bounded, so this net
+    exports as format v2 (kFlagLamSigmoid) and hard-fails to load on a pre-v2 libcvc host.
+    Returns a new model."""
+    if getattr(model, "use_lam", False):
+        raise ValueError("add_lam_heads: model already has a lam head")
+    first = model.net[0]
+    hidden = first.out_features
+    out = CoefMLP(
+        hidden=hidden,
+        bias=tuple(model.bias.tolist()),
+        in_dim=model.in_dim,
+        use_mu=getattr(model, "use_mu", False),
+        use_risk=getattr(model, "use_risk", False),
+        use_lam=True,
+        lam_init=soft_init,
+        use_lam_hard=True,
+        lam_hard_init=hard_init,
+        lam_soft_max=lam_soft_max,
+        lam_hard_max=lam_hard_max,
+    )
+    with torch.no_grad():
+        out.net[0].weight.copy_(first.weight)
+        out.net[0].bias.copy_(first.bias)
+        out.net[2].weight.copy_(model.net[2].weight)
+        out.net[2].bias.copy_(model.net[2].bias)
+        # final layer: rows 0..2 = the abg head (copied verbatim), rows 3/4 = the lam heads with
+        # ZERO weights so they are position-independent at init, biases = logit(init/max) so they
+        # start at soft_init / hard_init (a sigmoid net's init lives in the last-layer bias).
+        out.net[4].weight.zero_()
+        out.net[4].weight[:3].copy_(model.net[4].weight)
+        out.net[4].bias[:3].copy_(model.net[4].bias)
+        out.net[4].bias[3] = _logit(float(soft_init) / lam_soft_max)
+        out.net[4].bias[4] = _logit(float(hard_init) / lam_hard_max)
         out.bias.copy_(model.bias)
     return out

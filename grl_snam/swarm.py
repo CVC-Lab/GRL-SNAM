@@ -540,7 +540,13 @@ class Swarm:
         else:
             feat = self._coef_feats(phi, nrm, carrot)
             mkw = self._material_kw()
-            if getattr(self.model, "use_lam", False):
+            if getattr(self.model, "use_lam_hard", False):
+                # TWO-head net: the net outputs BOTH lam_soft and lam_hard per agent; drive with
+                # both (as trained) instead of the fixed MaterialParams reroute strengths.
+                al, be, ga, lam_soft, lam_hard = self.model.coeffs_and_lam(feat)
+                if mkw:
+                    mkw = dict(mkw, lam_soft=lam_soft, lam_hard=lam_hard)
+            elif getattr(self.model, "use_lam", False):
                 # Deployable learned reroute: the net outputs lam_soft per agent; drive with
                 # it (as trained) instead of the fixed MaterialParams lam_soft.
                 al, be, ga, lam_soft = self.model.coeffs_and_lam(feat)
