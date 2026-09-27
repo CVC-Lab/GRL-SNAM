@@ -24,6 +24,7 @@ L_multi = multi_start_penalty(o0, v0, goal, C, R, mask,
 
 # add to loss: L += self.cfg.w_multi * L_multi
 """
+
 from __future__ import annotations
 
 import torch

@@ -48,6 +48,7 @@ Notes
 • If you want to make damping relative to the episode's nominal gamma_o, you can
   flip the flag --gamma_rel True, which makes gamma = gamma_rel * gamma_o(ep).
 """
+
 from __future__ import annotations
 
 import builtins
