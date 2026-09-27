@@ -182,6 +182,29 @@ def train(
     _train.train_sdf(sdf_npz, out, steps=steps, batch=batch, lr=lr, threads=threads, seed=seed)
 
 
+@main.command(
+    "coef-train",
+    # Pass every arg straight through to the tool's own argparse (the single source of truth for
+    # the ~18 flags) instead of re-declaring them here and risking drift. Disabling Click's -h/--help
+    # lets `grl-snam coef-train --help` reach argparse's full flag listing.
+    context_settings=dict(ignore_unknown_options=True, help_option_names=[]),
+    add_help_option=False,
+    short_help="Train a nav CoefMLP (geometry / grip / risk+lam) and export a deployable .cvcnav.",
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def coef_train_cmd(args) -> None:
+    """Train the coefficient net (torch) and export the versioned .cvcnav a pure-C++ host loads via
+    coef_mlp::load — the DEPLOYABLE nav policy. Geometry by default; grip/risk+learned-lam with
+    `--rollout bicycle --w-risk <w> --learned-lam` (a risk net deploys through the material drive:
+    --grip + --material on the host). Thin wrapper over grl_snam.tools.coef_train: all flags pass
+    straight through, so `grl-snam coef-train --help` prints the full list (--rollout / --steps /
+    --w-risk / --lam-soft / --learned-lam / --curriculum / --cuda / --out / --seed / --score ...).
+    """
+    from .tools.coef_train import main as _run
+
+    raise SystemExit(_run(list(args)))
+
+
 # ── drive + render ───────────────────────────────────────────────────────────
 @main.group()
 def capture() -> None:
