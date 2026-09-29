@@ -146,6 +146,27 @@ params = MaterialParams(
 grid = MaterialGrid(risk, hard, bounds, center, scale, params=params)
 ```
 
+### Learned lam — the two-head sigmoid reroute
+
+The `MaterialParams` above set **fixed** `lam_soft`/`lam_hard`. A trained
+coefficient net can instead **predict** them per-agent, which is the source
+method's design (`material_nav.py`'s sigmoid-bounded λ heads). The deployable
+`.cvcnav` carries this as **format v2** with a two-head sigmoid reroute:
+
+* **Single head** — the coefficient net emits a 4th output that overrides
+  `lam_soft` (a softplus head); `lam_hard` stays the fixed barrier.
+* **Two heads (format v2)** — the net emits a 4th and 5th output that are
+  `lam_soft`/`lam_hard`, each **sigmoid-bounded** as `lam_max · σ(raw)` rather
+  than softplus. Sigmoid bounding is what lets a head cleanly *suppress* its
+  channel (`λ → 0`) as readily as engage it, per the source; the per-head ceilings
+  are stored in the `.cvcnav` v2 trailer so the runtime reconstructs the exact
+  map. `lam_hard` is still never gated — the witness gate multiplies the predicted
+  `lam_soft` only, exactly as with fixed params.
+
+A v2 `.cvcnav` requires a v2-capable loader (the C++ twin hard-fails a v2 blob on
+a pre-v2 host). Fixed params remain fully supported; the learned reroute is an
+opt-in on the coefficient net, orthogonal to the mu-in-features widen below.
+
 ### Runtime events
 
 `grid.stamp_risk(r0, r1, c0, c1, value)` / `grid.stamp_hard(...)` mutate the
