@@ -2,7 +2,7 @@
 
 This repository contains the implementation of **GRL-SNAM**, a geometric reinforcement learning framework for simultaneous navigation and mapping in unknown environments using Hamiltonian mechanics and differential policy optimization.
 
-📖 **Documentation:** [Developer Guide](docs/developer-guide.md) · [Native `cvc::nav` acceleration](docs/NATIVE_CVC_NAV.md) · [Material-aware navigation](docs/MATERIAL_NAV.md) · [Vehicle refinements](docs/VEHICLE_REFINEMENTS.md) · [Navigation stats & scorecard](docs/NAV_STATS.md) · [PyPI Publishing Roadmap](docs/pypi-publishing-roadmap.md)
+📖 **Documentation:** [Developer Guide](docs/developer-guide.md) · [Native `cvc::nav` acceleration](docs/NATIVE_CVC_NAV.md) · [Material-aware navigation](docs/MATERIAL_NAV.md) · [Vehicle refinements](docs/VEHICLE_REFINEMENTS.md) · [Navigation stats & scorecard](docs/NAV_STATS.md) · [PyPI Publishing Roadmap](docs/pypi-publishing-roadmap.md) · [Headless server quickstart](docs/headless-quickstart.md)
 
 ## Overview
 
@@ -49,6 +49,10 @@ grl-snam = "^0.1"
 - Python >= 3.10, < 3.14
 - PyTorch >= 2.1
 - NumPy, Matplotlib, imageio (installed automatically)
+
+> **Headless server / want the graphics (`pycvc_gl`)?** `pip install` does not provide the
+> graphics bindings. Install from cvcpkg instead — see the
+> [headless quickstart](docs/headless-quickstart.md).
 
 ### Manual setup (without Poetry)
 ```bash
