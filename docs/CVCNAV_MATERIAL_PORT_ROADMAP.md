@@ -19,8 +19,8 @@ and hyperparameter. None of them are in this repo. They resolve as
 `$GRL_SNAM_MATERIAL_FORK/full_code/train_material.py` — a checkout of
 `github.com/SetasAditya/material-aware-grl-snam`, which
 `tests/test_material_fork_xcheck.py:22-24` skips against when the env var is
-unset. A clone exists at `/home/joe/src/cvc/material-aware-grl-snam`. Set
-`GRL_SNAM_MATERIAL_FORK` to it before touching any parity claim; the bit-identity
+unset. Clone it and set
+`GRL_SNAM_MATERIAL_FORK` to the clone before touching any parity claim; the bit-identity
 cross-check is otherwise silently green.
 
 **Companion C++-side doc:** libcvc `docs/NAV_MATERIAL.md` describes the same

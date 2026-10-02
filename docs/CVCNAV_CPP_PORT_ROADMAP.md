@@ -62,7 +62,7 @@ Boundary is drawn **exactly at the bilinear sample**. Everything upstream stays 
 
 Namespace `cvc::nav`, raw-pointer SoA cores, `int num_threads` on every batch, all new TUs compiled under the existing discipline (**no `-ffast-math`, no `-ffp-contract=fast`**, float32 interior to track torch f32). **Name collision to avoid:** `cvc::nav::sdf_field` already exists in `grid_nav.h` (the *built* field). The sampler stack is named **`field_stack`**.
 
-Files (all under `/home/joe/src/cvc/wt-libcvc-nav/`):
+Files (all under the libcvc repository root):
 
 ```
 inc/cvc/nav/detail/parallel.h   NEW  (extract parallel_for from grid_nav.cpp)
@@ -270,14 +270,14 @@ arch descriptor (hashed): pack("<IIII", in, out, L, flags) ++ per-layer pack("<I
 
 - **`arch_hash` is the "hidden-size change bumps the version" token.** Any change to in/out/layers/flags/per-layer shape-or-act flips it; the loader self-checks it and grl-snam pins it (`assert torch_arch_hash == native.arch_hash`), so `hidden=128` weights can never be paired with a 64-wide net silently. `format_version` is reserved for byte-layout/semantic changes (loader refuses newer).
 - **Loader** (`coef_mlp::build_from_bytes`): validate magic → CRC → format ≤ supported → flags known → endpoints match in/out → layers chain → recompute and match arch_hash → read weights → fold `out_bias_off_ = log(expm1(raw))` in f32 → assert `r.off == body_end`. Throws (never a partial model). Add a static LE-only guard.
-- **Exporter** `/home/joe/src/cvc/wt-grl-snam-nav/grl_snam/coef_export.py`: `serialize_coef_mlp(model)->bytes` walks the **live** `nn.Module` (activations discovered from `model.net`, `bias` buffer present), plus `serialize_checkpoint(pt_path)` that rebuilds a `CoefMLP` from a saved state_dict. `write_coef_mlp(model, path)`; CLI `python -m grl_snam.coef_export coef_sdf.pt coef_mlp.cvcnav`. Wire `write_coef_mlp` into `grl_snam/tools/train.py` and `grl_snam/tools/pipeline.py` so every checkpoint ships its deployable twin.
+- **Exporter** `grl_snam/coef_export.py` (this repo): `serialize_coef_mlp(model)->bytes` walks the **live** `nn.Module` (activations discovered from `model.net`, `bias` buffer present), plus `serialize_checkpoint(pt_path)` that rebuilds a `CoefMLP` from a saved state_dict. `write_coef_mlp(model, path)`; CLI `python -m grl_snam.coef_export coef_sdf.pt coef_mlp.cvcnav`. Wire `write_coef_mlp` into `grl_snam/tools/train.py` and `grl_snam/tools/pipeline.py` so every checkpoint ships its deployable twin.
 - **In-memory path is the parity substrate:** the same `bytes` feed torch (its source) and `pycvc.NavCoefMLP(blob)` — no file round-trip in the tolerance test.
 
 ---
 
 ## 5. Python-green seam + migration order
 
-**pycvc surface** (append to `/home/joe/src/cvc/wt-libcvc-nav/bindings/pycvc/pycvc_nav.i`, following the existing writable-borrow discipline — validate exact dtype/shape/contig, never coerce-copy an in-place buffer, `Py_BEGIN_ALLOW_THREADS` across compute):
+**pycvc surface** (append to libcvc's `bindings/pycvc/pycvc_nav.i`, following the existing writable-borrow discipline — validate exact dtype/shape/contig, never coerce-copy an in-place buffer, `Py_BEGIN_ALLOW_THREADS` across compute):
 
 - Fine-grained (parity + optional acceleration): `nav_sdf_sample(field[M,3,H,W]f32, o[N,2]f32, plane[N]i32|None, mnx..S) -> (phi[N], nrm[N,2])`; `NavCoefMLP(bytes)` / `nav_coef_mlp_load(path)` with `.forward(feat[N,5])->(N,3)`; `nav_drive_step(field, plane|None, <SoA borrowed in place>, mlp, veh scalars, integ, reach_tol, mnx..S, num_threads) -> None`.
 - Object surface (pure-C++ twin + full delegation): opaque `nav_sim_world_create(...)`, `_step`, `_snapshot(->dict of fresh numpy)`, `_retarget`, `_add_obstacle`, `_free`.
@@ -355,7 +355,7 @@ def drive_enabled():
 - **FSM source of truth:** port `swarm.py._plan_carrot` (ring-buffer form), **not** `nav.py._plan_carrot` (list-pop form). They compute `moved` against different history references; `swarm.py` is the vectorized reference the tests pin, and its integer state is exact.
 - **`allow_reverse`:** `bicycle_rollout`'s own default is `False`, but the deployment path (`SdfNavigator.VEHICLE_DEFAULTS`, inherited by `Swarm.veh`) is `True`. C++ `veh_params` default must be `true` (§2.3), and the golden must exercise the reverse branch.
 - **Weight bias:** keep it **raw** in the file (D2), not pre-folded (D5) — `log(expm1)` is a load-time constant folded once in f32, and a raw mirror of the state_dict is auditable. D1's fixed-4742-float blob is rejected in favor of D2's generic+arch_hash layout.
-- **CMake gtest wiring:** each new `*_test` needs **all five** `nav_test` entries in `/home/joe/src/cvc/wt-libcvc-nav/src/cvc/tests/CMakeLists.txt` — `add_executable` (L100), the `TEST_TARGETS`/list membership (L168), `target_link_libraries` (L320), `target_compile_features(... cxx_std_17)` (L850), `gtest_discover_tests` (L1014) — or the target is silently omitted (the "four-entry" trap in MEMORY).
+- **CMake gtest wiring:** each new `*_test` needs **all five** `nav_test` entries in libcvc's `src/cvc/tests/CMakeLists.txt` — `add_executable` (L100), the `TEST_TARGETS`/list membership (L168), `target_link_libraries` (L320), `target_compile_features(... cxx_std_17)` (L850), `gtest_discover_tests` (L1014) — or the target is silently omitted (the "four-entry" trap in MEMORY).
 
 **Open questions needing a decision (do not block P0–P5):**
 - **Deployment belief mode:** does a C++ renderer/game-engine host need clustered/private belief, or is **shared (M=1)** the whole deployment path? Shared is the thousands-of-agents target; if only shared, `map_id` is all-zeros and the M>1 COW/rebuild cost is untested-in-anger. Confirm before P6 sizing.
@@ -363,7 +363,7 @@ def drive_enabled():
 - **Whole-drive tolerance/horizon sign-off:** the proposed short-horizon `1e-3` normalized, `<0.5%` flip budget are from the existing `Squad(batched_drive)` 5e-3 tier and need empirical confirmation across all six stories and multiple seeds in P3/P6 — this is the single number that gates P6, and it is the top fidelity risk.
 - **Canonical `.cvcnav` home + provenance policy:** where the blessed weights live (libcvc test-data vs pycvc-published vs per-deployment bundle); and whether the provenance trailer is required for an audit trail.
 
-Files to create are listed in §2; the two files to edit are `/home/joe/src/cvc/wt-libcvc-nav/src/cvc/CMakeLists.txt` (add headers ~L88, sources ~L171 next to `nav/grid_nav.cpp`) and `/home/joe/src/cvc/wt-libcvc-nav/bindings/pycvc/pycvc_nav.i` (append the marshalling), plus the new grl-snam `coef_export.py`, `nav_native.py` additions, and the parity tests under `/home/joe/src/cvc/wt-grl-snam-nav/tests/`.
+Files to create are listed in §2; the two files to edit are libcvc's `src/cvc/CMakeLists.txt` (add headers ~L88, sources ~L171 next to `nav/grid_nav.cpp`) and `bindings/pycvc/pycvc_nav.i` (append the marshalling), plus the new grl-snam `coef_export.py`, `nav_native.py` additions, and the parity tests under this repo's `tests/`.
 ---
 
 ## 10. Decisions on the §9 open questions
