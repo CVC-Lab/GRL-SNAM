@@ -7,8 +7,10 @@ Goal: run GRL-SNAM on a server with no display and produce a demo video (mp4).
 GRL-SNAM's graphics (`pycvc_gl`, VTK) are **not on PyPI**. They are cvcpkg
 packages. A pip install gives you only the pure-Python part, which is why
 `pycvc_gl` is missing. The fix is to install GRL-SNAM *from cvcpkg* into its own
-prefix. The prefix carries its own Python 3.11, torch, `pycvc_gl`, VTK and an
-`ffmpeg`, so don't reuse your pip venv.
+prefix. The prefix carries its own Python 3.11, torch, `pycvc_gl`, VTK, a software OpenGL
+(Mesa), a virtual X server (Xvfb) and an `ffmpeg`, so it should need **no
+system GL or X packages and no sudo** (see "What was tested" at the end). Don't
+reuse your pip venv.
 
 Requirements: Linux x86-64, glibc ≥ 2.35 (Ubuntu 22.04+ or equivalent).
 
@@ -24,11 +26,11 @@ cvcpkg --version
 
 No `curl | sh`? Use pip instead: `python3 -m venv ~/cvcpkg-venv && ~/cvcpkg-venv/bin/pip install cvcpkg`.
 
-## 2. Install GRL-SNAM, its data and ffmpeg into a prefix
+## 2. Install GRL-SNAM, its data, OpenGL and ffmpeg into a prefix
 
 ```bash
-cvcpkg install grl-snam-cp311 grl-snam-weights scene-austin-south ffmpeg-cli \
-  --prefix $HOME/nav-env
+cvcpkg install grl-snam-cp311 grl-snam-weights scene-austin-south \
+  ffmpeg-cli mesa xvfb --prefix $HOME/nav-env
 . $HOME/nav-env/bin/activate
 
 python -c "import grl_snam, pycvc_gl, torch; print('ok')"
@@ -42,42 +44,31 @@ ffmpeg -hide_banner -encoders | grep libx264     # H.264 encoder present
 | `grl-snam-weights` | pretrained model → `$PREFIX/share/grl-snam-weights/coef_sdf.pt` |
 | `scene-austin-south` | Austin map (~110 MB, public, no token) → `$PREFIX/share/cvc-scenes/austin_south/` |
 | `ffmpeg-cli` | `ffmpeg` / `ffprobe` with H.264 (x264) → `$PREFIX/bin/` (`capture` encodes the mp4 with it) |
+| `mesa` | software OpenGL (llvmpipe), with EGL and GLX → `$PREFIX/lib/` |
+| `xvfb` | virtual X server + `xvfb-run` → `$PREFIX/bin/` (only needed for the Xvfb path in section 3) |
 
-The whole prefix is ~2.5 GB, mostly torch and VTK.
+The whole prefix is ~3 GB, mostly torch, VTK and Mesa's LLVM.
 
 - Want a lighter scene? Use `scene-austin-south-small` (~10 MB, same layout).
 - Prefer a git checkout? Inside the activated prefix run `pip install -e .` in
   your GRL-SNAM clone. Keep the `cvcpkg install` above for the bindings and data.
 - Different Python? Swap `cp311` for `cp312` or `cp313`. Don't mix columns.
 
-## 3. Headless rendering — no X server needed (EGL)
+## 3. Headless rendering — no display needed
 
 The cvcpkg VTK picks its render backend at runtime: X11, then **EGL**, then
-OSMesa. On a server with no `DISPLAY` it can render offscreen through EGL, either
-on the **GPU** (NVIDIA's EGL, if the driver is installed) or on the **CPU** (Mesa
-llvmpipe). No Xvfb is needed.
+OSMesa. On a server with no `DISPLAY` there are two ways to render, and both run
+entirely from the prefix. Use **EGL** (simplest). Use Xvfb only if EGL gives you
+trouble.
 
-EGL needs a vendor driver from the system. The cvcpkg GL loader looks for it
-inside the prefix, so you point it at the system's vendor file with an
-environment variable.
-
-**GPU server with the NVIDIA driver installed** (nothing to apt-install):
+### Option A: EGL (recommended)
 
 ```bash
 export VTK_DEFAULT_OPENGL_WINDOW=vtkEGLRenderWindow
-export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 ```
 
-**CPU-only server** (software rendering with Mesa; needs sudo for two packages):
-
-```bash
-sudo apt install libegl-mesa0 libgl1-mesa-dri
-export VTK_DEFAULT_OPENGL_WINDOW=vtkEGLRenderWindow
-export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
-```
-
-Put the two `export` lines in your `~/.bashrc` or a job script. Check that the
-file named in `__EGL_VENDOR_LIBRARY_FILENAMES` exists (`ls /usr/share/glvnd/egl_vendor.d/`).
+That is the only setting needed. `mesa` in the prefix provides the EGL driver and
+the prefix finds it by itself. Put the line in your `~/.bashrc` or job script.
 
 Smoke test (writes a PNG; no video yet):
 
@@ -85,24 +76,33 @@ Smoke test (writes a PNG; no video yet):
 env -u DISPLAY grl-snam lab-demo lab.png
 ```
 
+**GPU server with the NVIDIA driver installed:** to render on the GPU instead of
+the CPU, also point EGL at the system's NVIDIA vendor file:
+
+```bash
+export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
+```
+
+(Check the file exists with `ls /usr/share/glvnd/egl_vendor.d/`.)
+
 Notes:
 - `libEGL warning: ... driver (null)` and `EGL device index: 0 could not be initialized. Trying other devices...`
   messages are harmless as long as the command finishes and `lab.png` appears.
-- Don't combine EGL with `LIBGL_ALWAYS_SOFTWARE=1`. With the system Mesa that
-  combination crashed (segfault) in testing. The Mesa vendor file alone is enough.
+- Don't set `LIBGL_ALWAYS_SOFTWARE=1` with EGL. It crashes (an upstream Mesa bug
+  in the EGL device path). The default already falls back to software.
 
-### Fallback: Xvfb (virtual X server)
+### Option B: Xvfb (virtual X server)
 
-If EGL doesn't work on your machine, use a virtual X server with Mesa GLX instead:
+`xvfb-run` starts a virtual X server from the prefix for the length of one
+command, and the OpenGL goes through Mesa's GLX:
 
 ```bash
-sudo apt install xvfb libgl1-mesa-dri libglx-mesa0
 unset VTK_DEFAULT_OPENGL_WINDOW __EGL_VENDOR_LIBRARY_FILENAMES
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1920x1080x24" grl-snam lab-demo lab.png
+xvfb-run -a -s "-screen 0 1920x1080x24" grl-snam lab-demo lab.png
 ```
 
 Prefix every `grl-snam capture ...` command below with
-`LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1920x1080x24"` in that case.
+`xvfb-run -a -s "-screen 0 1920x1080x24"` in that case.
 
 ## 4. Make a demo video
 
@@ -121,8 +121,9 @@ The video shows the real 3-D Austin scene with a live HUD: the network's
 predicted coefficients (α, β, γ), wall clearance, speed and mode. Rendered PNG
 frames are kept in `_frames/` next to your `-o` file.
 
-For reference, the 0.1-minute test (480 frames, 960×540) took about 2 minutes
-on CPU (Mesa llvmpipe) and about 1.3 minutes on a GTX 1650.
+For reference, the 0.1-minute test (480 frames, 960×540) took about 1 minute 45
+seconds on CPU (Mesa llvmpipe, EGL or Xvfb) and about 1 minute 15 seconds on a
+GTX 1650 through NVIDIA EGL.
 
 Other commands:
 
@@ -149,18 +150,22 @@ grl-snam capture multigoal $BUNDLE coef_sdf.pt -o mine.mp4
 | symptom | fix |
 |---|---|
 | `import pycvc_gl` fails | you're not in the prefix. Run `. $HOME/nav-env/bin/activate` |
-| `bad X server connection` / `Unable to find a valid OpenGL 3.2 or later implementation` | EGL isn't finding a driver. Check the two `export`s in section 3 and that the vendor `.json` file exists |
+| `bad X server connection` / `Unable to find a valid OpenGL 3.2 or later implementation` | the prefix isn't activated, `mesa` wasn't installed, or (EGL) `VTK_DEFAULT_OPENGL_WINDOW` isn't set. With the NVIDIA vendor file, check that the `.json` exists |
 | renders but very slow | expected on CPU. Test with `--minutes 0.1`, or use a GPU node with the NVIDIA vendor file |
 | `ffmpeg: command not found` | the prefix isn't activated, or you left out `ffmpeg-cli` from the install |
+| `xvfb-run: command not found` | the prefix isn't activated, or `xvfb` wasn't installed (only needed for Option B) |
 | `cvcpkg install` can't find a package | check the `cpXXX` suffix matches the Python you want |
 
 ## What was tested
 
-Verified on Ubuntu with a desktop Mesa and an NVIDIA GTX 1650, with `DISPLAY`
-unset: installing `grl-snam-cp311 grl-snam-weights scene-austin-south` from the
-public catalog, `selftest`, `lab-demo`, and `capture multigoal` on both the Mesa
-EGL (CPU) path and the NVIDIA EGL (GPU) path. `ffmpeg-cli` was installed from the
-catalog into its own prefix and encoded PNG frames to H.264 correctly. It was not
-installed into the same prefix as GRL-SNAM in one command. Not yet tested: a bare
-server image. The two Mesa apt packages in the CPU path are the expected minimum,
-so tell us if the server needs more.
+Verified on Ubuntu with an NVIDIA GTX 1650, with `DISPLAY` unset, installing from
+the public catalog into a fresh prefix: `grl-snam-cp311`, `grl-snam-weights`,
+`scene-austin-south`, `ffmpeg-cli`, `mesa` and `xvfb`.
+- `selftest`, `lab-demo`, and `capture multigoal` (480 frames, 960×540, H.264) all
+  work on **EGL with the prefix's Mesa**, and on **Xvfb with the prefix's Mesa GLX**.
+  A library-load trace shows only prefix copies of Mesa, LLVM and the GL loaders
+  being used, with no system Mesa.
+- With the NVIDIA vendor file set, EGL loads NVIDIA's driver instead of Mesa.
+
+Not yet tested: a bare server image (this machine has a desktop OS installed).
+glibc 2.35 or newer is required.
