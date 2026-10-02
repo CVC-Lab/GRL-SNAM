@@ -1,10 +1,10 @@
 """Base navigation SCORECARD — aggregate a corpus of episodes into one fitness row.
 
 This is the Python twin of the C++ ``cvc::nav::nav_scorecard`` (transfix/libcvc
-``inc/cvc/nav/nav_stats.h``): the RF-free nav-fitness row grl-snam uses to rank its
-OWN base-policy checkpoints over a scene corpus. The DBG campaign layers an
-``rf_scorecard`` on top; the base half here is shared, so a grl-snam training run and
-a cvcdbg ``dbg_arrival_check3 --episodes`` run report identical base numbers (the
+``inc/cvc/nav/nav_stats.h``): the domain-neutral nav-fitness row grl-snam uses to rank
+its OWN base-policy checkpoints over a scene corpus. A downstream extension can layer its
+own domain-specific scorecard on top; the base half here is shared, so a grl-snam training
+run and a C++ ``cvc::nav`` collector run report identical base numbers (the
 aggregation logic + JSON keys are field-for-field the same, and ``tests/test_scorecard``
 pins them to the same hand-computed values the C++ ``nav_stats_test`` uses).
 
@@ -20,7 +20,7 @@ import json
 import math
 from dataclasses import dataclass, field
 
-from .material_palette import NUM_MATERIALS  # 13 == cvc::dbg kNumMaterials (channel.cpp table)
+from .material_palette import NUM_MATERIALS  # 13 == cvc::nav::kNumMaterials
 
 
 @dataclass
@@ -220,15 +220,15 @@ class NavScorecard:
     @classmethod
     def from_dict(cls, d: dict) -> NavScorecard:
         """Parse a scorecard dict back into a ``NavScorecard`` — the inverse of :meth:`to_dict`, and
-        the reader for the C++ ``cvc::nav::scorecard_json`` output (the keys are field-for-field the
-        same, so a ``dbg_arrival_check3 --episodes`` / ``scorecard_json`` row loads directly). This is
+        the reader for the C++ ``cvc::nav::nav_scorecard::to_json()`` output (the keys are
+        field-for-field the same, so a recorded C++ scorecard row loads directly). This is
         the plumbing a selection/loss stage reads a recorded corpus fitness from; nothing consumes it
         yet (Track 4 Phase 1+ wires it into training).
 
         Tolerant of a partial producer: any missing key keeps the dataclass default, so an older or
-        newer writer (or one that omits zero fields) still loads. An ``rf`` sub-object, if present
-        (the DBG ``scorecard_json`` embeds one), is ignored here — the base reader is RF-free; the DBG
-        side reads the RF scorecard separately.
+        newer writer (or one that omits zero fields) still loads. An extension sub-object, if
+        present (a downstream writer may embed its own record), is ignored here — the base reader
+        is domain-neutral; the extension reads its own sub-record separately.
         """
         cov = d.get("mean_coverage") or {}
         return cls(
@@ -274,7 +274,7 @@ class NavScorecard:
 
     @classmethod
     def from_json(cls, s: str) -> NavScorecard:
-        """Parse a scorecard JSON string (``to_json`` / C++ ``scorecard_json``) into a
+        """Parse a scorecard JSON string (``to_json`` / C++ ``nav_scorecard::to_json()``) into a
         ``NavScorecard``. See :meth:`from_dict`."""
         return cls.from_dict(json.loads(s))
 

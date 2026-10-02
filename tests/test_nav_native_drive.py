@@ -1,6 +1,6 @@
 """SdfNavigator native drive dispatch (``GRL_SNAM_NAV_DRIVE=native``).
 
-The per-agent navigator the DBG convoy drives (Squad -> Scenario ->
+The per-agent navigator a Squad convoy drives (Squad -> Scenario ->
 ``SdfNavigator``) can optionally run the torch-free C++ fused drive
 (``nav_native.drive_step``) instead of the torch coef-net + bicycle rollout,
 keeping the carrot FSM in Python. This is the SdfNavigator assembly of the

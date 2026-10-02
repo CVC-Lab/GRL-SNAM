@@ -15,9 +15,9 @@ water, bright warm-gray rock, everything else the neutral ``open_air`` hard/free
 learned model — reproducible and reviewable; tune :func:`classify` + the palette's ``GRIP_MU`` /
 ``TERRAIN_RISK`` for other biomes.
 
-NOTE on the palette: it is an RF/building-material table (``reinforced_concrete`` etc. carry
-penetration-loss dB) plus a few natural-terrain classes, with NO asphalt/road class. ``reinforced_
-concrete`` means building walls, not pavement; buildings are obstacles the convoy never drives
+NOTE on the palette: it is a building-material table (``reinforced_concrete``, ``brick``,
+``glass`` etc.) plus a few natural-terrain classes, with NO asphalt/road class. ``reinforced_
+concrete`` means building walls, not pavement; buildings are obstacles a vehicle never drives
 (tagged from the scene's building metadata), so this GROUND classifier only ever emits the drivable
 classes ``open_air`` / ``foliage`` / ``soil`` / ``water`` / ``rock``.
 """
@@ -103,7 +103,10 @@ def to_material_json(material_id: np.ndarray, bounds) -> dict:
     ids = sorted(int(v) for v in np.unique(material_id))
     return {
         "schema": "cvc-scene-material/1",
-        "provenance": "scene land cover (grl-snam material-raster: masks if present, else satellite); ids = cvc::dbg MATERIAL_TABLE",
+        # This provenance value matches the C++ cvc::nav::material_raster::to_json byte for byte
+        # (libcvc src/cvc/nav/material_raster.cpp). The documents as a whole are not
+        # byte-identical: the two writers format floats (bounds, mu/risk) differently.
+        "provenance": "scene land cover (cvc::nav material_raster: masks if present, else satellite); ids = the 13-class material palette",
         "rows": rows,
         "cols": cols,
         "bounds": _bounds_dict(bounds),

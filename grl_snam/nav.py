@@ -92,7 +92,7 @@ class SdfNavigator:
         # ``o[B,2] -> [B,2]`` returning an extra acceleration (rollout/normalized
         # frame) summed alongside F_bar/F_goal each substep. Unlike carrot_bias_fn
         # (which nudges the pure-pursuit carrot), this enters the force law itself
-        # — the seam the DBG comm force uses as a genuine force term. ``None``
+        # — the seam an application-specific force uses as a genuine force term. ``None``
         # (default) is additively inert and bit-for-bit unchanged.
         self.ext_force_fn = None
         # Optional material-aware runtime (grl_snam.material.MaterialRuntime).

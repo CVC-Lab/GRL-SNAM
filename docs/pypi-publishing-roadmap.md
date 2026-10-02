@@ -4,9 +4,8 @@
 current Python packaging standards, so it installs with a plain
 `pip install grl-snam`.
 
-> **Scope.** This covers the public `grl-snam` package only. Any sensitive
-> downstream extensions are **not** publicly distributed; they are out of scope
-> here and must never be published. Once `grl-snam` is on PyPI, downstreams can
+> **Scope.** This covers the public `grl-snam` package only; downstream
+> extensions are out of scope here. Once `grl-snam` is on PyPI, downstreams can
 > depend on it by version instead of a GitHub URL.
 
 ---

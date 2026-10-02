@@ -3,20 +3,21 @@ buckets are indexed by.
 
 This is the SINGLE source of the palette shared across the stack: it mirrors
 ``cvc::nav::kNumMaterials`` (libcvc ``inc/cvc/nav/nav_stats.h``) and is positional
-with the ``cvc::dbg`` ``MATERIAL_TABLE`` (cvcdbg ``src/cvc/dbg/channel.cpp``), so a
-material id means the same class in the C++ collector, the DBG RF layer, and here.
-Keep the ORDER byte-for-byte with that table — the ids are the wire format.
+with the ``cvc::nav`` ``material_id`` enum (libcvc ``inc/cvc/nav/material_raster.h``),
+so a material id means the same class in the C++ collector, in any downstream table
+keyed by these ids, and here. Keep the ORDER byte-for-byte with that enum — the ids
+are the wire format.
 
 The discrete buckets (``time_over_material_s`` / ``dist_over_material_m``) are the
 parity field with the C++ scorecard. "Time in terrain-risk areas" is DERIVED from
 them — :func:`terrain_risk_share` sums the traversable outdoor classes that carry
 mobility risk — rather than stored as a separate schema field, so the scorecard
-stays field-for-field with ``cvc::dbg::nav_scorecard``.
+stays field-for-field with ``cvc::nav::nav_scorecard``.
 """
 
 from __future__ import annotations
 
-# Positional — index == material id. MUST match cvc::dbg MATERIAL_TABLE order.
+# Positional — index == material id. MUST match the cvc::nav material_id enum order.
 MATERIALS = (
     "reinforced_concrete",  # 0
     "brick",  # 1

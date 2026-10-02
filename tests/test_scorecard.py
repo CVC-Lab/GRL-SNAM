@@ -76,7 +76,7 @@ def test_scorecard_json_keys():
         "material_time_share",
     ):
         assert k in d
-    assert "rf" not in d  # base-only shape (grl-snam-non-DBG)
+    assert "ext" not in d  # base-only shape (no extension sub-object)
 
 
 def test_navstats_accumulates_turn_and_fuel():
@@ -248,13 +248,14 @@ def test_scorecard_json_has_track1_keys():
     }
 
 
-# --- Track 4 Phase 0: the scorecard reader (inverse of to_dict/to_json; loads C++ scorecard_json) ---
+# --- Track 4 Phase 0: the scorecard reader (inverse of to_dict/to_json; loads C++ nav_scorecard) ---
 
 
 def test_scorecard_reader_round_trips():
     # A fully-populated scorecard (all Track-1 field families non-default) survives to_dict->from_dict
     # and to_json->from_json unchanged. Since to_dict's keys are field-for-field the C++
-    # cvc::nav::scorecard_json keys, this is also the guarantee that a recorded C++ scorecard row loads.
+    # cvc::nav::nav_scorecard::to_json() keys, this is also the guarantee that a recorded C++
+    # scorecard row loads.
     e0 = EpisodeStats(
         success=True,
         makespan_s=20,
@@ -292,11 +293,11 @@ def test_scorecard_reader_round_trips():
     assert NavScorecard.from_json(sc.to_json()).to_dict() == d  # JSON round-trip too
 
 
-def test_scorecard_reader_tolerates_partial_and_ignores_rf():
-    # A partial producer (missing keys) loads with dataclass defaults; an embedded "rf" sub-object
-    # (the DBG scorecard_json shape) is ignored by the base reader.
+def test_scorecard_reader_tolerates_partial_and_ignores_extension():
+    # A partial producer (missing keys) loads with dataclass defaults; an embedded extension
+    # sub-object (a downstream writer's own record) is ignored by the base reader.
     sc = NavScorecard.from_dict(
-        {"checkpoint": "x", "success_rate": 0.5, "rf": {"outage_rate": 0.9}}
+        {"checkpoint": "x", "success_rate": 0.5, "ext": {"extra_metric": 0.9}}
     )
     assert sc.checkpoint == "x"
     assert math.isclose(sc.success_rate, 0.5)
@@ -305,4 +306,4 @@ def test_scorecard_reader_tolerates_partial_and_ignores_rf():
     assert math.isclose(sc.mean_coverage.phantom_frac, 0.0)  # missing nested -> default
     # missing list field -> the length-NUM_MATERIALS zero default, NOT [] (so share[m] never IndexErrors)
     assert sc.material_time_share == [0.0] * NUM_MATERIALS
-    assert not hasattr(sc, "rf")  # rf sub-object dropped, not smuggled onto the base row
+    assert not hasattr(sc, "ext")  # extension sub-object dropped, not smuggled onto the base row

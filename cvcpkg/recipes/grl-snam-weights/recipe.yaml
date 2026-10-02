@@ -6,7 +6,7 @@ recipe:
   # BUMP cvc_revision on ANY change to the staged bytes (a new checkpoint/blob, or
   # an edited PROVENANCE.md that ships under share/) — a same-revision re-push
   # silently no-ops against the already-published artifact.
-  cvc_revision: 1
+  cvc_revision: 2
   kind: data
   maintainer: "cvcpkg group"
   maintainer_email: "info@cvcpkg.org"
@@ -14,7 +14,7 @@ recipe:
   license: MIT
   tags: [data, grl-snam, weights, nav]
   description: >-
-    Pretrained base GRL-SNAM navigation coefficients (no RF-comm forces): the
+    Pretrained base GRL-SNAM navigation coefficients (geometry only): the
     self-supervised SDF CoefMLP that predicts (alpha, beta, gamma) for the
     differentiable SDF navigator. Ships BOTH the native CVNV blob
     (coef_sdf.cvcnav, for the C++ cvc::nav forward) and the torch checkpoint

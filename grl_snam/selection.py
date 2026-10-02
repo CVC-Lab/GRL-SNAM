@@ -4,7 +4,7 @@ fitness and rank a set of candidates (Track 4 Phase 1, SELECTION only).
 This is deliberately separate from :mod:`grl_snam.scorecard` (which stays a pure schema + reducer):
 selection reads finished ``NavScorecard`` rows and never serializes back, so it can never perturb the
 C++<->Python parity surface (the composite is a free function, NOT a scorecard field). It also stays
-RF-free — the DBG campaign composes an RF fitness on top of ``composite_fitness`` in ``grl_snam_dbg``;
+domain-neutral — a downstream extension can compose its own fitness on top of ``composite_fitness``;
 nothing here touches the loss or the rollout (that is Phase 2).
 
 Typical use — rank recorded corpus rows (the C++/native collector fills the formation/coverage/grip
@@ -109,9 +109,10 @@ def select_best(
 
 def _main(argv: list[str] | None = None) -> int:
     """`python -m grl_snam.selection card1.json card2.json [--weights '{"w_form_arrival":1.0}']` —
-    load recorded scorecard rows (cvc::nav ``scorecard_json`` / ``NavScorecard.to_json``) and print
-    them best-first by composite fitness. This is the offline SELECTION entry point; the recorded
-    (``from_json``) row is where the formation/coverage/grip fields are actually non-zero."""
+    load recorded scorecard rows (C++ ``cvc::nav::nav_scorecard::to_json()`` /
+    ``NavScorecard.to_json``) and print them best-first by composite fitness. This is the offline
+    SELECTION entry point; the recorded (``from_json``) row is where the formation/coverage/grip
+    fields are actually non-zero."""
     import argparse
 
     ap = argparse.ArgumentParser(
