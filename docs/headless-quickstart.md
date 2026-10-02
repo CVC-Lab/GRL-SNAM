@@ -33,7 +33,7 @@ cvcpkg install grl-snam-cp311 grl-snam-weights scene-austin-south \
   ffmpeg-cli mesa xvfb --prefix $HOME/nav-env
 . $HOME/nav-env/bin/activate
 
-python -c "import grl_snam, pycvc_gl, torch; print('ok')"
+python3.11 -c "import grl_snam, pycvc_gl, torch; print('ok')"   # python3.12 / python3.13 for those columns
 grl-snam selftest
 ffmpeg -hide_banner -encoders | grep libx264     # H.264 encoder present
 ```
