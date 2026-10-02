@@ -18,5 +18,8 @@ SDF navigator's `CoefMLP` — predicts `(alpha, beta, gamma)`.
 - **Character:** an initial, deliberately short proof-of-pipeline run — enough
   that the coefficients have moved and the weights are usable, NOT a full
   training campaign. Regenerate from a longer run for production accuracy.
+- **Metadata:** the checkpoint's `meta` and the `.cvcnav` provenance trailer
+  name the training SDF as `austin_south/nav_sdf.npz` (scene-relative). Since
+  revision 2; the weights are the same as in revision 1.
 
 Bump `cvc_revision` in `recipe.yaml` whenever these bytes change.
