@@ -53,7 +53,7 @@ def _xy(env, default):
 
 def setup() -> None:
     host = current_host()
-    from pycvc_gl.camera import ChaseCamera
+    from pycvc_gl.camera import NativeChaseCamera as ChaseCamera
     from pycvc_gl.scenes import building_occupancy, load_geometry_bundle, terrain_grid
     from pycvc_gl.vehicle import VehiclePose
 
