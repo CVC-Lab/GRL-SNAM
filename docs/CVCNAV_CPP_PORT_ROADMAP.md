@@ -361,7 +361,7 @@ def drive_enabled():
 - **Deployment belief mode:** does a C++ renderer/game-engine host need clustered/private belief, or is **shared (M=1)** the whole deployment path? Shared is the thousands-of-agents target; if only shared, `map_id` is all-zeros and the M>1 COW/rebuild cost is untested-in-anger. Confirm before P6 sizing.
 - **`nsub` at deploy** (`meta.get("nsub",1)`): if always 1, the golden and gtests can pin `nsub=1`; if >1, the multi-substep transcendental accumulation must be in the golden.
 - **Whole-drive tolerance/horizon sign-off:** the proposed short-horizon `1e-3` normalized, `<0.5%` flip budget are from the existing `Squad(batched_drive)` 5e-3 tier and need empirical confirmation across all six stories and multiple seeds in P3/P6 — this is the single number that gates P6, and it is the top fidelity risk.
-- **Canonical `.cvcnav` home + provenance policy:** where the blessed weights live (libcvc test-data vs pycvc-published vs per-deployment bundle) (kept out of public repos where required); and whether the provenance trailer is required for an audit trail.
+- **Canonical `.cvcnav` home + provenance policy:** where the blessed weights live (libcvc test-data vs pycvc-published vs per-deployment bundle); and whether the provenance trailer is required for an audit trail.
 
 Files to create are listed in §2; the two files to edit are `/home/joe/src/cvc/wt-libcvc-nav/src/cvc/CMakeLists.txt` (add headers ~L88, sources ~L171 next to `nav/grid_nav.cpp`) and `/home/joe/src/cvc/wt-libcvc-nav/bindings/pycvc/pycvc_nav.i` (append the marshalling), plus the new grl-snam `coef_export.py`, `nav_native.py` additions, and the parity tests under `/home/joe/src/cvc/wt-grl-snam-nav/tests/`.
 ---

@@ -424,7 +424,7 @@ def sdf_rollout(
     returning an extra force (accel units) at the current positions each substep,
     summed into the acceleration alongside ``F_bar``/``F_goal``/``F_mat`` — the
     physics-agnostic Python twin of ``cvc::nav``'s ``ext_force`` port. It carries
-    NO RF/comms vocabulary; a private consumer (DBG's comm force) supplies it.
+    NO domain vocabulary; the caller (e.g. an application-specific force) supplies it.
     ``None`` (the default) is additively inert and bit-for-bit unchanged."""
     hdt = dt / nsub
     minclr = torch.full((o.shape[0],), 9.9, device=o.device)
@@ -440,7 +440,7 @@ def sdf_rollout(
                 a = F_bar + F_goal + F_mat - ga.unsqueeze(-1) * v
             else:
                 a = F_bar + F_goal - ga.unsqueeze(-1) * v
-            if ext_force_fn is not None:  # generic external force (e.g. DBG comm force)
+            if ext_force_fn is not None:  # generic external force (caller-supplied)
                 a = a + ext_force_fn(o)
             v = v + hdt * a
             sp = v.norm(dim=-1, keepdim=True)
@@ -647,7 +647,7 @@ def bicycle_rollout(
                 a_max_e, a_lat_e = a_max * _mu, a_lat_max * _mu
 
             F_goal = -be.unsqueeze(-1) * (o - goal)
-            # Generic external force (e.g. DBG comm force). Evaluated once and, like
+            # Generic external force (caller-supplied). Evaluated once and, like
             # F_mat, joins BOTH couplings — the longitudinal projection AND the
             # steering bias below. None (default) is additively inert.
             F_ext = ext_force_fn(o) if ext_force_fn is not None else None

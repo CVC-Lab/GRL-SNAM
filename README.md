@@ -146,7 +146,7 @@ GRL-SNAM (not the other way round) and keep their dataset-specific code and mode
 of this general library. Such an extension reuses exactly the pieces shown above — the
 differentiable surrogate, the coefficient network, and the `pycvc`/`pycvc_gl` scene
 bindings — and versions its own additions in its own repository. This library stays
-general; the extensions stay separate and private.
+general; the extensions stay separate.
 
 ## Repository Structure
 

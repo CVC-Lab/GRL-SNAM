@@ -1,13 +1,13 @@
-"""Base-policy scorecard eval — rank a CoefMLP checkpoint by its RF-free navigation
+"""Base-policy scorecard eval — rank a CoefMLP checkpoint by its domain-neutral navigation
 fitness over a scene corpus.
 
 Runs the vectorized :class:`~grl_snam.swarm.Swarm` with its opt-in base nav_stats
 collector across a corpus of city scenes, reduces each episode to an
 :class:`~grl_snam.scorecard.EpisodeStats`, and aggregates them into one
 :class:`~grl_snam.scorecard.NavScorecard` — the single fitness row grl-snam uses to
-rank its own base-policy checkpoints (arrival, economy, safety, material), RF-free.
-This is the base half of the two-layer nav-stats design's training bridge (the DBG
-campaign layers an ``rf_scorecard`` on top); the scorecard field-mirrors the C++
+rank its own base-policy checkpoints (arrival, economy, safety, material).
+This is the base half of the two-layer nav-stats design's training bridge (a downstream
+extension can layer its own scorecard on top); the scorecard field-mirrors the C++
 ``cvc::nav::nav_scorecard`` and the native ``sim_world`` collector, so a checkpoint
 scores identically whichever path evaluates it.
 

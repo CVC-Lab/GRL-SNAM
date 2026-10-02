@@ -433,7 +433,7 @@ binding. That is deliberate: a green tick from an absent feature reads as
 coverage this repo does not have.
 
 Before pushing, run the linters CI runs — they are not installable here
-(`black`/`ruff` are absent from `dbg-deps` and from the cvcpkg catalog for this
+(`black`/`ruff` are absent from the local deps prefix and from the cvcpkg catalog for this
 platform tuple), so use a throwaway venv:
 
 ```bash

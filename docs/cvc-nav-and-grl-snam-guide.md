@@ -736,9 +736,8 @@ cvcpkg install grl-snam-weights --prefix ./nav-env
 > on the free-space rollout surrogate currently *regresses* versus the hand-tuned
 > `(1,3,4)` basin. Use this package to exercise the pipeline and as a starting
 > checkpoint; keep the seed unless a longer run beats it on your own reach eval.
-> The **RF-comm-aware** DBG policy is a *separate, private* package
-> (`cvc-dbg-weights` on the `utdbg` org) — the research/development seam is kept at
-> the org boundary, never mixed into this public package.
+> A policy that a downstream application trains with its own extra force terms is
+> published by that project, never mixed into this package.
 
 ---
 

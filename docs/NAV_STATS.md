@@ -1,9 +1,10 @@
 # Navigation statistics & the base-policy scorecard
 
-grl-snam is the **base (RF-free)** owner of the two-layer nav-stats design: per-vehicle + per-episode
-navigation telemetry and a corpus scorecard that ranks base-policy checkpoints. It is field-mirrored
-by the C++ `cvc::nav::nav_stats` (libcvc `docs/NAV_STATS.md`) — the same schema and the same
-hand-computed numbers — and the RF/comms layer (grl_snam_dbg) extends it, joined by vehicle index.
+grl-snam is the **base (domain-neutral)** owner of the two-layer nav-stats design: per-vehicle +
+per-episode navigation telemetry and a corpus scorecard that ranks base-policy checkpoints. It is
+field-mirrored by the C++ `cvc::nav::nav_stats` (libcvc `docs/NAV_STATS.md`) — the same schema and
+the same hand-computed numbers. The second layer is an extension seam: a downstream layer that needs
+domain-specific metrics keeps them in its own record, joined to this one by vehicle index.
 
 ## The schema (`grl_snam.metrics`)
 
@@ -36,14 +37,15 @@ All three collect the **same** base row, so a checkpoint scores identically whic
 `EpisodeStats.from_nav_stats(vehicles, straights_m=, arrival_times_s=, veh_contacts=, min_sep_m=)`
 reduces a list of per-vehicle `NavStats` (plus the fields `NavStats` doesn't carry) into one episode
 record; `aggregate_nav(episodes, checkpoint)` reduces a corpus into a single `NavScorecard` — the
-RF-free fitness row (arrival, economy, safety, material). Mirrors C++ `cvc::nav::nav_scorecard`.
+domain-neutral fitness row (arrival, economy, safety, material). Mirrors C++
+`cvc::nav::nav_scorecard`.
 
 ## Material & terrain-risk buckets
 
 The scorecard's material dimension is **discrete**, mirroring C++ `veh_nav_stats`: each vehicle's
 `NavStats` carries `time_over_material_s[13]` and `dist_over_material_m[13]`, indexed by the shared
 13-class palette (`grl_snam.material_palette`, positional with `cvc::nav::kNumMaterials` and the
-`cvc::dbg` `MATERIAL_TABLE`). `aggregate_nav` reduces the time buckets into
+`cvc::nav` `material_id` enum). `aggregate_nav` reduces the time buckets into
 `NavScorecard.material_time_share[13]`, and `terrain_risk_share(...)` sums the traversable
 terrain-risk classes (foliage/soil/water/rock) into the single **"time in terrain-risk areas"**
 number the eval CLI prints as `risk-time%`.
@@ -122,7 +124,7 @@ the floor keeps coverage everywhere. Magnitude scales with `--curriculum-eps`/bi
 ## Parity
 
 `tests/test_scorecard.py` pins the reducer to the SAME hand-computed corpus as libcvc's
-`nav_stats_test.cpp` and cvcdbg's `tests/nav_stats_test.cpp` (the shared-schema contract);
+`nav_stats_test.cpp` (the shared-schema contract);
 `tests/test_swarm.py` checks the `Swarm` collector against N serial `SdfNavigator`s to float32;
 `tests/test_material_buckets.py` hand-computes the material buckets (the time/dist-per-id contract
 mirrored from `nav_stats_test.cpp`), the id-raster sampler, and the byte-identical no-material default;
