@@ -64,6 +64,12 @@ except Exception:
         return b, dbdd
 
 
+def _per_sample_radius(robot_radius: torch.Tensor | float, o0: torch.Tensor) -> torch.Tensor:
+    """``robot_radius`` as a ``[B]`` tensor: accepts a float, a 0-d / ``[1]`` tensor, or ``[B]``."""
+    rr = torch.as_tensor(robot_radius, device=o0.device, dtype=o0.dtype).reshape(-1)
+    return rr.expand(o0.shape[0]) if rr.numel() == 1 else rr
+
+
 @torch.no_grad()
 def _nearest_obstacle(
     o: torch.Tensor,  # (B,2)
@@ -114,12 +120,13 @@ def integrate_surrogate_v2(
     margin_factor: float = 0.5,
     mass: float = 1.0,
 ):
-    """Radius-aware version of integrate_surrogate. R_eff = R + margin_factor * robot_radius."""
+    """Radius-aware version of integrate_surrogate. R_eff = R + margin_factor * robot_radius.
+
+    Semi-implicit Euler: ``v`` is updated first and the position step uses ``v_{n+1}``.
+    ``robot_radius`` may be a float or a ``[B]`` tensor.
+    """
     B, N = C.shape[:2]
-    if not torch.is_tensor(robot_radius):
-        rr = o0.new_tensor(float(robot_radius))
-    else:
-        rr = robot_radius.to(device=o0.device, dtype=o0.dtype)
+    rr = _per_sample_radius(robot_radius, o0)
     R_eff = R + margin_factor * rr[:, None]
 
     o = o0.clone()
@@ -168,25 +175,38 @@ def multi_start_penalty(
     ms_h: int = 2,
     ms_dt_mult: float = 1.5,
     tau: float = 0.05,
+    frac_range: tuple[float, float] = (0.8, 0.98),
+    generator: torch.Generator | None = None,
 ) -> torch.Tensor:
-    """Sample feasible starts near nearest obstacle and penalize penetrations after short rollouts."""
+    """Sample feasible starts near nearest obstacle and penalize penetrations after short rollouts.
+
+    Each of the ``ms_count`` auxiliary starts moves every agent a random fraction
+    ``frac ~ U(frac_range)`` of its clearance toward its nearest obstacle (drawn independently per
+    start and per sample), then runs an ``ms_h``-step rollout at ``ms_dt_mult * dt_prime`` and
+    penalizes ``softplus(-clearance / tau)``. The default range is centred on the old fixed
+    ``frac = 0.9``, so ``w_multi`` keeps its scale. A degenerate range ``(f, f)`` draws no random
+    numbers; ``(0.9, 0.9)`` reproduces the pre-2026-10 penalty, whose ``ms_count`` rollouts were all
+    identical (libcvc's native ``cvc::nav::multi_start_penalty`` mirrors that single start).
+    ``generator`` makes the draw reproducible without touching the global RNG.
+    """
+    lo, hi = (float(f) for f in frac_range)
+    if not 0.0 <= lo <= hi < 1.0:
+        raise ValueError(f"frac_range must satisfy 0 <= lo <= hi < 1, got {frac_range!r}")
     B, N = C.shape[:2]
     if ms_count <= 0 or N == 0:
         return o0.new_tensor(0.0)
-    # effective radius
-    if not torch.is_tensor(robot_radius):
-        rr = o0.new_tensor(float(robot_radius))
-    else:
-        rr = robot_radius.to(device=o0.device, dtype=o0.dtype)
-    while rr.ndim < 2:
-        rr = rr.unsqueeze(-1)
-    R_eff = R + margin_factor * rr.squeeze(-1)
+    rr = _per_sample_radius(robot_radius, o0)
+    R_eff = R + margin_factor * rr[:, None]
 
     L_acc = o0.new_tensor(0.0)
     dmin0, nmin0, _ = _nearest_obstacle(o0, C, R_eff, mask)
 
     for _ in range(ms_count):
-        frac = 0.9
+        if hi > lo:
+            u = torch.rand(B, generator=generator, device=o0.device, dtype=o0.dtype)
+            frac = lo + (hi - lo) * u
+        else:
+            frac = lo
         step = (frac * dmin0).unsqueeze(-1) * nmin0
         o_ms = o0 - step  # move toward obstacle
         # ensure feasibility
@@ -211,7 +231,7 @@ def multi_start_penalty(
             d_hat,
             dt_ms,
             H_ms,
-            robot_radius=rr.squeeze(-1),
+            robot_radius=rr,
             margin_factor=margin_factor,
         )
         L_acc = L_acc + torch.nn.functional.softplus((-clr_ms) / tau).mean()

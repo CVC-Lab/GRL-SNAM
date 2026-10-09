@@ -181,6 +181,7 @@ GRL-SNAM/
                                + w_vel·‖vT-v_tgt‖²
                                + w_friction·‖γ-γ₀‖²
                                + w_multi·L_multi
+                               + w_prox·softplus(-clearance/τ)
 ```
 
 ### 4.3 Key Classes
@@ -220,8 +221,8 @@ GRL-SNAM/
    - Target: `(o_target, v_target)` at the end of the window
 3. **Forward**: `CoefEnergyNet` predicts `(α[B,N], β[B], γ[B])`
 4. **Integrate**: `integrate_surrogate_v2` runs the surrogate dynamics forward $H$ steps from `(o0, v0)` using the predicted coefficients
-5. **Multi-start penalty**: `multi_start_penalty` samples 20 perturbed starts near the nearest obstacle, runs short rollouts, penalizes any penetrations
-6. **Loss**: weighted sum of position MSE, velocity MSE, friction matching, and multi-start penalty
+5. **Multi-start penalty**: `multi_start_penalty` samples 20 perturbed starts near the nearest obstacle (each a random fraction `U(0.8, 0.98)` of the clearance toward it), runs short rollouts, penalizes any penetrations
+6. **Loss**: weighted sum of position MSE, velocity MSE, friction matching, multi-start penalty, and the main rollout's penetration penalty (`w_prox`)
 7. **Backprop**: gradient through the differentiable integrator, clip at 5.0, Adam update
 
 ### 5.3 Evaluation (`eval_coef_energy.py`)
@@ -288,6 +289,7 @@ This creates a temporal hierarchy: shape equilibrates within each frame update, 
 | `w_multi` | `0.5` | Multi-start robustness penalty weight |
 | `margin_factor` | `0.5` | Obstacle radius inflation = margin_factor × robot_radius |
 | `ms_count` | `20` | Number of perturbed starts for multi-start penalty |
+| `w_prox` | `0.1` | Penetration penalty on the main rollout (`prox_tau` 0.05 m) |
 | `mass` | `1.0` | Robot translational mass |
 | `k_bulk` | `1.5` | Bulk modulus (area stiffness) for hyperelastic ring |
 

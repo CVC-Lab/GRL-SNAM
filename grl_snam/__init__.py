@@ -34,8 +34,14 @@ __all__ = [
 
 def __getattr__(name: str):
     """Lazy attribute access so heavy imports (torch) happen on demand."""
-    if name in {"CoefEnergyNet", "integrate_surrogate"}:
-        from grl_snam.train_coef_energy import CoefEnergyNet, integrate_surrogate  # noqa: PLC0415
+    if name == "CoefEnergyNet":
+        from grl_snam.train_coef_energy import CoefEnergyNet  # noqa: PLC0415
 
-        return {"CoefEnergyNet": CoefEnergyNet, "integrate_surrogate": integrate_surrogate}[name]
+        return CoefEnergyNet
+    if name == "integrate_surrogate":
+        # The semi-implicit integrator the trainer, the runtime stepper and cvc::nav all use —
+        # not the legacy explicit-Euler train_coef_energy.integrate_surrogate_explicit.
+        from grl_snam.surrogate_robust import integrate_surrogate_v2  # noqa: PLC0415
+
+        return integrate_surrogate_v2
     raise AttributeError(f"module 'grl_snam' has no attribute {name!r}")

@@ -203,6 +203,7 @@ python -m train_coef_energy \
 **Training parameters:**
 - `--w_friction`: Weight for friction matching loss (default: 0.1)
 - `--w_multi`: Weight for multi-start robustness penalty (default: 0.5)
+- `--w_prox`: Weight for the penetration penalty on the main rollout (default: 0.1; 0 = the pre-2026-10 objective)
 - `--gamma_rel`: Use relative gamma scaling (flag)
 
 ### 3. Evaluate Trained Model
@@ -267,11 +268,14 @@ L_multi = multi_start_penalty(
     alphas, beta, gamma, d_hat, dt, H,
     ms_count=20,    # Number of aux starts
     ms_h=3,         # Short rollout horizon
-    ms_dt_mult=4.0  # Enlarged timestep
+    ms_dt_mult=4.0, # Enlarged timestep
+    frac_range=(0.8, 0.98),  # each start moves U(frac_range) of the clearance toward the obstacle
 )
 ```
 
-Ensures robustness in near-contact scenarios.
+Ensures robustness in near-contact scenarios. Each start draws its own fraction
+(pass `generator=` for a reproducible draw); `frac_range=(0.9, 0.9)` reproduces the
+pre-2026-10 penalty, whose `ms_count` rollouts were all the same start.
 
 ### Online Adaptation
 
@@ -370,6 +374,7 @@ python -m eval_coef_energy \
 - `w_vel`: 1.0 (velocity loss weight)
 - `w_friction`: 0.1 (damping matching weight)
 - `w_multi`: 0.5 (multi-start robustness weight)
+- `w_prox`: 0.1 (penetration penalty on the main rollout, softness `prox_tau` 0.05 m)
 - `margin_factor`: 0.5 (robot radius margin)
 
 **Surrogate Integration:**
