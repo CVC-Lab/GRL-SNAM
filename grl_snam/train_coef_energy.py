@@ -383,7 +383,7 @@ class CoefEnergyNet(nn.Module):
 # -----------------------------
 
 
-def integrate_surrogate(
+def integrate_surrogate_explicit(
     o0: torch.Tensor,
     v0: torch.Tensor,
     goal: torch.Tensor,
@@ -400,6 +400,11 @@ def integrate_surrogate(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Integrate B independent samples for H_i steps with step dt_i.
     All inputs are batched (B, ...). Returns (oT, vT, min_clear_along) for penalty.
+
+    LEGACY EXPLICIT Euler: the position step uses ``v_n`` (before the velocity update). Training
+    (``Trainer.version == 2``), the runtime stepper and ``cvc::nav`` all integrate with the
+    semi-implicit :func:`grl_snam.surrogate_robust.integrate_surrogate_v2`, which is what
+    ``grl_snam.integrate_surrogate`` exports. Kept only for the ``version != 2`` trainer path.
 
     Force model: F = F_barrier(α, d_hat) + F_goal(β) - γ * v
       • F_goal = -β * (o - goal)
@@ -456,6 +461,8 @@ class TrainCfg:
     gamma_rel: bool = False
     margin_factor: float = 0.5  # minimal squeeze margin = 0.5 * radius
     w_multi: float = 0.5  # weight for multi-start penalty
+    w_prox: float = 0.1  # weight for the penetration (proximity) penalty on the main rollout
+    prox_tau: float = 0.05  # softness of that penalty, metres
     ms_count: int = 20  # # of aux starts per sample
     ms_h: int = 3  # short horizon for each aux rollout
     ms_dt_mult: float = 4.0  # enlarge dt for robustness
@@ -552,14 +559,11 @@ class Trainer:
 
             # barrier penalty if min clearance < 0 (penetration)
             m = self.cfg.margin_factor * batch.get("radius", 0.0)  # per-sample margin
-            tau = getattr(self.cfg, "prox_tau", 0.05)
-            pen = torch.nn.functional.softplus((m - clr) / tau).mean()
-
-            # add weight
-            # L = L + getattr(self.cfg, "w_prox", 0.1) * pen
+            pen = torch.nn.functional.softplus((m - clr) / self.cfg.prox_tau).mean()
+            L = L + self.cfg.w_prox * pen
         else:
 
-            oT, vT, clr = integrate_surrogate(
+            oT, vT, clr = integrate_surrogate_explicit(
                 o0, v0, goal, C, R, mask, alphas, beta, gamma, d_hat, dt_prime, H
             )
             # losses
@@ -609,6 +613,7 @@ def main():
     ap.add_argument("--save-every", type=int, default=1)
     ap.add_argument("--w_friction", type=float, default=0.1)
     ap.add_argument("--w_multi", type=float, default=0.5)
+    ap.add_argument("--w_prox", type=float, default=0.1)
 
     args = ap.parse_args()
 
@@ -633,6 +638,7 @@ def main():
         gamma_rel=args.gamma_rel,
         w_friction=args.w_friction,
         w_multi=args.w_multi,
+        w_prox=args.w_prox,
     )
     trainer = Trainer(model, tcfg)
 
