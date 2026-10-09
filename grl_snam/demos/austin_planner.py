@@ -99,7 +99,7 @@ def _obstacle_actor(x, y, r, height=40.0):
 
 def setup() -> None:
     host = current_host()
-    from pycvc_gl.camera import ChaseCamera
+    from pycvc_gl.camera import NativeChaseCamera as ChaseCamera
 
     path2d, clear = plan_path()
     print(
