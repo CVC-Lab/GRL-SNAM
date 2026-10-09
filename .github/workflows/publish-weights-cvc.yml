@@ -1,15 +1,15 @@
 name: publish-weights-cvc
 
 # Publish the grl-snam-weights data package (base GRL-SNAM nav coefficients — the
-# research tier, NO RF-comm forces) to the PUBLIC `cvc` org on cvcpkg.org, using
+# geometry-only research tier) to the PUBLIC `cvc` org on cvcpkg.org, using
 # this repo's CVCPKG_TOKEN (the cvc-org publisher) — the same token that ships the
 # grl-snam-cpXXX columns. Kept separate from publish-cvcpkg.yml (the interpreter
 # matrix) because the weights are a single noarch data package with no py column.
 #
 # Org packages belong in their own repo's recipes, never in libcvc-deps: this
-# recipe lives here, in cvcpkg/recipes/grl-snam-weights. The DBG comm-aware weights
-# are the SEPARATE private cvc-dbg-weights on the utdbg org — the research/
-# development seam is the org boundary; this workflow only ever targets --org cvc.
+# recipe lives here, in cvcpkg/recipes/grl-snam-weights. Weights that a downstream
+# application trains with its own extra force terms are published by that project
+# to its own org; this workflow only ever targets --org cvc.
 #
 #   workflow_dispatch: dry_run=true (default) packs only; dry_run=false publishes.
 on:

@@ -43,13 +43,9 @@ packages = [
     { include = "scripts" },
     { include = "experiments" },
     { include = "src" },
-    # Research core kept as top-level modules (imported by grl_snam + downstreams);
-    # sdf_nav.py was previously omitted here — a real packaging bug now fixed.
-    { include = "train_coef_energy.py" },
-    { include = "eval_coef_energy.py" },
-    { include = "surrogate_robust.py" },
-    { include = "sdf_nav.py" },
-    { include = "material_nav.py" },
+    # The research core (sdf_nav / material_nav / train_coef_energy / eval_coef_energy /
+    # surrogate_robust) now lives UNDER grl_snam/ and is imported as grl_snam.<module>, so it
+    # ships with the package — no more top-level module includes (they were a flat-layout legacy).
 ]
 
 [tool.poetry.group.dev.dependencies]
@@ -78,9 +74,10 @@ target-version = ["py310", "py311", "py312"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-# Only lint the new packaging shim, tests, and src/. The legacy flat-layout
-# research modules (experiments/, scripts/, train_*.py, eval_*.py, etc.) are
-# kept out of CI lint to avoid churn on imported third-party / generated code.
+# Lint the whole grl_snam package + tests. The research core moved in from the repo
+# root (sdf_nav / material_nav / train_coef_energy / eval_coef_energy /
+# surrogate_robust) is now under grl_snam/ and held to the package lint standard
+# (black + ruff), like the rest of it. experiments/ and scripts/ stay unlinted.
 include = ["grl_snam/**/*.py", "tests/**/*.py"]
 extend-exclude = ["build", "dist", "__pycache__", ".venv", "data"]
 
@@ -98,8 +95,9 @@ ignore = [
 # (the maintained `grl_snam` package only). Omitted below is code with no
 # headless-CI surface — runnable GL/matplotlib demos, video-capture /
 # benchmark / one-off visualization scripts — plus trivial stubs and the thin
-# CLI entry point. The flat-layout research modules (sdf_nav.py, material_nav.py,
-# ...) sit outside `grl_snam` and, like lint, outside this gate. `pytest --cov`
+# CLI entry point. The research core (grl_snam/sdf_nav.py, material_nav.py,
+# ...) is now under `grl_snam` but explicitly OMITted below to keep it outside this
+# gate, as it was pre-refactor when it lived at the top level. `pytest --cov`
 # and CI's `coverage run` both read this config, so the local and gated numbers
 # match. Current: ~85% of the in-scope surface (gate floor is 80).
 # -----------------------------------------------------------------------------
@@ -124,6 +122,14 @@ omit = [
     "grl_snam/adaptation.py",         # stub
     "grl_snam/network.py",            # stub
     "grl_snam/utils/*",               # stub
+    # The research core, moved under grl_snam/ (was top-level, outside this gate). Kept OUT of the
+    # coverage gate to preserve the pre-refactor scope — these are large torch research modules
+    # exercised by the parity/native tests, not unit-covered line-by-line.
+    "grl_snam/sdf_nav.py",
+    "grl_snam/material_nav.py",
+    "grl_snam/train_coef_energy.py",
+    "grl_snam/eval_coef_energy.py",
+    "grl_snam/surrogate_robust.py",
 ]
 
 [tool.coverage.report]

@@ -2,7 +2,7 @@
 
 import numpy as np
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 from grl_snam.metrics import NavMetrics, NavStats, hud_lines
 from grl_snam.nav import SdfNavigator
 

@@ -46,7 +46,7 @@ def _meta():
 def _model(seed=0):
     import torch
 
-    import sdf_nav
+    import grl_snam.sdf_nav as sdf_nav
 
     torch.manual_seed(seed)
     m = sdf_nav.CoefMLP()

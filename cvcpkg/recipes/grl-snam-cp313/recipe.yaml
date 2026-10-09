@@ -25,7 +25,13 @@ recipe:
   # Bumped 4 -> 5: world-clock sim pacing (SimPacer) for the austin_freedrive /
   # austin_learned live demos + a clear --volrover3 message for the vrhost-only
   # lab demo (GRL-SNAM #79). Vendored source, so a repack ships the fix.
-  cvc_revision: 5
+  # Bumped 5 -> 6: republish after #103 moved the flat-layout research core
+  # (sdf_nav, material_nav, train_coef_energy, eval_coef_energy,
+  # surrogate_robust) under grl_snam/. cvc.5 predates it, so catalog consumers
+  # still see only the top-level modules and no grl_snam.sdf_nav. package.files
+  # drops the three top-level entries #103 removed; they now ship inside
+  # grl_snam/, and an unmatched entry fails the pack.
+  cvc_revision: 6
   maintainer: "cvcpkg group"
   maintainer_email: "info@cvcpkg.org"
   maintainer_url: "https://cvcpkg.org"
@@ -145,9 +151,6 @@ package:
     - lib/python3.13/site-packages/scripts/
     - lib/python3.13/site-packages/experiments/
     - lib/python3.13/site-packages/src/
-    - lib/python3.13/site-packages/train_coef_energy.py
-    - lib/python3.13/site-packages/eval_coef_energy.py
-    - lib/python3.13/site-packages/surrogate_robust.py
 
 notes: >-
   Provenance & follow-ups.  (1) Source is the GRL-SNAM checkout this recipe

@@ -41,11 +41,12 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 
 from . import nav_native as _native
 from .belief import BeliefGrid, DynamicLayer, composite_occupancy
 from .fog_stories import Story, build_scenario
+from .metrics import NavMetrics, NavStats
 
 SEEK, WALL = 0, 1
 
@@ -107,6 +108,9 @@ class Swarm:
         clusters=None,
         nsub: int | None = None,
         material=None,
+        collect_stats: bool = False,
+        contact_radius_m: float = 0.0,
+        material_ids=None,
     ):
         if not specs:
             raise ValueError("a swarm needs at least one agent")
@@ -118,6 +122,15 @@ class Swarm:
         self.sense_every = max(1, int(sense_every))
         self.reach_tol = float(reach_tol)
         self.belief_mode = belief_mode
+        # Opt-in base-NavStats collection (default off = the drive path is byte-identical
+        # and every existing parity test unchanged). See _collect_step / episode_stats.
+        self._collect_stats = bool(collect_stats)
+        self._contact_r = float(contact_radius_m)
+        # Optional discrete material-id raster (grl_snam.material.MaterialIdRaster) for
+        # the per-material nav-stats buckets. STATS-ONLY: it classifies what each agent
+        # drives over and never touches the drive (that is `material=`). None => buckets
+        # stay zero and the drive/collect path is byte-identical.
+        self._material_ids = material_ids
 
         # One template FogScenario gives us the whole shared world — meta,
         # bounds/scale, the truth raster, and (the objects we actually share) a
@@ -227,6 +240,20 @@ class Swarm:
                     stacklevel=2,
                 )
                 want_native_drive = False
+        # Risk-lookahead feature config for driving a use_risk net (matches the
+        # coef_feats / train_bicycle defaults so eval-time features == train-time).
+        self._risk_lookahead = 0.3
+        self._risk_probes = 3
+        # A widened net (grip/risk feature, or a lam OUTPUT head) can only be driven by the
+        # torch path: the native coef_feats builds the base-5 vector and the native coef_mlp
+        # returns 3 outputs, so force torch for those models.
+        _widened = (
+            getattr(self.model, "use_mu", False)
+            or getattr(self.model, "use_risk", False)
+            or getattr(self.model, "use_lam", False)
+        )
+        if _widened:
+            want_native_drive = False
         if want_native_drive and _native.HAS_DRIVE:
             import tempfile
 
@@ -281,6 +308,101 @@ class Swarm:
         self.reached = torch.zeros(N, dtype=torch.bool, device=dev)
         self.active = torch.ones(N, dtype=torch.bool, device=dev)
         self._arange = torch.arange(N, device=dev)
+        if self._collect_stats:
+            self._init_stats()
+
+    # ── base NavStats collection (opt-in) ─────────────────────────────────────
+    def _init_stats(self) -> None:
+        """Allocate the per-agent base-NavStats collector state. Kept next to the
+        other [N] columns; seeded so the first tick matches the serial reference."""
+        N = self.N
+        self._sc_stats = [NavStats() for _ in range(N)]
+        self._sc_prev_world = self.n2w(self.o)  # seed = start world poses (first step_world honest)
+        # Seed each accumulator with the true start pose so total_path_m includes the
+        # start->first-step leg, matching the C++ cvc::nav collector (turn/fuel still skip
+        # the first sample). _sc_prev_world is the start world pose at build time.
+        sw0 = self._sc_prev_world.tolist()
+        for i in range(N):
+            self._sc_stats[i].seed_start(sw0[i][0], sw0[i][1])
+        self._sc_arrival_tick = torch.full((N,), -1, dtype=torch.int64, device=self.dev)
+        self._sc_contacts = torch.zeros(N, dtype=torch.int64, device=self.dev)
+        self._sc_min_sep = float("inf")
+        self._sc_straights = [
+            float(np.hypot(s.goal[0] - s.start[0], s.goal[1] - s.start[1])) for s in self.specs
+        ]
+
+    def _collect_step(self, newly: torch.Tensor) -> None:
+        """Fold one tick into the per-agent base NavStats — the vectorized twin of
+        SdfNavigator._metrics (nav.py), field-for-field. Called once per tick AFTER
+        the drive and BEFORE agents park, so the arriving tick is counted. Swarm is
+        normalized-coords, so every metre field converts (/S or via n2w) — never feed
+        a raw normalized value into a *_m field (the C++ /sc seam's trap)."""
+        rr = float(self.meta["rr"])  # normalized robot radius, same source as nav.py
+        phi_post, _ = self.field.sample(self.o)  # [N] CENTER clearance at the post-drive pose
+        world = self.n2w(self.o)  # [N,2] world metres
+        step_world = (world - self._sc_prev_world).norm(dim=1)  # [N] world displacement this tick
+        heading = torch.atan2(self.th.sin(), self.th.cos())  # [N] wrapped, bicycle
+        collectible = self.active & ~self.parked  # pre-park gate: freeze the tick after arrival
+        inv_dt = 1.0 / self.dt if self.dt > 0 else 0.0
+        wx, wy = world[:, 0].tolist(), world[:, 1].tolist()
+        ph = phi_post.tolist()
+        hd = heading.tolist()
+        stw = step_world.tolist()
+        rch = self.reached.tolist()
+        col = collectible.tolist()
+        # Discrete material id per agent at the post-drive pose (stats-only; -1 when no
+        # raster). One vectorized nearest-cell lookup, the twin of C++ material_id(x,y).
+        mids = self._material_ids.ids_at_norm(self.o).tolist() if self._material_ids else None
+        for i in range(self.N):
+            if not col[i]:
+                continue
+            phi_i = ph[i]
+            self._sc_stats[i].update(
+                NavMetrics(
+                    x=wx[i],
+                    y=wy[i],
+                    heading_rad=hd[i],
+                    speed_mps=stw[i] * inv_dt,
+                    clearance_m=(phi_i - rr) / self.S,
+                    inside_building=phi_i < 0.0,
+                    reached=bool(rch[i]),
+                    goal_index=0,
+                    material_id=(int(mids[i]) if mids is not None else -1),
+                ),
+                dt=self.dt,
+            )
+        # arrival tick (ticks taken, incl. this one) — stamped once, on the transition.
+        self._sc_arrival_tick[newly] = self.gstep + 1
+        # pairwise contacts + running min separation (opt-in; O(N^2)).
+        if self._contact_r > 0.0 and self.N > 1:
+            D = torch.cdist(world, world)  # [N,N] world metres
+            eye = torch.eye(self.N, dtype=torch.bool, device=self.dev)
+            off = D[~eye]
+            if off.numel():
+                self._sc_min_sep = min(self._sc_min_sep, float(off.min()))
+            near = ((D < self._contact_r) & ~eye).any(dim=1) & collectible
+            self._sc_contacts += near.to(torch.int64)
+        self._sc_prev_world = world
+
+    def episode_stats(self):
+        """Reduce the collected per-agent NavStats into an ``EpisodeStats`` (the base
+        scorecard's episode record) via the shared scorecard reducer. A corpus of these
+        (one per scene) feeds ``scorecard.aggregate_nav(episodes, checkpoint)``. Requires
+        ``collect_stats=True``."""
+        if not self._collect_stats:
+            raise RuntimeError("episode_stats() requires Swarm(..., collect_stats=True)")
+        from .scorecard import EpisodeStats
+
+        arrivals = [
+            (float(t) * self.dt if int(t) >= 0 else -1.0) for t in self._sc_arrival_tick.tolist()
+        ]
+        return EpisodeStats.from_nav_stats(
+            self._sc_stats,
+            straights_m=self._sc_straights,
+            arrival_times_s=arrivals,
+            veh_contacts=self._sc_contacts.tolist(),
+            min_sep_m=(self._sc_min_sep if self._sc_min_sep != float("inf") else 1e30),
+        )
 
     # ── belief grouping (the map_id seam) ─────────────────────────────────────
     def _resolve_maps(self, mode, clusters):
@@ -417,7 +539,21 @@ class Swarm:
             self._native_drive_step(carrot)
         else:
             feat = self._coef_feats(phi, nrm, carrot)
-            al, be, ga = self.model(feat)
+            mkw = self._material_kw()
+            if getattr(self.model, "use_lam_hard", False):
+                # TWO-head net: the net outputs BOTH lam_soft and lam_hard per agent; drive with
+                # both (as trained) instead of the fixed MaterialParams reroute strengths.
+                al, be, ga, lam_soft, lam_hard = self.model.coeffs_and_lam(feat)
+                if mkw:
+                    mkw = dict(mkw, lam_soft=lam_soft, lam_hard=lam_hard)
+            elif getattr(self.model, "use_lam", False):
+                # Deployable learned reroute: the net outputs lam_soft per agent; drive with
+                # it (as trained) instead of the fixed MaterialParams lam_soft.
+                al, be, ga, lam_soft = self.model.coeffs_and_lam(feat)
+                if mkw:
+                    mkw = dict(mkw, lam_soft=lam_soft)
+            else:
+                al, be, ga = self.model(feat)
             self.o, self.th, self.sp, _ = sdf_nav.bicycle_rollout(
                 self.field,
                 self.o,
@@ -431,13 +567,15 @@ class Swarm:
                 nsub=self.nsub,
                 **self.kw,
                 **self.veh,
-                **self._material_kw(),
+                **mkw,
             )
 
         # 5. METRICS + WAYPOINT — a reached agent parks (single-goal swarm).
         dg_new = (self.goal - self.o).norm(dim=1)
         self.reached = dg_new < self.reach_tol
         newly = self.reached & ~self.parked & self.active
+        if self._collect_stats:
+            self._collect_step(newly)  # fold this tick BEFORE parking (arriving tick counts)
         self.parked = self.parked | newly
 
         self.gstep += 1
@@ -680,12 +818,36 @@ class Swarm:
     ) -> torch.Tensor:
         """``sdf_nav.coef_feats`` reusing the already-taken sample (the serial
         path re-samples; the values are identical since it samples at the same
-        ``o``). Features are taken toward the CARROT, exactly as the drive."""
+        ``o``). Features are taken toward the CARROT, exactly as the drive.
+
+        A widened net gets its extra columns appended in the same order
+        :func:`sdf_nav.coef_feats` uses: risk (terrain-risk lookahead) when the model
+        declares ``use_risk`` and a material grid is attached, so ``scorecard_eval`` can
+        drive/score a risk-trained net. Grip (``use_mu``) is not supported here (the Swarm
+        carries no friction field)."""
         dg = carrot - self.o
         gd = dg.norm(dim=-1, keepdim=True)
         gdir = dg / (gd + 1e-6)
         align = (gdir * nrm).sum(-1, keepdim=True)
-        return torch.cat([phi.unsqueeze(-1), gd, gdir, align], -1)
+        cols = [phi.unsqueeze(-1), gd, gdir, align]
+        if getattr(self.model, "use_mu", False):
+            raise RuntimeError(
+                "Swarm drive cannot feed a grip (use_mu) model — no friction field is attached"
+            )
+        if getattr(self.model, "use_risk", False):
+            if self._material is None:
+                raise RuntimeError(
+                    "a use_risk model needs a material grid attached to the Swarm (material=)"
+                )
+            mf = self._material.field
+            reach = gd.clamp(max=self._risk_lookahead)  # WORST risk toward the carrot (MAX)
+            probes = [mf.sample(self.o)[0].unsqueeze(-1)]
+            for k in range(1, self._risk_probes + 1):
+                probes.append(
+                    mf.sample(self.o + (k / self._risk_probes) * reach * gdir)[0].unsqueeze(-1)
+                )
+            cols.append(torch.cat(probes, -1).max(dim=-1).values.unsqueeze(-1))
+        return torch.cat(cols, -1)
 
     # ── live-scene commands (used by SimThread; safe to call standalone) ──────
     def retarget(self, i: int, goal_world) -> None:

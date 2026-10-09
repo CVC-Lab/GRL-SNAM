@@ -18,10 +18,10 @@ import imageio
 import matplotlib.pyplot as plt
 
 # ==== project imports ====
-from train_coef_energy import CoefEnergyNet
+from grl_snam.train_coef_energy import CoefEnergyNet
 import scripts.ring_dataset_maxmin as gen
 import scripts.spline_stagewise6 as ssi
-from eval_coef_energy import HistSecantController
+from grl_snam.eval_coef_energy import HistSecantController
 import re
 
 def mkdir(p): os.makedirs(p, exist_ok=True); return p

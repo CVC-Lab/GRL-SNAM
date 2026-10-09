@@ -22,7 +22,7 @@ import imageio
 import matplotlib.pyplot as plt
 
 # Project imports
-from train_coef_energy import CoefEnergyNet
+from grl_snam.train_coef_energy import CoefEnergyNet
 import scripts.ring_dataset_maxmin as gen
 import scripts.spline_stagewise6 as ssi
 

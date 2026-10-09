@@ -25,7 +25,7 @@ import os
 import numpy as np
 import torch
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 from grl_snam.demos._common import (
     SimPacer,
     current_host,

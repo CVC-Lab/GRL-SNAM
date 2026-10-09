@@ -7,6 +7,6 @@ for downstream packages.
 
 from __future__ import annotations
 
-from train_coef_energy import CoefEnergyNet  # noqa: F401
+from grl_snam.train_coef_energy import CoefEnergyNet  # noqa: F401
 
 __all__ = ["CoefEnergyNet"]

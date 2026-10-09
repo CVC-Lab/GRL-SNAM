@@ -15,7 +15,7 @@ them side by side:
 
 The bundle path is always supplied at runtime and never defaulted: the DATA is
 OpenStreetMap (ODbL) and SRTM (US public domain), so renders are publishable,
-but the bundle itself is a local artifact of a private project and its path
+but the bundle itself is a local artifact and its path
 does not belong in this repo.
 """
 

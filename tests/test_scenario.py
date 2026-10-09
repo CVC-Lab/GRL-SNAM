@@ -10,7 +10,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import sdf_nav  # noqa: E402  (imports torch; must follow the skip guard)
+import grl_snam.sdf_nav as sdf_nav  # noqa: E402  (imports torch; must follow the skip guard)
 from grl_snam.scenario import Event, FogScenario  # noqa: E402
 
 N = 96

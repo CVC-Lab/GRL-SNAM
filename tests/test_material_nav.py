@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 import torch
 
-import material_nav as mnav
+import grl_snam.material_nav as mnav
 
 # ---------------------------------------------------------------------------
 # Witness gate

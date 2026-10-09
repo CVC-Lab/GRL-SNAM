@@ -17,7 +17,7 @@ torch = pytest.importorskip("torch")
 
 # These import torch at module level, so they must come AFTER the skip guard
 # or collection itself crashes on a torch-less environment.
-import sdf_nav  # noqa: E402
+import grl_snam.sdf_nav as sdf_nav  # noqa: E402
 from grl_snam.nav import SdfNavigator  # noqa: E402
 
 RR, DHAT, DT, VMAX = 0.15, 0.35, 0.06, 0.9

@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 
 from .belief import BeliefGrid, DynamicLayer, composite_occupancy
 from .nav import SdfNavigator
@@ -444,8 +444,8 @@ class FogScenario:
         (the documented downstream seam — never clobbered), composed additively
         with the material cost raster when a MaterialGrid is attached.
 
-        route_cost_fn is the seam a downstream package (e.g. an RF-aware
-        planner) plugs a cost surface into; base GRL-SNAM never interprets it.
+        route_cost_fn is the seam a downstream package (e.g. an application-
+        specific planner) plugs a cost surface into; base GRL-SNAM never interprets it.
         """
         cost = self.route_cost_fn() if self.route_cost_fn is not None else None
         if self._material is not None:

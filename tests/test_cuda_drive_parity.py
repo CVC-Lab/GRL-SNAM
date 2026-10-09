@@ -14,7 +14,7 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("pycvc")
 
-import sdf_nav  # noqa: E402
+import grl_snam.sdf_nav as sdf_nav  # noqa: E402
 from grl_snam import nav_native  # noqa: E402
 from grl_snam.fog_stories import STORIES, shrunk  # noqa: E402
 from grl_snam.tools import coef_export  # noqa: E402

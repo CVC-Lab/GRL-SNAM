@@ -14,7 +14,10 @@ exactly the signals a HUD (still being designed) should surface in real time.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+
+from .material_palette import NUM_MATERIALS
 
 
 @dataclass
@@ -42,6 +45,7 @@ class NavMetrics:
     heading_rad: float = 0.0  # vehicle heading (bicycle dynamics; 0 in point mode)
     material_risk: float = 0.0  # smoothed material risk r~ at the agent (0 without material)
     material_gate: bool = False  # witness gate active this step (False without material)
+    material_id: int = -1  # discrete material class 0..NUM_MATERIALS-1 at the agent (-1 unknown)
 
     def as_dict(self) -> dict:
         return self.__dict__.copy()
@@ -53,22 +57,73 @@ class NavStats:
 
     steps: int = 0
     penetration_steps: int = 0
-    min_clearance_m: float = field(default=1e9)
+    min_clearance_m: float = field(default=1e30)  # "unmeasured" sentinel; matches C++ veh_nav_stats
     total_path_m: float = 0.0
+    # Economy signals for the base scorecard (grl_snam.scorecard), accumulated the same
+    # way the C++ nav_stats collector does: total heading change and a Sigma|dSpeed| fuel
+    # proxy. Zero until the drive feeds a second NavMetrics.
+    turn_total_rad: float = 0.0
+    fuel_used: float = 0.0
+    # Per-material buckets, indexed by grl_snam.material_palette id. Mirrors the C++
+    # veh_nav_stats time_over_material_s/dist_over_material_m (cvc/nav/nav_stats.h): at
+    # each collected step the id at the CURRENT pose gets the step's dt (time) and the
+    # step's travelled segment (dist). Stay all-zero until a material id is supplied
+    # (update's default m.material_id == -1), so a non-material drive is byte-identical.
+    time_over_material_s: list = field(default_factory=lambda: [0.0] * NUM_MATERIALS)
+    dist_over_material_m: list = field(default_factory=lambda: [0.0] * NUM_MATERIALS)
     _prev: tuple | None = None
+    _prev_head: float | None = None
+    _prev_speed: float | None = None
     _reached: set = field(default_factory=set)
 
-    def update(self, m: NavMetrics) -> None:
+    def seed_start(self, x0: float, y0: float) -> None:
+        """Prime the path accumulator with the true START pose, so the first ``update()``
+        counts the start -> first-step segment. This matches the C++ ``cvc::nav`` nav_stats
+        collector, which seeds ``prev_pos`` to the start (``total_path_m`` includes that
+        first leg). Turn/fuel still skip the first sample — ``_prev_head``/``_prev_speed``
+        stay ``None`` — exactly as the C++ collector skips turn/accel on the first step.
+        Call once, before the first ``update()``; without it the first segment is dropped
+        (the prior behavior, kept for callers that don't know the start, e.g. the HUD)."""
+        self._prev = (float(x0), float(y0))
+
+    def update(self, m: NavMetrics, dt: float | None = None) -> None:
+        """Fold one step. ``dt`` (sim-seconds this step) is needed only for the
+        time-over-material bucket; pass it whenever a material id is supplied so
+        ``time_over_material_s`` matches the C++ collector (which holds the episode
+        dt). ``dist_over_material_m`` needs no dt (it uses the travelled segment).
+        With ``m.material_id == -1`` (the default) neither bucket moves, so a
+        non-material drive is byte-identical to before."""
         self.steps += 1
         if m.inside_building:
             self.penetration_steps += 1
         if m.reached:
             self._reached.add(m.goal_index)  # count DISTINCT goals, not per-frame reached flags
         self.min_clearance_m = min(self.min_clearance_m, m.clearance_m)
+        seg = 0.0
         if self._prev is not None:
             dx, dy = m.x - self._prev[0], m.y - self._prev[1]
-            self.total_path_m += (dx * dx + dy * dy) ** 0.5
+            seg = (dx * dx + dy * dy) ** 0.5
+            self.total_path_m += seg
+        # Material buckets — parity with cvc/nav/nav_stats.cpp step(): id at the current
+        # pose takes the step dt (time) and the step segment (dist). dist accrues even
+        # without dt; time needs dt. First collected step: seg is start->step1 when
+        # seed_start primed _prev, matching the C++ seeded prev_pos.
+        mid = m.material_id
+        if 0 <= mid < NUM_MATERIALS:
+            self.dist_over_material_m[mid] += seg
+            if dt is not None:
+                self.time_over_material_s[mid] += float(dt)
+        if self._prev_head is not None:
+            dh = m.heading_rad - self._prev_head
+            while dh > math.pi:
+                dh -= 2.0 * math.pi
+            while dh <= -math.pi:
+                dh += 2.0 * math.pi
+            self.turn_total_rad += abs(dh)
+            self.fuel_used += abs(m.speed_mps - self._prev_speed)
         self._prev = (m.x, m.y)
+        self._prev_head = m.heading_rad
+        self._prev_speed = m.speed_mps
 
     @property
     def penetration_pct(self) -> float:

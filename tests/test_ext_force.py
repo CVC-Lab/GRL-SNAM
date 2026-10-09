@@ -1,8 +1,9 @@
 """ext_force_fn parity — the generic external-force channel in sdf_rollout and
 bicycle_rollout (the Python twin of cvc::nav's ext_force port). A ``None`` hook
 (the default) and a zero force are byte-identical to the plain rollout; a live
-force bends the trace. This is what carries the DBG comm force once it moves off
-the carrot bias: F_comm/F_jam sum with F_bar/F_goal in the integrator.
+force bends the trace. This is what carries an application-specific force as a
+genuine force term rather than a carrot bias: F_ext sums with F_bar/F_goal in the
+integrator.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import sdf_nav  # noqa: E402
+import grl_snam.sdf_nav as sdf_nav  # noqa: E402
 
 BOUNDS = (-100.0, -100.0, 100.0, 100.0)
 CENTER = (0.0, 0.0)

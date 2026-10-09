@@ -32,7 +32,7 @@ try:
 except ImportError:  # pragma: no cover - torch is a hard dep of the swarm
     raise SystemExit("swarm_bench needs torch")
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 
 from .. import planner
 from ..fog_stories import STORIES, shrunk

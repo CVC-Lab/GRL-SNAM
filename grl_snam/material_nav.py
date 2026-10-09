@@ -40,15 +40,15 @@ Provenance notes (load-bearing, verified against the source repo):
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import List, Mapping, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from train_coef_energy import ipc_piecewise
+from grl_snam.train_coef_energy import ipc_piecewise
 
 # ---------------------------------------------------------------------------
 # Model
@@ -145,7 +145,7 @@ class CoefEnergyNetMaterial(nn.Module):
         obs_mask: torch.Tensor,
         goal_feats: torch.Tensor,
         risk_patch: torch.Tensor,
-    ) -> Tuple[torch.Tensor, ...]:
+    ) -> tuple[torch.Tensor, ...]:
         B, N = obs_feats.shape[:2]
         z_goal = self.goal_enc(goal_feats).unsqueeze(1)
 
@@ -213,7 +213,7 @@ def load_geometry_weights(
 
 def sdf_barrier_grad(
     sdf_val: torch.Tensor, d_hat_sdf: float = 3.0, k_sharp: float = 5.0
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Softplus hazard barrier b(phi) and its derivative db/dphi.
 
         b(phi)  = (1/k) * log(1 + exp(k * (d_hat - phi)))    active when phi < d_hat
@@ -266,7 +266,7 @@ def integrate_surrogate_material(
     margin_factor: float = 0.5,
     mass: float = 1.0,
     d_hat_sdf: float = 3.0,
-) -> Tuple[torch.Tensor, ...]:
+) -> tuple[torch.Tensor, ...]:
     """Surrogate integrator with material forces (faithful port).
 
     Shapes: o0/v0/goal (B,2) in (x=col, y=row) global pixels; C (B,N,2);
@@ -362,8 +362,8 @@ class GateDecision:
     nominal_risk: float
     best_risk: float
     feasible_count: int
-    selected_direction_rc: Tuple[float, float]
-    selected_endpoint_rc: Tuple[float, float]
+    selected_direction_rc: tuple[float, float]
+    selected_endpoint_rc: tuple[float, float]
     selected_min_clearance_m: float
 
 
@@ -374,7 +374,7 @@ def _unit(v: np.ndarray) -> np.ndarray:
     return (v / norm).astype(np.float32)
 
 
-def _clip_rc(point_rc: np.ndarray, shape: Tuple[int, int]) -> Tuple[int, int]:
+def _clip_rc(point_rc: np.ndarray, shape: tuple[int, int]) -> tuple[int, int]:
     # round() is round-half-to-even; the C++ twin uses std::rint to match.
     return (
         int(np.clip(round(float(point_rc[0])), 0, shape[0] - 1)),
@@ -389,7 +389,7 @@ def _ray_cost(
     *,
     horizon_cells: int,
     hard_margin_m: float,
-) -> Tuple[float, bool, float]:
+) -> tuple[float, bool, float]:
     """Mean sampled risk, feasibility, and min hazard clearance along one ray.
 
     Samples at integer distances 1..horizon; the float point is bounds-checked
@@ -399,7 +399,7 @@ def _ray_cost(
     risk = maps["risk_map"]
     hard = maps["hard_mask"].astype(bool)
     sdf = maps["sdf_hard"]
-    values: List[float] = []
+    values: list[float] = []
     min_clearance = float("inf")
     feasible = True
     for distance in range(1, horizon_cells + 1):

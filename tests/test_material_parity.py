@@ -31,7 +31,7 @@ from grl_snam.material import (  # noqa: E402
 if not nav_native.HAS_MATERIAL:
     pytest.skip("this pycvc build has no material kernels", allow_module_level=True)
 
-import sdf_nav  # noqa: E402
+import grl_snam.sdf_nav as sdf_nav  # noqa: E402
 
 BOUNDS = (-100.0, -100.0, 100.0, 100.0)
 CENTER = (0.0, 0.0)

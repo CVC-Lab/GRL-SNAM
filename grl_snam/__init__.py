@@ -4,8 +4,8 @@ This module is a thin façade over the project's flat module layout
 (`train_coef_energy.py`, `surrogate_robust.py`, `eval_coef_energy.py`,
 `src/utils/`, `scripts/`, `experiments/`).  The flat layout is preserved
 for backward compatibility with the original research code; this package
-exposes a stable, importable API for downstream consumers (e.g. a
-private downstream extension).
+exposes a stable, importable API for downstream consumers (e.g. an
+application-specific extension layer).
 
 Typical use::
 
@@ -35,7 +35,7 @@ __all__ = [
 def __getattr__(name: str):
     """Lazy attribute access so heavy imports (torch) happen on demand."""
     if name in {"CoefEnergyNet", "integrate_surrogate"}:
-        from train_coef_energy import CoefEnergyNet, integrate_surrogate  # noqa: PLC0415
+        from grl_snam.train_coef_energy import CoefEnergyNet, integrate_surrogate  # noqa: PLC0415
 
         return {"CoefEnergyNet": CoefEnergyNet, "integrate_surrogate": integrate_surrogate}[name]
     raise AttributeError(f"module 'grl_snam' has no attribute {name!r}")

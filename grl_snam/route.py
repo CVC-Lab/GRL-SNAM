@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import numpy as np
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 from grl_snam import planner
 
 

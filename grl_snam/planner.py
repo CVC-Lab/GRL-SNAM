@@ -97,7 +97,7 @@ def astar(occ: np.ndarray, start, goal, cost: np.ndarray | None = None):
     parameter existed — the golden traces stay valid.
 
     The surcharge is domain-agnostic on purpose: it is "this cell is expensive",
-    not "this cell is dangerous/jammed/steep". Whoever builds the raster owns
+    not "this cell is dangerous/slow/steep". Whoever builds the raster owns
     the meaning. Keep values modest — a surcharge much larger than the map's
     diameter makes the heuristic wildly inadmissible and A* degenerates toward
     Dijkstra, exploring the whole grid for a route it was always going to take.

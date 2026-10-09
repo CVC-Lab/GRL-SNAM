@@ -22,7 +22,7 @@ try:
 except ImportError:  # pragma: no cover
     raise SystemExit("belief_bench needs torch")
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 
 from .. import nav_native, planner
 from ..fog_stories import STORIES, shrunk

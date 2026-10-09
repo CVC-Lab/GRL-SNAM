@@ -364,7 +364,9 @@ class BatchedSDFField:
 def _ipc_dbdd(d: torch.Tensor, d_hat: float) -> torch.Tensor:
     """IPC barrier derivative (matches surrogate_robust's piecewise form)."""
     d = d.clamp_min(1e-6)
-    val = -(2 * (d - d_hat) * torch.log(d / d_hat) + (d - d_hat) ** 2 / d)  # M10: analytic derivative of b (was +（d-dh)+1, an attraction band); verified vs autograd
+    val = -(
+        2 * (d - d_hat) * torch.log(d / d_hat) + (d - d_hat) ** 2 / d
+    )  # M10: analytic derivative of b (was +（d-dh)+1, an attraction band); verified vs autograd
     return torch.where(d < d_hat, val, torch.zeros_like(d))
 
 
@@ -422,7 +424,7 @@ def sdf_rollout(
     returning an extra force (accel units) at the current positions each substep,
     summed into the acceleration alongside ``F_bar``/``F_goal``/``F_mat`` — the
     physics-agnostic Python twin of ``cvc::nav``'s ``ext_force`` port. It carries
-    NO RF/comms vocabulary; a private consumer (DBG's comm force) supplies it.
+    NO domain vocabulary; the caller (e.g. an application-specific force) supplies it.
     ``None`` (the default) is additively inert and bit-for-bit unchanged."""
     hdt = dt / nsub
     minclr = torch.full((o.shape[0],), 9.9, device=o.device)
@@ -438,7 +440,7 @@ def sdf_rollout(
                 a = F_bar + F_goal + F_mat - ga.unsqueeze(-1) * v
             else:
                 a = F_bar + F_goal - ga.unsqueeze(-1) * v
-            if ext_force_fn is not None:  # generic external force (e.g. DBG comm force)
+            if ext_force_fn is not None:  # generic external force (caller-supplied)
                 a = a + ext_force_fn(o)
             v = v + hdt * a
             sp = v.norm(dim=-1, keepdim=True)
@@ -645,7 +647,7 @@ def bicycle_rollout(
                 a_max_e, a_lat_e = a_max * _mu, a_lat_max * _mu
 
             F_goal = -be.unsqueeze(-1) * (o - goal)
-            # Generic external force (e.g. DBG comm force). Evaluated once and, like
+            # Generic external force (caller-supplied). Evaluated once and, like
             # F_mat, joins BOTH couplings — the longitudinal projection AND the
             # steering bias below. None (default) is additively inert.
             F_ext = ext_force_fn(o) if ext_force_fn is not None else None
@@ -862,48 +864,173 @@ def ackermann_delta_max(L: float, delta_max: float, track_width: float) -> float
     return math.atan(L / (L / math.tan(delta_max) + 0.5 * float(track_width)))
 
 
+def _logit(x: float) -> float:
+    """Inverse of sigmoid: the last-layer bias that makes a sigmoid lam head start at ``x*max``.
+    Caller guarantees 0 < x < 1 (see CoefMLP._check_sigmoid_init)."""
+    return math.log(x / (1.0 - x))
+
+
 class CoefMLP(nn.Module):
     """Predict ``(alpha, beta, gamma)`` from local SDF features, biased toward the
     known-good navigating regime (``bias``) so the self-supervised optimizer starts
     in — and stays near — the stable basin."""
 
-    def __init__(self, hidden=64, bias=(1.0, 3.0, 4.0), in_dim=5):
+    def __init__(
+        self,
+        hidden=64,
+        bias=(1.0, 3.0, 4.0),
+        in_dim=5,
+        use_mu=False,
+        use_risk=False,
+        use_lam=False,
+        lam_init=0.4,
+        use_lam_hard=False,
+        lam_hard_init=1.0,
+        lam_sigmoid=False,
+        lam_soft_max=5.0,
+        lam_hard_max=10.0,
+    ):
         super().__init__()
-        #: 5 = the original [phi, goal_dist, gdir_x, gdir_y, align]; 6 adds the
-        #: sampled grip mu (see :func:`coef_feats`). Stored so the exporter and
-        #: the C++ twin can read the stride off the model instead of assuming.
+        #: 5 = the original [phi, goal_dist, gdir_x, gdir_y, align]; then the OPTIONAL
+        #: probe features append in a fixed order: mu (grip) if use_mu, then risk
+        #: (terrain-risk lookahead) if use_risk (see :func:`coef_feats`). Stored so the
+        #: exporter and the C++ twin can read the stride off the model instead of
+        #: assuming. use_mu/use_risk disambiguate which optional column an in_dim==6 net
+        #: carries (a bare 6-in net is grip, the historical widen_coef_mlp output).
         self.in_dim = int(in_dim)
+        self.use_mu = bool(use_mu)
+        self.use_risk = bool(use_risk)
+        #: ``use_lam`` adds a 4th OUTPUT, the learned material-reroute strength lam_soft
+        #: (see :meth:`coeffs_and_lam`). ``use_lam_hard`` adds a 5th, lam_hard — the paper's
+        #: two-head reroute (App A.4). A two-head net is always ``lam_sigmoid`` (the paper form
+        #: lam = lam_max*sigmoid(head), material_nav.py:175-176), which the exporter writes as
+        #: .cvcnav format v2. A lone lam_soft (``use_lam`` only, no sigmoid) keeps the historical
+        #: single uniform ``softplus(net + log(expm1(out_bias)))`` (v1) so old blobs are unchanged.
+        self.use_lam = bool(use_lam)
+        self.use_lam_hard = bool(use_lam_hard)
+        if self.use_lam_hard and not self.use_lam:
+            raise ValueError("use_lam_hard requires use_lam (lam_hard is the 5th output, col 4)")
+        #: A two-head net is the paper's sigmoid form; a single lam_soft can opt in explicitly.
+        self.lam_sigmoid = bool(lam_sigmoid) or self.use_lam_hard
+        self.lam_soft_max = float(lam_soft_max)
+        self.lam_hard_max = float(lam_hard_max)
+        self.out_dim = 3 + (1 if self.use_lam else 0) + (1 if self.use_lam_hard else 0)
         self.net = nn.Sequential(
             nn.Linear(self.in_dim, hidden),
             nn.SiLU(),
             nn.Linear(hidden, hidden),
             nn.SiLU(),
-            nn.Linear(hidden, 3),
+            nn.Linear(hidden, self.out_dim),
         )
-        self.register_buffer("bias", torch.tensor(bias))
+        self.register_buffer("bias", torch.tensor(bias))  # abg raw bias (unchanged)
+        if self.use_lam and not self.lam_sigmoid:
+            # v1 single-softplus lam_soft: softplus(0 + log(expm1(lam_init))) == lam_init at the
+            # zero column. Requires lam_init > 0: log(expm1(0)) is -inf (a DEAD lam head — 0 with
+            # zero gradient), and log(expm1(<0)) is NaN (poisons the drive/loss/.cvcnav).
+            if not (float(lam_init) > 0.0):
+                raise ValueError(
+                    f"use_lam requires lam_init > 0 (softplus init is -inf at 0, NaN below); "
+                    f"got {lam_init!r}"
+                )
+            self.register_buffer("lam_raw_bias", torch.tensor(float(lam_init)))
+        if self.lam_sigmoid:
+            # Sigmoid lam heads: lam = lam_max*sigmoid(head), so the init bias lives in the LAST
+            # Linear layer's bias (logit(init/max)), NOT the softplus-fold buffer. Requires
+            # 0 < init < max (logit is +/-inf otherwise). A freshly-built net thus starts at the
+            # requested init (add_lam_heads re-asserts these when lifting a trained net).
+            self._check_sigmoid_init(float(lam_init), self.lam_soft_max, "lam_init/--lam-soft")
+            with torch.no_grad():
+                self.net[-1].bias[3] = _logit(float(lam_init) / self.lam_soft_max)
+                if self.use_lam_hard:
+                    self._check_sigmoid_init(
+                        float(lam_hard_init), self.lam_hard_max, "lam_hard_init/--lam-hard-init"
+                    )
+                    self.net[-1].bias[4] = _logit(float(lam_hard_init) / self.lam_hard_max)
+
+    @staticmethod
+    def _check_sigmoid_init(init, mx, name):
+        if not (0.0 < init < mx):
+            raise ValueError(
+                f"a sigmoid lam head needs 0 < {name} < its max ({mx}); got {init!r} "
+                f"(logit(init/max) is +/-inf outside that range)"
+            )
+
+    def full_out_bias(self) -> torch.Tensor:
+        """The RAW pre-softplus bias the exporter writes as ``out_bias``. For a sigmoid net
+        (v2) it is the 3 abg biases only — the lam heads' init is carried in the last Linear
+        layer's bias, not here. For a v1 single-softplus lam net it is abg + lam_init, so the
+        whole output stack is one uniform softplus the C++ folds log(expm1) at load."""
+        if self.lam_sigmoid:
+            return self.bias
+        if self.use_lam:
+            return torch.cat([self.bias, self.lam_raw_bias.reshape(1)])
+        return self.bias
+
+    def _outputs(self, feat):
+        net_out = self.net(feat)  # [N, out_dim]
+        if not self.lam_sigmoid:
+            raw = net_out + torch.log(torch.expm1(self.full_out_bias())).unsqueeze(0)
+            return F.softplus(raw)
+        # Two-head sigmoid (v2): abg keep the softplus(log(expm1)) fold; the lam columns are
+        # lam_max*sigmoid(head) (the head bias is already in net[-1].bias). Byte-parity with the
+        # C++ coef_mlp forward (kFlagLamSigmoid) and material_nav.py:175-176.
+        abg = F.softplus(net_out[:, :3] + torch.log(torch.expm1(self.bias)).unsqueeze(0))
+        cols = [abg, self.lam_soft_max * torch.sigmoid(net_out[:, 3:4])]
+        if self.use_lam_hard:
+            cols.append(self.lam_hard_max * torch.sigmoid(net_out[:, 4:5]))
+        return torch.cat(cols, dim=1)
 
     def forward(self, feat):
-        raw = self.net(feat) + torch.log(torch.expm1(self.bias)).unsqueeze(0)
-        c = F.softplus(raw)
+        c = self._outputs(feat)
         return c[:, 0], c[:, 1], c[:, 2]
 
+    def coeffs_and_lam(self, feat):
+        """``(alpha, beta, gamma, lam_soft)`` — or ``(..., lam_soft, lam_hard)`` for a two-head
+        net (``use_lam_hard``). lam_soft/lam_hard are the LEARNED per-agent reroute strengths
+        (F_soft = -lam_soft*grad risk, F_hard = -lam_hard*db*grad phi), the deployable
+        replacement for the fixed ``--lam-soft`` / ``--lam-hard`` dials. Requires ``use_lam``."""
+        if not self.use_lam:
+            raise RuntimeError("this CoefMLP has no lam head (use_lam=False)")
+        c = self._outputs(feat)
+        if self.use_lam_hard:
+            return c[:, 0], c[:, 1], c[:, 2], c[:, 3], c[:, 4]
+        return c[:, 0], c[:, 1], c[:, 2], c[:, 3]
 
-def coef_feats(field: SDFField, o, goal, friction=None, mu_lookahead=0.3, mu_probes=3):
+
+def coef_feats(
+    field: SDFField,
+    o,
+    goal,
+    friction=None,
+    mu_lookahead=0.3,
+    mu_probes=3,
+    material=None,
+    risk_lookahead=0.3,
+    risk_probes=3,
+):
     """Local features for ``CoefMLP``: ``[phi, goal_dist, goal_dir_x, goal_dir_y,
     goal·wall_normal]`` — the last says whether a wall stands between agent and goal.
 
     ``friction`` (a :class:`grl_snam.material.FrictionField`) appends the sampled
-    grip ``mu`` as a SIXTH feature. Without it the drive discovers ice only by
+    grip ``mu`` as the next feature. Without it the drive discovers ice only by
     standing on it — the stopping governor has already budgeted for grip it no
     longer has — so anticipation has to come through the coefficients, and they
     cannot anticipate what they cannot see.
 
-    ``None`` (the default) returns the 5-feature vector bit-for-bit, so every
-    trained ``.cvcnav`` weight file stays loadable. A 6-feature net is NOT a
-    retrain from scratch: :func:`widen_coef_mlp` lifts a trained 5-feature net
-    into one whose mu column is zero, which is output-identical at init and
-    therefore starts fine-tuning inside the known-good basin rather than in the
-    collapsed one a fresh init lands in.
+    ``material`` (a :class:`grl_snam.material.MaterialField`) appends the WORST
+    terrain risk ``r~`` between here and the carrot as the next feature (after mu
+    when both are given) — the terrain-risk analogue of the grip probe. Like grip,
+    the drive otherwise only reacts to risk it is already standing in (the material
+    force pushes down-gradient at the current cell); the lookahead is what lets the
+    coefficients see risky ground *ahead* and act before entering it. MAX along the
+    ray (not min), because a risk patch you are about to cross should read as risky.
+
+    ``None`` for both (the default) returns the 5-feature vector bit-for-bit, so every
+    trained ``.cvcnav`` weight file stays loadable and the C++/native ``coef_feats``
+    twin agrees. A widened net is NOT a retrain from scratch: :func:`widen_coef_mlp`
+    (grip) / :func:`add_risk_feature` (risk) lift a trained net into one whose new
+    column is zero — output-identical at init — so fine-tuning starts inside the
+    known-good basin rather than the collapsed one a fresh init lands in.
     """
     phi, nrm = field.sample(o)
     dg = goal - o
@@ -930,10 +1057,25 @@ def coef_feats(field: SDFField, o, goal, friction=None, mu_lookahead=0.3, mu_pro
         for k in range(1, int(mu_probes) + 1):
             probes.append(friction.sample(o + (k / float(mu_probes)) * reach * gdir))
         cols.append(torch.stack(probes, -1).min(dim=-1).values.unsqueeze(-1))
+    if material is not None:
+        # The WORST terrain risk between here and the carrot -- the mirror of the mu
+        # probe, but MAX not MIN, because a risk patch ahead should read as risky, not
+        # averaged away. material.sample(o) -> (risk, phi_m, grad_r, grad_phi); we take
+        # risk[..,0]. Probe out to ``risk_lookahead`` along the carrot (never past it),
+        # include o so uniform ground gives the underfoot value and the feature degrades
+        # gracefully. grid_sample is autograd-friendly, so this is differentiable through
+        # the trajectory -- the seam a risk-exposure loss needs.
+        reach = gd.clamp(max=float(risk_lookahead))
+        rprobes = [material.sample(o)[0].unsqueeze(-1)]
+        for k in range(1, int(risk_probes) + 1):
+            rprobes.append(
+                material.sample(o + (k / float(risk_probes)) * reach * gdir)[0].unsqueeze(-1)
+            )
+        cols.append(torch.cat(rprobes, -1).max(dim=-1).values.unsqueeze(-1))
     return torch.cat(cols, -1)
 
 
-def widen_coef_mlp(model: "CoefMLP") -> "CoefMLP":
+def widen_coef_mlp(model: CoefMLP) -> CoefMLP:
     """Lift a trained 5-feature ``CoefMLP`` to a 6-feature one that sees grip.
 
     The new mu column of the first layer is ZERO, so the widened net computes
@@ -950,7 +1092,7 @@ def widen_coef_mlp(model: "CoefMLP") -> "CoefMLP":
         raise ValueError(f"expected a 5-feature CoefMLP, got in_dim={model.in_dim}")
     first = model.net[0]
     hidden = first.out_features
-    out = CoefMLP(hidden=hidden, bias=tuple(model.bias.tolist()), in_dim=6)
+    out = CoefMLP(hidden=hidden, bias=tuple(model.bias.tolist()), in_dim=6, use_mu=True)
     with torch.no_grad():
         out.net[0].weight.zero_()
         out.net[0].weight[:, :5].copy_(first.weight)
@@ -958,5 +1100,121 @@ def widen_coef_mlp(model: "CoefMLP") -> "CoefMLP":
         for i in (2, 4):
             out.net[i].weight.copy_(model.net[i].weight)
             out.net[i].bias.copy_(model.net[i].bias)
+        out.bias.copy_(model.bias)
+    return out
+
+
+def add_risk_feature(model: CoefMLP) -> CoefMLP:
+    """Lift a trained ``CoefMLP`` into one that sees a terrain-risk lookahead — the
+    risk twin of :func:`widen_coef_mlp`. Appends ONE input column (the last), zero in
+    the first layer, so the new net computes exactly the same function of the original
+    features — bit-for-bit identical outputs on any input whose leading columns match —
+    and only fine-tuning can discover a use for the risk feature, from inside the basin
+    that already works. Works on a 5-feature net (-> 6, base+risk) or a grip-widened
+    6-feature net (-> 7, base+mu+risk); ``use_mu`` is preserved. Returns a new model.
+    """
+    if getattr(model, "use_risk", False):
+        raise ValueError("add_risk_feature: model already has the risk feature")
+    n = model.in_dim
+    first = model.net[0]
+    hidden = first.out_features
+    out = CoefMLP(
+        hidden=hidden,
+        bias=tuple(model.bias.tolist()),
+        in_dim=n + 1,
+        use_mu=getattr(model, "use_mu", False),
+        use_risk=True,
+    )
+    with torch.no_grad():
+        out.net[0].weight.zero_()
+        out.net[0].weight[:, :n].copy_(first.weight)  # risk column stays 0
+        out.net[0].bias.copy_(first.bias)
+        for i in (2, 4):
+            out.net[i].weight.copy_(model.net[i].weight)
+            out.net[i].bias.copy_(model.net[i].bias)
+        out.bias.copy_(model.bias)
+    return out
+
+
+def add_lam_head(model: CoefMLP, lam_init: float = 0.4) -> CoefMLP:
+    """Lift a trained ``CoefMLP`` into one that also OUTPUTS the material-reroute strength
+    lam_soft — the learned, deployable replacement for the fixed ``lam_soft`` dial. Appends
+    ONE output column (the last), zero in the final layer, so lam_soft starts at the constant
+    ``lam_init`` and the (alpha,beta,gamma) outputs are bit-for-bit unchanged — only fine-
+    tuning can discover a use for a position-dependent lam. Preserves the input feature flags
+    (typically a risk net, so the net can see risk to decide lam). Returns a new model."""
+    if getattr(model, "use_lam", False):
+        raise ValueError("add_lam_head: model already has a lam head")
+    first = model.net[0]
+    hidden = first.out_features
+    out = CoefMLP(
+        hidden=hidden,
+        bias=tuple(model.bias.tolist()),
+        in_dim=model.in_dim,
+        use_mu=getattr(model, "use_mu", False),
+        use_risk=getattr(model, "use_risk", False),
+        use_lam=True,
+        lam_init=lam_init,
+    )
+    with torch.no_grad():
+        out.net[0].weight.copy_(first.weight)
+        out.net[0].bias.copy_(first.bias)
+        out.net[2].weight.copy_(model.net[2].weight)
+        out.net[2].bias.copy_(model.net[2].bias)
+        # final layer: rows 0..2 = the abg head (copied), row 3 = lam (ZERO -> lam == lam_init)
+        out.net[4].weight.zero_()
+        out.net[4].bias.zero_()
+        out.net[4].weight[:3].copy_(model.net[4].weight)
+        out.net[4].bias[:3].copy_(model.net[4].bias)
+        out.bias.copy_(model.bias)
+    return out
+
+
+def add_lam_heads(
+    model: CoefMLP,
+    soft_init: float = 0.4,
+    hard_init: float = 1.0,
+    lam_soft_max: float = 5.0,
+    lam_hard_max: float = 10.0,
+) -> CoefMLP:
+    """Lift a trained ``CoefMLP`` into the paper's TWO-head sigmoid-bounded reroute net (the
+    deployable .cvcnav format v2): appends BOTH lam_soft (col 3) and lam_hard (col 4) as
+    ``lam_max*sigmoid(head)`` outputs (material_nav.py:175-176). Mirrors :func:`add_lam_head`
+    but basin-preserving for TWO heads: the appended final-layer weight rows are zeroed and
+    their biases set to ``logit(init/max)``, so each lam starts at its constant init; the
+    (alpha,beta,gamma) rows are copied verbatim so abg is bit-for-bit unchanged at init. Unlike
+    the v1 single-softplus :func:`add_lam_head`, the lam columns are sigmoid-bounded, so this net
+    exports as format v2 (kFlagLamSigmoid) and hard-fails to load on a pre-v2 libcvc host.
+    Returns a new model."""
+    if getattr(model, "use_lam", False):
+        raise ValueError("add_lam_heads: model already has a lam head")
+    first = model.net[0]
+    hidden = first.out_features
+    out = CoefMLP(
+        hidden=hidden,
+        bias=tuple(model.bias.tolist()),
+        in_dim=model.in_dim,
+        use_mu=getattr(model, "use_mu", False),
+        use_risk=getattr(model, "use_risk", False),
+        use_lam=True,
+        lam_init=soft_init,
+        use_lam_hard=True,
+        lam_hard_init=hard_init,
+        lam_soft_max=lam_soft_max,
+        lam_hard_max=lam_hard_max,
+    )
+    with torch.no_grad():
+        out.net[0].weight.copy_(first.weight)
+        out.net[0].bias.copy_(first.bias)
+        out.net[2].weight.copy_(model.net[2].weight)
+        out.net[2].bias.copy_(model.net[2].bias)
+        # final layer: rows 0..2 = the abg head (copied verbatim), rows 3/4 = the lam heads with
+        # ZERO weights so they are position-independent at init, biases = logit(init/max) so they
+        # start at soft_init / hard_init (a sigmoid net's init lives in the last-layer bias).
+        out.net[4].weight.zero_()
+        out.net[4].weight[:3].copy_(model.net[4].weight)
+        out.net[4].bias[:3].copy_(model.net[4].bias)
+        out.net[4].bias[3] = _logit(float(soft_init) / lam_soft_max)
+        out.net[4].bias[4] = _logit(float(hard_init) / lam_hard_max)
         out.bias.copy_(model.bias)
     return out

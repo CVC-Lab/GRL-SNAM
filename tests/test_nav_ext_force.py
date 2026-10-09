@@ -3,14 +3,14 @@
 #66 added the generic ext_force_fn hook to sdf_rollout / bicycle_rollout; this
 pins that SdfNavigator threads it through step() correctly: a None or zero-force
 hook leaves every trace bit-for-bit unchanged (the byte-identical-off contract
-the DBG comm-force cutover relies on), and a non-zero hook actually bends the
+an external-force caller relies on), and a non-zero hook actually bends the
 path.
 """
 
 import numpy as np
 import torch
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 from grl_snam.nav import SdfNavigator
 
 

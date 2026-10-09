@@ -68,7 +68,7 @@ def fork_modules():
 
 
 def test_barrier_sampler_integrator_bitwise(fork_modules):
-    import material_nav as mnav
+    import grl_snam.material_nav as mnav
 
     fork_tm, _ = fork_modules
     tg = torch.Generator().manual_seed(7)
@@ -114,7 +114,7 @@ def test_barrier_sampler_integrator_bitwise(fork_modules):
 
 
 def test_model_state_dict_and_forward_bitwise(fork_modules):
-    import material_nav as mnav
+    import grl_snam.material_nav as mnav
 
     fork_tm, _ = fork_modules
     m_fork = fork_tm.CoefEnergyNetMaterial()
@@ -135,7 +135,7 @@ def test_model_state_dict_and_forward_bitwise(fork_modules):
 
 
 def test_gate_bitwise_random_grids(fork_modules):
-    import material_nav as mnav
+    import grl_snam.material_nav as mnav
 
     _, fork_exp1 = fork_modules
     rng = np.random.default_rng(3)

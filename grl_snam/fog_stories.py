@@ -401,7 +401,7 @@ def build_scenario(
     """
     import torch  # noqa: PLC0415 -- lazy: importing this module must stay cheap
 
-    import sdf_nav
+    import grl_snam.sdf_nav as sdf_nav
     from grl_snam.scenario import FogScenario
 
     if model is None:

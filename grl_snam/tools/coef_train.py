@@ -28,7 +28,7 @@ try:
 except ImportError:  # pragma: no cover
     raise SystemExit("coef_train needs torch")
 
-import sdf_nav
+import grl_snam.sdf_nav as sdf_nav
 
 from .. import planner
 from ..fog_stories import STORIES, shrunk
@@ -149,6 +149,12 @@ def train_bicycle(
     veh=None,
     d_safe=None,
     scene=None,
+    material=None,
+    w_risk=0.0,
+    lam_soft=0.0,
+    lam_hard=0.0,
+    risk_lookahead=0.3,
+    curriculum=None,
 ):
     """Fine-tune the coefficients through the VEHICLE, with grip in the dynamics.
 
@@ -262,15 +268,44 @@ def train_bicycle(
         return worst
 
     model = sdf_nav.CoefMLP() if model is None else model
-    wants_mu = getattr(model, "in_dim", 5) == 6
+    wants_risk = getattr(model, "use_risk", False)
+    # A 6-feature net is grip UNLESS it explicitly declares the risk column.
+    wants_mu = getattr(model, "use_mu", False) or (
+        getattr(model, "in_dim", 5) == 6 and not wants_risk
+    )
     if wants_mu and friction is None:
-        raise ValueError("a 6-feature model needs friction= to supply its mu column")
+        raise ValueError("a grip (mu) model needs friction= to supply its mu column")
+    if wants_risk and material is None:
+        raise ValueError(
+            "a risk model needs material= (a grl_snam.material.MaterialGrid) for its risk column"
+        )
+    wants_lam = getattr(model, "use_lam", False)
+    wants_lam_hard = getattr(model, "use_lam_hard", False)
+    if wants_lam and material is None:
+        raise ValueError("a lam-head model needs material= (it learns the reroute strength)")
+    # Terrain-risk drive: the material force (grl_snam.material) reroutes AROUND risk; the
+    # risk-lookahead feature (coef_feats material=) lets the coefficients SEE it; the w_risk
+    # term penalizes dwelling in it. All default off/zero, so a plain call is byte-identical
+    # to the geometry-only trainer. The reroute strength lam_soft is the FIXED --lam-soft dial
+    # UNLESS the net has a lam head (wants_lam), in which case it is LEARNED per agent per step
+    # (coeffs_and_lam) — the deployable reroute lever.
+    mfield = material.field() if material is not None else None
+    lam_s = torch.full((n,), float(lam_soft)) if mfield is not None else None
+    lam_h = torch.full((n,), float(lam_hard)) if mfield is not None else None
     model.train()
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     rng = np.random.default_rng(seed)
-    last = (0.0, 0.0)
+    last = (0.0, 0.0, 0.0)
     for step in range(steps):
-        o = torch.from_numpy(rand_on(n, rng))
+        # Curriculum (opt-in): draw STARTS from the hard/risky-region sampler instead of
+        # uniform; goals stay uniform. start_bins lets us attribute this batch's difficulty
+        # back to the bins the agents started in (curriculum.update below).
+        if curriculum is not None:
+            o_np, start_bins = curriculum.sample_starts(n, rng)
+            o = torch.from_numpy(o_np)
+        else:
+            o = torch.from_numpy(rand_on(n, rng))
+            start_bins = None
         goal = torch.from_numpy(rand_on(n, rng))
         th = torch.from_numpy(rng.uniform(-np.pi, np.pi, n).astype(np.float32))
         # A spread of starting speeds, not rest: training only from standstill
@@ -278,10 +313,26 @@ def train_bicycle(
         # against the actuator clamp, rather than to the cruising regime the
         # vehicle spends its time in.
         sp = torch.from_numpy(rng.uniform(0.0, float(vmax), n).astype(np.float32))
+        init_dist = (goal - o).norm(dim=1).clamp_min(1e-6).detach()  # for the curriculum shortfall
+        risk_agent = torch.zeros(n)  # per-agent risk exposure (detached; curriculum difficulty)
         coll = torch.zeros(())
+        risk = torch.zeros(())
         for t in range(horizon):
-            feat = sdf_nav.coef_feats(field, o, goal, friction=friction if wants_mu else None)
-            al, be, ga = model(feat)
+            feat = sdf_nav.coef_feats(
+                field,
+                o,
+                goal,
+                friction=friction if wants_mu else None,
+                material=mfield if wants_risk else None,
+                risk_lookahead=risk_lookahead,
+            )
+            if wants_lam_hard:
+                # TWO-head: both reroute strengths are LEARNED per agent (paper App A.4).
+                al, be, ga, lam_s, lam_h = model.coeffs_and_lam(feat)
+            elif wants_lam:
+                al, be, ga, lam_s = model.coeffs_and_lam(feat)  # LEARNED per-agent lam_soft
+            else:
+                al, be, ga = model(feat)
             o, th, sp, _ = sdf_nav.bicycle_rollout(
                 field,
                 o,
@@ -297,24 +348,47 @@ def train_bicycle(
                 dt=dt,
                 vmax=vmax,
                 friction=friction,
+                material=mfield,
+                lam_soft=lam_s,
+                lam_hard=lam_h,
                 **kw,
             )
             # Margin shortfall, not breach depth: nonzero for any agent within
             # d_safe of geometry, which is where the signal has to live.
             coll = coll + (torch.relu(d_safe - _clearance(o, th)) / d_safe).mean()
+            # Risk exposure: mean terrain risk underfoot, integrated over the rollout —
+            # the "time in terrain-risk areas" the loss should shrink (0 without material).
+            if mfield is not None:
+                risk_here = mfield.sample(o)[0]
+                risk = risk + risk_here.mean()
+                risk_agent = risk_agent + risk_here.detach()  # per-agent, for the curriculum
             if (t + 1) % window == 0 or t == horizon - 1:
                 goal_loss = (goal - o).norm(dim=1).mean() / region_n
-                loss = goal_loss + w_coll * coll / window
+                loss = goal_loss + w_coll * coll / window + w_risk * risk / window
                 opt.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 opt.step()
-                # The two summands AS APPLIED, so a caller can check the
-                # objective is balanced without scraping stdout.
-                last = (goal_loss.item(), float(w_coll * coll.detach() / window))
-                o, th, sp, coll = o.detach(), th.detach(), sp.detach(), torch.zeros(())
+                # The three summands AS APPLIED, so a caller can check the objective is
+                # balanced (risk is 0.0 when w_risk==0 or no material) without scraping stdout.
+                last = (
+                    goal_loss.item(),
+                    float(w_coll * coll.detach() / window),
+                    float(w_risk * risk.detach() / window),
+                )
+                o, th, sp = o.detach(), th.detach(), sp.detach()
+                coll, risk = torch.zeros(()), torch.zeros(())
+        if curriculum is not None:
+            # Difficulty this batch = how far each agent still is from its goal (0 = reached,
+            # 1 = no progress) PLUS its mean terrain-risk exposure — so the curriculum mines
+            # regions that are hard to clear AND risky. Attributed to the START bins.
+            shortfall = ((goal - o).norm(dim=1) / init_dist).clamp(0.0, 1.0).detach()
+            difficulty = shortfall.cpu().numpy() + (risk_agent / horizon).cpu().numpy()
+            curriculum.update(start_bins, difficulty)
         if step % 50 == 0 or step == steps - 1:
-            print(f"  step {step:4d}: goal_dist {last[0]:6.3f}  coll {last[1]:6.3f}")
+            print(
+                f"  step {step:4d}: goal_dist {last[0]:6.3f}  coll {last[1]:6.3f}  risk {last[2]:6.3f}"
+            )
     model.eval()
     model.last_loss_terms = last
     return model
@@ -346,6 +420,68 @@ def reach_rate(model, grid=96, n=400, ticks=200, seed=123):
     for _ in range(ticks):
         sw.step()
     return float(sw.reached.float().mean())
+
+
+@torch.no_grad()
+def eval_risk_exposure(model, *, grid=64, lam_soft=0.4, seed=999, n=256, horizon=60, reach_tol=0.8):
+    """Direct bicycle-rollout eval for a (possibly risk-widened) net: mean terrain-risk
+    exposure and reach fraction over ``n`` random start->goal drives on the city's
+    material scene. This is the reproducible harness behind the docs/NAV_STATS.md smoke
+    table and the way to measure a widened net (the Swarm drive / scorecard_eval are
+    base-5-feature only). ``model`` may be a plain 5-feature net or an
+    :func:`sdf_nav.add_risk_feature` net (its risk column is fed automatically). The
+    material reroute force is active (``lam_soft``) for BOTH so w_risk's effect is what
+    an A/B isolates. Returns ``(risk_exposure, reach)``."""
+    from grl_snam.material import city_material_grid
+
+    field, meta, rand_on = _scene(grid, seed)
+    rr, d_hat, dt, vmax = meta["rr"], meta["d_hat"], meta["dt"], meta["vmax"]
+    story = shrunk(STORIES["city"], n=grid, max_steps=100)
+    mgrid, _ = city_material_grid(
+        story.truth_grid(), story.bounds, meta["center"], meta["scale"], seed=0
+    )
+    mf = mgrid.field()
+    kw = dict(L=0.035, delta_max=0.6, a_max=1.5, a_lat_max=1.0, k_steer=0.8, allow_reverse=True)
+    wants_risk = getattr(model, "use_risk", False)
+    wants_lam = getattr(model, "use_lam", False)
+    wants_lam_hard = getattr(model, "use_lam_hard", False)
+    rng = np.random.default_rng(seed)
+    o = torch.from_numpy(rand_on(n, rng))
+    goal = torch.from_numpy(rand_on(n, rng))
+    th = torch.from_numpy(rng.uniform(-np.pi, np.pi, n).astype(np.float32))
+    sp = torch.zeros(n)
+    lam_s, lam_h = torch.full((n,), float(lam_soft)), torch.zeros(n)
+    risk_sum = 0.0
+    for _ in range(horizon):
+        feat = sdf_nav.coef_feats(field, o, goal, material=mf if wants_risk else None)
+        if wants_lam_hard:
+            al, be, ga, lam_s, lam_h = model.coeffs_and_lam(feat)  # LEARNED two-head reroute
+        elif wants_lam:
+            al, be, ga, lam_s = model.coeffs_and_lam(feat)  # LEARNED reroute strength
+        else:
+            al, be, ga = model(feat)
+        o, th, sp, _ = sdf_nav.bicycle_rollout(
+            field,
+            o,
+            th,
+            sp,
+            goal,
+            al,
+            be,
+            ga,
+            1,
+            rr=rr,
+            d_hat=d_hat,
+            dt=dt,
+            vmax=vmax,
+            material=mf,
+            lam_soft=lam_s,
+            lam_hard=lam_h,
+            **kw,
+        )
+        risk_sum += float(mf.sample(o)[0].mean())
+    reach = float(((goal - o).norm(dim=1) < reach_tol).float().mean())
+    return risk_sum / horizon, reach
 
 
 def train_native(out, *, grid=96, steps=400, rollout="surrogate", use_cuda=False, lr=None, seed=0):
@@ -396,6 +532,7 @@ def main(argv=None):
     ap.add_argument("--n", type=int, default=192)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--grid", type=int, default=96, help="scene grid resolution")
     ap.add_argument("--out", type=str, default="coef_mlp.cvcnav")
     # Feature flag: which trainer runs. `torch` (canonical) or `native` (the
     # torch-free libcvc cvc::nav trainer, via pycvc). Env default lets a whole
@@ -421,6 +558,76 @@ def main(argv=None):
         "selects an operating point -- it is not a hyperparameter to tune away.",
     )
     ap.add_argument("--cuda", action="store_true", help="native backend: use the GPU trainer")
+    ap.add_argument(
+        "--w-risk",
+        type=float,
+        default=0.0,
+        help="bicycle rollout only: terrain-risk exposure weight. >0 attaches a material "
+        "grid, widens the net with a risk-lookahead feature, and adds a w_risk*risk term to "
+        "the loss. 0 (default) = the geometry-only objective, byte-identical.",
+    )
+    ap.add_argument(
+        "--lam-soft",
+        type=float,
+        default=0.4,
+        help="--w-risk: FIXED strength of the material reroute force (F_soft = -lam_soft*grad "
+        "risk) that steers around terrain risk. This is the reroute lever; a LEARNED lam head "
+        "is a separate follow-up. 0 = feature+penalty only (the net can slow but not reroute).",
+    )
+    ap.add_argument(
+        "--lam-hard", type=float, default=0.0, help="--w-risk: hard-hazard force strength"
+    )
+    ap.add_argument(
+        "--learned-lam",
+        action="store_true",
+        help="--w-risk: give the net a lam head so it LEARNS the per-position reroute strength "
+        "(deployable lever) instead of the fixed --lam-soft dial; --lam-soft becomes the init.",
+    )
+    ap.add_argument(
+        "--learned-lam-hard",
+        action="store_true",
+        help="--w-risk: the paper's TWO-head reroute — also LEARN the hard-hazard strength "
+        "lam_hard (5th output, lam_hard_max*sigmoid). Implies --learned-lam; both lam columns "
+        "become sigmoid-bounded, so the exported .cvcnav is format v2 (needs a v2 libcvc host).",
+    )
+    ap.add_argument(
+        "--lam-hard-init",
+        type=float,
+        default=1.0,
+        help="--learned-lam-hard: initial hard-hazard reroute strength (the sigmoid head starts "
+        "here). Must be > 0 (and < lam_hard_max=10); seeds the head, not a frozen dial.",
+    )
+    ap.add_argument(
+        "--risk-lookahead",
+        type=float,
+        default=0.3,
+        help="--w-risk: how far ahead (normalized) the risk-lookahead feature probes",
+    )
+    ap.add_argument(
+        "--curriculum",
+        action="store_true",
+        help="bicycle rollout only: bias start sampling toward the regions the policy handles "
+        "worst (hard-to-reach + high terrain-risk), refreshed from each batch's own outcomes. "
+        "Off (default) = uniform start sampling, byte-identical.",
+    )
+    ap.add_argument("--curriculum-bins", type=int, default=6, help="--curriculum: bins per axis")
+    ap.add_argument(
+        "--curriculum-eps",
+        type=float,
+        default=0.15,
+        help="--curriculum: uniform-sampling floor mixed in so no region starves (0..1)",
+    )
+    ap.add_argument(
+        "--score",
+        action="store_true",
+        help="after training, score the checkpoint with the base NavScorecard "
+        "(arrival/economy/safety over a scene corpus) instead of just reach — the "
+        "single fitness row a campaign ranks on (tools.scorecard_eval).",
+    )
+    ap.add_argument("--score-scenes", type=int, default=6, help="--score: scene-corpus size")
+    ap.add_argument(
+        "--score-json", type=str, default="", help="--score: also write the scorecard JSON here"
+    )
     args = ap.parse_args(argv)
 
     if args.backend == "native":
@@ -435,6 +642,12 @@ def main(argv=None):
             seed=args.seed,
         )
         print(f"wrote {args.out} (native cvc::nav)")
+        if args.score:
+            print(
+                "--score: the native .cvcnav scores through the sim_world collector "
+                "(nav_native.NativeSimWorld.begin_nav_stats / episode_stats), not the torch "
+                "Swarm; --score reports the base scorecard on the torch backend for now."
+            )
         return
 
     print(f"training ({args.rollout}, {args.steps} steps)...")
@@ -443,13 +656,135 @@ def main(argv=None):
         # surrogate, so this is the path that can learn about either. Pass a
         # FrictionField or a footprint programmatically -- there is no flag for
         # them because both need a world, not a scalar.
+        material = risk_model = None
+        if args.w_risk > 0.0:
+            # Terrain-risk training: a material grid aligned with the SAME city truth
+            # train_bicycle's _scene(grid) builds (deterministic per grid), and a
+            # risk-lookahead-featured net so the coefficients can see risk ahead.
+            from grl_snam.material import city_material_grid
+
+            story = shrunk(STORIES["city"], n=args.grid, max_steps=100)
+            meta = story.meta()
+            material, _ = city_material_grid(
+                story.truth_grid(), story.bounds, meta["center"], meta["scale"], seed=args.seed
+            )
+            risk_model = sdf_nav.add_risk_feature(sdf_nav.CoefMLP())
+            if args.learned_lam or args.learned_lam_hard:
+                # LEARNED reroute: the net outputs lam_soft per position instead of the fixed
+                # --lam-soft dial — the deployable reroute lever (drive_step_material reads the 4th
+                # output as per-agent lam_soft since libcvc #413). --lam-soft is the INIT here and
+                # must be > 0 (0 is a valid FIXED-mode value but a dead learned init).
+                if args.lam_soft <= 0.0:
+                    raise SystemExit(
+                        "--learned-lam needs --lam-soft > 0 (it seeds the lam head; 0 would freeze "
+                        "it with a dead gradient). Use a small positive init, e.g. --lam-soft 0.4."
+                    )
+                if args.learned_lam_hard:
+                    # TWO-head (paper form): also learn lam_hard. Both lam columns become sigmoid-
+                    # bounded (format v2). --lam-soft / --lam-hard-init seed the two heads and must
+                    # be strictly inside (0, max) so logit(init/max) is finite.
+                    if args.lam_hard_init <= 0.0:
+                        raise SystemExit(
+                            "--learned-lam-hard needs --lam-hard-init > 0 (it seeds the lam_hard "
+                            "head; 0 folds to a +/-inf logit). Use e.g. --lam-hard-init 1.0."
+                        )
+                    risk_model = sdf_nav.add_lam_heads(
+                        risk_model, soft_init=args.lam_soft, hard_init=args.lam_hard_init
+                    )
+                else:
+                    risk_model = sdf_nav.add_lam_head(risk_model, lam_init=args.lam_soft)
+        curriculum = None
+        if args.curriculum:
+            from grl_snam.curriculum import build_city_curriculum
+
+            curriculum = build_city_curriculum(
+                args.grid, bins=args.curriculum_bins, eps=args.curriculum_eps
+            )
         model = train_bicycle(
-            args.steps, args.horizon, args.n, args.lr, args.seed, w_coll=args.w_coll
+            args.steps,
+            args.horizon,
+            args.n,
+            args.lr,
+            args.seed,
+            grid=args.grid,
+            w_coll=args.w_coll,
+            model=risk_model,
+            material=material,
+            w_risk=args.w_risk,
+            lam_soft=args.lam_soft,
+            lam_hard=args.lam_hard,
+            risk_lookahead=args.risk_lookahead,
+            curriculum=curriculum,
         )
     else:
         model = train(args.steps, args.horizon, args.n, args.lr, args.seed)
     write_coef_mlp(model, args.out)
-    print(f"wrote {args.out}   reach_rate={reach_rate(model):.2%}")
+    if getattr(model, "use_risk", False) or getattr(model, "use_lam", False):
+        if getattr(model, "use_lam_hard", False):
+            extra = (
+                f", out_dim={model.out_dim} (TWO-head sigmoid lam_soft+lam_hard, .cvcnav v2; "
+                f"maxes {model.lam_soft_max}/{model.lam_hard_max})"
+            )
+            host = (
+                "a libcvc host at or past the two-head sigmoid drive update (.cvcnav format v2 — "
+                "coef_mlp::has_lam_hard / kFlagLamSigmoid). A v2 blob HARD-FAILS to load on a "
+                "pre-v2 host, so land the host first"
+            )
+        elif getattr(model, "use_lam", False):
+            extra = f", out_dim={model.out_dim} (lam head)"
+            host = (
+                "a libcvc host at or past the risk-lookahead/learned-lam drive update "
+                "(transfix/libcvc #413)"
+            )
+        else:
+            extra = ""
+            host = (
+                "a libcvc host at or past the risk-lookahead/learned-lam drive update "
+                "(transfix/libcvc #413)"
+            )
+        print(
+            f"wrote {args.out}  (grip/risk model, in_dim={model.in_dim}{extra}) — DEPLOYABLE on "
+            f"{host}: coef_feats builds the risk-lookahead column and drive_step_material reads "
+            "the lam output(s). Drive it through the MATERIAL path (drive_step_material / "
+            "drive_step_material_ext), with a material stack + grip attached — the plain drive_step "
+            "rejects a risk net. Round-trip + drive verified by libcvc nav_material_deploy_test."
+        )
+    else:
+        print(f"wrote {args.out}   reach_rate={reach_rate(model):.2%}")
+    if args.score:
+        _report_scorecard(model, args)
+
+
+def _report_scorecard(model, args) -> None:
+    """Score a freshly-trained torch CoefMLP with the base NavScorecard — the fitness
+    row (arrival/economy/safety) a training campaign ranks on, replacing the raw
+    reach_rate as the signal of record. Reuses tools.scorecard_eval so the number
+    matches a standalone `scorecard_eval --checkpoint` and the C++/native collectors."""
+    from ..material_palette import terrain_risk_share
+    from .scorecard_eval import evaluate as _score
+
+    if getattr(model, "use_mu", False):
+        print(
+            "--score: the Swarm drive carries no friction field, so a grip (use_mu) net is not "
+            "Swarm-scorable — skipping the scorecard. (Measure it with a direct bicycle eval.)"
+        )
+        return
+    # A use_risk net IS scored: scorecard_eval attaches the matching material grid so the
+    # Swarm drives it as trained (risk feature + reroute force).
+    card = _score(model, scenes=args.score_scenes, checkpoint_label=args.out)
+    d = card.to_dict()
+    print(
+        f"base scorecard [{args.out}] scenes={args.score_scenes} runs={d['n_vehicle_runs']} "
+        f"success={d['success_rate']:.3f} arrival={d['arrival_rate']:.3f} "
+        f"path_ratio={d['mean_path_ratio']:.3f} pen%={d['mean_penetration_pct']:.3f} "
+        f"contacts/run={d['veh_contacts_per_run']:.3f} "
+        f"risk-time%={100.0 * terrain_risk_share(d['material_time_share']):.1f}"
+    )
+    if args.score_json:
+        import pathlib
+
+        pathlib.Path(args.score_json).write_text(card.to_json())
+        print(f"wrote scorecard {args.score_json}")
 
 
 if __name__ == "__main__":
