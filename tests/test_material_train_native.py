@@ -10,6 +10,7 @@ drops substantially, then save + round-trip load. No torch required.
 
 from __future__ import annotations
 
+import inspect
 import struct
 
 import numpy as np
@@ -225,3 +226,119 @@ def test_cuda_and_cpu_training_agree(tmp_path):
     # Float-equivalent ops compounded over `steps` optimizer updates.
     assert abs(c1 - g1) / abs(c1) < 1e-3, f"CPU {c1:.6f} vs GPU {g1:.6f}"
     assert abs(cval - gval) / abs(cval) < 1e-3
+
+
+# --------------------------------------------------------------------------- L_multi sampling
+
+_needs_multistart = pytest.mark.skipif(
+    not (mtn.HAS_MATERIAL_TRAINER_MULTISTART and mtn.HAS_MATERIAL_TRAINER_LOSS),
+    reason="pycvc's nav_material_trainer_create lacks the L_multi sampling args (libcvc #596)",
+)
+_SAMPLED = dict(ms_count=4, frac_range=(0.8, 0.98))
+
+
+def _close(x, y):
+    return abs(x - y) / (abs(y) + 1e-6) < 1e-6
+
+
+def test_multistart_probe_agrees_with_the_binding_signature():
+    """The capability probe must not be fooled by its own argument types: SWIG answers a type
+    mismatch with the same TypeError an old arity gives. The proxy signature cross-checks it."""
+    try:
+        params = inspect.signature(mtn._pycvc.nav_material_trainer_create).parameters
+    except (TypeError, ValueError):
+        pytest.skip("this pycvc's create has no Python-level signature to compare against")
+    assert mtn.HAS_MATERIAL_TRAINER_MULTISTART == ("ms_semi_implicit" in params)
+
+
+@_needs_multistart
+def test_sampled_multi_start_args(tmp_path):
+    """libcvc's test_sampled_multi_start_args, through the wrapper: a degenerate range is the
+    legacy single start, a sampled range and the integrator switch reach the loss, validation
+    draws with the base seed, and step k draws with seed + k."""
+    ckpt = tmp_path / "init.cvcnm"
+    _write_random_cvcnm(ckpt, patch_size=16, seed=5)
+    batch = _synthetic_batch(seed=13)
+
+    def loss(**kw):
+        return mtn.MaterialTrainer(ckpt, **kw).loss(batch)
+
+    legacy = loss()
+    # The wrapper routes this through the legacy signature (no draw, one rollout)...
+    assert loss(ms_count=10, frac_range=(0.9, 0.9), seed=123) == legacy
+    # ...so check native's own degenerate handling on a configuration that needs the new args.
+    semi_one = loss(semi_implicit=True)
+    assert loss(ms_count=7, frac_range=(0.9, 0.9), seed=3, semi_implicit=True) == semi_one
+    assert semi_one != legacy, "semi_implicit did not reach the rollout"
+
+    sampled = mtn.MaterialTrainer(ckpt, seed=5, **_SAMPLED)
+    base = sampled.loss(batch)
+    assert base != legacy, "sampled starts did not reach the loss"
+    assert sampled.loss(batch) == base, "validation loss is not deterministic"
+    assert loss(seed=5, semi_implicit=True, **_SAMPLED) != base, "semi_implicit ignored"
+    # Only the low 32 bits of the seed count, as with torch.Generator.manual_seed.
+    assert loss(seed=5 + 2**32, **_SAMPLED) == base
+
+    # At lr=0 the weights never move, so the k-th step scores what a trainer seeded seed + k
+    # scores at its base seed. (step vs loss: the same value, compared to a tolerance.)
+    tr = mtn.MaterialTrainer(ckpt, seed=5, **_SAMPLED)
+    s0 = tr.step(batch, lr=0.0)
+    s1 = tr.step(batch, lr=0.0)
+    assert _close(s0, base), "step 0 did not draw with the base seed"
+    assert not _close(s1, s0), "the draw did not advance between steps"
+    assert _close(s1, loss(seed=6, **_SAMPLED)), "step 1 did not draw with seed + 1"
+    assert tr.loss(batch) == base, "steps moved the validation draw"
+
+    with pytest.raises(ValueError, match="frac_range"):
+        mtn.MaterialTrainer(ckpt, ms_count=4, frac_range=(0.98, 0.8))
+
+
+@_needs_multistart
+@pytest.mark.parametrize("case", [0, 1, 2])
+def test_semi_implicit_l_multi_matches_the_torch_reference(tmp_path, case):
+    """Native L_multi with semi_implicit=True is GRL-SNAM's multi_start_penalty, fed the native
+    model's coefficients and a manual_seed generator; the explicit default is not.
+
+    L_multi is isolated as loss(w_multi=1) - loss(w_multi=0): every other term is the same
+    deterministic function of the same weights and batch.
+    """
+    torch = pytest.importorskip("torch")
+    from grl_snam.surrogate_robust import multi_start_penalty
+
+    rng = np.random.default_rng(100 + case)
+    seed = int(rng.integers(0, 2**32)) + (2**32 if case == 2 else 0)  # high bits must not matter
+    ms_count = int(rng.integers(2, 7))
+    lo = float(rng.uniform(0.5, 0.85))
+    frac_range = (lo, float(rng.uniform(lo + 0.05, 0.99)))
+    ckpt = tmp_path / "init.cvcnm"
+    _write_random_cvcnm(ckpt, patch_size=16, seed=200 + case)
+    b = _synthetic_batch(seed=300 + case)
+    ms = dict(ms_count=ms_count, frac_range=frac_range, seed=seed)
+
+    def native(semi):
+        on, off = (
+            mtn.MaterialTrainer(ckpt, w_multi=w, semi_implicit=semi, **ms).loss(b) for w in (1, 0)
+        )
+        return on - off
+
+    B, N = b["C"].shape[:2]
+    alphas, beta, gamma = mtn._pycvc.nav_matnet_forward(
+        str(ckpt),
+        b["obs_feats"].reshape(B * N, 6),
+        b["obs_mask"].reshape(B * N),
+        (np.arange(B + 1) * N).astype(np.int32),
+        b["goal_feats"],
+        b["risk_patch"],
+    )[:3]
+    t = torch.from_numpy
+    ref = multi_start_penalty(
+        t(b["o0"]), t(b["v0"]), t(b["goal"]), t(b["C"]), t(b["R"]), t(b["obs_mask"].astype(bool)),
+        t(alphas.reshape(B, N)), t(beta), t(gamma), t(b["d_hat"]), t(b["dt"]), t(b["H"]),
+        robot_radius=t(b["rr"]), margin_factor=0.5, ms_h=3, ms_dt_mult=4.0, tau=0.05,
+        generator=torch.Generator().manual_seed(seed), ms_count=ms_count, frac_range=frac_range,
+    ).item()  # fmt: skip
+
+    semi, explicit = native(True), native(False)
+    assert ref > 1e-3, "fixture must actually score near-obstacle starts"
+    assert abs(semi - ref) <= 1e-5 * ref, f"semi-implicit native {semi!r} vs torch {ref!r}"
+    assert abs(explicit - ref) > 1e-3 * ref, "the explicit default should NOT match"

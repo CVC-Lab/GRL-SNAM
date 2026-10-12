@@ -80,8 +80,11 @@ def test_multi_start_starts_stay_between_the_agent_and_the_obstacle(monkeypatch)
 
 
 def test_multi_start_degenerate_range_reproduces_the_legacy_single_start():
-    """frac_range=(0.9, 0.9) is the pre-fix behaviour (and libcvc's native port) exactly,
-    and draws no random numbers."""
+    """frac_range=(0.9, 0.9) is the pre-fix behaviour exactly, and draws no random numbers.
+
+    libcvc's native port takes this same start, but its default rollout is explicit Euler (the
+    material fork's order), not this semi-implicit one. It matches this penalty only with
+    semi_implicit=True (libcvc #596); test_material_train_native checks that."""
     o0, v0, goal, C, R, mask, alphas, beta, gamma, d_hat, dt, H = _scene()
     state = torch.random.get_rng_state()
     got = sr.multi_start_penalty(

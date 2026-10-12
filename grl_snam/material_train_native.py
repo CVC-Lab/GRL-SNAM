@@ -17,6 +17,17 @@ agreeing with the CPU path to ~3e-6 after 30 optimizer steps. It is a REQUEST, n
 a guarantee — each op falls back to its host twin when the build has no CUDA, no
 device is present, or the batch exceeds a kernel's limits — so read
 :attr:`MaterialTrainer.cuda_active` for what is actually running.
+
+The multi-start term L_multi defaults to the material fork's legacy single start:
+one rollout from 90% of the clearance toward the nearest obstacle, integrated with
+EXPLICIT Euler (the fork's ``train_material.py`` order). ``ms_count``,
+``frac_range``, ``seed`` and ``semi_implicit`` opt into GRL-SNAM #113's sampled
+starts (libcvc #596). With ``semi_implicit=True`` the rollout is
+:func:`grl_snam.surrogate_robust.integrate_surrogate_v2`'s, and L_multi is
+:func:`~grl_snam.surrogate_robust.multi_start_penalty` with
+``generator=torch.Generator().manual_seed(seed)``. Those args need a pycvc that
+takes them (:data:`HAS_MATERIAL_TRAINER_MULTISTART`). Without one, only a
+configuration that equals the legacy start can be built.
 """
 
 from __future__ import annotations
@@ -35,6 +46,33 @@ HAS_MATERIAL_TRAINER_LOSS = HAS_MATERIAL_TRAINER and hasattr(_pycvc, "nav_materi
 HAS_MATERIAL_TRAINER_CUDA = HAS_MATERIAL_TRAINER and hasattr(
     _pycvc, "nav_material_trainer_cuda_active"
 )
+
+
+def _takes_multi_start_args() -> bool:
+    """Whether ``nav_material_trainer_create`` takes the trailing L_multi sampling args.
+
+    The args are new trailing positionals on an existing function (libcvc #596), so
+    ``hasattr`` cannot see them. The probe passes an inverted frac range. A binding
+    that takes the args range-checks it before it opens the model, so it raises
+    RuntimeError without a ``.cvcnm`` or a trainer. An older one rejects the argument
+    count with TypeError. The types must match the C signature exactly: SWIG's
+    overload dispatch also answers a type mismatch with TypeError.
+    """
+    if not HAS_MATERIAL_TRAINER:
+        return False
+    # path, grad_clip..tau (19 doubles), ms_h, ms_dt_mult, use_cuda, then
+    # ms_count, frac_lo, frac_hi, seed, ms_semi_implicit.
+    probe = ("", *[0.0] * 19, 3, 4.0, 0, 1, 0.5, 0.4, 0, 0)
+    try:
+        _pycvc.nav_material_trainer_create(*probe)
+    except RuntimeError:
+        return True  # past the arity check; the range check refused it
+    except Exception:
+        return False
+    return True  # accepted outright (cannot happen with an inverted range)
+
+
+HAS_MATERIAL_TRAINER_MULTISTART = _takes_multi_start_args()
 
 
 def cuda_available() -> bool:
@@ -116,6 +154,19 @@ class MaterialTrainer:
 
     Construct from a ``.cvcnm`` checkpoint (initial / Stage-1 warm-start weights);
     drive with :meth:`step` over batches; :meth:`save` the trained weights.
+
+    L_multi start sampling (GRL-SNAM #113, libcvc #596): each of ``ms_count`` starts
+    moves every agent ``frac ~ U(frac_range)`` of its clearance toward its nearest
+    obstacle. ``seed`` fixes the draw, and only its low 32 bits count, as with
+    ``torch.Generator.manual_seed``. The k-th :meth:`step` draws with ``seed + k``,
+    so each step sees fresh starts. :meth:`loss` always draws with ``seed``, so
+    validation is deterministic. ``semi_implicit`` selects GRL-SNAM's integrator for
+    the short rollouts. The default is the fork's explicit Euler. A degenerate range
+    draws nothing and runs one rollout whatever ``ms_count`` is. So the defaults, and
+    any ``ms_count >= 1`` or ``seed`` with ``frac_range=(0.9, 0.9)`` and
+    ``semi_implicit=False``, are the legacy single start. They work on any pycvc
+    with the trainer. Every other configuration needs
+    :data:`HAS_MATERIAL_TRAINER_MULTISTART`.
     """
 
     def __init__(
@@ -144,6 +195,10 @@ class MaterialTrainer:
         ms_h: int = 3,
         ms_dt_mult: float = 4.0,
         use_cuda: bool = False,
+        ms_count: int = 1,
+        frac_range: tuple[float, float] = (0.9, 0.9),
+        seed: int = 0,
+        semi_implicit: bool = False,
     ):
         if not HAS_MATERIAL_TRAINER:
             raise RuntimeError(
@@ -156,7 +211,18 @@ class MaterialTrainer:
                 "nav_material_trainer_cuda_active. Rebuild with -DCVC_ENABLE_CUDA=ON, "
                 "or pass use_cuda=False."
             )
-        self._h = _pycvc.nav_material_trainer_create(
+        frac_lo, frac_hi = (float(f) for f in frac_range)
+        if not 0.0 <= frac_lo <= frac_hi < 1.0:
+            raise ValueError(f"frac_range must satisfy 0 <= lo <= hi < 1, got {frac_range!r}")
+        legacy_multi = frac_lo == frac_hi == 0.9 and not semi_implicit and ms_count >= 1
+        if not legacy_multi and not HAS_MATERIAL_TRAINER_MULTISTART:
+            raise RuntimeError(
+                "ms_count/frac_range/seed/semi_implicit beyond the legacy single start need a "
+                "pycvc whose nav_material_trainer_create takes them (libcvc #596); this one "
+                "does not. Upgrade pycvc, or keep frac_range=(0.9, 0.9), "
+                "semi_implicit=False and ms_count >= 1."
+            )
+        args = [
             str(cvcnm_path),
             float(grad_clip),
             float(w_traj),
@@ -180,7 +246,17 @@ class MaterialTrainer:
             int(ms_h),
             float(ms_dt_mult),
             int(bool(use_cuda)),
-        )
+        ]
+        if not legacy_multi:
+            # The legacy start keeps the old signature, which every trainer binding takes.
+            args += [
+                int(ms_count),
+                frac_lo,
+                frac_hi,
+                int(seed) & 0xFFFFFFFF,
+                int(bool(semi_implicit)),
+            ]
+        self._h = _pycvc.nav_material_trainer_create(*args)
         self._requested_cuda = bool(use_cuda)
 
     @property
