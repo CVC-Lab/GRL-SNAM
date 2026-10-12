@@ -1,0 +1,25 @@
+# Fails when commits carry LLM / AI-assistant attribution: co-author trailers
+# naming an AI, "generated with" footers, AI session links, AI bot authors.
+# See https://github.com/cy-pca/llm-gate
+name: llm-gate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llm-gate-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  llm-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: cy-pca/llm-gate@v1
