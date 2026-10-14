@@ -17,7 +17,7 @@ _S: dict = {}
 
 def setup() -> None:
     host = current_host()
-    from pycvc_gl.camera import ChaseCamera
+    from pycvc_gl.camera import NativeChaseCamera as ChaseCamera
     from pycvc_gl.scenes import (
         building_occupancy,
         load_geometry_bundle,
