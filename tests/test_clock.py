@@ -155,7 +155,13 @@ def test_the_trajectory_is_the_same_under_every_pacing_mode():
 
     live = simulate(lambda c: c.advance(0.0167))
     n = ticks // 6
-    for trace in (simulate(fast), simulate(slow), simulate(lock), simulate(lambda c: c.advance_ticks(37)), simulate(step)):
+    for trace in (
+        simulate(fast),
+        simulate(slow),
+        simulate(lock),
+        simulate(lambda c: c.advance_ticks(37)),
+        simulate(step),
+    ):
         assert trace[:n] == live[:n]
 
 
@@ -169,7 +175,11 @@ def test_parity_with_the_native_clock():
     for rep in range(20):
         for d in deltas:
             a, b = py.advance(d), nat.advance(d)
-            assert (a.steps, a.dropped_steps, a.first_tick) == (b.steps, b.dropped_steps, b.first_tick)
+            assert (a.steps, a.dropped_steps, a.first_tick) == (
+                b.steps,
+                b.dropped_steps,
+                b.first_tick,
+            )
             assert abs(a.alpha - b.alpha) < 1e-12
         if rep == 10:
             py.set_mode("lockstep")
