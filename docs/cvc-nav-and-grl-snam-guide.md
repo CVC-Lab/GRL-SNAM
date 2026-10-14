@@ -145,11 +145,15 @@ Two concrete consequences worth carrying, not just vocabulary:
   That's fixed and republished now, but it's the load-bearing example of why "not actually Hamiltonian"
   matters operationally and not just semantically: a force field that isn't conservative can't be
   reasoned about the way the vocabulary suggests.
-- **A second, smaller divergence, still open:** `cvc::nav`'s `integrate_surrogate_v2`
-  (`geom_rollout.cpp`) runs **explicit** Euler where its Python namesake runs **semi-implicit** — a
-  genuine cross-language mismatch, though a narrow-blast-radius one (it isn't exported through
-  `pycvc_nav.i`, and its only callers are internal to `geom_rollout.cpp`'s multi-start training loss).
-  Worth knowing before you touch that path; not yet reconciled.
+- **A second, smaller divergence, opt-in to close:** `cvc::nav`'s `integrate_surrogate_v2`
+  (`geom_rollout.cpp`) runs **explicit** Euler by default, where its Python namesake runs
+  **semi-implicit**. The default follows the material fork's `train_material.py`, the native
+  trainer's normative source. Its blast radius is narrow: it isn't exported through `pycvc_nav.i`,
+  and its only callers are internal to `geom_rollout.cpp`'s multi-start training loss (L_multi).
+  libcvc #596 adds a `semi_implicit` switch, reached from Python as
+  `MaterialTrainer(semi_implicit=True)` in `grl_snam/material_train_native.py`. With it, native
+  L_multi matches `grl_snam.surrogate_robust.multi_start_penalty`. Without it, the two agree on the
+  start but not the rollout.
 
 None of this changes how you should use `cvc::nav` day to day — the fidelity contract above is what
 governs comparing outputs, and it holds regardless of what you call the underlying physics.

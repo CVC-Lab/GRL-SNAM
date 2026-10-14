@@ -186,8 +186,14 @@ def multi_start_penalty(
     penalizes ``softplus(-clearance / tau)``. The default range is centred on the old fixed
     ``frac = 0.9``, so ``w_multi`` keeps its scale. A degenerate range ``(f, f)`` draws no random
     numbers; ``(0.9, 0.9)`` reproduces the pre-2026-10 penalty, whose ``ms_count`` rollouts were all
-    identical (libcvc's native ``cvc::nav::multi_start_penalty`` mirrors that single start).
-    ``generator`` makes the draw reproducible without touching the global RNG.
+    identical. ``generator`` makes the draw reproducible without touching the global RNG.
+
+    libcvc's native ``cvc::nav::multi_start_penalty`` takes the same start but, by default, rolls it
+    out with EXPLICIT Euler. That is the material fork's order, which its ``train_material.py``
+    imports. :func:`integrate_surrogate_v2` here is semi-implicit, so the native default does not
+    reproduce this penalty. It does only with ``semi_implicit=True`` (libcvc #596; see
+    ``MaterialTrainer`` in :mod:`grl_snam.material_train_native`). There, native's sampled starts
+    match this function's with ``generator=torch.Generator().manual_seed(seed)``, draw for draw.
     """
     lo, hi = (float(f) for f in frac_range)
     if not 0.0 <= lo <= hi < 1.0:
