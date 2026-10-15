@@ -46,6 +46,7 @@ from a 0.06 s trace is wrong by 7.2x.
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import dataclass
 
 # Ceiling on the world delta one advance() may bank; past this a caller passed
@@ -115,6 +116,9 @@ class WorldClock:
         if mode not in MODES:
             raise ValueError(f"world clock: mode must be one of {MODES}")
         self._mode = mode
+        # Notified whenever the tick moves, so a follower thread can sleep until
+        # the driver advances the clock (wait_for_tick_change).
+        self._tick_changed = threading.Condition()
         self._apply_config(
             fixed_dt, scale, max_steps_per_advance, lockstep_steps, cap_scales_with_rate
         )
@@ -144,6 +148,7 @@ class WorldClock:
         self._accumulator = 0.0
         self._dropped = 0
         self._clear_measurement()
+        self._ticked()
 
     def configure(
         self,
@@ -183,11 +188,18 @@ class WorldClock:
             self._win_wall = 0.0
             self._win_world = 0.0
 
+    def _ticked(self) -> None:
+        """Wake every thread in :meth:`wait_for_tick_change`."""
+        with self._tick_changed:
+            self._tick_changed.notify_all()
+
     def _run(self, n: int) -> StepResult:
         """Run n quanta now: no cap, no bank."""
         first = self._tick
         self._tick += n
         self._win_world += n * self.fixed_dt
+        if n:
+            self._ticked()
         return StepResult(
             steps=n, alpha=_clamp_alpha(self._accumulator / self.fixed_dt), first_tick=first
         )
@@ -234,6 +246,8 @@ class WorldClock:
         self._accumulator = remainder
         self._dropped += dropped
         self._win_world += run * self.fixed_dt
+        if run:
+            self._ticked()
         return StepResult(
             steps=run,
             alpha=_clamp_alpha(self._accumulator / self.fixed_dt),
@@ -267,6 +281,15 @@ class WorldClock:
         if tick < 0:
             raise ValueError("world clock: tick must be >= 0")
         self._tick = int(tick)
+        self._ticked()
+
+    def wait_for_tick_change(self, tick: int, timeout: float) -> int:
+        """Block until the tick differs from ``tick`` or ``timeout`` seconds
+        pass, and return the current tick. A follower thread waits here for the
+        driver to move the clock, instead of polling."""
+        with self._tick_changed:
+            self._tick_changed.wait_for(lambda: self._tick != tick, timeout=max(0.0, timeout))
+            return self._tick
 
     def seek_time(self, t: float) -> None:
         """Seek to the quantum containing world time ``t``."""
@@ -340,6 +363,7 @@ class WorldClock:
         self._accumulator = 0.0
         self._dropped = 0
         self._clear_measurement()
+        self._ticked()
 
 
 # ── following one clock at several rates (cvc/core/clock_follower.h) ──────────

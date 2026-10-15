@@ -18,6 +18,7 @@ import math
 import os
 import sys
 
+from grl_snam.clock import ClockFollower, WorldClock, ticks_per_step
 from grl_snam.metrics import NavMetrics, hud_lines
 
 
@@ -186,30 +187,51 @@ def vehicle_box_mesh(length=4.6, width=2.0, height=1.6):
 
 
 class SimPacer:
-    """Wall-clock -> fixed-dt sim pacing — the Python twin of the native demos'
-    ``SimPacer`` (libcvc ``src/cvcGL/examples/nav_common.h``).
+    """Wall-clock -> fixed-dt sim pacing, on the shared world-clock mechanism.
 
-    Accumulate real seconds (times an optional ``speed``) and hand back the whole
-    number of fixed ``sim_dt`` ticks to run this frame, so the sim advances at a
-    fixed rate on ANY display rate. Stepping the navigator a fixed N times per
-    render frame instead made the same drive run faster the faster the window drew
-    (and much faster than real time on an unthrottled display) — this keeps world
-    time honest, exactly like the native cvc::nav demos' world clock."""
+    The demo's frame loop calls :meth:`ticks` once per frame with the wall delta.
+    That drives :attr:`clock` (a :class:`~grl_snam.clock.WorldClock`, the twin of
+    ``cvc::world_clock``) as its ONE driver and returns the navigator steps that
+    fell due: one per ``sim_dt``, through a :class:`~grl_snam.clock.ClockFollower`.
+    So the sim advances at a fixed rate on ANY display rate. (Stepping the
+    navigator a fixed N times per render frame instead made the same drive run
+    faster the faster the window drew.) It replaces a private accumulator that the
+    libcvc demos also used; they now follow ``app.world_clock()`` the same way.
+
+    The clock's quantum is the suite's 0.01 s when ``sim_dt`` is a whole number of
+    them (a 0.06 s navigator is 6 quanta), else ``sim_dt`` itself. A stall is
+    capped at ``cap`` navigator steps; the clock drops and counts the rest
+    (``clock.total_dropped()``) rather than bursting."""
+
+    SUITE_QUANTUM = 0.01
 
     def __init__(self):
-        self.carry = 0.0
+        self.clock: WorldClock | None = None
+        self._nav: ClockFollower | None = None
+        self._key = None
+
+    def _configure(self, sim_dt: float, cap: int) -> None:
+        try:
+            k = ticks_per_step(sim_dt, self.SUITE_QUANTUM)
+            quantum = self.SUITE_QUANTUM
+        except ValueError:
+            k, quantum = 1, sim_dt
+        self.clock = WorldClock(
+            fixed_dt=quantum,
+            max_steps_per_advance=max(1, int(cap)) * k,
+            cap_scales_with_rate=True,
+        )
+        self._nav = ClockFollower(k, 0, self.clock.tick())
+        self._key = (sim_dt, cap)
 
     def ticks(self, wall_dt: float, sim_dt: float, speed: float = 1.0, cap: int = 8) -> int:
-        if not (wall_dt > 0.0) or not (sim_dt > 0.0):
+        if not (sim_dt > 0.0):
             return 0
-        self.carry += wall_dt * speed
-        n = int(self.carry / sim_dt)
-        if n > cap:
-            n = cap  # a stall drops the backlog, never a tick burst that fast-forwards
-            self.carry = 0.0
-        else:
-            self.carry -= n * sim_dt
-        return n
+        if self._key != (sim_dt, cap):
+            self._configure(sim_dt, cap)
+        self.clock.set_scale(speed)
+        self.clock.advance(wall_dt)  # the one driver; a non-positive delta runs nothing
+        return self._nav.take(self.clock)
 
 
 class CameraDriver:

@@ -685,6 +685,8 @@ def sim_world_from_swarm(sw, weights_path, *, truth, freeze_sense=False, sense_e
 
 
 HAS_SIM_THREAD = AVAILABLE and hasattr(_pycvc, "nav_sim_thread_create")
+# The pycvc build can make the thread FOLLOW a shared pycvc.world_clock.
+HAS_SIM_THREAD_CLOCK = AVAILABLE and hasattr(_pycvc, "nav_sim_thread_create_on_clock")
 
 
 class NativeSimThread:
@@ -692,11 +694,36 @@ class NativeSimThread:
     ``cvc::nav::sim_thread``. The worker is a real thread that never touches the
     GIL (it runs only cvc::nav kernels), so it advances genuinely concurrently
     with Python; ``read()`` is a lock-free snapshot the renderer never blocks
-    the sim to take."""
+    the sim to take.
 
-    def __init__(self, sim_world, hz=60.0):
+    Two forms. ``NativeSimThread(world, hz=60.0)`` paces itself: ``hz`` steps per
+    wall second on a private clock (60 Hz at 0.06 s is 3.6x real time).
+    ``NativeSimThread(world, clock=app.world_clock())`` FOLLOWS a shared
+    ``pycvc.world_clock``: one navigator step every ``veh.dt / fixed_dt`` quanta,
+    run as the caller's driver advances the clock (``world_clock_binding.drive``),
+    so speed, pause, single-step and lockstep are the clock's, shared with every
+    other simulation on it. ``veh.dt`` must be a whole number of the clock's
+    quanta (configure the clock at 0.01 s for a 0.06 s navigator)."""
+
+    def __init__(self, sim_world, hz=60.0, *, clock=None):
         self._sw = sim_world  # keep the NativeSimWorld (and its capsule) alive
-        self._h = _pycvc.nav_sim_thread_create(sim_world._h, float(hz))
+        self._clock = clock  # the C++ thread borrows it; keep it alive too
+        if clock is None:
+            self._h = _pycvc.nav_sim_thread_create(sim_world._h, float(hz))
+        else:
+            if not HAS_SIM_THREAD_CLOCK:
+                raise RuntimeError(
+                    "this pycvc build cannot follow a shared clock "
+                    "(it lacks nav_sim_thread_create_on_clock; libcvc #630)"
+                )
+            self._h = _pycvc.nav_sim_thread_create_on_clock(sim_world._h, clock)
+
+    def wait_caught_up(self, timeout=5.0):
+        """Block until the worker has run every step due up to the clock's
+        current tick (True), or ``timeout`` seconds pass (False). A capture calls
+        this after driving the clock and before :meth:`read`, so each frame holds
+        exactly the steps its quanta made due."""
+        return bool(_pycvc.nav_sim_thread_wait_caught_up(self._h, float(timeout)))
 
     def start(self):
         _pycvc.nav_sim_thread_start(self._h)

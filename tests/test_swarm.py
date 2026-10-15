@@ -22,6 +22,7 @@ torch = pytest.importorskip("torch")
 
 import grl_snam.sdf_nav as sdf_nav  # noqa: E402
 from grl_snam import planner  # noqa: E402
+from grl_snam.clock import WorldClock  # noqa: E402
 from grl_snam.fog_stories import STORIES, shrunk  # noqa: E402
 from grl_snam.metrics import NavStats  # noqa: E402
 from grl_snam.nav import SdfNavigator  # noqa: E402
@@ -341,6 +342,34 @@ def test_sim_thread_runs_concurrently_and_reacts_to_commands():
     finally:
         sim.stop()
     assert not sim.is_alive(), "sim thread must shut down cleanly"
+
+
+def test_sim_thread_follows_a_shared_clock():
+    """Given a shared WorldClock, the thread runs exactly the steps the driver's
+    quanta make due (one per world.dt / fixed_dt), and a capture that waits for it
+    sees every frame's steps, however the worker is scheduled."""
+    story = _story(96)
+    truth = story.truth_grid()
+    specs = _free_specs(story, truth, 16, seed=3)
+    sw = Swarm(story, specs, model=_model(), truth_occ=truth, prior_occ=truth, sense_every=4)
+    sw._sense_shared = lambda: None
+
+    clock = WorldClock(fixed_dt=sw.dt / 3.0, mode="lockstep", lockstep_steps=2)
+    sim = SimThread(sw, clock=clock)
+    sim.start()
+    try:
+        for frame in range(1, 13):  # 2 quanta a frame: a step every 1.5 frames
+            clock.advance(0.0)
+            assert sim.wait_caught_up(5.0), f"frame {frame}"
+            assert sim.ticks == clock.tick() // 3, f"frame {frame}"
+            assert sim.buffer.read().tick == sim.ticks, f"frame {frame}"
+        clock.set_mode("paused")
+        clock.advance(1.0)
+        assert sim.wait_caught_up(5.0)
+        assert sim.ticks == 8, "a paused clock runs nothing"
+    finally:
+        sim.stop()
+    assert not sim.is_alive()
 
 
 # ── grouped belief: shared / clustered / private via map_id ──────────────────

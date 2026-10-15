@@ -114,3 +114,29 @@ def test_sim_thread_pause_resume(tmp_path):
         assert sim.ticks > a, "resumed sim must advance"
     finally:
         sim.stop()
+
+
+@pytest.mark.skipif(
+    not nav_native.HAS_SIM_THREAD_CLOCK, reason="pycvc build lacks nav_sim_thread_create_on_clock"
+)
+def test_sim_thread_follows_a_shared_pycvc_clock(tmp_path):
+    """The C++ worker follows app.world_clock(): one step per veh.dt / fixed_dt
+    quanta, as the Python driver advances the clock; a capture that waits for it
+    sees exactly each frame's steps."""
+    import pycvc
+
+    cw, sw = _native_world(tmp_path, n=200)
+    app = pycvc.App()
+    clock = app.world_clock()
+    clock.set_config(sw.dt / 3.0, 1.0, 8, 2, False)  # 3 quanta per navigator step
+    clock.set_mode_name("lockstep")  # 2 quanta per advance
+    sim = nav_native.NativeSimThread(cw, clock=clock)
+    sim.start()
+    try:
+        for frame in range(1, 13):
+            clock.advance(0.0)
+            assert sim.wait_caught_up(5.0), f"frame {frame}"
+            assert sim.ticks == clock.tick() // 3, f"frame {frame}"
+            assert sim.read()[5] == sim.ticks, f"frame {frame}"
+    finally:
+        sim.stop()

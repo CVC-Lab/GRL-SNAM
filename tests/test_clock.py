@@ -9,6 +9,8 @@ agree tick for tick.
 from __future__ import annotations
 
 import math
+import threading
+import time
 
 import pytest
 
@@ -163,6 +165,20 @@ def test_the_trajectory_is_the_same_under_every_pacing_mode():
         simulate(step),
     ):
         assert trace[:n] == live[:n]
+
+
+def test_a_follower_thread_wakes_when_the_driver_moves_the_clock():
+    c = WorldClock(fixed_dt=0.01)
+    assert c.wait_for_tick_change(0, 0.01) == 0, "no driver: times out at the same tick"
+    seen = []
+    t = threading.Thread(target=lambda: seen.append(c.wait_for_tick_change(0, 5.0)))
+    t.start()
+    time.sleep(0.02)
+    c.advance_ticks(3)
+    t.join(5.0)
+    assert seen == [3]
+    c.reset()
+    assert c.wait_for_tick_change(3, 0.0) == 0, "a rewind counts as a change"
 
 
 def test_parity_with_the_native_clock():
