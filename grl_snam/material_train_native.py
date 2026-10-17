@@ -46,6 +46,10 @@ HAS_MATERIAL_TRAINER_LOSS = HAS_MATERIAL_TRAINER and hasattr(_pycvc, "nav_materi
 HAS_MATERIAL_TRAINER_CUDA = HAS_MATERIAL_TRAINER and hasattr(
     _pycvc, "nav_material_trainer_cuda_active"
 )
+# Training through the deployed kinematic bicycle instead of the point mass (libcvc P8b).
+HAS_MATERIAL_TRAINER_BICYCLE = HAS_MATERIAL_TRAINER and hasattr(
+    _pycvc, "nav_material_trainer_set_bicycle"
+)
 
 
 def _takes_multi_start_args() -> bool:
@@ -155,6 +159,12 @@ class MaterialTrainer:
     Construct from a ``.cvcnm`` checkpoint (initial / Stage-1 warm-start weights);
     drive with :meth:`step` over batches; :meth:`save` the trained weights.
 
+    ``bicycle`` (a :class:`grl_snam.material_bike.BicycleParams`, or any object with its
+    fields) takes the loss through the deployed kinematic bicycle instead of the point-mass
+    surrogate (libcvc P8b). The limits are in the batch's length units. The bicycle starts
+    each agent at speed ``|v0|`` heading along ``v0``, and runs on the CPU even when
+    ``use_cuda`` is set. Needs :data:`HAS_MATERIAL_TRAINER_BICYCLE`.
+
     L_multi start sampling (GRL-SNAM #113, libcvc #596): each of ``ms_count`` starts
     moves every agent ``frac ~ U(frac_range)`` of its clearance toward its nearest
     obstacle. ``seed`` fixes the draw, and only its low 32 bits count, as with
@@ -199,6 +209,7 @@ class MaterialTrainer:
         frac_range: tuple[float, float] = (0.9, 0.9),
         seed: int = 0,
         semi_implicit: bool = False,
+        bicycle=None,
     ):
         if not HAS_MATERIAL_TRAINER:
             raise RuntimeError(
@@ -256,8 +267,35 @@ class MaterialTrainer:
                 int(seed) & 0xFFFFFFFF,
                 int(bool(semi_implicit)),
             ]
+        if bicycle is not None and not HAS_MATERIAL_TRAINER_BICYCLE:
+            raise RuntimeError(
+                "bicycle= needs a pycvc with nav_material_trainer_set_bicycle (libcvc P8b); "
+                "this one trains on the point mass only."
+            )
         self._h = _pycvc.nav_material_trainer_create(*args)
         self._requested_cuda = bool(use_cuda)
+        if bicycle is not None:
+            # Any object with the BicycleParams fields (grl_snam.material_bike, which
+            # needs torch, so it is not imported here).
+            _pycvc.nav_material_trainer_set_bicycle(
+                self._h,
+                1,
+                float(bicycle.L),
+                float(bicycle.delta_max),
+                float(bicycle.a_max),
+                float(bicycle.a_lat_max),
+                float(bicycle.k_steer),
+                float(bicycle.vmax),
+                int(bool(bicycle.allow_reverse)),
+            )
+
+    @property
+    def integrator(self) -> str:
+        """``"bicycle"`` when the loss is taken through the kinematic bicycle (``bicycle=``),
+        else ``"surrogate"``, the point mass."""
+        if not HAS_MATERIAL_TRAINER_BICYCLE:
+            return "surrogate"
+        return str(_pycvc.nav_material_trainer_integrator(self._h))
 
     @property
     def cuda_active(self) -> bool:
