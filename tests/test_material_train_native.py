@@ -342,3 +342,29 @@ def test_semi_implicit_l_multi_matches_the_torch_reference(tmp_path, case):
     assert ref > 1e-3, "fixture must actually score near-obstacle starts"
     assert abs(semi - ref) <= 1e-5 * ref, f"semi-implicit native {semi!r} vs torch {ref!r}"
     assert abs(explicit - ref) > 1e-3 * ref, "the explicit default should NOT match"
+
+
+@pytest.mark.skipif(
+    not mtn.HAS_MATERIAL_TRAINER_BICYCLE, reason="pycvc lacks nav_material_trainer_set_bicycle"
+)
+def test_bicycle_integrator_trains(tmp_path):
+    """bicycle= takes the loss through the kinematic bicycle (libcvc P8b), and it descends."""
+    from grl_snam.material_bike import BicycleParams
+
+    ckpt = tmp_path / "init.cvcnm"
+    _write_random_cvcnm(ckpt, patch_size=16, seed=5)
+    batch = _synthetic_batch(seed=13)
+    point_mass = mtn.MaterialTrainer(ckpt)
+    assert point_mass.integrator == "surrogate"
+    # Limits sized for the synthetic batch (positions within a few units, dt = 0.1).
+    vehicle = BicycleParams(L=0.3, a_max=2.0, a_lat_max=1.5, vmax=1.5)
+    bike = mtn.MaterialTrainer(ckpt, bicycle=vehicle)
+    assert bike.integrator == "bicycle"
+    assert bike.loss(batch) != point_mass.loss(batch)
+    L0 = bike.step(batch, lr=1e-3)
+    L = L0
+    for _ in range(20):
+        L = bike.step(batch, lr=1e-3)
+    assert np.isfinite(L) and L < L0, f"bicycle training did not descend ({L0} -> {L})"
+    with pytest.raises(Exception):
+        mtn.MaterialTrainer(ckpt, bicycle=BicycleParams(L=0.0))  # a zero wheelbase is refused
