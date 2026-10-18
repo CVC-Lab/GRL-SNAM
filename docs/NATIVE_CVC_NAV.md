@@ -21,6 +21,7 @@ API reference for the trainer lives in libcvc `docs/NAV_TRAINING.md`.
 | **Kernels** — EDT, `build_sdf`, inflate, line-of-sight, `nearest_free`, A*, string-pull, `sense_batch`, neighbours | `grl_snam/planner.py`, `sdf_nav.py`, `belief.py` | `nav_native.*` → `pycvc.nav_*` | `GRL_SNAM_NAV_BACKEND` (default `native`; `python` forces off) | **bit-identical** |
 | **Drive** — sample → CoefMLP → bicycle rollout, carrot FSM, `sim_world`, `sim_thread` | `sdf_nav.py`, `swarm.py` | `nav_native.drive_step` / `sim_world_*` | `GRL_SNAM_NAV_DRIVE=native` (Swarm; default `torch`) | float-equivalent (~1e-4) |
 | **Trainer** — self-supervised CoefMLP training | `grl_snam/tools/coef_train.py` (torch) | `nav_native.train_coef_mlp` → `cvc::nav::coef_train` | `GRL_SNAM_TRAIN_BACKEND=native` (or `--backend native`) | torch-independent (gradcheck) |
+| **Plant** — the vehicles agents drive: nav's bicycle, or `cvc::physics` vehicles on Jolt | the kinematic bicycle (`sdf_nav.py`) | `nav_native.JoltPlant` → `pycvc.nav_plant`; `Squad(plant=...)` | `plant=` (`Squad`, `sim_world_from_swarm`); default none | a different runtime: physics, measured against the bicycle |
 
 **Nothing above is on by default that changes results.** The kernels are a
 bit-identical drop-in (so they *can* be the default when present); the drive and
@@ -131,6 +132,62 @@ the final weights come back), when the `pycvc` was built with CUDA and a device 
 present. It is a device transcription of the same hand-written adjoints and
 reproduces the CPU loss+gradient to ~1e-7.
 
+## A physics plant — `Squad(plant=...)`
+
+With a pycvc carrying libcvc's P6 physics bindings (`nav_native.HAS_PLANT`), the agents can
+drive physics vehicles instead of nav's kinematic bicycle. libcvc's navigator computes each
+agent's command, a `cvc::physics` vehicle's driver model and Jolt integrate it, and nav
+reads the rear axle back (libcvc's `nav_plant`, its P4 plant seam).
+
+```python
+from grl_snam.squad import Squad
+from grl_snam import nav_native
+
+sq = Squad(story, agents, truth_occ=truth, prior_occ=truth, plant="jolt")  # RoboRacers
+res = sq.run(max_steps=1500)
+res.reached, res.energy_J                 # who arrived, and what each drew (J)
+sq.plant.vehicle_state(0)["energy"]       # the whole ledger: brake, tire, aero, rolling, ...
+sq.plant.drift_summary()                  # the plant against nav's bicycle, by lateral g
+
+# or by hand, on any native world:
+w = nav_native.sim_world_from_swarm(sw, weights, truth=truth,
+                                    plant=nav_native.JoltPlant("roboracer"))
+```
+
+- **`plant=`** is `"jolt"` (RoboRacers), a preset name (`"roboracer"`, `"humvee"`), a
+  `JoltPlant`, or `"kinematic"` for nav's C++ bicycle without physics. `None`, the
+  default, keeps the Python path.
+- **The runtime.** `Squad(plant=...)` runs the squad in libcvc's pure-C++ `sim_world`, with
+  one private belief plane per agent. It keeps `step`, `run`, `done`, the per-agent records
+  and `SquadResult` (plus `energy_J`). It does not keep the Python path's route spine: the
+  C++ world drives its own carrot toward each goal. Peers meet as bodies in the physics
+  world, not as stamps in each other's truth. Moving goals and `FollowGoal` work.
+  Per-agent `vmax` or sensor overrides and material grids are refused for now.
+- **The world.** `JoltPlant` builds a flat ground (`ground_mu`, `rolling_resistance`) and
+  turns the truth grid's occupied cells into static boxes, merged into rectangles
+  (`obstacle_boxes`). A vehicle that leaves the plan then meets the building it would have
+  met. A start inside an occupied cell is refused, because a vehicle added in a box is
+  wedged there.
+- **Limits.** GRL-SNAM's limits are in the trained metric (`a_lat_max` 1.0 normalized is
+  about 2 g), more than a tire holds. On a plant the navigator plans with the vehicle's
+  limits, never more than the story's: `0.8 × max_accel`, and a corner cap of `a_lat_g`
+  g (0.5 by default).
+- **Vehicles.** The RoboRacer, the UT-AV lab's 1/10 car, fits GRL-SNAM's 0.7 m bodies and
+  is the default. A Humvee is for Humvee-scale scenes: it does not fit the city story's
+  streets.
+- **Measured** on the city story (96 cells, known map, two agents crossing):
+
+  | Runtime | Ticks | Arrived | Penetration | Wall time |
+  |---|---|---|---|---|
+  | Python | 583 | both | 0 | 4.6 s |
+  | Native kinematic | 441 | both | 0 | 0.3 s |
+  | Jolt RoboRacers | 842 | both | 0 | 0.7 s |
+
+  On the plant the agents drew 3.3 and 3.7 kJ from their batteries.
+
+`tests/test_squad_plant.py` covers it, and skips without the bindings. The torch `Swarm`
+and the Python `Squad` stay kinematic: they are what trains.
+
 ## Fidelity contract
 
 - **Kernels: bit-identical.** A C++ kernel result equals the numpy reference
@@ -158,6 +215,11 @@ newer, ≥ 3.3.0 for the trainer) with `CVC_BUILD_PYCVC=ON` and point `PYTHONPAT
 
 Everything degrades cleanly without it: `HAS_* == False`, `enabled() == False`, and
 the Python/torch path runs.
+
+The physics plant needs libcvc with its P6 pycvc bindings (`pycvc.physics_world`,
+`pycvc.nav_plant`, `nav_sim_world_set_plant`). On Windows, Python 3.8+ ignores `PATH`
+for extension DLLs: call `os.add_dll_directory` for the deps' and the build's `bin`
+before `import pycvc`.
 
 ## See also
 
