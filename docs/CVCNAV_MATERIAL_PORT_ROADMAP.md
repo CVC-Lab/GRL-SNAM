@@ -350,6 +350,68 @@ The full material suite is green: 31 tests across 7 binaries
 independently reproduces #271's RTX 3050 Ti / Windows validation on a second
 platform.
 
+### The torch trainer, held to the native one
+
+Every training stage has a C++ and a Python path, CUDA on either, parity-tested. For this stage
+the Python path is `grl_snam/material_train_torch.py`: `MaterialTrainerTorch`, the torch twin of
+`MaterialTrainer`. It takes the same constructor arguments, the same `step(batch, lr, ext=)` /
+`loss(batch, frozen_eta, ext=)` / `save(path)` and the same 17-array batch, and adds
+`loss_parts` / `loss_and_grad` (the terms, named as libcvc's `material_loss_parts`, and the
+per-tensor weight gradients). It trains `CoefEnergyNetMaterial` through the torch rollout twins
+(`integrate_surrogate_material`, `integrate_bicycle_material`, both with `ext=`), differentiated by
+autograd, on the CPU or `device="cuda"`, in float32 or float64. Weights load from and save to
+`.cvcnm` through `matnet_export`, so one file runs on both trainers. The dynamic integrator has no
+torch twin yet; `integrator="dynamic"` raises `NotImplementedError`.
+
+It implements `material_train.cpp`'s `compute_loss` term by term, and follows the native where a
+literal torch reading would differ:
+
+- The model runs without dropout and through the transformer's math path (no fused fast path),
+  as `coef_energy_net` does. TF32 is off for its convolutions on CUDA; with it, the risk
+  encoder's gradients drift by 1e-4.
+- Every config scalar is rounded to float32 (`cvar_alpha = 0.95f` moves `1/(1-alpha)` by 2e-7),
+  and the reductions run in float64 from the per-agent values.
+- The CVaR quantile is `quantile_linear`, detached; `lreg`'s clamp passes its gradient through,
+  as the native seed does.
+- `L_multi` is `geom_rollout.cpp`'s: explicit Euler by default, the trainer's mass, the starts
+  drawn as `multi_start_fracs` draws them, `seed + k` at step k. The bicycle uses the
+  `_bicycle` variant.
+- The optimizer is `material_adam`: global-norm clip, then bias-corrected Adam, in float32
+  arithmetic.
+
+**The gate** is libcvc's own golden: `NavMaterialTrain.TorchTrainerGolden` (libcvc #734,
+6001a840). With `CVC_MATERIAL_TRAIN_GOLDEN_DIR` set, it writes the config, batch and a scheduled
+two-patch external force (JSON), the weights before and after 3 Adam steps (`.cvcnm`), step 0's
+weight gradients and each step's loss terms. It is ~3 MB and not committed;
+`tests/test_material_train_torch.py` reads it from `GRL_SNAM_MATERIAL_TRAIN_GOLDEN` and skips
+without it. Measured, CPU and CUDA, float32 and float64:
+
+| quantity | tolerance | measured |
+|---|---|---|
+| step-0 loss and every term (eta frozen at the native's) | 1e-5 rel | <= 5e-7 |
+| step-0 weight gradients, per tensor | 1e-4 of the tensor's largest entry | <= 1e-6 |
+| the loss and eta at steps 0-2 and after the 3rd update | 1e-5 rel | <= 2e-7 |
+| weights after 3 Adam steps (lr 1e-3) | 1e-6 on 99.99%, 2.5e-5 on every entry | 1.3e-7 / 3.5e-6 |
+
+The native's model and rollouts are float32 and only its reductions are double, so the golden
+holds at the float tier for either torch dtype. The double part is checked on its own: on both
+sides the terms add up to L to 1e-12. One exclusion, by construction: the attention key bias
+(`in_proj_bias[64:128]`). Softmax ignores a shift shared by every key, so its gradient is
+identically zero, and both trainers' gradients there are roundoff (~1e-8). Adam divides by the
+gradient's own size, so it turns that roundoff into steps of up to `lr`, differently on each
+side. The test checks those 128 entries for exactly that.
+
+When the installed pycvc has the trainer binding, the same test file also runs a live native
+trainer against the torch one. That covers what the golden does not: the bicycle, and sampled
+and semi-implicit multi-start. Measured against a pre-#734 build (no `ext`): loss <= 1e-7 rel
+over 3 steps, weights 1.8e-7 at the 99.99th percentile, 1.2e-5 max. Without either, CI runs the
+self-consistency half: a float64 central-difference gradcheck of the full loss -> weights chain
+(directional along the whole gradient to 1e-5, and every tensor's largest entry to 1e-4), with
+`ext` and on the bicycle. It also checks the pass-through's semantics (`loss` does not train,
+`step` returns the pre-update loss, step k draws with `seed + k`, `ext=None` equals a zero
+force), that semi-implicit `L_multi` equals `surrogate_robust.multi_start_penalty`, determinism,
+the `.cvcnm` round trip, and CUDA against the CPU.
+
 ### The shipped CUDA design (not the one this document originally planned)
 
 Recorded here because the code took the route the earlier plan rejected, and the
@@ -386,15 +448,16 @@ theory is how the shipped design would get replaced by something slower.
 ### What does not exist
 
 - **No campaign driver.** `grl_snam/material_train_native.py` is a per-step
-  handle and nothing more. Grepping for `material_train_native`, `MaterialTrainer`
-  or `BATCH_KEYS` returns exactly three files: this roadmap, the module, and its
-  own test — there is no production caller. There
+  handle and nothing more, and so is its torch twin, `material_train_torch.py`.
+  Grepping for `MaterialTrainer` or `BATCH_KEYS` finds only those two modules,
+  their tests and the docs. There is no production caller. There
   is no dataset adapter (`git grep -i dfc2018` returns nothing), no `collate_fn`
   doing obstacle padding + bool mask, no epoch loop, no running-metric logging,
   no per-epoch/best checkpoint writes, and no `train-material` subcommand in
   `grl_snam/cli.py` (which registers only `material-demo`, `train`, `train-coef`,
-  `train-geo`). The only thing in the repo that builds the 17 `BATCH_KEYS`
-  arrays is `_synthetic_batch()` in `tests/test_material_train_native.py:105`.
+  `train-geo`). The only things in the repo that build the 17 `BATCH_KEYS`
+  arrays are test fixtures (`_synthetic_batch()` in
+  `tests/test_material_train_native.py`, `_batch()` in `tests/test_material_train_torch.py`).
   The dataset and epoch loop staying in Python is the design — but the Python
   has not been written.
 - **`L_multi` has no CUDA twin.** There is no `src/cvc/nav/geom_rollout.cu`;
