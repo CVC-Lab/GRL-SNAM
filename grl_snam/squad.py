@@ -17,6 +17,16 @@ per agent over a shared static truth, stepped in lockstep. That reuses the whole
 tested single-agent path — sensing, the route spine, the vehicle model, the
 collision scoring — instead of forking it, and it keeps each agent's trace in
 exactly the format the renderer already reads.
+
+``Squad(..., plant=...)`` is the other runtime: the squad runs in libcvc's pure-C++
+``cvc::nav::sim_world``, one private belief plane per agent, and its agents drive a
+physics plant's vehicles (``plant="jolt"``, a vehicle preset name, or a
+:class:`~grl_snam.nav_native.JoltPlant`) or nav's C++ bicycle (``"kinematic"``).
+It keeps the squad's interface — ``step``, ``run``, ``done``, the per-agent records
+and :class:`SquadResult` — but not the Python path's planner: the C++ world drives
+its own carrot toward each goal, and peers meet as bodies in the physics world
+rather than as stamps in each other's truth. The torch path stays the default, and
+the one that trains.
 """
 
 from __future__ import annotations
@@ -65,6 +75,9 @@ class SquadResult:
     ticks: int = 0
     reached: dict = field(default_factory=dict)
     penetration: dict = field(default_factory=dict)
+    #: J each agent's vehicle drew from its source (fuel or battery) — filled only on
+    #: a physics plant (``Squad(plant=...)``), whose energy ledger measures it.
+    energy_J: dict = field(default_factory=dict)
     #: Steps with ANY body point in truth, per agent. `penetration` is a POINT
     #: test at the rear axle and under-reports a body clipping a corner, so a
     #: footprint's whole benefit is invisible in it. Report both when comparing
@@ -98,9 +111,7 @@ class FollowGoal:
     def position_at(self, t: float) -> tuple[float, float]:
         if self._squad is None:
             raise RuntimeError("FollowGoal was never bound to a Squad")
-        sc = self._squad.scenarios[self.leader_key]
-        x, y = sc.nav.pos_world()
-        return float(x), float(y)
+        return self._squad.position_of(self.leader_key)
 
 
 class Squad:
@@ -119,6 +130,7 @@ class Squad:
         batched_drive: bool = False,
         stagger_sense: bool = False,
         material=None,
+        plant=None,
     ):
         if not agents:
             raise ValueError("a squad needs at least one agent")
@@ -193,6 +205,176 @@ class Squad:
         if stagger_sense:
             for i, sc in enumerate(self.scenarios.values()):
                 sc.sense_phase = i % sc.sense_every
+
+        # The native runtime (libcvc's sim_world, optionally on a physics plant).
+        self.native = None
+        self.plant = None
+        self._native_weights = None
+        if plant is not None:
+            self._native_init(plant, prior_occ, material)
+
+    # ── the native runtime (Squad(plant=...)) ───────────────────────────────
+    def _native_init(self, plant, prior_occ, material) -> None:
+        """Build the C++ sim_world that runs this squad: the scenarios' truth, starts,
+        goals, sensor and vehicle parameters, the shared policy, one belief plane per
+        agent; then the plant."""
+        import os
+        import tempfile
+
+        from .tools.coef_export import write_coef_mlp
+
+        if not _native.HAS_SIM_WORLD or not _native.HAS_SIM_WORLD_PLANES:
+            raise RuntimeError(
+                "Squad(plant=...) needs a pycvc with libcvc's P6 bindings (nav_sim_world_create "
+                "with map_id, nav_sim_world_set_plant)"
+            )
+        if material is not None:
+            raise NotImplementedError("Squad(plant=...) with a material grid is a follow-up")
+        scs = list(self.scenarios.values())
+        sc0 = scs[0]
+        nav0 = sc0.nav
+        for a, sc in zip(self.agents, scs):
+            if sc.nav.kw != nav0.kw or sc.sensor != sc0.sensor:
+                raise NotImplementedError(
+                    f"Squad(plant=...): agent {a.key!r} overrides vmax or its sensor; the native "
+                    "world takes one vehicle and one sensor for the squad"
+                )
+        fd, path = tempfile.mkstemp(suffix=".cvcnav")
+        os.close(fd)
+        write_coef_mlp(nav0.model, path)
+        self._native_weights = path
+
+        def w2n(p):
+            return nav0.w2n(p)
+
+        o = np.stack([w2n(sc.nav.pos_world()) for sc in scs]).astype(np.float32)
+        goal = np.stack([w2n(sc.waypoints[0]) for sc in scs]).astype(np.float32)
+        color = np.array([a.color for a in self.agents], np.float32)
+        truth = np.ascontiguousarray(sc0.truth, np.uint8)
+        prior = (
+            np.ascontiguousarray(prior_occ, np.uint8)
+            if prior_occ is not None
+            else np.zeros_like(truth)
+        )
+        H, W = truth.shape
+        mnx, mny, mxx, mxy = sc0.bounds
+        k, v = nav0.kw, dict(nav0._veh)
+        n = len(scs)
+        self.plant = _native.make_plant(plant, bounds=sc0.bounds, obstacles=sc0.truth)
+        if self.plant is not None:
+            # The navigator's limits in its trained metric are more than any tire holds;
+            # on a physics plant it plans with the vehicle's (never more than the story's).
+            lim = self.plant.nav_limits(nav0.S)
+            v["a_max"] = min(float(v["a_max"]), lim["a_max"])
+            v["a_lat_max"] = min(float(v["a_lat_max"]), lim["a_lat_max"])
+        h = _native._pycvc.nav_sim_world_create(
+            truth,
+            prior,
+            path,
+            o,
+            goal,
+            color,
+            H,
+            W,
+            mnx,
+            mny,
+            mxx,
+            mxy,
+            nav0.cx,
+            nav0.cy,
+            nav0.S,
+            float(sc0.sensor.get("range_m", 60.0)),
+            int(sc0.sensor.get("n_rays", 240)),
+            float(sc0.sensor.get("fov_rad", 2 * np.pi)),
+            k["rr"],
+            k["d_hat"],
+            k["dt"],
+            k["vmax"],
+            v["L"],
+            v["delta_max"],
+            v["a_max"],
+            v["a_lat_max"],
+            v["k_steer"],
+            int(nav0.nsub),
+            int(bool(v["allow_reverse"])),
+            float(nav0.reach_tol),
+            int(sc0.sense_every),
+            0,
+            2.2,
+            -1.4,
+            8.0,
+            1 if sc0.unknown == "optimistic" else 0,
+            0.5,
+            0.15,
+            4.0,
+            np.arange(n, dtype=np.int32),
+            n,
+        )
+        self.native = _native.NativeSimWorld(h, n)
+        if self.plant is not None:
+            # A vehicle added inside a building's box is wedged in it for good; nav's
+            # bicycle would just drive out. Refuse it rather than run a stuck agent.
+            for a, sc in zip(self.agents, scs):
+                if sc._truth_hit(sc.nav.pos_world()):
+                    raise ValueError(
+                        f"Squad(plant=...): agent {a.key!r} starts inside an obstacle cell; a "
+                        "physics vehicle cannot be added there"
+                    )
+        self.native.set_plant(self.plant)
+        self._native_dt = float(nav0.dt)
+        self._native_reached = np.zeros(n, bool)
+        self._native_tick = 0
+
+    def position_of(self, key: str) -> tuple[float, float]:
+        """Agent ``key``'s position (world metres), from whichever runtime steps it."""
+        if self.native is not None:
+            i = list(self.scenarios).index(key)
+            pos = self.native.snapshot()[0]
+            return float(pos[i, 0]), float(pos[i, 1])
+        x, y = self.scenarios[key].nav.pos_world()
+        return float(x), float(y)
+
+    def _native_step(self) -> dict:
+        from .scenario import StepRecord
+
+        t = self._native_tick * self._native_dt
+        keys = list(self.scenarios)
+        # A moving goal is the agent's target where it is NOW (a FollowGoal reads its
+        # leader's current position, the one-tick-lag case of the serial path).
+        for i, a in enumerate(self.agents):
+            mg = a.moving_goal if a.moving_goal is not None else self.story.moving_goal
+            if mg is not None:
+                gx, gy = mg.position_at(t)
+                gn = self.scenarios[a.key].nav.w2n((gx, gy))
+                self.native.retarget(i, float(gn[0]), float(gn[1]))
+        self.native.step()
+        self._native_tick += 1
+        pos, head, speed, mode, reached = self.native.snapshot()
+        out = {}
+        for i, k in enumerate(keys):
+            sc = self.scenarios[k]
+            x, y = float(pos[i, 0]), float(pos[i, 1])
+            hit = sc._truth_hit((x, y))
+            newly = bool(reached[i]) and not self._native_reached[i]
+            gx, gy = sc.waypoints[0]
+            out[k] = StepRecord(
+                step=self._native_tick,
+                x=x,
+                y=y,
+                heading_rad=float(head[i]),
+                speed_mps=float(speed[i]),
+                reached_wp=0 if newly else None,
+                goal_index=0,
+                mode="wall" if int(mode[i]) == 1 else "seek",
+                rebuilt=False,
+                truth_penetration=hit,
+                body_penetration=hit,
+                body_clearance_m=float("nan"),
+                belief_version=0,
+                goal_dist_m=float(np.hypot(gx - x, gy - y)),
+            )
+        self._native_reached = np.asarray(reached, bool).copy()
+        return out
 
     # ── the shared world ────────────────────────────────────────────────────
     def _footprint(self, sc, half_m: float) -> tuple[int, int, int, int] | None:
@@ -388,6 +570,10 @@ class Squad:
         return metrics
 
     def step(self) -> dict:
+        if self.native is not None:
+            out = self._native_step()
+            self.step_i += 1
+            return out
         self._stamp_peers()
         out = {}
         sdf_batch = self._batch_enabled()
@@ -448,6 +634,8 @@ class Squad:
 
     @property
     def done(self) -> bool:
+        if self.native is not None:
+            return bool(self._native_reached.all())
         return all(sc.done for sc in self.scenarios.values())
 
     def run(
@@ -490,7 +678,12 @@ class Squad:
         res.tracks = {k: np.asarray(v, np.float32) for k, v in tracks.items()}
         res.penetration = pen
         res.body_penetration = bpen
-        res.reached = {k: sc.done for k, sc in self.scenarios.items()}
+        if self.native is not None:
+            res.reached = {k: bool(self._native_reached[i]) for i, k in enumerate(self.scenarios)}
+            if self.plant is not None:
+                res.energy_J = {k: self.plant.energy_J(i) for i, k in enumerate(self.scenarios)}
+        else:
+            res.reached = {k: sc.done for k, sc in self.scenarios.items()}
         return res
 
 

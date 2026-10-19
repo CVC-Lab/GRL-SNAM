@@ -457,6 +457,7 @@ class NativeSimWorld:
     def __init__(self, handle, n):
         self._h = handle
         self.n = int(n)
+        self.plant = None  # a JoltPlant once set_plant() gives one
 
     def step(self, num_threads=0):
         _pycvc.nav_sim_world_step(self._h, int(num_threads))
@@ -467,6 +468,65 @@ class NativeSimWorld:
 
     def retarget(self, i, gx_n, gy_n):
         _pycvc.nav_sim_world_retarget(self._h, int(i), float(gx_n), float(gy_n))
+
+    # ── the plant (libcvc P4/P6; opt-in: nav's own bicycle until one is set) ──
+    @property
+    def tick(self):
+        """Ticks stepped."""
+        return int(_pycvc.nav_sim_world_tick(self._h))
+
+    @property
+    def plant_kind(self):
+        """``"kinematic"`` (nav's bicycle) or ``"jolt"`` (a :class:`JoltPlant`)."""
+        if not HAS_PLANT:
+            return "kinematic"
+        return str(_pycvc.nav_sim_world_plant_kind(self._h))
+
+    def set_plant(self, plant):
+        """Drive the agents as ``plant``'s vehicles (a :class:`JoltPlant`), or as nav's
+        kinematic bicycle with ``None``. The plant is attached at the agents' current
+        poses, at rest; the world holds it alive while it is set."""
+        if plant is None:
+            if HAS_PLANT:
+                _pycvc.nav_sim_world_set_plant(self._h, None)
+            self.plant = None
+            return
+        if not HAS_PLANT:
+            raise RuntimeError(
+                "pycvc lacks nav_sim_world_set_plant — install a pycvc with libcvc's P6 "
+                "physics bindings."
+            )
+        _pycvc.nav_sim_world_set_plant(self._h, plant.plant)
+        self.plant = plant
+
+    # ── terrain (libcvc P5; opt-in) ────────────────────────────────────────
+    def set_terrain(self, heights, config=None):
+        """Terrain in the navigator's energy: ``heights`` (rows, cols) metres over the
+        grid, row 0 at min y, and a config dict (``JoltPlant.terrain_config_of``'s
+        form; missing keys keep libcvc's defaults)."""
+        if not HAS_PLANT:
+            raise RuntimeError("pycvc lacks nav_sim_world_set_terrain (libcvc P6)")
+        _pycvc.nav_sim_world_set_terrain(
+            self._h, np.ascontiguousarray(heights, np.float32), dict(config or {})
+        )
+
+    def terrain_settings(self):
+        """The terrain's config as a dict, or None without one."""
+        return _pycvc.nav_sim_world_terrain_settings(self._h) if HAS_PLANT else None
+
+    def infeasible_entries(self):
+        """Each agent's ticks on infeasible slope since set_terrain, or None."""
+        return _pycvc.nav_sim_world_infeasible_entries(self._h) if HAS_PLANT else None
+
+    # ── the state tree (libcvc P6: sim_world::pull / publish) ──────────────
+    def pull(self, app, prefix):
+        """Read the world's live settings from ``<prefix>.nav.*`` in ``app``'s tree
+        (seeded with the world's values when unset; metres, not normalized)."""
+        _pycvc.nav_sim_world_pull(self._h, app, str(prefix))
+
+    def publish(self, app, prefix):
+        """Write the world's fixed settings and tick under ``<prefix>.nav.*``."""
+        _pycvc.nav_sim_world_publish(self._h, app, str(prefix))
 
     # ── material (opt-in; the world is byte-unchanged until attached) ────────
     @property
@@ -629,10 +689,13 @@ class NativeSimWorld:
         )
 
 
-def sim_world_from_swarm(sw, weights_path, *, truth, freeze_sense=False, sense_every=4):
+def sim_world_from_swarm(sw, weights_path, *, truth, freeze_sense=False, sense_every=4, plant=None):
     """Build a :class:`NativeSimWorld` mirroring a shared-belief :class:`Swarm`'s
     init (same poses, goals, colors, field prior, sensor / vehicle params and the
-    same ``.cvcnav`` policy) — the pure-C++ counterpart of the torch swarm."""
+    same ``.cvcnav`` policy) — the pure-C++ counterpart of the torch swarm.
+
+    ``plant`` (a :class:`JoltPlant`) makes the agents drive its physics vehicles;
+    the torch Swarm itself stays kinematic (it is what trains)."""
     o = np.ascontiguousarray(sw.o.detach().cpu().numpy(), np.float32)
     goal = np.ascontiguousarray(sw.goal.detach().cpu().numpy(), np.float32)
     color = np.ascontiguousarray(sw.color.detach().cpu().numpy(), np.float32)
@@ -681,7 +744,203 @@ def sim_world_from_swarm(sw, weights_path, *, truth, freeze_sense=False, sense_e
         0.15,
         4.0,
     )
-    return NativeSimWorld(h, sw.N)
+    w = NativeSimWorld(h, sw.N)
+    if plant is not None:
+        w.set_plant(plant)
+    return w
+
+
+# ── a physics plant (libcvc P4/P6): the agents drive cvc::physics vehicles ──────
+
+#: The pycvc build carries libcvc P6's physics bindings: a ``physics_world``, its
+#: vehicles, and ``nav_plant`` to make them a sim_world's plant.
+HAS_PLANT = (
+    AVAILABLE and hasattr(_pycvc, "nav_sim_world_set_plant") and hasattr(_pycvc, "nav_plant")
+)
+#: ``nav_sim_world_create`` takes a per-agent ``map_id`` (private / clustered belief).
+HAS_SIM_WORLD_PLANES = HAS_PLANT  # both arrived with libcvc P6's bindings
+
+#: The vehicle presets libcvc ships (``pycvc.vehicle_desc.<name>()``).
+VEHICLE_PRESETS = ("roboracer", "humvee")
+
+
+def vehicle_desc(vehicle):
+    """A ``pycvc.vehicle_desc`` from a preset name, or the descriptor itself."""
+    if isinstance(vehicle, str):
+        if vehicle not in VEHICLE_PRESETS:
+            raise ValueError(f"vehicle must be one of {VEHICLE_PRESETS} or a pycvc.vehicle_desc")
+        return getattr(_pycvc.vehicle_desc, vehicle)()
+    return vehicle
+
+
+def obstacle_boxes(occ, bounds):
+    """Cover the occupied cells of ``occ`` (rows, cols) over ``bounds`` (min_x, min_y,
+    max_x, max_y, cell centres at the grid points) with as few axis-aligned rectangles
+    as a greedy merge finds: each row's runs, grown down while the next row has the same
+    run. Returns ``[(x0, y0, x1, y1), ...]`` in world metres, each rectangle exactly its
+    cells' extent (half a cell beyond the outer centres)."""
+    occ = np.asarray(occ, bool)
+    rows, cols = occ.shape
+    mnx, mny, mxx, mxy = (float(b) for b in bounds)
+    cw = (mxx - mnx) / (cols - 1)
+    ch = (mxy - mny) / (rows - 1)
+    done = np.zeros_like(occ)
+    out = []
+    for r in range(rows):
+        c = 0
+        while c < cols:
+            if not occ[r, c] or done[r, c]:
+                c += 1
+                continue
+            c1 = c
+            while c1 < cols and occ[r, c1] and not done[r, c1]:
+                c1 += 1
+            r1 = r + 1
+            while r1 < rows and occ[r1, c:c1].all() and not done[r1, c:c1].any():
+                r1 += 1
+            done[r:r1, c:c1] = True
+            out.append(
+                (
+                    mnx + (c - 0.5) * cw,
+                    mny + (r - 0.5) * ch,
+                    mnx + (c1 - 0.5) * cw,
+                    mny + (r1 - 0.5) * ch,
+                )
+            )
+            c = c1
+    return out
+
+
+class JoltPlant:
+    """A ``cvc::physics`` world whose vehicles a :class:`NativeSimWorld`'s agents drive
+    (libcvc's ``nav_plant``, P4): the navigator computes each agent's command, the
+    vehicle's driver model and Jolt integrate it, and nav reads the rear axle back.
+
+    ``vehicles`` is a preset name (``"roboracer"``, the lab's 1/10 car and the right size
+    for GRL-SNAM's 0.7 m bodies; ``"humvee"``), a ``pycvc.vehicle_desc``, or a list of
+    them (agent ``i`` drives ``vehicles[i % len]``). The ground is a flat static box,
+    ``ground_mu`` and ``rolling_resistance`` its surface. ``obstacles`` ((rows, cols) bool
+    over ``bounds``) become static boxes ``obstacle_height_m`` tall, one per merged
+    rectangle (:func:`obstacle_boxes`), so a vehicle that leaves the plan meets the
+    building it would have met, and nav_stats counts it (``building_contacts``).
+    ``latency`` and ``brake_margin`` are the plant-aware governors' (libcvc D14).
+    ``fixed_dt`` must divide the navigator's tick.
+
+    The navigator's own limits are in its trained metric (GRL-SNAM's ``a_lat_max`` of 1.0
+    normalized is about 2 g), more than any tire holds; :meth:`nav_limits` gives the
+    vehicle's instead: ``0.8 x max_accel`` and a corner cap of ``a_lat_g`` g.
+    """
+
+    kind = "jolt"
+
+    def __init__(
+        self,
+        vehicles="roboracer",
+        *,
+        bounds=None,
+        obstacles=None,
+        ground_mu=0.9,
+        rolling_resistance=0.015,
+        obstacle_height_m=6.0,
+        latency=0.1,
+        brake_margin=0.8,
+        fixed_dt=0.01,
+        metres_per_world_unit=1.0,
+        a_lat_g=0.5,
+    ):
+        if not HAS_PLANT:
+            raise RuntimeError(
+                "pycvc lacks the physics bindings (physics_world, nav_plant) — install a pycvc "
+                "built from libcvc with P6."
+            )
+        vs = vehicles if isinstance(vehicles, list | tuple) else [vehicles]
+        if not vs:
+            raise ValueError("JoltPlant needs at least one vehicle")
+        self.descs = [vehicle_desc(v) for v in vs]
+        self.a_lat_g = float(a_lat_g)
+        self.world = _pycvc.physics_world(backend="jolt", fixed_dt=float(fixed_dt))
+        ground = self.world.add_material(
+            "ground", friction=float(ground_mu), rolling_resistance=float(rolling_resistance)
+        )
+        if bounds is not None:
+            mnx, mny, mxx, mxy = (float(b) for b in bounds)
+            cx, cy = 0.5 * (mnx + mxx), 0.5 * (mny + mxy)
+            hx, hy = 0.5 * (mxx - mnx) + 50.0, 0.5 * (mxy - mny) + 50.0
+        else:
+            cx = cy = 0.0
+            hx = hy = 1000.0
+        self.world.add_box((hx, hy, 0.5), position=(cx, cy, -0.5), motion="static", material=ground)
+        self.obstacles = []
+        if obstacles is not None:
+            if bounds is None:
+                raise ValueError("JoltPlant: obstacles need the grid's bounds")
+            building = self.world.add_material("building", friction=0.6)
+            h = float(obstacle_height_m)
+            for x0, y0, x1, y1 in obstacle_boxes(obstacles, bounds):
+                self.obstacles.append(
+                    self.world.add_box(
+                        (0.5 * (x1 - x0), 0.5 * (y1 - y0), 0.5 * h),
+                        position=(0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * h),
+                        motion="static",
+                        material=building,
+                    )
+                )
+        self.plant = _pycvc.nav_plant(
+            self.world,
+            self.descs,
+            latency=float(latency),
+            brake_margin=float(brake_margin),
+            metres_per_world_unit=float(metres_per_world_unit),
+        )
+
+    def nav_limits(self, scale):
+        """The navigator's acceleration limits for these vehicles, normalized at ``scale``
+        (normalized units per metre): ``a_max`` is 0.8 x the least ``max_accel`` (libcvc's
+        plant tests' margin) and ``a_lat_max`` is ``a_lat_g`` g."""
+        g = 9.80665
+        a_max = 0.8 * min(d.max_accel for d in self.descs)
+        return {"a_max": a_max * float(scale), "a_lat_max": self.a_lat_g * g * float(scale)}
+
+    @staticmethod
+    def terrain_config_of(vehicle="roboracer", mu=0.9):
+        """A vehicle's terrain limits (its climb on ``mu`` and its static stability
+        factor) as a config dict for :meth:`NativeSimWorld.set_terrain`."""
+        return _pycvc.nav_plant.terrain_config_of(vehicle_desc(vehicle), mu)
+
+    def state(self, i):
+        """Agent ``i`` as nav reads it (normalized frame), with the measured tire use,
+        load transfer, pitch and roll."""
+        return self.plant.state(int(i))
+
+    def vehicle_state(self, i):
+        """Agent ``i``'s vehicle: its body, speed, pedals, gear, wheels and energy
+        ledger (J), as libcvc's ``vehicle_state``."""
+        return self.world.vehicle_state(self.plant.vehicle(int(i)))
+
+    def energy_J(self, i):
+        """What agent ``i``'s vehicle drew from its source (fuel or battery), J."""
+        return float(self.vehicle_state(i)["energy"]["source"])
+
+    def drift_summary(self):
+        """Every tick's plant-vs-bicycle drift, binned by lateral g (libcvc D14)."""
+        return self.plant.drift_summary()
+
+    def state_hash(self):
+        return int(self.world.state_hash())
+
+
+def make_plant(plant, *, bounds=None, obstacles=None):
+    """``None`` / ``"kinematic"`` -> None (nav's bicycle); ``"jolt"`` or a preset name ->
+    a :class:`JoltPlant` over ``bounds`` with ``obstacles``; a JoltPlant as it is."""
+    if plant is None or plant == "kinematic":
+        return None
+    if isinstance(plant, JoltPlant):
+        return plant
+    if plant == "jolt":
+        plant = "roboracer"
+    if isinstance(plant, str):
+        return JoltPlant(plant, bounds=bounds, obstacles=obstacles)
+    raise ValueError("plant is None, 'kinematic', 'jolt', a vehicle preset name or a JoltPlant")
 
 
 HAS_SIM_THREAD = AVAILABLE and hasattr(_pycvc, "nav_sim_thread_create")
