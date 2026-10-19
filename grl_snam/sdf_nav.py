@@ -482,6 +482,7 @@ def bicycle_rollout(
     track_width=None,
     friction=None,
     ext_force_fn=None,
+    ext_steer=True,
 ):
     """Differentiable *kinematic bicycle* rollout over the same SDF barrier.
 
@@ -582,6 +583,10 @@ def bicycle_rollout(
       (:func:`coef_feats` ``friction=``) starting from a
       :func:`widen_coef_mlp` copy of a trained net; see "Grip" in
       docs/MATERIAL_NAV.md.
+
+    ``ext_force_fn`` (``o -> [B,2]``) adds a caller's force to the longitudinal
+    projection and, while ``ext_steer`` is true (the default), to the steering
+    bias: libcvc's ``ext_force`` and its ``steer`` flag.
     """
     hdt = dt / nsub
     # Inner-wheel lock: see ``track_width`` above. ``None`` leaves both
@@ -698,7 +703,7 @@ def bicycle_rollout(
                 _steer = F_rep + F_mat
             else:
                 _steer = F_rep
-            if F_ext is not None:  # the external force steers too, like F_mat
+            if F_ext is not None and ext_steer:  # the external force steers too, like F_mat
                 _steer = _steer + F_ext
             delta = delta + k_steer * torch.tanh((_steer * left).sum(-1))
             delta = delta.clamp(-delta_max, delta_max)
