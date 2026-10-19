@@ -100,7 +100,9 @@ def _secant_w(F, alpha, w, w0, B, C, D, u):
 
 
 def _clamp(x, lo: float, hi: float):
-    return torch.where(x < lo, torch.full_like(x, lo), torch.where(x > hi, torch.full_like(x, hi), x))
+    return torch.where(
+        x < lo, torch.full_like(x, lo), torch.where(x > hi, torch.full_like(x, hi), x)
+    )
 
 
 def dyn_plant(

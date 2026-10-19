@@ -52,15 +52,15 @@ def test_next_state_and_gradient_match_libcvc(case):
     acmd = torch.tensor(c["a_cmd"], dtype=torch.float64, requires_grad=True)
     nxt = dyn_plant(p, limits, state, dcmd, acmd, c["grade"])
     for k, name in enumerate(ORDER):
-        assert _close(nxt[k].item(), c["next"][k]), (
-            f"case {case} next {name}: torch {nxt[k].item()!r}, libcvc {c['next'][k]!r}"
-        )
+        assert _close(
+            nxt[k].item(), c["next"][k]
+        ), f"case {case} next {name}: torch {nxt[k].item()!r}, libcvc {c['next'][k]!r}"
     g_out = torch.tensor(data["g_out"], dtype=torch.float64)
     (nxt * g_out).sum().backward()
     for k, name in enumerate(ORDER):
-        assert _close(state.grad[k].item(), c["g_state"][k]), (
-            f"case {case} d/d{name}: torch {state.grad[k].item()!r}, libcvc {c['g_state'][k]!r}"
-        )
+        assert _close(
+            state.grad[k].item(), c["g_state"][k]
+        ), f"case {case} d/d{name}: torch {state.grad[k].item()!r}, libcvc {c['g_state'][k]!r}"
     assert _close(dcmd.grad.item(), c["g_delta_cmd"])
     assert _close(acmd.grad.item(), c["g_a_cmd"])
 
@@ -92,9 +92,14 @@ def test_braking_from_speed_stops_near_the_friction_limit():
     for _ in range(2000):
         if s[3].item() <= 1e-3:
             break
-        n = dyn_plant(p, limits, s, torch.tensor(0.0, dtype=torch.float64),
-                      torch.tensor(-2.0 * p.mu * p.g, dtype=torch.float64))
+        n = dyn_plant(
+            p,
+            limits,
+            s,
+            torch.tensor(0.0, dtype=torch.float64),
+            torch.tensor(-2.0 * p.mu * p.g, dtype=torch.float64),
+        )
         dist += torch.hypot(n[0] - s[0], n[1] - s[1]).item()
         s = n
-    ideal = 20.0 ** 2 / (2.0 * p.mu * p.g)
+    ideal = 20.0**2 / (2.0 * p.mu * p.g)
     assert abs(dist / ideal - 1.0) < 0.10, (dist, ideal)
