@@ -12,7 +12,9 @@ Three layers:
    these tests skip.
 2. **A live native trainer**, when the installed pycvc has the ``nav_material_trainer_*`` binding:
    the same weights and batch through both trainers, for the configurations the golden does not
-   cover (the bicycle, sampled and semi-implicit multi-start).
+   cover (the bicycle, with and without the external force, and sampled and semi-implicit
+   multi-start). Against libcvc #734's pycvc: loss <= 1e-7 relative over 3 steps, L_multi alone
+   <= 1e-8, weights <= 1.9e-7 at the 99.99th percentile.
 3. **Self-consistency**, always: a float64 finite-difference gradcheck of the full loss -> weights
    chain, the pass-through's semantics (``loss`` does not train, ``step`` returns the pre-update
    loss, step k draws with ``seed + k``, ``ext=None`` is a zero force), determinism, the

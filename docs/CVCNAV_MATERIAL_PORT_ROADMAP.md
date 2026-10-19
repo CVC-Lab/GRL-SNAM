@@ -402,9 +402,11 @@ gradient's own size, so it turns that roundoff into steps of up to `lr`, differe
 side. The test checks those 128 entries for exactly that.
 
 When the installed pycvc has the trainer binding, the same test file also runs a live native
-trainer against the torch one. That covers what the golden does not: the bicycle, and sampled
-and semi-implicit multi-start. Measured against a pre-#734 build (no `ext`): loss <= 1e-7 rel
-over 3 steps, weights 1.8e-7 at the 99.99th percentile, 1.2e-5 max. Without either, CI runs the
+trainer against the torch one. That covers what the golden does not: the bicycle (with and
+without `ext`), and sampled and semi-implicit multi-start. Measured against libcvc #734's pycvc
+(6001a840), all six configurations: loss <= 1e-7 rel over 3 steps, `L_multi` alone (the
+native's as `loss(w_multi=1) - loss(w_multi=0)`) <= 1e-8, weights <= 1.9e-7 at the 99.99th
+percentile and 1.2e-5 max. Without either, CI runs the
 self-consistency half: a float64 central-difference gradcheck of the full loss -> weights chain
 (directional along the whole gradient to 1e-5, and every tensor's largest entry to 1e-4), with
 `ext` and on the bicycle. It also checks the pass-through's semantics (`loss` does not train,
