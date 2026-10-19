@@ -90,21 +90,24 @@ def integrate_bicycle_material(
     mass: float = 1.0,
     d_hat_sdf: float = 3.0,
     k_sharp: float = 5.0,
+    ext=None,
 ) -> tuple[torch.Tensor, ...]:
     """Roll the bicycle out; returns (oT, thT, spT, min_clear, cum_risk, hard_count, arc_length).
 
     Shapes as :func:`grl_snam.material_nav.integrate_surrogate_material`, with the start
     heading ``th0`` and signed speed ``sp0`` (B,) in place of ``v0``. ``mask`` (B,N) bool.
+    ``ext`` (a :class:`grl_snam.material_ext.MaterialExt`) adds an external force to F and,
+    with its ``steer``, to the steering bias, as libcvc's ``material_ext`` does.
     """
     B, N = C.shape[:2]
     dtype, dev = o0.dtype, o0.device
     v = vehicle
     L = float(v.L)
     dmax = float(v.delta_max)
-    tan_dmax = torch.tan(torch.tensor(dmax, dtype=dtype))
+    tan_dmax = torch.tan(torch.tensor(dmax, dtype=dtype, device=dev))
     a_max, a_lat, vmax = float(v.a_max), float(v.a_lat_max), float(v.vmax)
     sp_min = -0.25 * vmax if v.allow_reverse else 0.0
-    v_creep_cap = 0.5 * torch.sqrt(torch.tensor(a_lat * L, dtype=dtype) / tan_dmax)
+    v_creep_cap = 0.5 * torch.sqrt(torch.tensor(a_lat * L, dtype=dtype, device=dev) / tan_dmax)
     kfloor = tan_dmax / (L * 400.0)
     rr_eff = margin_factor * rr
     R_eff = R + rr_eff[:, None]
@@ -118,6 +121,10 @@ def integrate_bicycle_material(
     hard_count = torch.zeros(B, dtype=dtype, device=dev)
     arc_length = torch.zeros(B, dtype=dtype, device=dev)
     zero, one = torch.zeros(B, dtype=dtype, device=dev), torch.ones(B, dtype=dtype, device=dev)
+    if ext is not None:
+        from grl_snam.material_ext import ExtForce
+
+        ext_force = ExtForce(ext, o0)
 
     for s in range(int(H.max().item()) if B else 0):
         active = s < H
@@ -161,6 +168,10 @@ def integrate_bicycle_material(
         Fmy = -lam_soft * gry + (-lam_hard * db) * gpy
         Fx = (Fg[:, 0] + Fgoal[:, 0]) + Fmx
         Fy = (Fg[:, 1] + Fgoal[:, 1]) + Fmy
+        Fe = ext_force.at(s, o) if ext is not None else None
+        if Fe is not None:  # libcvc adds the external force last
+            Fx = Fx + Fe[:, 0]
+            Fy = Fy + Fe[:, 1]
 
         a0c = _clamp(((Fx * ch + Fy * sh) - gamma * sp) / mass, -a_max, a_max)
 
@@ -176,7 +187,11 @@ def integrate_bicycle_material(
         cap = torch.where(cap_raw < 4.0 * L, torch.full_like(cap_raw, 4.0 * L), cap_raw)
         Ldeff = torch.where(cap < Ld, cap, Ld)
         delta0 = torch.where(behind, turn_sign * dmax, torch.atan2(2.0 * L * sa, Ldeff))
-        S = (Fr[:, 0] + Fmx) * (-sh) + (Fr[:, 1] + Fmy) * ch
+        bsx, bsy = Fr[:, 0] + Fmx, Fr[:, 1] + Fmy
+        if Fe is not None and ext.steer:
+            bsx = bsx + Fe[:, 0]
+            bsy = bsy + Fe[:, 1]
+        S = bsx * (-sh) + bsy * ch
         delta2 = _clamp(delta0 + v.k_steer * torch.tanh(S), -dmax, dmax)
 
         # Governors.

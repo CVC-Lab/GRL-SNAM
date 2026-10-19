@@ -1357,12 +1357,15 @@ def integrate_surrogate_material(
     d_hat_sdf=3.0,
     k_sharp=5.0,
     num_threads=0,
+    ext=None,
 ):
     """Torch-free obstacle-list material surrogate rollout
     (cvc::nav::integrate_surrogate_material) — the faithful C++ twin of
     material_nav.integrate_surrogate_material. Batched over B agents with N
     padded obstacles. Returns (oT (B,2), vT (B,2), min_clear (B,),
-    cum_risk (B,), hard_count (B,), arc_length (B,))."""
+    cum_risk (B,), hard_count (B,), arc_length (B,)). ``ext`` is an external force
+    (:func:`material_ext_args`)."""
+    extra = () if ext is None else material_ext_args(ext)
     return _pycvc.nav_integrate_surrogate_material(
         np.ascontiguousarray(o0, np.float32).reshape(-1, 2),
         np.ascontiguousarray(v0, np.float32).reshape(-1, 2),
@@ -1385,12 +1388,82 @@ def integrate_surrogate_material(
         float(d_hat_sdf),
         float(k_sharp),
         int(num_threads),
+        *extra,
     )
 
 
 # The material rollout on the kinematic bicycle (libcvc P8b): the C++ twin of
 # grl_snam.material_bike.integrate_bicycle_material, and its VJP.
 HAS_BICYCLE_MATERIAL_ROLLOUT = AVAILABLE and hasattr(_pycvc, "nav_integrate_bicycle_material")
+
+
+# An external force in the material rollouts (libcvc material_ext, #734): trailing ext_* args on
+# the material rollout and trainer bindings. They are new trailing args on existing functions, so
+# hasattr cannot see them; the probe makes one empty rollout with a force patch.
+def _takes_material_ext() -> bool:
+    if not (AVAILABLE and hasattr(_pycvc, "nav_integrate_surrogate_material")):
+        return False
+    z = lambda *shape: np.zeros(shape, np.float32)  # noqa: E731
+    try:
+        _pycvc.nav_integrate_surrogate_material(
+            z(1, 2),
+            z(1, 2),
+            z(1, 2),
+            z(1, 0, 2),
+            z(1, 0),
+            np.zeros((1, 0), np.uint8),
+            z(1, 0),
+            z(1),
+            z(1),
+            z(1),
+            z(1),
+            z(1, 6, 2, 2),
+            z(1),
+            z(1),
+            z(1),
+            np.zeros(1, np.int32),
+            0.5,
+            1.0,
+            3.0,
+            5.0,
+            0,
+            z(1, 1, 2, 2, 2),
+        )
+    except TypeError:
+        return False
+    return True
+
+
+HAS_MATERIAL_EXT = _takes_material_ext()
+
+
+def _np(x, dtype):
+    if x is None:
+        return None
+    if hasattr(x, "detach"):  # a torch tensor
+        x = x.detach().cpu().numpy()
+    return np.ascontiguousarray(x, dtype)
+
+
+def material_ext_args(ext) -> tuple:
+    """The trailing (ext_patch, ext_patch_of_step, ext_F, ext_J, ext_steer) for the material
+    bindings from ``ext`` (a :class:`grl_snam.material_ext.MaterialExt`, or any object with its
+    fields; arrays or tensors), or Nones for None. A callable source has no native form."""
+    if ext is None:
+        return (None, None, None, None, 1)
+    if not HAS_MATERIAL_EXT:
+        raise RuntimeError(
+            "an external force (ext=) needs a pycvc whose material bindings take it (libcvc #734)"
+        )
+    if getattr(ext, "sample", None) is not None:
+        raise ValueError("a callable external force has no native form: pass patch or F")
+    return (
+        _np(getattr(ext, "patch", None), np.float32),
+        _np(getattr(ext, "patch_of_step", None), np.int32),
+        _np(getattr(ext, "F", None), np.float32),
+        _np(getattr(ext, "J", None), np.float32),
+        int(bool(getattr(ext, "steer", True))),
+    )
 
 
 def _bike_args(
@@ -1476,10 +1549,13 @@ def integrate_bicycle_material(
     d_hat_sdf=3.0,
     k_sharp=5.0,
     num_threads=0,
+    ext=None,
 ):
     """cvc::nav::integrate_bicycle_material. ``vehicle`` is a
     :class:`grl_snam.material_bike.BicycleParams`. Returns (oT (B,2), thT, spT,
-    min_clear, cum_risk, hard_count, arc_length (B,))."""
+    min_clear, cum_risk, hard_count, arc_length (B,)). ``ext`` is an external force
+    (:func:`material_ext_args`)."""
+    extra = () if ext is None else material_ext_args(ext)
     return _pycvc.nav_integrate_bicycle_material(
         *_bike_args(
             o0,
@@ -1506,6 +1582,7 @@ def integrate_bicycle_material(
             k_sharp,
         ),
         int(num_threads),
+        *extra,
     )
 
 
@@ -1540,10 +1617,14 @@ def integrate_bicycle_material_vjp(
     d_hat_sdf=3.0,
     k_sharp=5.0,
     num_threads=0,
+    ext=None,
+    want_g_fext=False,
 ):
     """The VJP of :func:`integrate_bicycle_material`: upstream grads on (oT, thT, spT,
     min_clear, cum_risk, arc_length) -> (g_alphas (B,N), g_beta, g_gamma, g_lam_soft,
-    g_lam_hard (B,))."""
+    g_lam_hard (B,)), and with ``ext`` and ``want_g_fext`` a sixth, dL/dF_ext
+    (B,steps,2)."""
+    extra = () if ext is None else (*material_ext_args(ext), int(bool(want_g_fext)))
     f32 = lambda x, *shape: np.ascontiguousarray(x, np.float32).reshape(*shape)  # noqa: E731
     return _pycvc.nav_integrate_bicycle_material_vjp(
         *_bike_args(
@@ -1577,4 +1658,5 @@ def integrate_bicycle_material_vjp(
         f32(g_cum_risk, -1),
         f32(g_arc_length, -1),
         int(num_threads),
+        *extra,
     )

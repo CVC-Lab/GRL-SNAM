@@ -309,14 +309,20 @@ class MaterialTrainer:
             return False
         return bool(_pycvc.nav_material_trainer_cuda_active(self._h))
 
-    def step(self, batch: Mapping[str, np.ndarray], lr: float, num_threads: int = 0) -> float:
+    def step(
+        self, batch: Mapping[str, np.ndarray], lr: float, num_threads: int = 0, ext=None
+    ) -> float:
         """One training step over ``batch`` (keys :data:`BATCH_KEYS`) at learning rate ``lr``.
 
-        Returns the scalar loss (computed on the pre-update weights, as in torch).
+        Returns the scalar loss (computed on the pre-update weights, as in torch). ``ext`` is
+        an external force in the rollouts (a :class:`grl_snam.material_ext.MaterialExt` with a
+        patch or per-step values: cvcdbg's RF/comm force, libcvc #734); it needs
+        :data:`grl_snam.nav_native.HAS_MATERIAL_EXT`.
         """
+        extra = () if ext is None else _nn.material_ext_args(ext)
         return float(
             _pycvc.nav_material_trainer_step(
-                self._h, *pack_batch(batch), float(lr), int(num_threads)
+                self._h, *pack_batch(batch), float(lr), int(num_threads), *extra
             )
         )
 
@@ -325,16 +331,18 @@ class MaterialTrainer:
         batch: Mapping[str, np.ndarray],
         frozen_eta: float = float("nan"),
         num_threads: int = 0,
+        ext=None,
     ) -> float:
         """Forward-only loss — score a held-out batch without training on it.
 
         Runs no backward and does not touch the optimizer, so the weights and the
         Adam moments are unchanged. ``frozen_eta`` pins the detached CVaR quantile;
-        the default NaN computes it from this batch's own costs.
+        the default NaN computes it from this batch's own costs. ``ext`` as for :meth:`step`.
         """
+        extra = () if ext is None else _nn.material_ext_args(ext)
         return float(
             _pycvc.nav_material_trainer_loss(
-                self._h, *pack_batch(batch), float(frozen_eta), int(num_threads)
+                self._h, *pack_batch(batch), float(frozen_eta), int(num_threads), *extra
             )
         )
 
