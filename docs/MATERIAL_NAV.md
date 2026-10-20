@@ -130,6 +130,30 @@ object (one shared oracle plane for the whole squad/swarm). Not passing
 `material` — or passing an all-zero grid — leaves every trajectory exactly
 as before.
 
+### The Austin scene's masks: a pinned, public source
+
+`tools/material_raster.py` builds a palette raster from a scene bundle's
+segmentation masks when they are present, and otherwise classifies the
+satellite image. For Austin South the masks are published on cvcpkg.org,
+public, with no token:
+
+```
+cvcpkg install cy-pca/scene-austin-south==1.0.0+cvc.3 --prefix <prefix>
+```
+
+That installs `<prefix>/share/cvc-scenes/austin_south/`, 29 files, among them
+`navmask.png`, `watermask.png`, `water.png`, `roads.png`, `open_fields.png`,
+`foliage_mask.png` (+ `foliage_mask_meta.json`), `go_areas.png`,
+`building_outlines.png`, `material_tags.v1.json`, `terrain.json` and
+`satellite.png`. Pin it: the archive's sha256 is
+`7c598bc1bd74ef9da22de34289e8dca8586fb2108e40a081437c9def7ceb6397`
+(117 MB, CC-BY-4.0).
+
+`cy-pca/scene-austin-south-small` is the lean variant. It installs to the same
+directory with only `terrain.json`, `buildings.glb`, `satellite.png` and
+`Humvee.glb`, and **no masks**, so a script that needs them must check for the
+files and fail loudly rather than fall back.
+
 ### Tuning
 
 ```python
