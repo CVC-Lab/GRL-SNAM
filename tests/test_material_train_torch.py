@@ -62,9 +62,17 @@ GOLDEN_ENV = "GRL_SNAM_MATERIAL_TRAIN_GOLDEN"
 # The goldens by name: "small" is committed (libcvc's TorchTrainerGoldenSmall: the narrowest net,
 # a batch of 4), so CI holds the trainer to it; "full" (TorchTrainerGolden, ~3 MB) is read from
 # GOLDEN_ENV when it is set.
-GOLDEN_STEM = {"small": "material_train_golden_small", "full": "material_train_golden"}
-SMALL_GOLDEN_DIR = Path(__file__).resolve().parent / "fixtures" / "material_train_golden_small"
-GOLDENS = ["small", "full"]
+# "belief" is committed too (libcvc's TorchTrainerGoldenBelief: the small golden's widths with the
+# 3-channel net, patches cropped from belief planes, and the training gate on agents 0 and 2).
+GOLDEN_STEM = {
+    "small": "material_train_golden_small",
+    "belief": "material_train_golden_belief",
+    "full": "material_train_golden",
+}
+_FIXTURES = Path(__file__).resolve().parent / "fixtures"
+SMALL_GOLDEN_DIR = _FIXTURES / "material_train_golden_small"
+COMMITTED = {"small": SMALL_GOLDEN_DIR, "belief": _FIXTURES / "material_train_golden_belief"}
+GOLDENS = ["small", "belief", "full"]
 
 
 def _golden_files(stem):
@@ -112,9 +120,9 @@ def _weight_gap(got: dict, want: dict):
 # --------------------------------------------------------------------------- fixtures
 
 
-def _write_model(path, seed=0, patch_size=16):
+def _write_model(path, seed=0, patch_size=16, risk_channels=2):
     torch.manual_seed(seed)
-    m = CoefEnergyNetMaterial(patch_size=patch_size)
+    m = CoefEnergyNetMaterial(patch_size=patch_size, risk_channels=risk_channels)
     m.patch_size = patch_size
     mtt.save_cvcnm(m, path)
     return path
@@ -194,8 +202,8 @@ def ckpt(tmp_path_factory):
 
 def _golden_dir(which) -> Path:
     stem = GOLDEN_STEM[which]
-    if which == "small":
-        d = SMALL_GOLDEN_DIR
+    if which in COMMITTED:
+        d = COMMITTED[which]
     else:
         env = os.environ.get(GOLDEN_ENV)
         if not env:
@@ -207,7 +215,7 @@ def _golden_dir(which) -> Path:
         d = Path(env)
     missing = [f for f in _golden_files(stem) if not (d / f).is_file()]
     if missing:
-        if which == "small":
+        if which in COMMITTED:
             raise FileNotFoundError(f"the committed golden {d} lacks {', '.join(missing)}")
         pytest.skip(f"{GOLDEN_ENV}={d} lacks {', '.join(missing)}")
     return d
@@ -220,11 +228,12 @@ def _golden(which):
     assert g["format"] == "cvc-material-train-golden-1"
     b = g["batch"]
     B, N, P, Hp, Wp = b["B"], b["N"], b["P"], b["Hp"], b["Wp"]
+    Cr = int(b.get("risk_channels", 2))  # 3: the belief net's [r~, hard, seen]
     shapes = {
         "obs_feats": (B, N, 6),
         "obs_mask": (B, N),
         "goal_feats": (B, 4),
-        "risk_patch": (B, 2, P, P),
+        "risk_patch": (B, Cr, P, P),
         "o0": (B, 2),
         "v0": (B, 2),
         "goal": (B, 2),
@@ -240,6 +249,8 @@ def _golden(which):
         "gamma_o": (B,),
     }
     batch = {k: np.asarray(b[k]).reshape(s) for k, s in shapes.items()}
+    if "gate_active" in b:  # the witness gate in training
+        batch["gate_active"] = np.asarray(b["gate_active"], np.uint8).reshape(B)
     e = g["ext"]
     ext = MaterialExt(
         patch=torch.tensor(np.asarray(e["patch"], np.float32).reshape(B, e["K"], 2, Hp, Wp)),
@@ -678,3 +689,32 @@ def test_cuda_matches_cpu(ckpt, dtype):
     assert all(_rel(pg[k], pc[k]) < tol for k in ("L", *PARTS) if pc[k] != 0.0)
     worst, _, _ = _weight_gap(wg, wc)
     assert worst < (1e-9 if dtype == torch.float64 else 1e-5), worst
+
+
+@pytest.mark.skipif(
+    not mtn.HAS_MATERIAL_TRAINER_GATE,
+    reason="pycvc lacks the belief net's trainer (nav_material_trainer_risk_channels)",
+)
+@pytest.mark.parametrize("integrator", ["surrogate", "bicycle"])
+def test_live_native_trainer_agrees_on_the_belief_net(tmp_path, integrator):
+    """A 3-channel net with the training gate: the torch trainer and the native one agree on the
+    loss, its terms and three Adam steps (libcvc B3; the committed belief golden pins the same)."""
+    kw = {"bicycle": VEHICLE} if integrator == "bicycle" else {}
+    init = _write_model(tmp_path / "belief.cvcnm", seed=13, risk_channels=3)
+    batch = dict(_batch(B=16, seed=23))
+    B, P = batch["risk_patch"].shape[0], batch["risk_patch"].shape[2]
+    seen = (np.arange(P * P).reshape(P, P) % 3 != 0).astype(np.float32)
+    batch["risk_patch"] = np.concatenate(
+        [batch["risk_patch"] * seen, np.broadcast_to(seen, (B, 1, P, P))], axis=1
+    ).astype(np.float32)
+    batch["gate_active"] = (np.arange(B) % 2 == 0).astype(np.uint8)
+    native = mtn.MaterialTrainer(init, **kw)
+    assert native.risk_channels == 3
+    torch_tr = mtt.MaterialTrainerTorch(init, **kw)
+    assert _rel(torch_tr.loss(batch), native.loss(batch)) < 1e-5
+    ungated = {k: v for k, v in batch.items() if k != "gate_active"}
+    assert native.loss(ungated) != native.loss(batch), "the gate did not reach the native rollout"
+    for t in range(3):
+        a = torch_tr.step(batch, lr=1e-3)
+        b = native.step(batch, lr=1e-3)
+        assert _rel(a, b) < 1e-5, f"step {t}: torch {a!r} native {b!r}"

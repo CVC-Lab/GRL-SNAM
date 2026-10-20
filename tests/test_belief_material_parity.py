@@ -26,6 +26,7 @@ from grl_snam.belief_material import (
     belief_gate_surface,
     belief_material_inputs,
     belief_material_runtime,
+    material_patch_belief,
     seen_disc,
 )
 
@@ -291,3 +292,62 @@ def test_native_sense_mask_matches_numpy(rm):
             assert np.array_equal(ms[m], beliefs[m].material_seen), (t, m)
             assert np.array_equal(es[m], beliefs[m].ever_seen), (t, m)
             assert bool(changed[m]) == grew[m], (t, m)
+
+
+def test_crop_reproduces_golden_3_patches():
+    """libcvc's golden 3 (TorchTrainerGoldenBelief) crops its patches with material_patch_belief
+    from golden 1's full planes; the numpy twin reproduces all of them, byte for byte."""
+    g3 = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures"
+            / "material_train_golden_belief"
+            / "material_train_golden_belief.json"
+        ).read_text()
+    )
+    full = GOLDEN["full"]
+    risk = np.array(full["risk"], np.float32).reshape(R, C)
+    hard = np.array(full["hard_b"]).reshape(R, C)
+    seen = np.array(full["material_seen"]).reshape(R, C)
+    crop = g3["crop"]
+    P = crop["P"]
+    bp = BeliefMaterialParams(
+        unknown_risk=crop["unknown_risk"], unknown_hard=bool(crop["unknown_hard"])
+    )
+    want = np.array(g3["batch"]["risk_patch"], np.float32).reshape(-1, 3, P, P)
+    assert want.shape[0] == len(crop["positions"])
+    for i, pos in enumerate(crop["positions"]):
+        got = material_patch_belief(risk, hard, seen, BOUNDS, pos, crop["extent_m"], P, bp)
+        assert got.tobytes() == want[i].tobytes(), i
+
+
+def test_crop_pins_unseen_and_off_map_samples():
+    risk = np.full((R, C), 0.3, np.float32)
+    seen = np.zeros((R, C), bool)
+    seen[:, : C // 2] = True
+    bp = BeliefMaterialParams(unknown_risk=0.5, unknown_hard=True)
+    out = material_patch_belief(risk, np.zeros((R, C)), seen, BOUNDS, (BOUNDS[2], 10.0), 8.0, 5, bp)
+    assert out.shape == (3, 5, 5) and out.dtype == np.float32
+    assert not out[2].any()  # the right half is unseen and the patch reaches off the map
+    assert np.all(out[0] == np.float32(0.5)) and np.all(out[1] == 1.0)
+    with pytest.raises(ValueError):
+        material_patch_belief(risk, risk, seen, BOUNDS, (1.0, 1.0), 8.0, 1)
+
+
+@pytest.mark.skipif(
+    not (nav_native.AVAILABLE and hasattr(nav_native._pycvc, "nav_material_patch_belief")),
+    reason="pycvc build lacks nav_material_patch_belief",
+)
+def test_native_crop_matches_numpy():
+    full = GOLDEN["full"]
+    risk = np.array(full["risk"], np.float32).reshape(R, C)
+    hard = np.array(full["hard_b"], np.uint8).reshape(R, C)
+    seen = np.array(full["material_seen"], np.uint8).reshape(R, C)
+    for pos, ext, P in (((11.9, 7.4), 12.0, 16), ((20.0, 2.0), 7.5, 9)):
+        got = np.asarray(
+            nav_native._pycvc.nav_material_patch_belief(
+                risk, hard, seen, *BOUNDS, pos[0], pos[1], ext, P, 0.0, 0
+            )
+        )
+        want = material_patch_belief(risk, hard, seen, BOUNDS, pos, ext, P)
+        assert got.tobytes() == want.tobytes(), pos
