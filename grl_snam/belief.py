@@ -25,6 +25,8 @@ incremental-update cleverness to distrust.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 # Log-odds increments per observation. Asymmetric on purpose: one hit is strong
@@ -54,6 +56,26 @@ class BeliefGrid:
         # Every cell ever seen. Remembered-but-not-currently-visible is the
         # middle tier of the classic three-tier fog.
         self.ever_seen = np.zeros((self.ny, self.nx), bool)
+        # Belief material's seen mask (grl_snam.belief_material), off until
+        # track_material(): None here, so plain occupancy sensing is unchanged.
+        self.material_seen: np.ndarray | None = None
+        self.material_range_m = 0.0
+        self.material_grew = False
+
+    def track_material(self, material_range_m: float = 0.0) -> None:
+        """Keep a second monotonic field-of-view mask for belief material.
+
+        Each :meth:`sense` then ORs into :attr:`material_seen` the cells its rays
+        touched whose distance from the agent's cell is at most
+        ``material_range_m`` (0, the default, means the sense range — the mask then
+        grows exactly as :attr:`ever_seen` does), and sets :attr:`material_grew`.
+        The numpy twin of libcvc ``sense_batch``'s ``material_seen`` output: the
+        same rays and occluders, only a shorter cutoff."""
+        if not math.isfinite(material_range_m) or material_range_m < 0.0:
+            raise ValueError("material_range_m must be finite and >= 0")
+        self.material_seen = np.zeros((self.ny, self.nx), bool)
+        self.material_range_m = float(material_range_m)
+        self.material_grew = False
 
     # ── coordinates ─────────────────────────────────────────────────────────
     def world_to_cell(self, x, y):
@@ -110,6 +132,7 @@ class BeliefGrid:
         cell_h = (self.mxy - self.mny) / (self.ny - 1)
 
         r0, c0 = self.world_to_cell(pos_world[0], pos_world[1])
+        self.material_grew = False
         if not self.in_bounds(r0, c0):
             self.last_visible = np.zeros((self.ny, self.nx), bool)
             return 0
@@ -161,6 +184,16 @@ class BeliefGrid:
         visible[rows_c[occ_mask], cols_c[occ_mask]] = True
         self.last_visible = visible
         self.ever_seen |= visible
+        if self.material_seen is not None:
+            # dist is a function of the cell alone, so this is "touched and within
+            # the material range" (libcvc sense_batch's material mask, bit for bit).
+            rm = self.material_range_m if self.material_range_m > 0.0 else range_m
+            near = dist <= rm
+            seen_now = np.zeros((self.ny, self.nx), bool)
+            seen_now[rows_c[free_mask & near], cols_c[free_mask & near]] = True
+            seen_now[rows_c[occ_mask & near], cols_c[occ_mask & near]] = True
+            self.material_grew = bool((seen_now & ~self.material_seen).any())
+            self.material_seen |= seen_now
 
         # Accumulate per-visit evidence exactly as the scalar loop did (a cell
         # crossed by several rays gets several increments), then clamp.

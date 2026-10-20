@@ -174,6 +174,34 @@ raw rasters, re-derive the planes, and bump `grid.version` — an attached
 scenario forces a replan on the next tick (bypassing the route hysteresis),
 which is how a mud-onset event lands mid-run.
 
+### Belief (observed) material
+
+For range-limited sensing, build the planes from what a belief plane has seen rather than
+from the whole map (`grl_snam/belief_material.py`; the C++ twin is libcvc's
+`belief_material.h`, spec in libcvc `docs/roadmap/NAV-BELIEF-MATERIAL-ROADMAP.md`):
+
+```python
+from grl_snam.belief_material import BeliefMaterialParams, belief_material_runtime
+
+belief.track_material()          # BeliefGrid: keep the material seen mask (== ever_seen here)
+belief.sense(truth, pos, range_m=60.0, n_rays=240)
+rt = belief_material_runtime(risk_raw, hard, belief.material_seen, belief.to_occupancy(),
+                             bounds, center, scale, belief=BeliefMaterialParams())
+```
+
+* An unseen cell takes `unknown_risk` / `unknown_hard` (defaults 0 / False: no force of its
+  own), so the blur and the hard-distance field see only what was observed.
+* The gate's surface is `hard_b | occ | ~seen` (`unknown_gate_hard`, default on): a ray
+  through unseen ground never certifies a detour. `occ` is the plane's own planning raster.
+* `track_material(material_range_m)` keeps only the touched cells within a shorter range
+  (the same rays, a shorter cutoff). `seen_disc` is the optional range-disc rule (no
+  occlusion; it sees through walls).
+* The batched native sense takes `material_seen=` (`nav_native.sense_batch`,
+  `HAS_SENSE_BATCH_MATERIAL`).
+
+`tests/test_belief_material_parity.py` holds all of it to libcvc's
+`belief_material_golden.json` (`tests/fixtures/`), bit for bit.
+
 ### Reading it back
 
 `NavMetrics.material_risk` / `.material_gate` carry the per-step risk at the
@@ -208,6 +236,7 @@ after soak.
 |---|---|---|
 | gaussian blur / EDT / gradients (`material_build`) | BIT (tobytes) | `test_material_parity.py`, gtest goldens, scipy-equivalence pinned by a corner-impulse discriminator |
 | witness gate, serial + batch | BIT (every field; batch == serial bytes; thread-count stable) | `test_material_gate_sim.py`, `test_material_parity.py`, `NavMaterialGate.*` |
+| belief material: the seen mask, `belief_material_inputs`, the gate surface, `seen_disc` | BIT (SHA-256 of every raster + the gate outputs) | `test_belief_material_parity.py` vs libcvc's golden |
 | `material_sample` | FLOAT (rtol 1e-5) + non-contractual bit tripwire | `test_material_parity.py` |
 | rollout with material vs torch | FLOAT (rtol 1e-4 / atol 1e-5, fixed lambda columns) | `test_material_parity.py` |
 | no-material invariance | BIT | null-material delegation byte-identity (gtest), zero-grid value-identity, full suite green |
