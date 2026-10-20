@@ -279,6 +279,7 @@ def integrate_surrogate_material(
     d_hat_sdf: float = 3.0,
     ext=None,
     k_sharp: float = 5.0,
+    energy: dict | None = None,
 ) -> tuple[torch.Tensor, ...]:
     """Surrogate integrator with material forces (faithful port).
 
@@ -295,6 +296,12 @@ def integrate_surrogate_material(
     ``ext`` (a :class:`grl_snam.material_ext.MaterialExt`) adds an external force to the
     force sum, libcvc's ``material_ext``; None is the rollout without one. ``k_sharp`` is the
     hazard barrier's sharpness (libcvc's ``surrogate_material_params::k_sharp``, the source's 5.0).
+
+    ``energy``, a dict when given, receives U_nav along the rollout (libcvc's ``rollout_energy``;
+    :func:`grl_snam.nav_potential.material_potential`): ``potential`` ``(B, maxH+1)`` at the state
+    each step starts from and at the end state, ``terms`` ``(B, maxH+1, 4)`` (goal, barrier, soft,
+    hard), and ``force`` ``(B, maxH, 2)``, the conservative force each step applied (damping and
+    ``ext`` excluded). The rollout's outputs are unchanged.
 
     Returns (oT, vT, min_clear_geom, cum_risk, hard_count, arc_length).
     """
@@ -317,8 +324,36 @@ def integrate_surrogate_material(
         from grl_snam.material_ext import ExtForce
 
         ext_force = ExtForce(ext, o0)
+    if energy is not None:
+        from grl_snam.nav_potential import material_potential
+
+        def _potential(at):
+            return material_potential(
+                at,
+                goal,
+                C,
+                R,
+                mask,
+                alphas,
+                beta,
+                lam_soft,
+                lam_hard,
+                rollout_patch,
+                o0,
+                d_hat,
+                robot_radius=rr,
+                margin_factor=margin_factor,
+                d_hat_sdf=d_hat_sdf,
+                k_sharp=k_sharp,
+            )
+
+        u_log, t_log, f_log = [], [], []
     for s in range(int(H.max().item())):
         active = (s < H).to(o.dtype).unsqueeze(-1)
+        if energy is not None:
+            u = _potential(o)
+            u_log.append(u.total())
+            t_log.append(torch.stack([u.goal, u.barrier, u.soft, u.hard], -1))
 
         sem = bilinear_sample_patch(rollout_patch, o, o0)
         risk_val = sem[:, 0].clamp(0.0, 1.0)
@@ -348,6 +383,8 @@ def integrate_surrogate_material(
         F_mat_hard = -lam_hard.unsqueeze(-1) * db_dphi.unsqueeze(-1) * sdf_grad
 
         F_tot = F_goal + F_geom + F_mat_soft + F_mat_hard - gamma.unsqueeze(-1) * v
+        if energy is not None:
+            f_log.append(F_goal + F_geom + F_mat_soft + F_mat_hard)
         if ext is not None:
             F_tot = F_tot + ext_force.at(s, o)
         a = F_tot / mass
@@ -364,6 +401,13 @@ def integrate_surrogate_material(
         v = v_new
         o = o_new
 
+    if energy is not None:
+        u = _potential(o)
+        u_log.append(u.total())
+        t_log.append(torch.stack([u.goal, u.barrier, u.soft, u.hard], -1))
+        energy["potential"] = torch.stack(u_log, 1)
+        energy["terms"] = torch.stack(t_log, 1)
+        energy["force"] = torch.stack(f_log, 1) if f_log else o.new_zeros(o.shape[0], 0, 2)
     return o, v, min_clear, cum_risk, hard_count, arc_length
 
 

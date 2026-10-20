@@ -329,6 +329,18 @@ class MaterialField:
         self.cx, self.cy = grid.center
         self.S = grid.scale
 
+    @classmethod
+    def from_planes(cls, planes, bounds, center, scale: float, device: str = "cpu"):
+        """A sampler over a given ``[6, H, W]`` plane stack (the channels above), as libcvc's
+        ``material_stack`` borrows one, with no MaterialGrid behind it."""
+        self = cls.__new__(cls)
+        self.dev = torch.device(device)
+        self.field = torch.as_tensor(np.asarray(planes, np.float32))[None].to(self.dev)
+        self.mnx, self.mny, self.mxx, self.mxy = (float(b) for b in bounds)
+        self.cx, self.cy = float(center[0]), float(center[1])
+        self.S = float(scale)
+        return self
+
     def sample(self, on: torch.Tensor):
         """on: ``[B,2]`` normalized -> ``(risk[B], phi_m[B], grad_r[B,2],
         grad_phi[B,2])``."""
