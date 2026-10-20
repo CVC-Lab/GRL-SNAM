@@ -995,6 +995,127 @@ def make_plant(plant, *, bounds=None, obstacles=None):
     raise ValueError("plant is None, 'kinematic', 'jolt', a vehicle preset name or a JoltPlant")
 
 
+# ── vehicle routes on a plant (libcvc's plan_vehicle_route + route_follower, P9 R1/R2) ──────
+
+#: The pycvc build wraps libcvc's vehicle routes (plan_vehicle_route, route_follower, the
+#: route vehicle from a plant, a belief plane's raster).
+HAS_VEHICLE_ROUTES = (
+    AVAILABLE
+    and hasattr(_pycvc, "nav_plan_vehicle_route")
+    and hasattr(_pycvc, "nav_route_follower_create")
+    and hasattr(_pycvc, "nav_sim_world_route_vehicle")
+    and hasattr(_pycvc, "nav_sim_world_belief_occ")
+)
+
+
+class VehicleRoutes:
+    """A native world's agents on vehicle routes instead of nav's carrot.
+
+    On a physics plant the carrot FSM's wall-follow target can sit inside the vehicle's
+    turning circle, where it hunts between gears and stops for good. A route from libcvc's
+    ``plan_vehicle_route`` is drivable by construction (the turning radius, the body's discs,
+    reverse legs and cusps), and ``route_follower`` drives it, as libcvc's own finale and
+    cvcdbg's convoy do. Each agent's route is planned on its own belief plane (what it knows).
+    An agent that stands still short of its goal for ``still_s`` world seconds is planned again
+    from where it is. ``agents`` are the indices driven on routes; the rest keep the carrot.
+    Lengths are in the world's metres."""
+
+    #: The follower's carrot along a forward leg, in the sim's reach radii (cvcdbg's choice: the
+    #: default, three route steps, drove nearly every bend by pure pursuit at low speed).
+    LOOKAHEAD_REACH = 3.0
+    #: Moving less than this (m) since it was last marked counts as standing still.
+    STILL_M = 1.0
+
+    def __init__(self, world, bounds, agents, *, still_s=4.0, max_expansions=120000):
+        if not HAS_VEHICLE_ROUTES:
+            raise RuntimeError(
+                "pycvc lacks the vehicle-route bindings (nav_plan_vehicle_route, "
+                "nav_route_follower_create); install a pycvc from libcvc with them"
+            )
+        h = world._h
+        self.world = world
+        self.bounds = tuple(float(b) for b in bounds)
+        self.agents = [int(i) for i in agents]
+        self.vehicles = {i: _pycvc.nav_sim_world_route_vehicle(h, i) for i in self.agents}
+        if any(v is None for v in self.vehicles.values()):
+            raise ValueError("vehicle routes need a plant: set_plant first")
+        v0 = self.vehicles[self.agents[0]] if self.agents else None
+        self.reach = float(v0["reach"]) if v0 else 0.0
+        self.follower = _pycvc.nav_route_follower_create(
+            h,
+            (
+                {
+                    "wheelbase": v0["wheelbase"],
+                    "max_steer": v0["max_steer"],
+                    "lookahead": self.LOOKAHEAD_REACH * self.reach,
+                }
+                if v0
+                else {}
+            ),
+        )
+        self._planes = np.asarray(_pycvc.nav_sim_world_agent_planes(h))
+        self.still_s = float(still_s)
+        self.max_expansions = int(max_expansions)
+        self.goals = {}
+        self._mark = {}  # i -> (x, y, t): where and when it was last seen moving
+        self.plans = 0
+        self.replans = 0
+
+    def plan(self, i, x, y, heading, gx, gy):
+        """Plan agent ``i``'s route from its pose to the goal on its belief plane and hand it to
+        the follower. A route that falls short of the goal still leads the way."""
+        v = self.vehicles[i]
+        occ = _pycvc.nav_sim_world_belief_occ(self.world._h, int(self._planes[i]))
+        r = _pycvc.nav_plan_vehicle_route(
+            occ,
+            *self.bounds,
+            float(x),
+            float(y),
+            float(heading),
+            float(gx),
+            float(gy),
+            {k: v[k] for k in ("min_radius", "disc_offsets", "disc_radius")},
+            {"max_expansions": self.max_expansions},
+        )
+        if r["reached"] or len(r["poses"]) >= 2:
+            _pycvc.nav_route_follower_set(self.follower, i, r["poses"])
+        self.goals[i] = (float(gx), float(gy))
+        self.plans += 1
+        return r
+
+    def start(self, pos, head, goals, t=0.0):
+        """Plan every route agent from its current pose (``pos`` (N,2) m, ``head`` (N,) rad)
+        to ``goals[i]`` (world m)."""
+        for i in self.agents:
+            self.plan(i, pos[i, 0], pos[i, 1], head[i], *goals[i])
+            self._mark[i] = (float(pos[i, 0]), float(pos[i, 1]), float(t))
+
+    def done(self):
+        """(N,) bool: the route agents that finished their routes (the rest False)."""
+        return np.asarray(_pycvc.nav_route_follower_status(self.follower)["done"], bool)
+
+    def apply(self, t, pos, head):
+        """Before each step: plan again any route agent still for ``still_s`` short of its goal,
+        then let the follower retarget or command every route agent."""
+        done = self.done()
+        for i in self.agents:
+            x, y = float(pos[i, 0]), float(pos[i, 1])
+            mx, my, mt = self._mark[i]
+            if np.hypot(x - mx, y - my) >= self.STILL_M:
+                self._mark[i] = (x, y, float(t))
+                continue
+            gx, gy = self.goals[i]
+            if (
+                not done[i]
+                and t - mt > self.still_s
+                and np.hypot(gx - x, gy - y) > 1.5 * self.reach
+            ):
+                self.plan(i, x, y, head[i], gx, gy)
+                self.replans += 1
+                self._mark[i] = (x, y, float(t))
+        _pycvc.nav_route_follower_apply(self.follower)
+
+
 HAS_SIM_THREAD = AVAILABLE and hasattr(_pycvc, "nav_sim_thread_create")
 # The pycvc build can make the thread FOLLOW a shared pycvc.world_clock.
 HAS_SIM_THREAD_CLOCK = AVAILABLE and hasattr(_pycvc, "nav_sim_thread_create_on_clock")

@@ -69,11 +69,10 @@ def test_obstacle_boxes_cover_exactly_the_occupied_cells():
 
 
 @pytest.mark.xfail(
+    not nav_native.HAS_VEHICLE_ROUTES,
     strict=False,
-    reason="libcvc 3.7.0 on Linux: RoboRacer b stalls near (-16.6, 3.5) from about tick 270, "
-    "hunting between reverse and forward on a near-zero commanded acceleration beside a building "
-    "block; it arrived on the pre-release P6 build this test was written against. Open in the "
-    "libcvc workstream (P6).",
+    reason="without pycvc's vehicle-route bindings the squad drives nav's carrot on the plant, "
+    "where the wall-follow target can sit inside the turning circle: b stalls on libcvc 3.7.0",
 )
 def test_a_squad_drives_the_jolt_plant_to_its_goals():
     """Two RoboRacers cross the city on the Jolt plant: both arrive, never inside a
@@ -178,3 +177,62 @@ def test_the_plant_needs_a_squad_without_overrides():
     agents[1].vmax = 3.0
     with pytest.raises(NotImplementedError, match="vmax"):
         Squad(story, agents, truth_occ=truth, prior_occ=truth, plant="jolt")
+
+
+routes = pytest.mark.skipif(
+    not nav_native.HAS_VEHICLE_ROUTES, reason="pycvc lacks libcvc's vehicle-route bindings"
+)
+
+
+@routes
+def test_vehicle_routes_cross_the_city_from_nearby_starts():
+    """On the plant the carrot is chaotic here: starts a few cm apart decide whether a
+    RoboRacer stalls in wall-follow inside its turning circle (both arrived in 4 of 10 on
+    libcvc 3.7.0). On vehicle routes every start arrives, never inside a building."""
+    story, truth, free = _city()
+    base = _crossing(free)
+    for dx, dy in ((0.0, 0.0), (0.05, 0.0), (0.0, 0.05), (-0.1, 0.1), (0.2, 0.0)):
+        specs = [AgentSpec(a.key, (a.start[0] + dx, a.start[1] + dy), a.goal) for a in base]
+        torch.manual_seed(0)
+        sq = Squad(story, specs, truth_occ=truth, prior_occ=truth, plant="jolt")
+        assert sq._routes is not None and sq._routes.agents == [0, 1]
+        r = sq.run(max_steps=1500)
+        assert r.reached == {"a": True, "b": True}, ((dx, dy), r.reached)
+        assert r.penetration == {"a": 0, "b": 0}, ((dx, dy), r.penetration)
+
+
+@routes
+def test_vehicle_routes_are_a_choice_and_need_a_plant():
+    story, truth, free = _city(max_steps=60)
+    torch.manual_seed(0)
+    off = Squad(
+        story, _crossing(free), truth_occ=truth, prior_occ=truth, plant="jolt", vehicle_routes=False
+    )
+    assert off._routes is None
+    with pytest.raises(ValueError, match="physics plant"):
+        Squad(
+            story,
+            _crossing(free),
+            truth_occ=truth,
+            prior_occ=truth,
+            plant="kinematic",
+            vehicle_routes=True,
+        )
+    with pytest.raises(ValueError, match="plant"):
+        Squad(story, _crossing(free), truth_occ=truth, prior_occ=truth, vehicle_routes=True)
+
+
+@routes
+def test_a_moving_goal_keeps_the_carrot():
+    """A FollowGoal agent's goal moves every tick, so it keeps nav's carrot; its leader drives a
+    route."""
+    story, truth, free = _city(max_steps=60)
+    agents = [
+        AgentSpec("lead", free(-70, -60), free(70, 60)),
+        AgentSpec("follow", free(-80, -70), (0.0, 0.0), moving_goal=FollowGoal("lead")),
+    ]
+    torch.manual_seed(0)
+    sq = Squad(story, agents, truth_occ=truth, prior_occ=truth, plant="jolt")
+    assert sq._routes.agents == [0]
+    rv = sq._routes.vehicles[0]
+    assert rv["min_radius"] > 0.0 and rv["reach"] > 0.0
