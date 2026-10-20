@@ -17,24 +17,46 @@ the fast path disabled) and the C++ twin must match. It is the parity oracle.
 
 Format (little-endian, float32 row-major):
     "CVNM"                     4 bytes magic
-    format_version  u32        = 1
+    format_version  u32        = 1, or 2 for a net on belief (observed) material maps
     arch_hash       u64        FNV-1a over sorted (name, shape) descriptors
     d_tok u32, nhead u32, num_layers u32, d_risk u32, patch_size u32
     lam_soft_max f32, lam_hard_max f32, mu_lat_max f32, eps f32
+    version 2 only, the belief block (libcvc's NAV-BELIEF-MATERIAL-ROADMAP §6):
+      risk_channels u32 (2 = [r~, hard]; 3 = [r~, hard, seen]), seen_rule u32 (0 raycast,
+      1 disc), unknown_risk f32, unknown_hard u32, unknown_gate_hard u32,
+      material_range_m f32 (0 = the sense range), patch_extent_m f32 (0 = not recorded)
     n_tensors u32
     per tensor: name_len u32, name utf-8, ndim u32, dims[ndim] u32, f32 data
     meta_len u32, meta utf-8
+
+A 2-channel net is written as version 1, byte-identical to before; a 3-channel net as version 2,
+which a pre-belief reader refuses rather than mis-striding.
 """
 
 from __future__ import annotations
 
 import struct
+from dataclasses import dataclass
 
 import numpy as np
 
 MAGIC = b"CVNM"
 FORMAT_VERSION = 1
+FORMAT_VERSION_BELIEF = 2
 EPS = 1e-5
+
+
+@dataclass
+class BeliefHeader:
+    """A version-2 file's belief block: what the net was trained on (spec §6)."""
+
+    risk_channels: int = 3
+    seen_rule: int = 0  # 0 raycast, 1 disc
+    unknown_risk: float = 0.0
+    unknown_hard: int = 0
+    unknown_gate_hard: int = 1
+    material_range_m: float = 0.0
+    patch_extent_m: float = 0.0
 
 
 def _fnv1a64(data: bytes) -> int:
@@ -57,19 +79,31 @@ def arch_hash(named_shapes) -> int:
 # ---------------------------------------------------------------------------
 
 
-def write_matnet(model, path: str, *, meta: str = "") -> str:
+def write_matnet(model, path: str, *, meta: str = "", belief: BeliefHeader | None = None) -> str:
     """Serialize a ``CoefEnergyNetMaterial`` to ``path`` as ``.cvcnm``.
 
     Reads ``model.state_dict()`` — every parameter by name, float32 row-major
     (torch ``Linear`` weight is ``[out, in]``; ``Conv2d`` weight
-    ``[Cout, Cin, kH, kW]``; ``in_proj_weight`` ``[3*d, d]``)."""
+    ``[Cout, Cin, kH, kW]``; ``in_proj_weight`` ``[3*d, d]``). A 3-channel net (the
+    encoder's first conv takes 3 channels) is written as version 2 with its belief block:
+    ``belief``, else ``model.belief_header``, else the spec's defaults."""
     sd = model.state_dict()
     tensors = [(k, v.detach().cpu().numpy().astype(np.float32)) for k, v in sd.items()]
     named_shapes = [(k, tuple(v.shape)) for k, v in tensors]
+    w0 = sd.get("risk_enc.net.0.weight")
+    channels = int(w0.shape[1]) if w0 is not None else 2
+    if channels == 3:
+        belief = belief or getattr(model, "belief_header", None) or BeliefHeader()
+        if belief.risk_channels != 3:
+            raise ValueError(f"a 3-channel net with belief.risk_channels {belief.risk_channels}")
+    elif channels != 2:
+        raise ValueError(f"risk_enc.net.0.weight has {channels} input channels: 2 or 3")
+    else:
+        belief = None
 
     with open(path, "wb") as f:
         f.write(MAGIC)
-        f.write(struct.pack("<I", FORMAT_VERSION))
+        f.write(struct.pack("<I", FORMAT_VERSION_BELIEF if belief else FORMAT_VERSION))
         f.write(struct.pack("<Q", arch_hash(named_shapes)))
         f.write(
             struct.pack(
@@ -90,6 +124,19 @@ def write_matnet(model, path: str, *, meta: str = "") -> str:
                 EPS,
             )
         )
+        if belief:
+            f.write(
+                struct.pack(
+                    "<IIfIIff",
+                    int(belief.risk_channels),
+                    int(belief.seen_rule),
+                    float(belief.unknown_risk),
+                    int(belief.unknown_hard),
+                    int(belief.unknown_gate_hard),
+                    float(belief.material_range_m),
+                    float(belief.patch_extent_m),
+                )
+            )
         f.write(struct.pack("<I", len(tensors)))
         for name, arr in tensors:
             nb = name.encode("utf-8")
@@ -111,9 +158,27 @@ def write_matnet(model, path: str, *, meta: str = "") -> str:
 
 
 class MatNet:
-    """Parsed ``.cvcnm``: tensors by name + the scalar hyperparameters."""
+    """Parsed ``.cvcnm``: tensors by name + the scalar hyperparameters (and, for version 2, the
+    belief block; ``risk_channels`` is 2 for version 1)."""
 
-    def __init__(self, tensors, d_tok, nhead, num_layers, d_risk, patch_size, caps, arch):
+    def __init__(
+        self,
+        tensors,
+        d_tok,
+        nhead,
+        num_layers,
+        d_risk,
+        patch_size,
+        caps,
+        arch,
+        version=FORMAT_VERSION,
+        belief=None,
+        meta="",
+    ):
+        self.version = version
+        self.belief = belief
+        self.risk_channels = belief.risk_channels if belief else 2
+        self.meta = meta
         self.t = tensors
         self.d_tok = d_tok
         self.nhead = nhead
@@ -139,10 +204,16 @@ def read_matnet(path: str) -> MatNet:
     assert buf[:4] == MAGIC, "not a .cvcnm file"
     off = 4
     (ver,) = take("<I")
-    assert ver == FORMAT_VERSION, f"unsupported .cvcnm version {ver}"
+    if ver not in (FORMAT_VERSION, FORMAT_VERSION_BELIEF):
+        raise ValueError(f"unsupported .cvcnm version {ver}")
     (arch,) = take("<Q")
     d_tok, nhead, num_layers, d_risk, patch_size = take("<IIIII")
     caps = take("<ffff")
+    belief = None
+    if ver == FORMAT_VERSION_BELIEF:
+        belief = BeliefHeader(*take("<IIfIIff"))
+        if belief.risk_channels not in (2, 3):
+            raise ValueError(f"belief block: risk_channels {belief.risk_channels}")
     (n_tensors,) = take("<I")
     tensors = {}
     for _ in range(n_tensors):
@@ -155,7 +226,20 @@ def read_matnet(path: str) -> MatNet:
         arr = np.frombuffer(buf, np.float32, count, off).reshape(dims).copy()
         off += count * 4
         tensors[name] = arr
-    return MatNet(tensors, d_tok, nhead, num_layers, d_risk, patch_size, caps, arch)
+    meta = ""
+    if off + 4 <= len(buf):
+        (ml,) = take("<I")
+        meta = buf[off : off + ml].decode("utf-8")
+    channels = belief.risk_channels if belief else 2
+    w0 = tensors.get("risk_enc.net.0.weight")
+    if w0 is not None and tuple(w0.shape) != (16, channels, 3, 3):
+        raise ValueError(
+            f"risk_enc.net.0.weight is {tuple(w0.shape)}; a {channels}-channel file needs "
+            f"(16, {channels}, 3, 3)"
+        )
+    return MatNet(
+        tensors, d_tok, nhead, num_layers, d_risk, patch_size, caps, arch, ver, belief, meta
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -325,4 +409,12 @@ def matnet_forward_numpy(mn: MatNet, obs_feats, obs_mask, goal_feats, risk_patch
     return alphas, float(beta), float(gamma), float(lam_soft), float(lam_hard), float(mu_lat)
 
 
-__all__ = ["write_matnet", "read_matnet", "matnet_forward_numpy", "MatNet", "arch_hash", "MAGIC"]
+__all__ = [
+    "write_matnet",
+    "read_matnet",
+    "matnet_forward_numpy",
+    "MatNet",
+    "BeliefHeader",
+    "arch_hash",
+    "MAGIC",
+]

@@ -56,15 +56,20 @@ from grl_snam.train_coef_energy import ipc_piecewise
 
 
 class RiskPatchEncoder(nn.Module):
-    """Small CNN over a (2, P, P) risk patch: ch0 = smoothed r~, ch1 = hard mask.
+    """Small CNN over a (C, P, P) risk patch: ch0 = smoothed r~, ch1 = hard mask, and with
+    ``in_ch=3`` ch2 = the seen bit of a belief (observed) material map (libcvc's
+    NAV-BELIEF-MATERIAL-ROADMAP §5).
 
     Output: (B, d_out) risk context vector.
     """
 
-    def __init__(self, patch_size: int = 32, d_out: int = 64):
+    def __init__(self, patch_size: int = 32, d_out: int = 64, in_ch: int = 2):
         super().__init__()
+        if in_ch not in (2, 3):
+            raise ValueError(f"in_ch {in_ch}: 2 (r~, hard) or 3 (r~, hard, seen)")
+        self.in_ch = in_ch
         self.net = nn.Sequential(
-            nn.Conv2d(2, 16, kernel_size=3, padding=1),
+            nn.Conv2d(in_ch, 16, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
@@ -112,8 +117,10 @@ class CoefEnergyNetMaterial(nn.Module):
         mu_lat_max: float = 5.0,
         nhead: int = 4,
         num_layers: int = 2,
+        risk_channels: int = 2,
     ):
         super().__init__()
+        self.risk_channels = risk_channels
         # The .cvcnm header's widths (libcvc's net reads them from the file).
         self.d_tok, self.nhead, self.num_layers, self.d_risk = d_tok, nhead, num_layers, d_risk
         self.lam_soft_max = lam_soft_max
@@ -132,7 +139,7 @@ class CoefEnergyNetMaterial(nn.Module):
         self.gamma_head = nn.Sequential(nn.Linear(d_tok, 64), nn.ReLU(), nn.Linear(64, 1))
 
         # Material risk branch.
-        self.risk_enc = RiskPatchEncoder(patch_size=patch_size, d_out=d_risk)
+        self.risk_enc = RiskPatchEncoder(patch_size=patch_size, d_out=d_risk, in_ch=risk_channels)
         self.lam_soft_head = nn.Sequential(
             nn.Linear(d_risk + d_tok, 64), nn.ReLU(), nn.Linear(64, 1)
         )

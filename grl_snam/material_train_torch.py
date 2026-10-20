@@ -112,6 +112,7 @@ def load_cvcnm(path, *, device=None, dtype: torch.dtype = torch.float32) -> Coef
         d_risk=mn.d_risk,
         nhead=mn.nhead,
         num_layers=mn.num_layers,
+        risk_channels=mn.risk_channels,
         lam_soft_max=float(mn.lam_soft_max),
         lam_hard_max=float(mn.lam_hard_max),
         mu_lat_max=float(mn.mu_lat_max),
@@ -131,6 +132,7 @@ def load_cvcnm(path, *, device=None, dtype: torch.dtype = torch.float32) -> Coef
         if isinstance(mod, nn.LayerNorm):
             mod.eps = float(mn.eps)
     m.patch_size = int(mn.patch_size)
+    m.belief_header = mn.belief  # a version-2 file's belief block, written back by save_cvcnm
     _no_nested(m)
     m.eval()
     return m.to(device=device, dtype=dtype)
@@ -525,6 +527,7 @@ class MaterialTrainerTorch:
         B = out["o0"].shape[0] if out["o0"].dim() == 2 else -1
         N = out["C"].shape[1] if out["C"].dim() == 3 else -1
         rp, rl = out["risk_patch"], out["rollout_patch"]
+        C = int(getattr(self.model, "risk_channels", 2))
         want = {
             "obs_feats": (B, N, 6),
             "obs_mask": (B, N),
@@ -543,8 +546,8 @@ class MaterialTrainerTorch:
             "gamma_o": (B,),
         }
         bad = [k for k, s in want.items() if tuple(out[k].shape) != s]
-        if rp.dim() != 4 or rp.shape[0] != B or rp.shape[1] != 2 or rp.shape[2] != rp.shape[3]:
-            bad.append("risk_patch")
+        if rp.dim() != 4 or rp.shape[0] != B or rp.shape[1] != C or rp.shape[2] != rp.shape[3]:
+            bad.append(f"risk_patch (the model takes {C} channels)")
         if rl.dim() != 4 or rl.shape[0] != B or rl.shape[1] != 6:
             bad.append("rollout_patch")
         if B < 0 or N < 0 or bad:
@@ -552,6 +555,18 @@ class MaterialTrainerTorch:
         P = getattr(self.model, "patch_size", None)
         if P is not None and int(rp.shape[2]) != int(P):
             raise ValueError(f"risk_patch P {int(rp.shape[2])} != model patch_size {int(P)}")
+        # The witness gate in training (spec §5, optional): [B] 0/1, data (no gradient). Absent is
+        # ungated, the trainer as before.
+        g = batch.get("gate_active") if hasattr(batch, "get") else None
+        if g is not None:
+            if torch.is_tensor(g):
+                g = g.detach().cpu().numpy()
+            g = np.ascontiguousarray(g, np.uint8).reshape(-1)
+            if g.shape[0] != B:
+                raise ValueError(f"gate_active has {g.shape[0]} entries for a batch of {B}")
+            out["gate_active"] = torch.from_numpy((g != 0).astype(np.float32)).to(
+                device=self.device, dtype=self.dtype
+            )
         return out
 
     def _ext(self, ext):
@@ -712,8 +727,12 @@ class MaterialTrainerTorch:
             alphas, beta, gamma, lam_soft, lam_hard, _ = self.model(
                 b["obs_feats"], b["obs_mask"], b["goal_feats"], b["risk_patch"]
             )
+        # The gate multiplies each agent's lam_soft in the rollout (all integrators and their
+        # adjoints); lreg below still sees the head's own value.
+        gate = b.get("gate_active")
+        lam_soft_r = lam_soft if gate is None else lam_soft * gate
         oT, vT, min_clear, cum, hard, arc, th0, sp0 = self._rollout(
-            b, (alphas, beta, gamma, lam_soft, lam_hard), ext
+            b, (alphas, beta, gamma, lam_soft_r, lam_hard), ext
         )
         B = oT.shape[0]
         inv_b = 1.0 / float(B)
