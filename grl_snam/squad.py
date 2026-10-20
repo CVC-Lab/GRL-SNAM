@@ -131,6 +131,7 @@ class Squad:
         stagger_sense: bool = False,
         material=None,
         plant=None,
+        vehicle_routes: bool | None = None,
     ):
         if not agents:
             raise ValueError("a squad needs at least one agent")
@@ -210,14 +211,19 @@ class Squad:
         self.native = None
         self.plant = None
         self._native_weights = None
+        self._routes = None
         if plant is not None:
-            self._native_init(plant, prior_occ, material)
+            self._native_init(plant, prior_occ, material, vehicle_routes)
+        elif vehicle_routes:
+            raise ValueError("vehicle_routes needs Squad(plant=...)")
 
     # ── the native runtime (Squad(plant=...)) ───────────────────────────────
-    def _native_init(self, plant, prior_occ, material) -> None:
+    def _native_init(self, plant, prior_occ, material, vehicle_routes=None) -> None:
         """Build the C++ sim_world that runs this squad: the scenarios' truth, starts,
         goals, sensor and vehicle parameters, the shared policy, one belief plane per
-        agent; then the plant."""
+        agent; then the plant. On a physics plant the agents with a fixed goal drive vehicle
+        routes (``vehicle_routes``: None = whenever pycvc has them, True = required, False =
+        nav's carrot); an agent chasing a moving goal keeps the carrot."""
         import os
         import tempfile
 
@@ -324,6 +330,21 @@ class Squad:
         self._native_dt = float(nav0.dt)
         self._native_reached = np.zeros(n, bool)
         self._native_tick = 0
+        use = vehicle_routes
+        if use is None:
+            use = self.plant is not None and _native.HAS_VEHICLE_ROUTES
+        if use:
+            if self.plant is None:
+                raise ValueError("vehicle_routes needs a physics plant, not nav's bicycle")
+            fixed = [
+                i
+                for i, a in enumerate(self.agents)
+                if (a.moving_goal if a.moving_goal is not None else self.story.moving_goal) is None
+            ]
+            if fixed:
+                self._routes = _native.VehicleRoutes(self.native, sc0.bounds, fixed)
+                pos, head = self.native.snapshot()[:2]
+                self._routes.start(pos, head, {i: tuple(scs[i].waypoints[0]) for i in fixed})
 
     def position_of(self, key: str) -> tuple[float, float]:
         """Agent ``key``'s position (world metres), from whichever runtime steps it."""
@@ -347,9 +368,19 @@ class Squad:
                 gx, gy = mg.position_at(t)
                 gn = self.scenarios[a.key].nav.w2n((gx, gy))
                 self.native.retarget(i, float(gn[0]), float(gn[1]))
+        if self._routes is not None:
+            pos0, head0 = self.native.snapshot()[:2]
+            self._routes.apply(t, pos0, head0)
         self.native.step()
         self._native_tick += 1
         pos, head, speed, mode, reached = self.native.snapshot()
+        if self._routes is not None:
+            # A route agent's snapshot `reached` is "at the follower's carrot"; it has arrived
+            # when it has finished its route.
+            reached = np.asarray(reached, bool).copy()
+            done = self._routes.done()
+            for i in self._routes.agents:
+                reached[i] = bool(done[i])
         out = {}
         for i, k in enumerate(keys):
             sc = self.scenarios[k]
