@@ -2,7 +2,7 @@
 
 The torch twin of libcvc's ``cvc::nav::material_ext`` (``inc/cvc/nav/material.h``): the
 deployed drive takes an external force alongside the material one
-(``drive_step_material_ext`` with an ``ext_force``, cvcdbg's RF/comm force), and the material
+(``drive_step_material_ext`` with an ``ext_force``, a caller's own force), and the material
 training rollouts take the same force, so the material heads learn in the presence of the force
 they face at deploy.
 

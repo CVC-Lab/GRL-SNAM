@@ -316,7 +316,7 @@ class MaterialTrainer:
 
         Returns the scalar loss (computed on the pre-update weights, as in torch). ``ext`` is
         an external force in the rollouts (a :class:`grl_snam.material_ext.MaterialExt` with a
-        patch or per-step values: cvcdbg's RF/comm force, libcvc #734); it needs
+        patch or per-step values, libcvc #734); it needs
         :data:`grl_snam.nav_native.HAS_MATERIAL_EXT`.
         """
         extra = () if ext is None else _nn.material_ext_args(ext)
