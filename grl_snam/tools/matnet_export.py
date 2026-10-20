@@ -74,10 +74,10 @@ def write_matnet(model, path: str, *, meta: str = "") -> str:
         f.write(
             struct.pack(
                 "<IIIII",
-                64,  # d_tok
-                4,  # nhead
-                2,  # num_layers
-                64,  # d_risk
+                int(getattr(model, "d_tok", 64)),
+                int(getattr(model, "nhead", 4)),
+                int(getattr(model, "num_layers", 2)),
+                int(getattr(model, "d_risk", 64)),
                 int(getattr(model, "patch_size", 32)) if hasattr(model, "patch_size") else 32,
             )
         )

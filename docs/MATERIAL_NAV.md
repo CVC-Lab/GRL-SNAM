@@ -212,6 +212,7 @@ after soak.
 | rollout with material vs torch | FLOAT (rtol 1e-4 / atol 1e-5, fixed lambda columns) | `test_material_parity.py` |
 | no-material invariance | BIT | null-material delegation byte-identity (gtest), zero-grid value-identity, full suite green |
 | behavior | acceptance | mud detour, hazard no-entry, arrival, replan-on-stamp, determinism (Python + gtest sim_world) |
+| torch trainer (`MaterialTrainerTorch`) vs the native one | FLOAT (terms 1e-5 rel; gradients 1e-4 of each tensor's max; weights after 3 Adam steps 1e-6 on 99.99%) | `test_material_train_torch.py` against libcvc's golden (`GRL_SNAM_MATERIAL_TRAIN_GOLDEN`) and a live pycvc trainer; float64 gradcheck always. See the roadmap's P5 section |
 
 The Layer-B gate in `grl_snam/material.py` is the NORMATIVE bit spec for the
 C++ twin: float64 end-to-end, a shared exact 16-direction table (libm

@@ -110,8 +110,12 @@ class CoefEnergyNetMaterial(nn.Module):
         lam_soft_max: float = 5.0,
         lam_hard_max: float = 10.0,
         mu_lat_max: float = 5.0,
+        nhead: int = 4,
+        num_layers: int = 2,
     ):
         super().__init__()
+        # The .cvcnm header's widths (libcvc's net reads them from the file).
+        self.d_tok, self.nhead, self.num_layers, self.d_risk = d_tok, nhead, num_layers, d_risk
         self.lam_soft_max = lam_soft_max
         self.lam_hard_max = lam_hard_max
         self.mu_lat_max = mu_lat_max
@@ -120,9 +124,9 @@ class CoefEnergyNetMaterial(nn.Module):
         self.obs_enc = nn.Sequential(nn.Linear(d_obs, 128), nn.ReLU(), nn.Linear(128, d_tok))
         self.goal_enc = nn.Sequential(nn.Linear(d_goal, 64), nn.ReLU(), nn.Linear(64, d_tok))
         enc = nn.TransformerEncoderLayer(
-            d_model=d_tok, nhead=4, dim_feedforward=128, batch_first=True
+            d_model=d_tok, nhead=nhead, dim_feedforward=128, batch_first=True
         )
-        self.fuser = nn.TransformerEncoder(enc, num_layers=2)
+        self.fuser = nn.TransformerEncoder(enc, num_layers=num_layers)
         self.alpha_head = nn.Sequential(nn.Linear(d_tok, 64), nn.ReLU(), nn.Linear(64, 1))
         self.beta_head = nn.Sequential(nn.Linear(d_tok, 64), nn.ReLU(), nn.Linear(64, 1))
         self.gamma_head = nn.Sequential(nn.Linear(d_tok, 64), nn.ReLU(), nn.Linear(64, 1))
@@ -267,6 +271,7 @@ def integrate_surrogate_material(
     mass: float = 1.0,
     d_hat_sdf: float = 3.0,
     ext=None,
+    k_sharp: float = 5.0,
 ) -> tuple[torch.Tensor, ...]:
     """Surrogate integrator with material forces (faithful port).
 
@@ -281,7 +286,8 @@ def integrate_surrogate_material(
     forces and the accumulated costs reflect the path actually taken.
 
     ``ext`` (a :class:`grl_snam.material_ext.MaterialExt`) adds an external force to the
-    force sum, libcvc's ``material_ext``; None is the rollout without one.
+    force sum, libcvc's ``material_ext``; None is the rollout without one. ``k_sharp`` is the
+    hazard barrier's sharpness (libcvc's ``surrogate_material_params::k_sharp``, the source's 5.0).
 
     Returns (oT, vT, min_clear_geom, cum_risk, hard_count, arc_length).
     """
@@ -331,7 +337,7 @@ def integrate_surrogate_material(
         min_clear = torch.minimum(min_clear, dmin)
 
         F_mat_soft = -lam_soft.unsqueeze(-1) * risk_grad
-        _, db_dphi = sdf_barrier_grad(sdf_val, d_hat_sdf=d_hat_sdf)
+        _, db_dphi = sdf_barrier_grad(sdf_val, d_hat_sdf=d_hat_sdf, k_sharp=k_sharp)
         F_mat_hard = -lam_hard.unsqueeze(-1) * db_dphi.unsqueeze(-1) * sdf_grad
 
         F_tot = F_goal + F_geom + F_mat_soft + F_mat_hard - gamma.unsqueeze(-1) * v
