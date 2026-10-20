@@ -2,14 +2,17 @@
 
 Three layers:
 
-1. **The native golden** (the gate). libcvc's ``NavMaterialTrain.TorchTrainerGolden`` (libcvc #734,
-   commit 6001a840, with ``CVC_MATERIAL_TRAIN_GOLDEN_DIR`` set) runs the native trainer for 3 Adam
-   steps on its fixture batch (B 16, N 3, P 16, 13x13 rollout patch) with a scheduled two-patch
-   external force, and writes ``material_train_golden.json`` (config, batch, force, the parameter
-   index, each step's loss, CVaR eta and unweighted terms), ``_w0.cvcnm`` / ``_w3.cvcnm`` (the
-   weights before and after) and ``_grad0.f32`` (step 0's weight gradients). The blobs are ~3 MB
-   and are not committed here: point ``GRL_SNAM_MATERIAL_TRAIN_GOLDEN`` at that directory, or
-   these tests skip.
+1. **The native goldens** (the gate). libcvc's ``NavMaterialTrain.TorchTrainerGolden`` (libcvc
+   #734, with ``CVC_MATERIAL_TRAIN_GOLDEN_DIR`` set) runs the native trainer for 3 Adam steps on
+   its fixture batch (B 16, N 3, P 16, 13x13 rollout patch) with a scheduled two-patch external
+   force, and writes ``material_train_golden.json`` (config, batch, force, the parameter index,
+   each step's loss, CVaR eta and unweighted terms), ``_w0.cvcnm`` / ``_w3.cvcnm`` (the weights
+   before and after) and ``_grad0.f32`` (step 0's weight gradients). Those blobs are ~3 MB and are
+   not committed: point ``GRL_SNAM_MATERIAL_TRAIN_GOLDEN`` at that directory, or the "full" cases
+   skip. ``TorchTrainerGoldenSmall`` writes the same at the narrowest widths (d_tok 16, 2 heads,
+   1 layer, d_risk 16; a batch of 4, a 9x9 rollout patch), ~0.8 MB, committed under
+   ``tests/fixtures/material_train_golden_small``: the "small" cases always run, so CI holds the
+   trainer to the native one.
 2. **A live native trainer**, when the installed pycvc has the ``nav_material_trainer_*`` binding:
    the same weights and batch through both trainers, for the configurations the golden does not
    cover (the bicycle, with and without the external force, and sampled and semi-implicit
@@ -56,12 +59,18 @@ from grl_snam.material_nav import CoefEnergyNetMaterial  # noqa: E402
 from grl_snam.tools.matnet_export import read_matnet  # noqa: E402
 
 GOLDEN_ENV = "GRL_SNAM_MATERIAL_TRAIN_GOLDEN"
-GOLDEN_FILES = (
-    "material_train_golden.json",
-    "material_train_golden_w0.cvcnm",
-    "material_train_golden_w3.cvcnm",
-    "material_train_golden_grad0.f32",
-)
+# The goldens by name: "small" is committed (libcvc's TorchTrainerGoldenSmall: the narrowest net,
+# a batch of 4), so CI holds the trainer to it; "full" (TorchTrainerGolden, ~3 MB) is read from
+# GOLDEN_ENV when it is set.
+GOLDEN_STEM = {"small": "material_train_golden_small", "full": "material_train_golden"}
+SMALL_GOLDEN_DIR = Path(__file__).resolve().parent / "fixtures" / "material_train_golden_small"
+GOLDENS = ["small", "full"]
+
+
+def _golden_files(stem):
+    return (f"{stem}.json", f"{stem}_w0.cvcnm", f"{stem}_w3.cvcnm", f"{stem}_grad0.f32")
+
+
 DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 DTYPES = [torch.float32, torch.float64]
 PARTS = ("traj", "vel", "fric", "clear", "nav", "lreg", "multi")
@@ -183,24 +192,31 @@ def ckpt(tmp_path_factory):
 # --------------------------------------------------------------------------- 1. the golden
 
 
-def _golden_dir() -> Path:
-    env = os.environ.get(GOLDEN_ENV)
-    if not env:
-        pytest.skip(
-            f"{GOLDEN_ENV} is unset: point it at the output directory of libcvc's "
-            "NavMaterialTrain.TorchTrainerGolden (libcvc #734; run it with "
-            "CVC_MATERIAL_TRAIN_GOLDEN_DIR set). The ~3 MB golden is not committed."
-        )
-    d = Path(env)
-    missing = [f for f in GOLDEN_FILES if not (d / f).is_file()]
+def _golden_dir(which) -> Path:
+    stem = GOLDEN_STEM[which]
+    if which == "small":
+        d = SMALL_GOLDEN_DIR
+    else:
+        env = os.environ.get(GOLDEN_ENV)
+        if not env:
+            pytest.skip(
+                f"{GOLDEN_ENV} is unset: point it at the output directory of libcvc's "
+                "NavMaterialTrain.TorchTrainerGolden (libcvc #734; run it with "
+                "CVC_MATERIAL_TRAIN_GOLDEN_DIR set). The ~3 MB golden is not committed."
+            )
+        d = Path(env)
+    missing = [f for f in _golden_files(stem) if not (d / f).is_file()]
     if missing:
-        pytest.skip(f"{GOLDEN_ENV}={env} lacks {', '.join(missing)}")
+        if which == "small":
+            raise FileNotFoundError(f"the committed golden {d} lacks {', '.join(missing)}")
+        pytest.skip(f"{GOLDEN_ENV}={d} lacks {', '.join(missing)}")
     return d
 
 
-def _golden():
-    d = _golden_dir()
-    g = json.loads((d / "material_train_golden.json").read_text(encoding="utf-8"))
+def _golden(which):
+    d = _golden_dir(which)
+    stem = GOLDEN_STEM[which]
+    g = json.loads((d / f"{stem}.json").read_text(encoding="utf-8"))
     assert g["format"] == "cvc-material-train-golden-1"
     b = g["batch"]
     B, N, P, Hp, Wp = b["B"], b["N"], b["P"], b["Hp"], b["Wp"]
@@ -242,31 +258,31 @@ def _golden():
     }
     kw["frac_range"] = (c["frac_lo"], c["frac_hi"])
     kw["semi_implicit"] = bool(c["semi_implicit"])
-    grad0 = np.fromfile(d / "material_train_golden_grad0.f32", dtype="<f4")
+    grad0 = np.fromfile(d / f"{stem}_grad0.f32", dtype="<f4")
     grads = {
         p["name"]: grad0[p["offset"] : p["offset"] + p["count"]].astype(np.float64)
         for p in g["params"]
     }
     return dict(
         dir=d,
+        w0_path=d / f"{stem}_w0.cvcnm",
         kw=kw,
         lr=c["lr"],
         batch=batch,
         ext=ext,
         grads=grads,
         steps=g["steps"],
-        w0=read_matnet(str(d / "material_train_golden_w0.cvcnm")).t,
-        w3=read_matnet(str(d / "material_train_golden_w3.cvcnm")).t,
+        w0=read_matnet(str(d / f"{stem}_w0.cvcnm")).t,
+        w3=read_matnet(str(d / f"{stem}_w3.cvcnm")).t,
     )
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("dev", DEVICES)
-def test_golden_step0_loss_terms_and_gradients(dev, dtype):
-    G = _golden()
-    tr = mtt.MaterialTrainerTorch(
-        G["dir"] / "material_train_golden_w0.cvcnm", device=dev, dtype=dtype, **G["kw"]
-    )
+@pytest.mark.parametrize("which", GOLDENS)
+def test_golden_step0_loss_terms_and_gradients(which, dev, dtype):
+    G = _golden(which)
+    tr = mtt.MaterialTrainerTorch(G["w0_path"], device=dev, dtype=dtype, **G["kw"])
     s0 = G["steps"][0]
     # With the CVaR quantile frozen at the native's: the loss and every term.
     parts, grads = tr.loss_and_grad(G["batch"], ext=G["ext"], frozen_eta=s0["eta"])
@@ -290,11 +306,10 @@ def test_golden_step0_loss_terms_and_gradients(dev, dtype):
 
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("dev", DEVICES)
-def test_golden_three_adam_steps(dev, dtype):
-    G = _golden()
-    tr = mtt.MaterialTrainerTorch(
-        G["dir"] / "material_train_golden_w0.cvcnm", device=dev, dtype=dtype, **G["kw"]
-    )
+@pytest.mark.parametrize("which", GOLDENS)
+def test_golden_three_adam_steps(which, dev, dtype):
+    G = _golden(which)
+    tr = mtt.MaterialTrainerTorch(G["w0_path"], device=dev, dtype=dtype, **G["kw"])
     for t in range(3):
         L = tr.step(G["batch"], lr=G["lr"], ext=G["ext"])
         want = G["steps"][t]
@@ -318,10 +333,11 @@ def test_golden_three_adam_steps(dev, dtype):
         assert np.abs(got - w0).max() <= 3 * lr * 1.001, name
 
 
-def test_golden_terms_add_up_to_the_loss():
+@pytest.mark.parametrize("which", GOLDENS)
+def test_golden_terms_add_up_to_the_loss(which):
     """The double-precision assembly: both sides' terms sum to their L (the native's
     TheLossPartsAddUpToTheLoss), to 1e-12."""
-    G = _golden()
+    G = _golden(which)
     kw = G["kw"]
     f = {k: float(np.float32(kw[k])) for k in ("w_traj", "w_vel", "w_fric", "w_clear", "w_lreg")}
     wm = float(np.float32(kw["w_multi"]))
@@ -339,9 +355,7 @@ def test_golden_terms_add_up_to_the_loss():
 
     for s in G["steps"]:
         assert abs(total(s) - s["L"]) <= 1e-12 * abs(s["L"])
-    tr = mtt.MaterialTrainerTorch(
-        G["dir"] / "material_train_golden_w0.cvcnm", dtype=torch.float64, **G["kw"]
-    )
+    tr = mtt.MaterialTrainerTorch(G["w0_path"], dtype=torch.float64, **G["kw"])
     q = tr.loss_parts(G["batch"], ext=G["ext"])
     assert abs(total(q) - q["L"]) <= 1e-12 * abs(q["L"])
 

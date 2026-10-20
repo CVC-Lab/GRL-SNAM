@@ -106,15 +106,12 @@ def load_cvcnm(path, *, device=None, dtype: torch.dtype = torch.float32) -> Coef
     native net has none).
     """
     mn = read_matnet(str(path))
-    if (mn.d_tok, mn.nhead, mn.num_layers, mn.d_risk) != (64, 4, 2, 64):
-        raise ValueError(
-            f"{path}: a CoefEnergyNetMaterial has d_tok 64, nhead 4, 2 layers and d_risk 64; this "
-            f"file has {mn.d_tok}, {mn.nhead}, {mn.num_layers} and {mn.d_risk}"
-        )
     m = CoefEnergyNetMaterial(
         d_tok=mn.d_tok,
         patch_size=mn.patch_size,
         d_risk=mn.d_risk,
+        nhead=mn.nhead,
+        num_layers=mn.num_layers,
         lam_soft_max=float(mn.lam_soft_max),
         lam_hard_max=float(mn.lam_hard_max),
         mu_lat_max=float(mn.mu_lat_max),

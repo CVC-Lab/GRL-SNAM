@@ -110,8 +110,12 @@ class CoefEnergyNetMaterial(nn.Module):
         lam_soft_max: float = 5.0,
         lam_hard_max: float = 10.0,
         mu_lat_max: float = 5.0,
+        nhead: int = 4,
+        num_layers: int = 2,
     ):
         super().__init__()
+        # The .cvcnm header's widths (libcvc's net reads them from the file).
+        self.d_tok, self.nhead, self.num_layers, self.d_risk = d_tok, nhead, num_layers, d_risk
         self.lam_soft_max = lam_soft_max
         self.lam_hard_max = lam_hard_max
         self.mu_lat_max = mu_lat_max
@@ -120,9 +124,9 @@ class CoefEnergyNetMaterial(nn.Module):
         self.obs_enc = nn.Sequential(nn.Linear(d_obs, 128), nn.ReLU(), nn.Linear(128, d_tok))
         self.goal_enc = nn.Sequential(nn.Linear(d_goal, 64), nn.ReLU(), nn.Linear(64, d_tok))
         enc = nn.TransformerEncoderLayer(
-            d_model=d_tok, nhead=4, dim_feedforward=128, batch_first=True
+            d_model=d_tok, nhead=nhead, dim_feedforward=128, batch_first=True
         )
-        self.fuser = nn.TransformerEncoder(enc, num_layers=2)
+        self.fuser = nn.TransformerEncoder(enc, num_layers=num_layers)
         self.alpha_head = nn.Sequential(nn.Linear(d_tok, 64), nn.ReLU(), nn.Linear(64, 1))
         self.beta_head = nn.Sequential(nn.Linear(d_tok, 64), nn.ReLU(), nn.Linear(64, 1))
         self.gamma_head = nn.Sequential(nn.Linear(d_tok, 64), nn.ReLU(), nn.Linear(64, 1))
