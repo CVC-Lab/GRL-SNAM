@@ -266,6 +266,7 @@ def integrate_surrogate_material(
     margin_factor: float = 0.5,
     mass: float = 1.0,
     d_hat_sdf: float = 3.0,
+    ext=None,
 ) -> tuple[torch.Tensor, ...]:
     """Surrogate integrator with material forces (faithful port).
 
@@ -278,6 +279,9 @@ def integrate_surrogate_material(
 
     Per step, fields are bilinearly resampled at the CURRENT position, so the
     forces and the accumulated costs reflect the path actually taken.
+
+    ``ext`` (a :class:`grl_snam.material_ext.MaterialExt`) adds an external force to the
+    force sum, libcvc's ``material_ext``; None is the rollout without one.
 
     Returns (oT, vT, min_clear_geom, cum_risk, hard_count, arc_length).
     """
@@ -296,6 +300,10 @@ def integrate_surrogate_material(
     hard_count = torch.zeros(B, dtype=o.dtype, device=o.device)
     arc_length = torch.zeros(B, dtype=o.dtype, device=o.device)
 
+    if ext is not None:
+        from grl_snam.material_ext import ExtForce
+
+        ext_force = ExtForce(ext, o0)
     for s in range(int(H.max().item())):
         active = (s < H).to(o.dtype).unsqueeze(-1)
 
@@ -327,6 +335,8 @@ def integrate_surrogate_material(
         F_mat_hard = -lam_hard.unsqueeze(-1) * db_dphi.unsqueeze(-1) * sdf_grad
 
         F_tot = F_goal + F_geom + F_mat_soft + F_mat_hard - gamma.unsqueeze(-1) * v
+        if ext is not None:
+            F_tot = F_tot + ext_force.at(s, o)
         a = F_tot / mass
         # Semi-implicit: the position step uses the NEW velocity (upstream ordering).
         v_new = v + active * dt.unsqueeze(-1) * a
