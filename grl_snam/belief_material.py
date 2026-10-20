@@ -15,6 +15,8 @@ pinned values everywhere else. :class:`~grl_snam.material.MaterialGrid` and
 * :func:`belief_gate_surface` — that surface and its metres clearance explicitly, the
   ``belief_gate_surface`` kernel's twin;
 * :func:`seen_disc` — the optional range-disc seen rule (no occlusion);
+* :func:`material_patch_belief` — the model's 3-channel ``[r~, hard, seen]`` risk patch, cropped
+  from belief planes around an agent (the ``material_patch_belief`` kernel's twin);
 * :func:`belief_material_grid` / :func:`belief_material_runtime` — the composition.
 
 The default seen mask is the sense ray-cast's field of view:
@@ -40,6 +42,7 @@ __all__ = [
     "belief_gate_occ",
     "belief_gate_surface",
     "seen_disc",
+    "material_patch_belief",
     "belief_material_grid",
     "belief_material_runtime",
 ]
@@ -160,3 +163,61 @@ def belief_material_runtime(
     rt = MaterialRuntime(grid)
     rt.update_occ(belief_gate_occ(occ, seen, belief))
     return rt
+
+
+def material_patch_belief(
+    risk: np.ndarray,
+    hard_b: np.ndarray,
+    seen: np.ndarray,
+    bounds,
+    pos_world,
+    extent_m: float,
+    P: int,
+    params: BeliefMaterialParams = BeliefMaterialParams(),
+) -> np.ndarray:
+    """The model's belief risk patch for one agent, ``(3, P, P)`` float32 ``[r~, hard, seen]``.
+
+    P x P samples on the world offsets ``np.linspace(-extent_m/2, extent_m/2, P)`` around
+    ``pos_world`` (rows along y, columns along x). Each sample's nearest cell (``np.rint``,
+    round-half-even) gives ``seen`` (0 off the grid); where seen, ``r~`` is the align-corners
+    bilinear value of ``risk`` (the belief planes' channel 0, coordinates clamped into the grid)
+    and ``hard`` the nearest cell's bit; elsewhere the pinned ``unknown_risk`` / ``unknown_hard``.
+    float64 throughout with one float32 store, in libcvc's pinned op order, so it is BIT-identical
+    to ``cvc::nav::material_patch_belief``."""
+    if P < 2:
+        raise ValueError("P must be >= 2")
+    if not (math.isfinite(extent_m) and extent_m > 0.0):
+        raise ValueError("extent_m must be positive")
+    risk = np.asarray(risk, np.float32)
+    rows, cols = risk.shape
+    hard_b = np.asarray(hard_b)
+    seen = np.asarray(seen)
+    off = np.linspace(-extent_m / 2.0, extent_m / 2.0, P, dtype=np.float64)
+    y = float(pos_world[1]) + off[:, None]
+    x = float(pos_world[0]) + off[None, :]
+    rr = (y - float(bounds[1])) / (float(bounds[3]) - float(bounds[1])) * (rows - 1)
+    cc = (x - float(bounds[0])) / (float(bounds[2]) - float(bounds[0])) * (cols - 1)
+    rr, cc = np.broadcast_arrays(rr, cc)
+    nr, nc = np.rint(rr), np.rint(cc)
+    on = (nr >= 0) & (nr < rows) & (nc >= 0) & (nc < cols)
+    ri = np.where(on, nr, 0).astype(np.intp)
+    ci = np.where(on, nc, 0).astype(np.intp)
+    s = on & (seen[ri, ci] != 0)
+    rc = np.clip(rr, 0.0, rows - 1.0)
+    ccl = np.clip(cc, 0.0, cols - 1.0)
+    r0 = np.floor(rc).astype(np.intp)
+    c0 = np.floor(ccl).astype(np.intp)
+    r1 = np.minimum(r0 + 1, rows - 1)
+    c1 = np.minimum(c0 + 1, cols - 1)
+    fr = rc - r0
+    fc = ccl - c0
+    r64 = risk.astype(np.float64)
+    top = r64[r0, c0] + (r64[r0, c1] - r64[r0, c0]) * fc
+    bot = r64[r1, c0] + (r64[r1, c1] - r64[r1, c0]) * fc
+    out = np.empty((3, P, P), np.float32)
+    out[0] = np.where(
+        s, (top + (bot - top) * fr).astype(np.float32), np.float32(params.unknown_risk)
+    )
+    out[1] = np.where(s, (hard_b[ri, ci] != 0).astype(np.float32), np.float32(params.unknown_hard))
+    out[2] = s.astype(np.float32)
+    return out

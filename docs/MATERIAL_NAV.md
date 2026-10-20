@@ -226,6 +226,15 @@ rt = belief_material_runtime(risk_raw, hard, belief.material_seen, belief.to_occ
 `tests/test_belief_material_parity.py` holds all of it to libcvc's
 `belief_material_golden.json` (`tests/fixtures/`), bit for bit.
 
+Training on belief planes: `material_patch_belief(risk, hard_b, seen, bounds, pos, extent_m, P)`
+crops the 3-channel `[r~, hard, seen]` model patch around an agent (r~ bilinear, hard and seen
+from the nearest cell, the pinned values where it is unseen or off the map), bit-identical to
+libcvc's kernel. `CoefEnergyNetMaterial(risk_channels=3)` takes it, saved as `.cvcnm` version 2,
+and a batch's `gate_active` gates each agent's `lam_soft` in the training rollouts, in both
+`MaterialTrainerTorch` and the native `MaterialTrainer` (`HAS_MATERIAL_TRAINER_GATE`). libcvc's
+`TorchTrainerGoldenBelief` (`tests/fixtures/material_train_golden_belief/`) pins both trainers
+and the crop.
+
 ### Reading it back
 
 `NavMetrics.material_risk` / `.material_gate` carry the per-step risk at the
@@ -261,6 +270,7 @@ after soak.
 | gaussian blur / EDT / gradients (`material_build`) | BIT (tobytes) | `test_material_parity.py`, gtest goldens, scipy-equivalence pinned by a corner-impulse discriminator |
 | witness gate, serial + batch | BIT (every field; batch == serial bytes; thread-count stable) | `test_material_gate_sim.py`, `test_material_parity.py`, `NavMaterialGate.*` |
 | belief material: the seen mask, `belief_material_inputs`, the gate surface, `seen_disc` | BIT (SHA-256 of every raster + the gate outputs) | `test_belief_material_parity.py` vs libcvc's golden |
+| belief training: `material_patch_belief`; the 3-channel net with `gate_active` | BIT (the crop); FLOAT (the trainer, the small golden's tolerances) | `test_belief_material_parity.py`, `test_material_train_torch.py` vs libcvc's belief golden |
 | `material_sample` | FLOAT (rtol 1e-5) + non-contractual bit tripwire | `test_material_parity.py` |
 | rollout with material vs torch | FLOAT (rtol 1e-4 / atol 1e-5, fixed lambda columns) | `test_material_parity.py` |
 | no-material invariance | BIT | null-material delegation byte-identity (gtest), zero-grid value-identity, full suite green |

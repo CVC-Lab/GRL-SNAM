@@ -43,6 +43,11 @@ HAS_MATERIAL_TRAINER = _nn.AVAILABLE and hasattr(_pycvc, "nav_material_trainer_c
 # The forward-only loss (validation) and the CUDA request/probe surface landed
 # after the first trainer binding, so they get their own capability flags.
 HAS_MATERIAL_TRAINER_LOSS = HAS_MATERIAL_TRAINER and hasattr(_pycvc, "nav_material_trainer_loss")
+# The belief net (libcvc B3): a trainer that reports its risk channels also takes the training
+# gate (a batch's "gate_active") as the trailing argument of step / loss.
+HAS_MATERIAL_TRAINER_GATE = HAS_MATERIAL_TRAINER and hasattr(
+    _pycvc, "nav_material_trainer_risk_channels"
+)
 HAS_MATERIAL_TRAINER_CUDA = HAS_MATERIAL_TRAINER and hasattr(
     _pycvc, "nav_material_trainer_cuda_active"
 )
@@ -103,7 +108,8 @@ def cuda_max_horizon() -> int:
 # The arrays nav_material_trainer_step expects, in order. Shapes (B agents,
 # N padded obstacles, P model patch, Hp*Wp rollout patch):
 #   obs_feats (B,N,6) f32   obs_mask (B,N) u8       goal_feats (B,4) f32
-#   risk_patch (B,2,P,P) f32   o0/v0/goal (B,2) f32  C (B,N,2) f32   R (B,N) f32
+#   risk_patch (B,C,P,P) f32 (C = the net's risk channels: 2, or 3 for [r~, hard, seen])
+#   o0/v0/goal (B,2) f32  C (B,N,2) f32   R (B,N) f32
 #   rollout_patch (B,6,Hp,Wp) f32   rr/d_hat/dt (B,) f32   H (B,) i32
 #   o_tgt/v_tgt (B,2) f32   gamma_o (B,) f32
 BATCH_KEYS = (
@@ -142,6 +148,19 @@ def pack_batch(batch: Mapping[str, np.ndarray]) -> list:
         dt = np.uint8 if k in _U8_KEYS else (np.int32 if k in _I32_KEYS else np.float32)
         out.append(np.ascontiguousarray(batch[k], dtype=dt))
     return out
+
+
+def _trailing(batch, ext) -> tuple:
+    """The trailing step/loss arguments: the external force (``ext``), then a batch's optional
+    ``gate_active`` (B,) — the witness gate in training, which multiplies each agent's lam_soft
+    in the rollouts (libcvc B3; needs :data:`HAS_MATERIAL_TRAINER_GATE`)."""
+    gate = batch.get("gate_active") if hasattr(batch, "get") else None
+    if gate is None:
+        return () if ext is None else _nn.material_ext_args(ext)
+    if not HAS_MATERIAL_TRAINER_GATE:
+        raise RuntimeError("gate_active needs a pycvc whose trainer takes it (libcvc B3)")
+    g = np.ascontiguousarray(np.asarray(gate) != 0, np.uint8).reshape(-1)
+    return (*_nn.material_ext_args(ext), g)
 
 
 def cosine_lr(lr0: float, t: int, t_max: int, eta_min_frac: float = 0.1) -> float:
@@ -319,7 +338,7 @@ class MaterialTrainer:
         patch or per-step values, libcvc #734); it needs
         :data:`grl_snam.nav_native.HAS_MATERIAL_EXT`.
         """
-        extra = () if ext is None else _nn.material_ext_args(ext)
+        extra = _trailing(batch, ext)
         return float(
             _pycvc.nav_material_trainer_step(
                 self._h, *pack_batch(batch), float(lr), int(num_threads), *extra
@@ -339,12 +358,19 @@ class MaterialTrainer:
         Adam moments are unchanged. ``frozen_eta`` pins the detached CVaR quantile;
         the default NaN computes it from this batch's own costs. ``ext`` as for :meth:`step`.
         """
-        extra = () if ext is None else _nn.material_ext_args(ext)
+        extra = _trailing(batch, ext)
         return float(
             _pycvc.nav_material_trainer_loss(
                 self._h, *pack_batch(batch), float(frozen_eta), int(num_threads), *extra
             )
         )
+
+    @property
+    def risk_channels(self) -> int:
+        """The net's risk-patch channels: 2, or 3 for a belief net (``.cvcnm`` version 2)."""
+        if not HAS_MATERIAL_TRAINER_GATE:
+            return 2
+        return int(_pycvc.nav_material_trainer_risk_channels(self._h))
 
     def save(self, path) -> None:
         """Write the trained weights to ``path`` as a ``.cvcnm``."""
