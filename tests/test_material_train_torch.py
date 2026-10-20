@@ -30,8 +30,11 @@ largest entry (measured <= 1e-6), and the weights after 3 Adam steps (lr 1e-3, s
 travel) to 1e-6 absolute on 99.99% of the 207k entries (measured <= 2e-7) and 2.5e-5 on every
 entry (measured 3.5e-6 against the golden, 1.2e-5 against a live trainer). The few entries above
 1e-6 are those whose gradient is ~1e-7 of their tensor's: Adam divides by the gradient's own
-size, so a float32 rounding of it there moves the step by a percent of lr. One exception, by
-construction: the key
+size, so a float32 rounding of it there moves the step by a percent of lr. Further down the
+gradient is roundoff and the steps can differ by more (6.4e-5 at 3e-8, on a live legacy+ext
+run), so a live check, which has torch's step-0 gradients, sets aside the entries whose gradient
+is nonzero and under 1e-6 of their tensor's (``ROUNDOFF_GRAD``) and checks only that each moved
+at most 3 lr on both sides. The goldens check every entry. One exception, by construction: the key
 projection's bias (``in_proj_bias[64:128]``) has an identically zero gradient (softmax is
 invariant to a shift shared by every key), so both trainers' gradients there are roundoff
 (~1e-8) and Adam, which normalizes the gradient, turns that roundoff into steps of up to ``lr``.
@@ -83,6 +86,7 @@ DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 DTYPES = [torch.float32, torch.float64]
 PARTS = ("traj", "vel", "fric", "clear", "nav", "lreg", "multi")
 WEIGHT_MAX = 2.5e-5  # weights after 3 steps, every entry (see the module docstring)
+ROUNDOFF_GRAD = 1e-6  # of a tensor's largest gradient: below it, a live check sets an entry aside
 VEHICLE = BicycleParams(L=0.3, a_max=2.0, a_lat_max=1.5, vmax=1.5)  # sized for the batch below
 
 
@@ -99,22 +103,44 @@ def _key_bias(name: str, n: int) -> np.ndarray:
     return m
 
 
+def _roundoff(grad) -> np.ndarray:
+    """True where step 0's gradient is nonzero but under ROUNDOFF_GRAD of its tensor's largest."""
+    g = np.abs(np.asarray(grad, np.float64).ravel())
+    return (g > 0.0) & (g < ROUNDOFF_GRAD * g.max())
+
+
 def _weights(tr) -> dict:
     return {k: v.detach().cpu().double().numpy() for k, v in tr.model.state_dict().items()}
 
 
-def _weight_gap(got: dict, want: dict):
-    """(max |got - want| off the key bias, its 99.99th percentile, the key-bias pairs)."""
-    off, keyb = [], []
+def _weight_gap(got: dict, want: dict, grads: dict | None = None):
+    """(max |got - want| off the set-aside entries, its 99.99th percentile, the key-bias pairs,
+    the roundoff pairs).
+
+    Set aside: the key bias, and with step 0's ``grads``, the :func:`_roundoff` entries. Each
+    pair is (name, mask, got[mask], want[mask]) on the flat tensor, for :func:`_adam_travel`."""
+    off, keyb, noise = [], [], []
     for k, w in want.items():
         g = np.asarray(got[k], np.float64).ravel()
         w = np.asarray(w, np.float64).ravel()
         kb = _key_bias(k, w.size)
-        off.append(np.abs(g - w)[~kb])
+        ro = _roundoff(grads[k]) & ~kb if grads is not None and k in grads else np.zeros_like(kb)
+        off.append(np.abs(g - w)[~kb & ~ro])
         if kb.any():
-            keyb.append((k, g[kb], w[kb]))
+            keyb.append((k, kb, g[kb], w[kb]))
+        if ro.any():
+            noise.append((k, ro, g[ro], w[ro]))
     off = np.concatenate(off)
-    return float(off.max()), float(np.quantile(off, 0.9999)), keyb
+    return float(off.max()), float(np.quantile(off, 0.9999)), keyb, noise
+
+
+def _adam_travel(pairs, w0: dict, lr: float, steps: int = 3):
+    """Each set-aside entry moved at most ``steps`` lr from ``w0`` on both sides: Adam normalizes
+    the gradient, so roundoff steps by up to lr, and agreement is not expected there."""
+    for name, m, got, want in pairs:
+        start = np.asarray(w0[name], np.float64).ravel()[m]
+        assert np.abs(want - start).max() <= steps * lr * 1.001, name
+        assert np.abs(got - start).max() <= steps * lr * 1.001, name
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -330,18 +356,14 @@ def test_golden_three_adam_steps(which, dev, dtype):
     after = tr.loss_parts(G["batch"], ext=G["ext"])
     for k in ("L", "eta", *PARTS):
         assert _rel(after[k], G["steps"][3][k]) < 1e-5, f"after 3 steps, {k}"
-    worst, p9999, keyb = _weight_gap(_weights(tr), G["w3"])
+    worst, p9999, keyb, _ = _weight_gap(_weights(tr), G["w3"])
     assert worst < WEIGHT_MAX, f"weights after 3 steps: max |torch - native| = {worst:.3e}"
     assert p9999 < 1e-6, f"weights after 3 steps: 99.99th percentile {p9999:.3e}"
     # The key bias: a zero gradient in exact arithmetic, roundoff in both trainers, so each
     # moved at most 3 lr on noise.
-    lr = G["lr"]
-    for name, got, want in keyb:
-        kb = _key_bias(name, G["grads"][name].size)
-        w0 = np.asarray(G["w0"][name], np.float64).ravel()[kb]
+    for name, kb, _, _ in keyb:
         assert np.abs(G["grads"][name][kb]).max() < 1e-6, name
-        assert np.abs(want - w0).max() <= 3 * lr * 1.001, name
-        assert np.abs(got - w0).max() <= 3 * lr * 1.001, name
+    _adam_travel(keyb, G["w0"], G["lr"])
 
 
 @pytest.mark.parametrize("which", GOLDENS)
@@ -410,6 +432,8 @@ def test_live_native_trainer_agrees(tmp_path, case):
     native = mtn.MaterialTrainer(init, **kw)
     torch_tr = mtt.MaterialTrainerTorch(init, **kw)
     assert torch_tr.integrator == native.integrator
+    w0 = _weights(torch_tr)
+    _, grad0 = torch_tr.loss_and_grad(batch, ext=ext)  # step 0's: no golden to read them from
     assert _rel(torch_tr.loss(batch, ext=ext), native.loss(batch, ext=ext)) < 1e-5
     # L_multi on its own: the native's as loss(w_multi=1) - loss(w_multi=0).
     multi = [mtn.MaterialTrainer(init, **kw, w_multi=w).loss(batch, ext=ext) for w in (1.0, 0.0)]
@@ -421,8 +445,11 @@ def test_live_native_trainer_agrees(tmp_path, case):
         b = native.step(batch, lr=1e-3, ext=ext)
         assert _rel(a, b) < 1e-5, f"step {t}: torch {a!r} native {b!r}"
     native.save(tmp_path / "native.cvcnm")
-    worst, p9999, _ = _weight_gap(_weights(torch_tr), read_matnet(str(tmp_path / "native.cvcnm")).t)
+    grads = {k: g.detach().cpu().double().numpy() for k, g in grad0.items()}
+    want_w = read_matnet(str(tmp_path / "native.cvcnm")).t
+    worst, p9999, keyb, noise = _weight_gap(_weights(torch_tr), want_w, grads)
     assert worst < WEIGHT_MAX and p9999 < 1e-6, f"{case}: weights {worst:.3e} ({p9999:.3e})"
+    _adam_travel(keyb + noise, w0, 1e-3)
 
 
 # --------------------------------------------------------------------------- 3. self-consistency
@@ -687,7 +714,7 @@ def test_cuda_matches_cpu(ckpt, dtype):
     (lc, pc, wc), (lg, pg, wg) = runs["cpu"], runs["cuda"]
     assert all(_rel(a, b) < tol for a, b in zip(lg, lc)), (lg, lc)
     assert all(_rel(pg[k], pc[k]) < tol for k in ("L", *PARTS) if pc[k] != 0.0)
-    worst, _, _ = _weight_gap(wg, wc)
+    worst, _, _, _ = _weight_gap(wg, wc)
     assert worst < (1e-9 if dtype == torch.float64 else 1e-5), worst
 
 
