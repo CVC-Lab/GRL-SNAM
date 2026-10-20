@@ -131,6 +131,8 @@ def neighbors(positions, radius):
 
 
 HAS_SENSE_BATCH = AVAILABLE and hasattr(_pycvc, "nav_sense_batch")
+# The belief-material mask on the batched sense (libcvc B1: nav_sense_batch_material).
+HAS_SENSE_BATCH_MATERIAL = AVAILABLE and hasattr(_pycvc, "nav_sense_batch_material")
 
 
 def sense_batch(
@@ -153,6 +155,8 @@ def sense_batch(
     l_free=-1.4,
     l_clamp=8.0,
     num_threads=0,
+    material_seen=None,
+    material_range_m=None,
 ):
     """Batched, in-place belief sense — a bit-identical port of
     :meth:`grl_snam.belief.BeliefGrid.sense` over N agents into M belief planes.
@@ -171,7 +175,13 @@ def sense_batch(
     ``+l_occ`` AND enter the field of view — the reference ``truth_now``
     composition. Pass ``None`` (the shared/clustered swarm's choice) to keep
     peers out of the log-odds and route them through the decaying dynamic layer
-    instead. Returns ``flips`` (N,) int32."""
+    instead. Returns ``flips`` (N,) int32.
+
+    ``material_seen`` (M,H,W bool, mutated in place) adds the belief-material mask
+    (:meth:`grl_snam.belief.BeliefGrid.track_material`'s batched twin): each agent ORs in
+    the cells its rays touched within ``material_range_m`` (scalar or (N,); None or 0 =>
+    the sense range). It needs :data:`HAS_SENSE_BATCH_MATERIAL`, and the call then returns
+    ``(flips, material_changed (M,) uint8)``."""
     N = int(positions.shape[0])
     for nm, a, dt, nd in (
         ("logodds", logodds, np.float32, 3),
@@ -194,6 +204,48 @@ def sense_batch(
     pb = None if peer_boxes is None else np.ascontiguousarray(peer_boxes, np.int32)
     mb = None if mover_boxes is None else np.ascontiguousarray(mover_boxes, np.int32)
     mnx, mny, mxx, mxy = (float(b) for b in bounds)
+    if material_seen is not None:
+        if not HAS_SENSE_BATCH_MATERIAL:
+            raise RuntimeError("sense_batch: this pycvc has no nav_sense_batch_material")
+        a = material_seen
+        if (
+            a.dtype != np.bool_
+            or a.shape != ever_seen.shape
+            or not a.flags["C_CONTIGUOUS"]
+            or not a.flags["WRITEABLE"]
+        ):
+            raise ValueError(
+                "sense_batch: material_seen must be a writable C-contiguous bool array shaped "
+                "like ever_seen — it is mutated in place, never copied"
+            )
+        mr = None
+        if material_range_m is not None:
+            mr = np.ascontiguousarray(np.broadcast_to(material_range_m, N), np.float64)
+        return _pycvc.nav_sense_batch_material(
+            tr,
+            pos,
+            hd,
+            rng,
+            nry,
+            fov,
+            logodds,
+            last_visible,
+            ever_seen,
+            version,
+            am,
+            pb,
+            mb,
+            material_seen,
+            mr,
+            mnx,
+            mny,
+            mxx,
+            mxy,
+            float(l_occ),
+            float(l_free),
+            float(l_clamp),
+            int(num_threads),
+        )
     return _pycvc.nav_sense_batch(
         tr,
         pos,
