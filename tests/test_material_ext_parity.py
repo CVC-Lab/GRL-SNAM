@@ -1,7 +1,7 @@
 """Parity for the external force in the material rollouts (libcvc material_ext, #734).
 
-libcvc's ``integrate_surrogate_material`` and ``integrate_bicycle_material`` with an external
-force, and their hand-written reverses, against the torch twins with ``ext=``
+libcvc's ``integrate_surrogate_material``, ``integrate_bicycle_material`` and
+``integrate_dynamic_material`` with an external force, and their hand-written reverses, against the torch twins with ``ext=``
 (:mod:`grl_snam.material_ext`), differentiated by autograd. The reference is libcvc's
 ``src/cvc/tests/data/material_ext_golden.json`` (copied to ``tests/fixtures``; written by
 ``NavMaterialExt.Golden`` with ``CVC_MATERIAL_EXT_GOLDEN_WRITE=1``): a small batch per integrator
@@ -9,9 +9,9 @@ with two force patches per agent, switched for half the agents at step 2, and ea
 outputs, coefficient gradients and dL/dF_ext for fixed output seeds.
 
 Tier: FLOAT contract, as the other material parity tests: the golden is libcvc's float rollout,
-the twin runs in float64, forward rtol 1e-4 and gradients rtol 1e-3 (measured: 1e-7 and 4e-7). The
-golden's dynamic case waits for a torch twin of the dynamic material integrator. With a pycvc that
-takes the channel, its bindings are held to the same golden, and the trainer to the null force.
+the twin runs in float64, forward rtol 1e-4 and gradients rtol 1e-3. With a pycvc that takes the
+channel, its bindings are held to the same golden (surrogate and bicycle; pycvc has no dynamic
+binding), and the trainer to the null force.
 """
 
 from __future__ import annotations
@@ -25,7 +25,12 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from grl_snam import nav_native  # noqa: E402
-from grl_snam.material_bike import BicycleParams, integrate_bicycle_material  # noqa: E402
+from grl_snam.dyn_bike import DynBikeParams  # noqa: E402
+from grl_snam.material_bike import (  # noqa: E402
+    BicycleParams,
+    integrate_bicycle_material,
+    integrate_dynamic_material,
+)
 from grl_snam.material_ext import ExtForce, MaterialExt  # noqa: E402
 from grl_snam.material_nav import integrate_surrogate_material  # noqa: E402
 
@@ -41,7 +46,7 @@ def _golden():
 
 
 def _cases():
-    return [c for c in _golden()["cases"] if c["integrator"] != "dynamic"]
+    return _golden()["cases"]
 
 
 def _rel(a, b) -> float:
@@ -104,11 +109,7 @@ def _run(c, dev, ext, coefs=None):
         vmax=vh["vmax"],
         allow_reverse=bool(vh["allow_reverse"]),
     )
-    o, th, sp, minc, cum, hard, arc = integrate_bicycle_material(
-        T("o0", B, 2),
-        T("th0", B),
-        T("sp0", B),
-        **common,
+    kw = dict(
         rr=T("rr", B),
         vehicle=veh,
         margin_factor=p["margin_factor"],
@@ -116,6 +117,29 @@ def _run(c, dev, ext, coefs=None):
         d_hat_sdf=p["d_hat_sdf"],
         k_sharp=p["k_sharp"],
         ext=ext,
+    )
+    if c["integrator"] == "dynamic":
+        o, th, sp, x, minc, cum, hard, arc = integrate_dynamic_material(
+            T("o0", B, 2),
+            T("th0", B),
+            T("sp0", B),
+            T("x0", B, 4),
+            **common,
+            dyn=DynBikeParams(**c["dynamic"]),
+            **kw,
+        )
+        return {
+            "o": o,
+            "th": th,
+            "sp": sp,
+            "x": x,
+            "min_clear": minc,
+            "cum_risk": cum,
+            "hard_count": hard,
+            "arc_length": arc,
+        }, co
+    o, th, sp, minc, cum, hard, arc = integrate_bicycle_material(
+        T("o0", B, 2), T("th0", B), T("sp0", B), **common, **kw
     )
     return {
         "o": o,
@@ -147,6 +171,8 @@ def _scalar(c, outs, dev):
     L = (outs["o"].reshape(-1) * S("o")).sum() + (outs["th"].reshape(-1) * S("th")).sum()
     if "sp" in outs:
         L = L + (outs["sp"] * S("sp")).sum()
+    if "x" in outs:
+        L = L + (outs["x"].reshape(-1) * S("x")).sum()
     for k in ("min_clear", "cum_risk", "arc_length"):
         L = L + (outs[k] * S(k)).sum()
     return L
@@ -263,6 +289,8 @@ def test_pycvc_bindings_match_the_golden():
     from grl_snam.material_bike import BicycleParams as BP
 
     for c in _cases():
+        if c["integrator"] == "dynamic":
+            continue
         B, Hp, Wp, K, steps = c["B"], c["Hp"], c["Wp"], c["K"], c["steps"]
         a = {k: np.asarray(c[k], np.float32) for k in c if isinstance(c[k], list)}
         ext = MaterialExt(

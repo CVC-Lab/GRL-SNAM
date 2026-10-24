@@ -27,6 +27,12 @@ and gradient are checked against this one in
 
 State per agent: position ``o`` (B,2), heading ``th`` (B,) and signed speed ``sp``
 (B,). Lengths are in the batch's units; the vehicle limits use the same units.
+
+:func:`integrate_dynamic_material` is libcvc's ``integrate_dynamic_material``: the same controller,
+its commands ``(delta, a)`` driving the dynamic single-track vehicle
+(:func:`grl_snam.dyn_bike.dyn_plant`) in place of the kinematic update, so the material policy
+learns what the vehicle can do. Its state adds ``x`` (B,4) = (vy, r, delta, a); arc length and
+cumulative risk follow the dynamic path.
 """
 
 from __future__ import annotations
@@ -67,38 +73,35 @@ def _clamp(x: torch.Tensor, lo, hi) -> torch.Tensor:
     return torch.where(x < lo_t, lo_t.expand_as(x), torch.where(x > hi_t, hi_t.expand_as(x), x))
 
 
-def integrate_bicycle_material(
-    o0: torch.Tensor,
-    th0: torch.Tensor,
-    sp0: torch.Tensor,
-    goal: torch.Tensor,
-    C: torch.Tensor,
-    R: torch.Tensor,
-    mask: torch.Tensor,
-    alphas: torch.Tensor,
-    beta: torch.Tensor,
-    gamma: torch.Tensor,
-    lam_soft: torch.Tensor,
-    lam_hard: torch.Tensor,
-    rollout_patch: torch.Tensor,
-    rr: torch.Tensor,
-    d_hat: torch.Tensor,
-    dt: torch.Tensor,
-    H: torch.Tensor,
-    vehicle: BicycleParams = BicycleParams(),
-    margin_factor: float = 0.5,
-    mass: float = 1.0,
-    d_hat_sdf: float = 3.0,
-    k_sharp: float = 5.0,
-    ext=None,
-) -> tuple[torch.Tensor, ...]:
-    """Roll the bicycle out; returns (oT, thT, spT, min_clear, cum_risk, hard_count, arc_length).
-
-    Shapes as :func:`grl_snam.material_nav.integrate_surrogate_material`, with the start
-    heading ``th0`` and signed speed ``sp0`` (B,) in place of ``v0``. ``mask`` (B,N) bool.
-    ``ext`` (a :class:`grl_snam.material_ext.MaterialExt`) adds an external force to F and,
-    with its ``steer``, to the steering bias, as libcvc's ``material_ext`` does.
-    """
+def _material_rollout(
+    o0,
+    th0,
+    sp0,
+    x0,
+    goal,
+    C,
+    R,
+    mask,
+    alphas,
+    beta,
+    gamma,
+    lam_soft,
+    lam_hard,
+    rollout_patch,
+    rr,
+    d_hat,
+    dt,
+    H,
+    vehicle,
+    margin_factor,
+    mass,
+    d_hat_sdf,
+    k_sharp,
+    ext,
+    dyn,
+):
+    """The material controller on the kinematic bicycle (``dyn`` None) or on the dynamic
+    vehicle (``dyn`` a :class:`grl_snam.dyn_bike.DynBikeParams`, ``x0`` its further state)."""
     B, N = C.shape[:2]
     dtype, dev = o0.dtype, o0.device
     v = vehicle
@@ -116,6 +119,9 @@ def integrate_bicycle_material(
     hdt = dt
 
     o, th, sp = o0.clone(), th0.clone(), sp0.clone()
+    x = None
+    if dyn is not None:
+        x = torch.zeros(B, 4, dtype=dtype, device=dev) if x0 is None else x0.clone()
     min_clear = torch.full((B,), float("inf"), dtype=dtype, device=dev)
     cum_risk = torch.zeros(B, dtype=dtype, device=dev)
     hard_count = torch.zeros(B, dtype=dtype, device=dev)
@@ -237,10 +243,18 @@ def integrate_bicycle_material(
         sp2 = torch.where(sp2 < 1e-9, torch.full_like(sp2, 1e-9), sp2)
         d_cap = torch.atan(a_lat * L / sp2)
         delta4 = torch.where(delta3 < -d_cap, -d_cap, torch.where(delta3 > d_cap, d_cap, delta3))
-        th1 = th + hdt * (sp1 / L) * torch.tan(delta4)
-        o1 = torch.stack(
-            [o[:, 0] + hdt * sp1 * torch.cos(th1), o[:, 1] + hdt * sp1 * torch.sin(th1)], -1
-        )
+        if dyn is None:
+            th1 = th + hdt * (sp1 / L) * torch.tan(delta4)
+            o1 = torch.stack(
+                [o[:, 0] + hdt * sp1 * torch.cos(th1), o[:, 1] + hdt * sp1 * torch.sin(th1)], -1
+            )
+        else:
+            # The commands (delta4, a3) drive the dynamic vehicle in place of the kinematic
+            # update (libcvc's step_fwd_dyn); sp1 above was only the lateral cap's speed.
+            nxt = _dyn_step(
+                dyn, v, torch.cat([o, th[:, None], sp[:, None], x], -1), delta4, a3, hdt
+            )
+            o1, th1, sp1, x1 = nxt[:, :2], nxt[:, 2], nxt[:, 3], nxt[:, 4:]
 
         sdx, sdy = o1[:, 0] - o[:, 0], o1[:, 1] - o[:, 1]
         disp = torch.where(active, _safe_sqrt(sdx * sdx + sdy * sdy), zero)
@@ -251,5 +265,147 @@ def integrate_bicycle_material(
         o = torch.where(active.unsqueeze(-1), o1, o)
         th = torch.where(active, th1, th)
         sp = torch.where(active, sp1, sp)
+        if dyn is not None:
+            x = torch.where(active.unsqueeze(-1), x1, x)
 
+    if dyn is not None:
+        return o, th, sp, x, min_clear, cum_risk, hard_count, arc_length
     return o, th, sp, min_clear, cum_risk, hard_count, arc_length
+
+
+def _dyn_step(dyn, v: BicycleParams, state, delta_cmd, a_cmd, hdt):
+    """One step of the dynamic vehicle, each agent at its own step ``hdt`` (B,)."""
+    from grl_snam.dyn_bike import PlantLimits, dyn_plant
+
+    out = None
+    for u in torch.unique(hdt).tolist():
+        lim = PlantLimits(L=float(v.L), vmax=float(v.vmax), hdt=u, allow_reverse=v.allow_reverse)
+        r = dyn_plant(dyn, lim, state, delta_cmd, a_cmd)
+        out = r if out is None else torch.where((hdt == u).unsqueeze(-1), r, out)
+    return out
+
+
+def integrate_bicycle_material(
+    o0: torch.Tensor,
+    th0: torch.Tensor,
+    sp0: torch.Tensor,
+    goal: torch.Tensor,
+    C: torch.Tensor,
+    R: torch.Tensor,
+    mask: torch.Tensor,
+    alphas: torch.Tensor,
+    beta: torch.Tensor,
+    gamma: torch.Tensor,
+    lam_soft: torch.Tensor,
+    lam_hard: torch.Tensor,
+    rollout_patch: torch.Tensor,
+    rr: torch.Tensor,
+    d_hat: torch.Tensor,
+    dt: torch.Tensor,
+    H: torch.Tensor,
+    vehicle: BicycleParams = BicycleParams(),
+    margin_factor: float = 0.5,
+    mass: float = 1.0,
+    d_hat_sdf: float = 3.0,
+    k_sharp: float = 5.0,
+    ext=None,
+) -> tuple[torch.Tensor, ...]:
+    """Roll the bicycle out; returns (oT, thT, spT, min_clear, cum_risk, hard_count, arc_length).
+
+    Shapes as :func:`grl_snam.material_nav.integrate_surrogate_material`, with the start
+    heading ``th0`` and signed speed ``sp0`` (B,) in place of ``v0``. ``mask`` (B,N) bool.
+    ``ext`` (a :class:`grl_snam.material_ext.MaterialExt`) adds an external force to F and,
+    with its ``steer``, to the steering bias, as libcvc's ``material_ext`` does.
+    """
+    return _material_rollout(
+        o0,
+        th0,
+        sp0,
+        None,
+        goal,
+        C,
+        R,
+        mask,
+        alphas,
+        beta,
+        gamma,
+        lam_soft,
+        lam_hard,
+        rollout_patch,
+        rr,
+        d_hat,
+        dt,
+        H,
+        vehicle,
+        margin_factor,
+        mass,
+        d_hat_sdf,
+        k_sharp,
+        ext,
+        None,
+    )
+
+
+def integrate_dynamic_material(
+    o0: torch.Tensor,
+    th0: torch.Tensor,
+    vx0: torch.Tensor,
+    x0: torch.Tensor | None,
+    goal: torch.Tensor,
+    C: torch.Tensor,
+    R: torch.Tensor,
+    mask: torch.Tensor,
+    alphas: torch.Tensor,
+    beta: torch.Tensor,
+    gamma: torch.Tensor,
+    lam_soft: torch.Tensor,
+    lam_hard: torch.Tensor,
+    rollout_patch: torch.Tensor,
+    rr: torch.Tensor,
+    d_hat: torch.Tensor,
+    dt: torch.Tensor,
+    H: torch.Tensor,
+    vehicle: BicycleParams,
+    dyn,
+    margin_factor: float = 0.5,
+    mass: float = 1.0,
+    d_hat_sdf: float = 3.0,
+    k_sharp: float = 5.0,
+    ext=None,
+) -> tuple[torch.Tensor, ...]:
+    """The material controller on the dynamic vehicle (libcvc's ``integrate_dynamic_material``).
+
+    As :func:`integrate_bicycle_material`, with the rear axle ``o0``, heading ``th0`` and
+    longitudinal speed ``vx0``, and ``x0`` (B,4) = (vy, r, delta, a) (None: at rest). ``dyn`` is a
+    :class:`grl_snam.dyn_bike.DynBikeParams` in the batch's units whose wheelbase ``lf + lr`` is
+    ``vehicle.L``. Returns (oT, thT, vxT, xT, min_clear, cum_risk, hard_count, arc_length).
+    """
+    if abs(float(dyn.lf) + float(dyn.lr) - float(vehicle.L)) > 1e-3 * float(vehicle.L):
+        raise ValueError("integrate_dynamic_material: the vehicle's lf + lr must be vehicle.L")
+    return _material_rollout(
+        o0,
+        th0,
+        vx0,
+        x0,
+        goal,
+        C,
+        R,
+        mask,
+        alphas,
+        beta,
+        gamma,
+        lam_soft,
+        lam_hard,
+        rollout_patch,
+        rr,
+        d_hat,
+        dt,
+        H,
+        vehicle,
+        margin_factor,
+        mass,
+        d_hat_sdf,
+        k_sharp,
+        ext,
+        dyn,
+    )
