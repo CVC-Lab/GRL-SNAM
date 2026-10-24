@@ -449,6 +449,281 @@ def sdf_rollout(
     return o, v, minclr
 
 
+def bike_control(
+    field: SDFField,
+    o,
+    th,
+    sp,
+    goal,
+    al,
+    be,
+    ga,
+    *,
+    rr,
+    d_hat,
+    dt,
+    vmax=0.9,
+    L=0.035,
+    delta_max=0.6,
+    a_max=1.5,
+    a_lat_max=1.0,
+    k_steer=0.8,
+    allow_reverse=False,
+    material=None,
+    lam_soft=None,
+    lam_hard=None,
+    mat_k_sharp=5.0,
+    mat_d_hat_m=3.0,
+    body_offsets=None,
+    body_rr=None,
+    body_gain=1.0,
+    track_width=None,
+    friction=None,
+    ext_force_fn=None,
+    ext_steer=True,
+):
+    """The controller half of :func:`bicycle_rollout`: one step of ``dt`` (one substep there).
+
+    libcvc's ``diff::bike_control``: the commands the drive gives its plant, with every governor
+    applied, from the pose ``o``/``th`` and the speed ``sp``. Returns ``(delta_cmd, a_cmd,
+    sp_next, d)``: the steering after the lateral-acceleration cap, which reads the speed the
+    kinematic update would reach; the longitudinal acceleration; that speed, ``sp + dt a_cmd``
+    clamped (the kinematic plant's next speed); and the binding clearance. A dynamic plant
+    (:func:`grl_snam.dyn_bike.dyn_plant`, :func:`grl_snam.dyn4.dyn4_plant`) takes ``(delta_cmd,
+    a_cmd)``. The arguments are :func:`bicycle_rollout`'s, ``dt`` being the step.
+    """
+    hdt = dt
+    # Inner-wheel lock: see ``track_width`` in bicycle_rollout. ``None`` leaves both constants
+    # exactly as passed.
+    if track_width is not None:
+        delta_max = math.atan(L / (L / math.tan(delta_max) + 0.5 * float(track_width)))
+    tan_dmax = math.tan(delta_max)
+    head = torch.stack([torch.cos(th), torch.sin(th)], -1)  # [B,2]
+    left = torch.stack([-torch.sin(th), torch.cos(th)], -1)  # [B,2]
+
+    if body_offsets is None:
+        phi, nrm = field.sample(o)
+        d = phi - rr
+        F_bar = -(al * _ipc_dbdd(d, d_hat)).unsqueeze(-1) * nrm
+    else:
+        # Multi-disc footprint. Clearance is the MIN over discs (the
+        # binding one); the barrier force is their SUM, so the nose is
+        # pushed off a wall the rear axle cannot see. ``d``/``nrm``
+        # handed downstream are the ARGMIN disc's, because "am I
+        # driving into the nearest wall" is a question about that disc.
+        _brr = rr if body_rr is None else body_rr
+        _ds, _ns = [], []
+        F_bar = F_rep = None
+        for _off in body_offsets:
+            _p = o if _off == 0.0 else o + float(_off) * head
+            _phi_k, _nrm_k = field.sample(_p)
+            _d_k = _phi_k - _brr
+            _b_k = _ipc_dbdd(_d_k, d_hat)
+            _alg = al if body_gain == 1.0 else al * body_gain
+            _fb = -(_alg * _b_k).unsqueeze(-1) * _nrm_k
+            _fr = -(_alg * _b_k.clamp(max=0.0)).unsqueeze(-1) * _nrm_k
+            F_bar = _fb if F_bar is None else F_bar + _fb
+            F_rep = _fr if F_rep is None else F_rep + _fr
+            _ds.append(_d_k)
+            _ns.append(_nrm_k)
+        d, _kmin = torch.stack(_ds, -1).min(dim=-1)  # [B,K] -> [B]
+        nrm = (
+            torch.stack(_ns, 1)  # [B,K,2]
+            .gather(1, _kmin[:, None, None].expand(-1, 1, 2))
+            .squeeze(1)
+        )
+    # The governor, the creep cutoff and the nose-blocked test all use
+    # ``rr`` as a stand-in for "one vehicle radius". With a footprint
+    # that is no longer the rr-disc, they must use the radius actually
+    # in play, or the margins stay sized for a body 12x too fat and the
+    # tighter footprint buys nothing. ``None`` -> exactly ``rr``.
+    _gov_rr = rr if body_offsets is None else _brr
+
+    # Friction-limited actuator envelope. BOTH limits are grip-limited
+    # in reality, so both scale with mu together -- that coupling is
+    # what makes ice read as ice: the corner cap and the stopping
+    # governor collapse at the same time. mu is None -> the constants
+    # pass through untouched (not `* 1.0`), so the legacy trace is
+    # bit-identical by construction rather than by float luck.
+    if friction is None:
+        a_max_e, a_lat_e = a_max, a_lat_max
+    else:
+        _mu = friction.sample(o)
+        a_max_e, a_lat_e = a_max * _mu, a_lat_max * _mu
+
+    F_goal = -be.unsqueeze(-1) * (o - goal)
+    # Generic external force (caller-supplied). Evaluated once and, like
+    # F_mat, joins BOTH couplings — the longitudinal projection AND the
+    # steering bias below. None (default) is additively inert.
+    F_ext = ext_force_fn(o) if ext_force_fn is not None else None
+    if material is not None:
+        F_mat = _material_force(material, o, lam_soft, lam_hard, mat_k_sharp, mat_d_hat_m)
+        F = F_bar + F_goal + F_mat
+    else:
+        F = F_bar + F_goal
+    if F_ext is not None:
+        F = F + F_ext
+
+    # longitudinal: project the virtual force onto the heading; damping
+    # becomes drag on speed. Clamped to the actuator limit.
+    a_long = torch.clamp(((F * head).sum(-1) - ga * sp), -a_max_e, a_max_e)
+
+    # steering: pure pursuit toward the carrot + bounded barrier bias.
+    to_goal = goal - o
+    L_d = to_goal.norm(dim=-1).clamp_min(1e-6)
+    ang = torch.atan2(to_goal[:, 1], to_goal[:, 0]) - th
+    sin_a = torch.sin(ang)  # sin()/cos() absorb the angle wrap
+    cos_a = torch.cos(ang)
+    behind = cos_a < 0.0
+    # Pure pursuit degenerates when the carrot is behind: sin(pi)=0
+    # gives zero steer while the goal spring brakes, and the vehicle
+    # parks facing away. Forward-only turn-around instead: full steer
+    # toward sign(sin_a) (ties broken toward +) at a creep speed.
+    turn_sign = torch.where(sin_a >= 0.0, torch.ones_like(sin_a), -torch.ones_like(sin_a))
+    # Adaptive lookahead: with a carrot ~30 wheelbases away, textbook
+    # pure pursuit commands ~3 degrees even at a 90-degree heading
+    # error -- no low-speed steering authority at all. Shrink the
+    # effective lookahead with speed (floor 4L) so a slow vehicle can
+    # steer hard; at speed L_d_eff ~ L_d and tracking is unchanged.
+    L_d_eff = torch.minimum(L_d, (1.2 * sp + 4.0 * L).clamp_min(4.0 * L))
+    delta = torch.where(behind, turn_sign * delta_max, torch.atan2(2.0 * L * sin_a, L_d_eff))
+    # Steering bias uses only the REPULSIVE part of the barrier. The
+    # inherited piecewise b' (surrogate_robust's +1-shifted form) is
+    # positive over d in (0.39 d_hat, d_hat) -- an attraction band --
+    # and tanh saturation made that bias out-vote pure pursuit ~15x,
+    # dragging the vehicle onto the b'=0 shell instead of its lane.
+    # The force term F_bar keeps the original form (point-mode parity);
+    # only what feeds the steering wheel is clamped repulsive-only,
+    # which also removes the 0.6 rad steering slew at the d_hat shell.
+    if body_offsets is None:  # multi-disc already summed F_rep per disc
+        F_rep = -(al * _ipc_dbdd(d, d_hat).clamp(max=0.0)).unsqueeze(-1) * nrm
+    if material is not None:
+        _steer = F_rep + F_mat
+    else:
+        _steer = F_rep
+    if F_ext is not None and ext_steer:  # the external force steers too, like F_mat
+        _steer = _steer + F_ext
+    delta = delta + k_steer * torch.tanh((_steer * left).sum(-1))
+    delta = delta.clamp(-delta_max, delta_max)
+
+    # corner speed limit from the lateral-acceleration cap.
+    kappa = torch.tan(delta).abs() / L
+    v_corner = torch.sqrt(a_lat_e / kappa.clamp_min(tan_dmax / (L * 400.0)))
+
+    # stopping-distance governor: never drive faster than you can stop
+    # inside the clearance ahead (v^2 <= 2 a_max (d - margin)). Forces
+    # alone cannot guarantee this -- with weak/untrained coefficients
+    # the goal spring's forward pull beats the barrier head-on, and
+    # clamping the NET force to a_max means the barrier can never
+    # out-brake the engine. Brakes are a constraint, not a force.
+    #
+    # DIRECTIONAL, or it deadlocks: only the velocity component INTO
+    # the wall consumes stopping distance -- driving parallel to a
+    # wall at small clearance is fine. An isotropic cap pins speed to
+    # ~0 head-on, and a bicycle cannot turn at zero speed (th' ~ v),
+    # so the vehicle would park nose-in forever.
+    _slack = (d - 0.5 * _gov_rr).clamp_min(0.0)
+    if body_offsets is None and friction is None:
+        v_stop = torch.sqrt(2.0 * a_max_e * _slack)  # legacy, bit-exact
+    else:
+        # sqrt'(0) is infinite and clamp_min's subgradient below its
+        # floor is 0, so the moment the vehicle actually reaches the
+        # stop margin the backward pass evaluates 0 * inf = NaN and
+        # poisons every coefficient gradient. A tighter footprint makes
+        # that reachable in ordinary driving, so the guarded form is
+        # required here. The epsilon is far below float32 resolution
+        # for any live value, and the legacy branch above keeps its
+        # exact op sequence so stored traces are unaffected.
+        v_stop = torch.sqrt(2.0 * a_max_e * _slack + 1e-24)
+    # Into-wall component of the MOTION direction (reversing flips
+    # it): a vehicle backing away from a wall is not approaching it.
+    motion_sign = torch.where(sp >= 0.0, torch.ones_like(sp), -torch.ones_like(sp))
+    approach = (-(nrm * head).sum(-1) * motion_sign).clamp(0.0, 1.0)  # 1 = head-on
+    # The constraint is on the INTO-wall component only:
+    # sp * approach <= v_stop. When the heading has no into-wall
+    # component the bound must vanish entirely -- v_stop/max(approach,
+    # floor) gets this wrong at the margin, where v_stop == 0 makes
+    # the limit 0 in EVERY direction and the vehicle deadlocks: too
+    # close to move, unable to move away because it cannot move.
+    v_stop_dir = torch.where(
+        approach > 0.05,
+        v_stop / approach.clamp_min(0.05),
+        torch.full_like(v_stop, vmax),
+    )
+    v_lim = torch.minimum(torch.full_like(v_corner, vmax), torch.minimum(v_corner, v_stop_dir))
+
+    # Maneuvering creep: turning requires motion. When a hard steer is
+    # commanded, keep a small speed floor so the vehicle can rotate
+    # out of a nose-in stop; its own stopping distance (v^2 / 2a_max)
+    # is far inside the governor margin, so this cannot cause
+    # penetration -- only escape.
+    hard_steer = delta.abs() >= 0.7 * delta_max
+    # Creep is allowed slightly INSIDE the governor's stop margin
+    # (0.5 rr): the governor parks the vehicle exactly at that margin,
+    # and if the creep cutoff sat at the same distance the two would
+    # deadlock nose-in at v=0, unable to rotate.
+    can_move = d > 0.25 * _gov_rr
+    v_floor = torch.where(
+        hard_steer & can_move, torch.full_like(v_lim, 0.08), torch.zeros_like(v_lim)
+    )
+    v_lim = torch.maximum(v_lim, v_floor)
+
+    # While turning around, hold a creep speed so th' = sp/L tan(delta)
+    # stays nonzero -- braking to rest would freeze the arc. The same
+    # applies at a nose-in stop against a wall: if the vehicle is
+    # (near) stationary and a hard steer is commanded, drive the speed
+    # toward the maneuvering floor.
+    # Creep target capped at its DESIGN value (half the full-steer
+    # corner speed): v_corner is computed from the biased/clamped
+    # delta, so at partial steer it can be several times larger and
+    # the turn-around would lunge. The barrier's decelerating
+    # projection stays active in the behind branch (the full F.head
+    # would re-introduce the parks-facing-away freeze: the goal
+    # spring is negative when the goal is behind).
+    v_creep = torch.minimum(
+        0.5 * v_corner,
+        (
+            torch.full_like(v_corner, 0.5 * math.sqrt(a_lat_max * L / tan_dmax))
+            if friction is None
+            else 0.5 * torch.sqrt(a_lat_e * (L / tan_dmax))
+        ),
+    )
+    a_long = torch.where(
+        behind,
+        (v_creep - sp) / hdt + torch.clamp((F_bar * head).sum(-1), max=0.0),
+        a_long,
+    )
+    stuck_turning = hard_steer & can_move & (sp.abs() < 0.06)
+    a_long = torch.where(stuck_turning, torch.maximum(a_long, (0.08 - sp) / hdt), a_long)
+    if allow_reverse:
+        # A nose-in car with no reverse gear cannot escape: the forward
+        # creep arc (radius R_min) dips toward the wall and burns its
+        # clearance before the heading comes around. When the carrot is
+        # behind AND the nose is against the wall, back out with
+        # opposite steer -- reversing with delta rotates the heading
+        # the other way, exactly as a real car backs out of a spot.
+        head_on = (-(nrm * head).sum(-1)).clamp(0.0, 1.0) > 0.6
+        nose_blocked = behind & head_on & (d < 0.5 * _gov_rr + 0.02)
+        a_long = torch.where(nose_blocked, (-0.10 - sp) / hdt, a_long)
+        delta = torch.where(nose_blocked, -delta, delta)
+    a_long = torch.clamp(a_long, -a_max_e, a_max_e)
+
+    # semi-implicit: speed, then heading with the new speed, then
+    # position. Speed approaches v_lim through the ACTUATOR, not a
+    # clamp -- clamping straight to v_lim shed up to ~15x a_max of
+    # speed in a single substep when the carrot flipped behind. The
+    # brakes are still only a_max strong, so sp may exceed v_lim
+    # transiently while shedding speed; the steering clamp below
+    # keeps the lateral invariant exact during exactly that window
+    # (the vehicle carves a wider arc while braking, as a car does).
+    a_long = torch.clamp(torch.minimum(a_long, (v_lim - sp) / hdt), -a_max_e, a_max_e)
+    sp_min = -0.25 * vmax if allow_reverse else 0.0
+    sp = (sp + hdt * a_long).clamp(torch.full_like(sp, sp_min), torch.full_like(sp, vmax))
+    d_cap = torch.atan(a_lat_e * L / sp.square().clamp_min(1e-9))
+    delta = torch.clamp(delta, -d_cap, d_cap)
+    return delta, a_long, sp, d
+
+
 def bicycle_rollout(
     field: SDFField,
     o,
@@ -589,242 +864,37 @@ def bicycle_rollout(
     bias: libcvc's ``ext_force`` and its ``steer`` flag.
     """
     hdt = dt / nsub
-    # Inner-wheel lock: see ``track_width`` above. ``None`` leaves both
-    # constants exactly as passed, so the legacy path is untouched.
-    if track_width is not None:
-        delta_max = math.atan(L / (L / math.tan(delta_max) + 0.5 * float(track_width)))
-    tan_dmax = math.tan(delta_max)
     minclr = torch.full((o.shape[0],), 9.9, device=o.device)
+    ctl = dict(
+        rr=rr,
+        d_hat=d_hat,
+        dt=hdt,
+        vmax=vmax,
+        L=L,
+        delta_max=delta_max,
+        a_max=a_max,
+        a_lat_max=a_lat_max,
+        k_steer=k_steer,
+        allow_reverse=allow_reverse,
+        material=material,
+        lam_soft=lam_soft,
+        lam_hard=lam_hard,
+        mat_k_sharp=mat_k_sharp,
+        mat_d_hat_m=mat_d_hat_m,
+        body_offsets=body_offsets,
+        body_rr=body_rr,
+        body_gain=body_gain,
+        track_width=track_width,
+        friction=friction,
+        ext_force_fn=ext_force_fn,
+        ext_steer=ext_steer,
+    )
     for _ in range(steps):
         for _s in range(nsub):
-            head = torch.stack([torch.cos(th), torch.sin(th)], -1)  # [B,2]
-            left = torch.stack([-torch.sin(th), torch.cos(th)], -1)  # [B,2]
-
-            if body_offsets is None:
-                phi, nrm = field.sample(o)
-                d = phi - rr
-                F_bar = -(al * _ipc_dbdd(d, d_hat)).unsqueeze(-1) * nrm
-            else:
-                # Multi-disc footprint. Clearance is the MIN over discs (the
-                # binding one); the barrier force is their SUM, so the nose is
-                # pushed off a wall the rear axle cannot see. ``d``/``nrm``
-                # handed downstream are the ARGMIN disc's, because "am I
-                # driving into the nearest wall" is a question about that disc.
-                _brr = rr if body_rr is None else body_rr
-                _ds, _ns = [], []
-                F_bar = F_rep = None
-                for _off in body_offsets:
-                    _p = o if _off == 0.0 else o + float(_off) * head
-                    _phi_k, _nrm_k = field.sample(_p)
-                    _d_k = _phi_k - _brr
-                    _b_k = _ipc_dbdd(_d_k, d_hat)
-                    _alg = al if body_gain == 1.0 else al * body_gain
-                    _fb = -(_alg * _b_k).unsqueeze(-1) * _nrm_k
-                    _fr = -(_alg * _b_k.clamp(max=0.0)).unsqueeze(-1) * _nrm_k
-                    F_bar = _fb if F_bar is None else F_bar + _fb
-                    F_rep = _fr if F_rep is None else F_rep + _fr
-                    _ds.append(_d_k)
-                    _ns.append(_nrm_k)
-                d, _kmin = torch.stack(_ds, -1).min(dim=-1)  # [B,K] -> [B]
-                nrm = (
-                    torch.stack(_ns, 1)  # [B,K,2]
-                    .gather(1, _kmin[:, None, None].expand(-1, 1, 2))
-                    .squeeze(1)
-                )
-            # The governor, the creep cutoff and the nose-blocked test all use
-            # ``rr`` as a stand-in for "one vehicle radius". With a footprint
-            # that is no longer the rr-disc, they must use the radius actually
-            # in play, or the margins stay sized for a body 12x too fat and the
-            # tighter footprint buys nothing. ``None`` -> exactly ``rr``.
-            _gov_rr = rr if body_offsets is None else _brr
+            # The controller (bike_control), then the kinematic update: heading with the new
+            # speed, then position.
+            delta, _a_long, sp, d = bike_control(field, o, th, sp, goal, al, be, ga, **ctl)
             minclr = torch.minimum(minclr, d.detach())
-
-            # Friction-limited actuator envelope. BOTH limits are grip-limited
-            # in reality, so both scale with mu together -- that coupling is
-            # what makes ice read as ice: the corner cap and the stopping
-            # governor collapse at the same time. mu is None -> the constants
-            # pass through untouched (not `* 1.0`), so the legacy trace is
-            # bit-identical by construction rather than by float luck.
-            if friction is None:
-                a_max_e, a_lat_e = a_max, a_lat_max
-            else:
-                _mu = friction.sample(o)
-                a_max_e, a_lat_e = a_max * _mu, a_lat_max * _mu
-
-            F_goal = -be.unsqueeze(-1) * (o - goal)
-            # Generic external force (caller-supplied). Evaluated once and, like
-            # F_mat, joins BOTH couplings — the longitudinal projection AND the
-            # steering bias below. None (default) is additively inert.
-            F_ext = ext_force_fn(o) if ext_force_fn is not None else None
-            if material is not None:
-                F_mat = _material_force(material, o, lam_soft, lam_hard, mat_k_sharp, mat_d_hat_m)
-                F = F_bar + F_goal + F_mat
-            else:
-                F = F_bar + F_goal
-            if F_ext is not None:
-                F = F + F_ext
-
-            # longitudinal: project the virtual force onto the heading; damping
-            # becomes drag on speed. Clamped to the actuator limit.
-            a_long = torch.clamp(((F * head).sum(-1) - ga * sp), -a_max_e, a_max_e)
-
-            # steering: pure pursuit toward the carrot + bounded barrier bias.
-            to_goal = goal - o
-            L_d = to_goal.norm(dim=-1).clamp_min(1e-6)
-            ang = torch.atan2(to_goal[:, 1], to_goal[:, 0]) - th
-            sin_a = torch.sin(ang)  # sin()/cos() absorb the angle wrap
-            cos_a = torch.cos(ang)
-            behind = cos_a < 0.0
-            # Pure pursuit degenerates when the carrot is behind: sin(pi)=0
-            # gives zero steer while the goal spring brakes, and the vehicle
-            # parks facing away. Forward-only turn-around instead: full steer
-            # toward sign(sin_a) (ties broken toward +) at a creep speed.
-            turn_sign = torch.where(sin_a >= 0.0, torch.ones_like(sin_a), -torch.ones_like(sin_a))
-            # Adaptive lookahead: with a carrot ~30 wheelbases away, textbook
-            # pure pursuit commands ~3 degrees even at a 90-degree heading
-            # error -- no low-speed steering authority at all. Shrink the
-            # effective lookahead with speed (floor 4L) so a slow vehicle can
-            # steer hard; at speed L_d_eff ~ L_d and tracking is unchanged.
-            L_d_eff = torch.minimum(L_d, (1.2 * sp + 4.0 * L).clamp_min(4.0 * L))
-            delta = torch.where(
-                behind, turn_sign * delta_max, torch.atan2(2.0 * L * sin_a, L_d_eff)
-            )
-            # Steering bias uses only the REPULSIVE part of the barrier. The
-            # inherited piecewise b' (surrogate_robust's +1-shifted form) is
-            # positive over d in (0.39 d_hat, d_hat) -- an attraction band --
-            # and tanh saturation made that bias out-vote pure pursuit ~15x,
-            # dragging the vehicle onto the b'=0 shell instead of its lane.
-            # The force term F_bar keeps the original form (point-mode parity);
-            # only what feeds the steering wheel is clamped repulsive-only,
-            # which also removes the 0.6 rad steering slew at the d_hat shell.
-            if body_offsets is None:  # multi-disc already summed F_rep per disc
-                F_rep = -(al * _ipc_dbdd(d, d_hat).clamp(max=0.0)).unsqueeze(-1) * nrm
-            if material is not None:
-                _steer = F_rep + F_mat
-            else:
-                _steer = F_rep
-            if F_ext is not None and ext_steer:  # the external force steers too, like F_mat
-                _steer = _steer + F_ext
-            delta = delta + k_steer * torch.tanh((_steer * left).sum(-1))
-            delta = delta.clamp(-delta_max, delta_max)
-
-            # corner speed limit from the lateral-acceleration cap.
-            kappa = torch.tan(delta).abs() / L
-            v_corner = torch.sqrt(a_lat_e / kappa.clamp_min(tan_dmax / (L * 400.0)))
-
-            # stopping-distance governor: never drive faster than you can stop
-            # inside the clearance ahead (v^2 <= 2 a_max (d - margin)). Forces
-            # alone cannot guarantee this -- with weak/untrained coefficients
-            # the goal spring's forward pull beats the barrier head-on, and
-            # clamping the NET force to a_max means the barrier can never
-            # out-brake the engine. Brakes are a constraint, not a force.
-            #
-            # DIRECTIONAL, or it deadlocks: only the velocity component INTO
-            # the wall consumes stopping distance -- driving parallel to a
-            # wall at small clearance is fine. An isotropic cap pins speed to
-            # ~0 head-on, and a bicycle cannot turn at zero speed (th' ~ v),
-            # so the vehicle would park nose-in forever.
-            _slack = (d - 0.5 * _gov_rr).clamp_min(0.0)
-            if body_offsets is None and friction is None:
-                v_stop = torch.sqrt(2.0 * a_max_e * _slack)  # legacy, bit-exact
-            else:
-                # sqrt'(0) is infinite and clamp_min's subgradient below its
-                # floor is 0, so the moment the vehicle actually reaches the
-                # stop margin the backward pass evaluates 0 * inf = NaN and
-                # poisons every coefficient gradient. A tighter footprint makes
-                # that reachable in ordinary driving, so the guarded form is
-                # required here. The epsilon is far below float32 resolution
-                # for any live value, and the legacy branch above keeps its
-                # exact op sequence so stored traces are unaffected.
-                v_stop = torch.sqrt(2.0 * a_max_e * _slack + 1e-24)
-            # Into-wall component of the MOTION direction (reversing flips
-            # it): a vehicle backing away from a wall is not approaching it.
-            motion_sign = torch.where(sp >= 0.0, torch.ones_like(sp), -torch.ones_like(sp))
-            approach = (-(nrm * head).sum(-1) * motion_sign).clamp(0.0, 1.0)  # 1 = head-on
-            # The constraint is on the INTO-wall component only:
-            # sp * approach <= v_stop. When the heading has no into-wall
-            # component the bound must vanish entirely -- v_stop/max(approach,
-            # floor) gets this wrong at the margin, where v_stop == 0 makes
-            # the limit 0 in EVERY direction and the vehicle deadlocks: too
-            # close to move, unable to move away because it cannot move.
-            v_stop_dir = torch.where(
-                approach > 0.05,
-                v_stop / approach.clamp_min(0.05),
-                torch.full_like(v_stop, vmax),
-            )
-            v_lim = torch.minimum(
-                torch.full_like(v_corner, vmax), torch.minimum(v_corner, v_stop_dir)
-            )
-
-            # Maneuvering creep: turning requires motion. When a hard steer is
-            # commanded, keep a small speed floor so the vehicle can rotate
-            # out of a nose-in stop; its own stopping distance (v^2 / 2a_max)
-            # is far inside the governor margin, so this cannot cause
-            # penetration -- only escape.
-            hard_steer = delta.abs() >= 0.7 * delta_max
-            # Creep is allowed slightly INSIDE the governor's stop margin
-            # (0.5 rr): the governor parks the vehicle exactly at that margin,
-            # and if the creep cutoff sat at the same distance the two would
-            # deadlock nose-in at v=0, unable to rotate.
-            can_move = d > 0.25 * _gov_rr
-            v_floor = torch.where(
-                hard_steer & can_move, torch.full_like(v_lim, 0.08), torch.zeros_like(v_lim)
-            )
-            v_lim = torch.maximum(v_lim, v_floor)
-
-            # While turning around, hold a creep speed so th' = sp/L tan(delta)
-            # stays nonzero -- braking to rest would freeze the arc. The same
-            # applies at a nose-in stop against a wall: if the vehicle is
-            # (near) stationary and a hard steer is commanded, drive the speed
-            # toward the maneuvering floor.
-            # Creep target capped at its DESIGN value (half the full-steer
-            # corner speed): v_corner is computed from the biased/clamped
-            # delta, so at partial steer it can be several times larger and
-            # the turn-around would lunge. The barrier's decelerating
-            # projection stays active in the behind branch (the full F.head
-            # would re-introduce the parks-facing-away freeze: the goal
-            # spring is negative when the goal is behind).
-            v_creep = torch.minimum(
-                0.5 * v_corner,
-                (
-                    torch.full_like(v_corner, 0.5 * math.sqrt(a_lat_max * L / tan_dmax))
-                    if friction is None
-                    else 0.5 * torch.sqrt(a_lat_e * (L / tan_dmax))
-                ),
-            )
-            a_long = torch.where(
-                behind,
-                (v_creep - sp) / hdt + torch.clamp((F_bar * head).sum(-1), max=0.0),
-                a_long,
-            )
-            stuck_turning = hard_steer & can_move & (sp.abs() < 0.06)
-            a_long = torch.where(stuck_turning, torch.maximum(a_long, (0.08 - sp) / hdt), a_long)
-            if allow_reverse:
-                # A nose-in car with no reverse gear cannot escape: the forward
-                # creep arc (radius R_min) dips toward the wall and burns its
-                # clearance before the heading comes around. When the carrot is
-                # behind AND the nose is against the wall, back out with
-                # opposite steer -- reversing with delta rotates the heading
-                # the other way, exactly as a real car backs out of a spot.
-                head_on = (-(nrm * head).sum(-1)).clamp(0.0, 1.0) > 0.6
-                nose_blocked = behind & head_on & (d < 0.5 * _gov_rr + 0.02)
-                a_long = torch.where(nose_blocked, (-0.10 - sp) / hdt, a_long)
-                delta = torch.where(nose_blocked, -delta, delta)
-            a_long = torch.clamp(a_long, -a_max_e, a_max_e)
-
-            # semi-implicit: speed, then heading with the new speed, then
-            # position. Speed approaches v_lim through the ACTUATOR, not a
-            # clamp -- clamping straight to v_lim shed up to ~15x a_max of
-            # speed in a single substep when the carrot flipped behind. The
-            # brakes are still only a_max strong, so sp may exceed v_lim
-            # transiently while shedding speed; the steering clamp below
-            # keeps the lateral invariant exact during exactly that window
-            # (the vehicle carves a wider arc while braking, as a car does).
-            a_long = torch.clamp(torch.minimum(a_long, (v_lim - sp) / hdt), -a_max_e, a_max_e)
-            sp_min = -0.25 * vmax if allow_reverse else 0.0
-            sp = (sp + hdt * a_long).clamp(torch.full_like(sp, sp_min), torch.full_like(sp, vmax))
-            d_cap = torch.atan(a_lat_e * L / sp.square().clamp_min(1e-9))
-            delta = torch.clamp(delta, -d_cap, d_cap)
             th = th + hdt * (sp / L) * torch.tan(delta)
             head = torch.stack([torch.cos(th), torch.sin(th)], -1)
             o = o + hdt * sp.unsqueeze(-1) * head
