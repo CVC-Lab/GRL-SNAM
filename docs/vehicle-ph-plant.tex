@@ -1,0 +1,1261 @@
+\documentclass[11pt]{article}
+
+% ---------------------------------------------------------------------------
+%  The vehicle plant in port-Hamiltonian form, for GRL-SNAM.
+%  Self-contained; compiles with a plain `pdflatex vehicle-ph-plant.tex`
+%  (run twice for the references).
+% ---------------------------------------------------------------------------
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.6}
+\renewcommand{\textfraction}{0.1}
+\renewcommand{\floatpagefraction}{0.8}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+% Code names in typewriter, breakable after . _ / :: and between camel-case words, so long
+% identifiers and test names wrap inside narrow table cells.
+\ExplSyntaxOn
+\tl_new:N \l__wp_code_tl
+\NewDocumentCommand{\code}{m}
+  {
+    \tl_set:Nn \l__wp_code_tl {#1}
+    \regex_replace_all:nnN { (\c{_}|\.|/|::) } { \0 \c{allowbreak} } \l__wp_code_tl
+    \regex_replace_all:nnN { ([a-z])([A-Z]) } { \1 \c{allowbreak} \2 } \l__wp_code_tl
+    \texttt{\codesize \tl_use:N \l__wp_code_tl}
+  }
+\ExplSyntaxOff
+% Code is set a size down in body text; tables (\tablesetup) leave it at their own size.
+\newcommand{\codesize}{\small}
+\newcommand{\tablesetup}{\footnotesize\renewcommand{\codesize}{}\renewcommand{\arraystretch}{1.15}}
+\newcommand{\J}{\mathsf J}
+\newcommand{\R}{\mathsf R}
+\newcommand{\G}{\mathsf G}
+\newcommand{\ub}{\bar u}
+\newcommand{\T}{^{\top}}
+\newcommand{\se}{\mathfrak{se}(2)}
+\newcommand{\Rx}{\raggedright\arraybackslash}
+
+\title{\bfseries The Vehicle Plant in Port-Hamiltonian Form:\\
+Theory, Implementation and Validation for GRL-SNAM}
+\author{Computational Visualization Center\\
+\normalsize The University of Texas at Austin}
+\date{October 2026\\[2pt]
+\small libcvc 3.7.1 (\code{transfix/libcvc}) $\cdot$ GRL-SNAM \code{main} at \code{0e21085}
+(\code{CVC-Lab/GRL-SNAM})}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+GRL-SNAM navigates by learning the coefficients of a potential field and driving a vehicle with
+a bicycle controller. The vehicle under that controller is now a dynamic single-track model with
+Pacejka tires, load transfer and actuator lag, implemented in libcvc and twinned in GRL-SNAM's
+torch code. This paper writes that model as a port-Hamiltonian system on $\se^*$
+\emph{exactly}, at every tire slip and not only in the linear-tire regime. The dissipation is the
+tires' secant stiffness, which is positive semi-definite even when a tire slides. The port is
+the pair of axle forces, with the wheels' ground speeds as its conjugate output. Steering is not a
+port: it only turns the directions along which the tires push, so it does no work. A small
+remainder from the slips' speed floor, and gravity on a grade, are booked as power lines of
+their own. The integrator's step keeps per-step energy books whose residual is second order in the
+step. We also describe the learned stochastic port-Hamiltonian plant on $SE(2)$ (\code{cvc::ph})
+and its energy balance, which includes the noise's power. We give the navigator's per-step energy
+identity, with its context and projection work at each tick. Every claim is tied to a test in
+libcvc or GRL-SNAM, with the tolerance the test enforces and the value measured on the released
+code (Section~\ref{sec:validation}), so it can be checked independently.
+\end{abstract}
+
+\tableofcontents
+
+% ===========================================================================
+\section{Introduction}
+\label{sec:intro}
+
+GRL-SNAM~\cite{grlsnam2025} treats navigation as motion in a learned energy landscape. A small
+network predicts the coefficients $(\alpha_j,\beta,\gamma)$ of a potential: barrier weights per
+obstacle, a goal spring and a damping. A controller turns the potential's force into steering and
+acceleration commands for a vehicle. GRL-SNAM's own guide to the C++ port
+(\code{docs/cvc-nav-and-grl-snam-guide.md}, ``A note on the vocabulary'') is careful about what
+this does and does not buy. The deployed navigator is a learned-coefficient potential field with
+viscous damping, on top of a kinematic bicycle and a pure-pursuit controller. No Hamiltonian is
+carried through it, and no energy or passivity argument transfers to it.
+
+This paper is about the layer under the navigator: the vehicle. libcvc 3.7.1 replaces the
+kinematic update, where a policy asks for it, with a dynamic single-track vehicle (the plant). It
+writes that vehicle as a port-Hamiltonian (pH) system with a genuine Hamiltonian $H$, momenta, a
+positive semi-definite dissipation, and a power port. It keeps books of where the vehicle's
+kinetic energy goes, step by step. The same release adds two related pieces: a learned stochastic
+pH model of a vehicle, and per-step energy books for the navigator's point-mass surrogate. Across
+the navigator's ticks those books include the potential's changes of context.
+
+\paragraph{Contributions.}
+\begin{enumerate}
+  \item An exact pH form of the dynamic single-track vehicle, valid at every slip
+        (Proposition~\ref{prop:ph}). The dissipation is built from the tires' secants, the port
+        is the axle forces, and steering is shown not to be a power port
+        (Section~\ref{sec:ph}).
+  \item The discrete step's energy books, with a residual that is second order per step
+        (Section~\ref{sec:books}), and a live plant that keeps them for every vehicle in a
+        navigation world.
+  \item The learned plant \code{cvc::ph}: its structure, its energy balance including the noise
+        power, its integrator and its training objective (Section~\ref{sec:learned}).
+  \item The navigator's per-step energy identity, the two checks built on it, and the context
+        work at tick boundaries (Section~\ref{sec:nav}).
+  \item GRL-SNAM's side: the torch twins and their parity tiers, what is not twinned yet, and how
+        a GRL-SNAM rollout or trainer can use the plant and its books (Section~\ref{sec:grl}).
+  \item A validation table that maps each claim to a test, its tolerance, the measured value and
+        the commit that added it (Section~\ref{sec:validation}).
+\end{enumerate}
+
+\paragraph{What is not claimed.} The closed loop of navigator, controller and plant is not
+port-Hamiltonian. The controller is a path follower, not an energy-shaping controller
+(Section~\ref{sec:limits}). Neither the analytic plant's integrator nor the learned plant's is
+structure-preserving. Both keep books with a residual instead. The learned plant's filter-based
+evidence bound is not yet implemented, and the four-wheel vehicle's pH form is not yet written.
+
+\paragraph{Versions.} Every statement about code refers to libcvc 3.7.1 or later and GRL-SNAM
+\code{main} at \code{0e21085}. The pH work is in transfix/libcvc \#831, \#832 and \#833, and all
+three are in the v3.7.1 tag. The measurements in Section~\ref{sec:validation} were taken on libcvc
+\code{master} at \code{c1f104c0}, whose \code{nav}, \code{ph} and \code{physics} sources and tests
+are identical to v3.7.1's.
+
+% ===========================================================================
+\section{Preliminaries}
+\label{sec:prelim}
+
+\subsection{Port-Hamiltonian systems}
+An input-state-output pH system~\cite{vanderschaft2014pht} with state $x$, stored energy $H(x)$,
+input $u$ and output $y$ is
+\begin{equation}
+  \dot x=\big(\J(x)-\R(x)\big)\nabla H(x)+\G(x)\,u,\qquad y=\G(x)\T\nabla H(x),
+  \label{eq:ph}
+\end{equation}
+with $\J=-\J\T$ (the interconnection) and $\R=\R\T\succeq0$ (the dissipation). Along solutions,
+$\dot H=-\nabla H\T\R\nabla H+y\T u\le y\T u$, so the system is passive from the port $(u,y)$, with
+$H$ as storage. The structure tells you where energy goes: $\J$ moves it without loss, $\R$
+dissipates it, and the port $y\T u$ is the only way it enters from outside. If $\R$ may depend on
+the input, nothing in this changes, provided it is positive semi-definite for every input value.
+
+\subsection{Planar rigid bodies and the Lie--Poisson structure}
+A planar rigid body has pose $q=(x,y,\psi)\in SE(2)$ and body twist $v=(v_x,v_y,r)\in\se$: the
+velocity of its centre of gravity in the body frame, and its yaw rate. With mass matrix
+$M=\operatorname{diag}(m,m,I_z)$ the momenta are $p=Mv\in\se^*$, and the kinetic energy is
+$H(p)=\tfrac12p\T M^{-1}p$, so $\nabla_pH=v$. The body-frame equations of motion of a free body are
+the Euler--Poincar\'e equations $\dot p=\operatorname{ad}^*_vp+f$, with $f$ the applied body
+wrench and
+\begin{equation}
+  \operatorname{ad}^*_vp=\J(p)\,v,\qquad
+  \J(p)=\begin{pmatrix}0&0&p_y\\0&0&-p_x\\-p_y&p_x&0\end{pmatrix}.
+  \label{eq:J}
+\end{equation}
+$\J(p)$ is skew-symmetric and linear in $p$: it is the Lie--Poisson structure of
+$\se^*$~\cite{marsden1999}, so it satisfies the Jacobi identity. With $M$ diagonal and equal
+masses on $v_x$ and $v_y$, $\J(p)v=(mv_yr,\,-mv_xr,\,0)$. These are the familiar $+rv_y$ and $-rv_x$
+terms of a vehicle's body-frame equations.
+
+\subsection{Where the plant sits in GRL-SNAM}
+GRL-SNAM's navigator evaluates a potential $U_{\mathrm{nav}}$ at the agent's position $o$,
+\begin{equation}
+  U_{\mathrm{nav}}(o)=\tfrac{\beta}{2}\lVert o-g\rVert^2+\textstyle\sum_j\alpha_j\,b(d_j(o))
+  +\text{(material and terrain terms)},
+  \label{eq:unav}
+\end{equation}
+with $b$ the IPC barrier of each obstacle's clearance $d_j$, and $g$ the current goal or carrot.
+Damping $-\gamma v$ is dissipation, not part of $U$. An external force, where one is used, is a
+port, not part of $U$ either. libcvc evaluates $U_{\mathrm{nav}}$ along every rollout
+(\code{inc/cvc/nav/detail/nav\_potential.h}), and GRL-SNAM's torch twin
+(\code{grl\_snam/nav\_potential.py}, CVC-Lab/GRL-SNAM\#133) is held to it. The controller
+(\code{bike\_control} in \code{diff\_rollout.h}; \code{sdf\_nav.bike\_control} in GRL-SNAM)
+turns the force $-\nabla U_{\mathrm{nav}}$, plus any external force, into a steering command
+$\delta_{\mathrm{cmd}}$ and an acceleration command $a_{\mathrm{cmd}}$. A plant then moves the
+vehicle. The default plant is the kinematic bicycle, $\dot\theta=(v/L)\tan\delta$. The dynamic plant
+of this paper takes the same commands, so a policy can train through tires, load transfer and
+actuator lag with the controller and its adjoint unchanged.
+
+% ===========================================================================
+\section{The dynamic single-track vehicle}
+\label{sec:model}
+
+The plant is \code{cvc::nav::diff::dyn\_plant} (\code{inc/cvc/nav/detail/dyn\_bike.h}). It is
+written once over a scalar type: float in training, double in the tests, and a forward-mode dual
+number for its adjoint. Its torch twin is \code{grl\_snam.dyn\_bike.dyn\_plant}. The model is the
+standard single-track (``bicycle'') vehicle~\cite{rajamani2012} with Pacejka lateral
+forces~\cite{pacejka2012}. We summarize what the pH form needs.
+
+\paragraph{State and parameters.} The state is $(x,y,\psi,v_x,v_y,r,\delta,a)$: the rear axle's
+position, the heading, the body twist at the centre of gravity, the road-wheel steering angle, and
+the drive or brake force per unit mass. The last two sit behind first-order actuators. The
+parameters are the mass $m$, the yaw inertia $I_z$, the distances $l_f,l_r$ from the centre of
+gravity to the axles ($L=l_f+l_r$), the centre of gravity's height $h_{\mathrm{cg}}$, the ground's
+friction $\mu$, Pacejka factors $B_f,B_r$ and $C$, drag $c_d$, rolling resistance $c_{rr}$, the
+drive and brake split between the axles, and a speed floor $\varepsilon>0$.
+
+\paragraph{Loads and grip.} Quasi-static longitudinal load transfer gives axle loads
+$F_{z,f}=m(gl_r-ah_{\mathrm{cg}})/L$ and $F_{z,r}=m(gl_f+ah_{\mathrm{cg}})/L$, each floored at a
+small fraction of $mg$. The drive or brake force $ma$ splits between the axles, and each share is
+saturated smoothly at $\mu F_{z,w}$. These are the axle forces $F_{x,f},F_{x,r}$. What grip they
+leave for cornering, $P_w$, follows from the friction ellipse with the longitudinal force first.
+Both depend on the actuator state $a$.
+
+\paragraph{Slips.} Let $\ub=\sqrt{v_x^2+\varepsilon^2}$ be the floored forward speed and
+$\varsigma=v_x/\ub$ its smooth sign. The axles' lateral velocities are $w_f=v_y+l_fr$ and
+$w_r=v_y-l_rr$, and the slip angles are
+\begin{equation}
+  \alpha_f=\varsigma\delta-\operatorname{atan2}(w_f,\ub),\qquad
+  \alpha_r=-\operatorname{atan2}(w_r,\ub).
+  \label{eq:slips}
+\end{equation}
+The floor keeps them smooth through zero speed. The lateral forces are Pacejka's,
+$F_{y,w}=P_w\sin\!\big(C\arctan(B_w\alpha_w)\big)$, with the shape factor $C\in(1,2)$, as the
+parameter's documentation requires.
+
+\paragraph{Directions.} Each tire's lateral force reaches the twist's coordinates
+$(v_x,v_y,r)$ along $n_w$, and each axle's drive or brake force along $t_w$:
+\begin{equation}
+  n_f(\delta)=\begin{pmatrix}-\sin\delta\\\cos\delta\\l_f\cos\delta\end{pmatrix},\quad
+  n_r=\begin{pmatrix}0\\1\\-l_r\end{pmatrix},\quad
+  t_f(\delta)=\begin{pmatrix}\cos\delta\\\sin\delta\\l_f\sin\delta\end{pmatrix},\quad
+  t_r=\begin{pmatrix}1\\0\\0\end{pmatrix}.
+  \label{eq:dirs}
+\end{equation}
+So $n_w\T v$ is the sideways velocity of that axle's contact patch in its wheel's frame, and
+$t_w\T v$ is its ground speed along the wheel. In particular $n_r\T v=w_r$ and
+$n_f\T v=\cos\delta\,(w_f-v_x\tan\delta)$.
+
+\paragraph{Equations of motion.} With $\theta$ the sine of the slope along the heading (positive
+uphill), and $c_x(\ub)=c_d\ub+c_{rr}mg/\ub$ the drag and rolling resistance acting on $v_x$, the
+body-frame Newton--Euler equations are
+\begin{align}
+  m(\dot v_x-rv_y)&=F_{x,f}\cos\delta-F_{y,f}\sin\delta+F_{x,r}-c_x v_x-mg\theta,\notag\\
+  m(\dot v_y+rv_x)&=F_{x,f}\sin\delta+F_{y,f}\cos\delta+F_{y,r},\label{eq:ne}\\
+  I_z\dot r&=l_f\big(F_{x,f}\sin\delta+F_{y,f}\cos\delta\big)-l_rF_{y,r}.\notag
+\end{align}
+In momenta and the directions above, \eqref{eq:ne} reads
+\begin{equation}
+  \dot p=\J(p)v+t_fF_{x,f}+t_rF_{x,r}+n_fF_{y,f}+n_rF_{y,r}-c_xv_x\,e_x-mg\theta\,e_x .
+  \label{eq:ne-p}
+\end{equation}
+Left out on purpose: wheel spin, suspension, lateral load transfer and contact loss. The
+four-wheel model (Section~\ref{sec:limits}) adds some of these.
+
+% ===========================================================================
+\section{The port-Hamiltonian form}
+\label{sec:ph}
+
+\subsection{The tires' secant stiffness}
+The key to an exact form is to write each lateral force as a stiffness times a velocity, in a way
+that stays valid past the tire's peak. A tangent stiffness does not. The secant through the force's
+root does.
+
+\begin{lemma}[Secant stiffness]
+\label{lem:secant}
+Let $w_{0,f}=\ub\tan(\varsigma\delta)$ and $w_{0,r}=0$ be the lateral velocities at which each slip
+vanishes. For $B_w>0$, $C\in(0,2)$, $P_w\ge0$ and $\lvert\delta\rvert<\pi/2$, the secant stiffness
+\begin{equation}
+  S_w=-\frac{F_{y,w}}{w_w-w_{0,w}}\qquad(w_w\neq w_{0,w}),
+  \label{eq:secant}
+\end{equation}
+continued at the root by the slope there, $S_w=P_wCB_w\ub/(\ub^2+w_w^2)$, is non-negative at every
+slip and every speed, sliding included. So $F_{y,w}=-S_w\,(w_w-w_{0,w})$.
+\end{lemma}
+
+\begin{proof}
+For $\ub>0$, $\alpha_w$ is strictly decreasing in $w_w$ and vanishes exactly at $w_{0,w}$ (for the
+front axle, $\arctan(w_f/\ub)=\varsigma\delta$ has the root $w_f=\ub\tan(\varsigma\delta)$, which
+exists since $\lvert\varsigma\delta\rvert<\pi/2$). So $\operatorname{sign}\alpha_w=-\operatorname{sign}(w_w-w_{0,w})$.
+Since $C\arctan(B_w\alpha_w)\in(-C\pi/2,\,C\pi/2)\subset(-\pi,\pi)$, the force
+$P_w\sin(C\arctan(B_w\alpha_w))$ has the sign of $\alpha_w$, or is zero. Hence $F_{y,w}$ and
+$w_w-w_{0,w}$ have opposite signs, and $S_w\ge0$. At the root, $-\partial F_{y,w}/\partial w_w$
+is $P_wCB_w\ub/(\ub^2+w_w^2)\ge0$.
+\end{proof}
+
+The implementation is \code{dyn\_secant\_w}. It takes the root branch when
+$(B_w\alpha_w)^2<10^{-8}$, so there $F_{y,w}=-S_w(w_w-w_{0,w})$ holds to second order in the
+slip, not exactly. That rounding is booked with the speed floor below. A Pacejka force with
+$C<2$ never changes sign against its slip. A tire past its peak gives less force for more slip,
+but never pushes the slip further.
+
+\subsection{The structure}
+Define
+\begin{align}
+  \R(v;\delta,a)&=c_x(\ub)\,e_xe_x\T+\frac{S_f}{\cos\delta}\,n_fn_f\T+S_r\,n_rn_r\T,
+  \label{eq:R}\\
+  \G(\delta)&=\big[\,t_f\;\;t_r\,\big],\qquad u=(F_{x,f},\,F_{x,r}),\qquad y=\G(\delta)\T v,
+  \label{eq:G}\\
+  f_\varepsilon&=n_f\Big(F_{y,f}+\tfrac{S_f}{\cos\delta}\,n_f\T v\Big)+n_r\big(F_{y,r}+S_r\,n_r\T v\big).
+  \label{eq:feps}
+\end{align}
+$\R$ depends on the actuator state $a$ through the grips $P_w$ in $S_w$. $f_\varepsilon$ is what the
+secant dissipation leaves of the tires' actual forces. In code these are \code{dyn\_ph\_J},
+\code{dyn\_ph\_R}, \code{dyn\_ph\_G}, \code{dyn\_ph\_input} and \code{dyn\_ph\_floor}. Their sum is
+\code{dyn\_ph\_rhs}, and \code{dyn\_ph\_rates\_at} evaluates the power balance at a state.
+
+\begin{proposition}[The dynamic single-track vehicle is port-Hamiltonian at every slip]
+\label{prop:ph}
+Under the conditions of Lemma~\ref{lem:secant}, with $c_d,c_{rr}\ge0$, the vehicle's equations
+of motion~\eqref{eq:ne} are exactly
+\begin{equation}
+  \dot p=\big(\J(p)-\R(v;\delta,a)\big)v+\G(\delta)\,u+f_\varepsilon-mg\theta\,e_x,\qquad
+  y=\G(\delta)\T v,
+  \label{eq:plant-ph}
+\end{equation}
+with $H=\tfrac12p\T M^{-1}p$, $\J=-\J\T$ the Lie--Poisson structure of $\se^*$, and $\R=\R\T\succeq0$
+at every state, slip and input. Consequently
+\begin{equation}
+  \dot H=-v\T\R v+y\T u+v\T f_\varepsilon-mg\theta\,v_x .
+  \label{eq:balance}
+\end{equation}
+The vehicle is passive with respect to the supply $y\T u+v\T f_\varepsilon-mg\theta v_x$. On level
+ground and in the limit $\varepsilon/\lvert v_x\rvert\to0$, where $f_\varepsilon\to0$, it is
+passive from the drive port $(u,y)$ alone.
+\end{proposition}
+
+\begin{proof}
+By~\eqref{eq:feps}, $n_fF_{y,f}+n_rF_{y,r}=-\big(\tfrac{S_f}{\cos\delta}n_fn_f\T+S_rn_rn_r\T\big)v+f_\varepsilon$.
+Substituting this into~\eqref{eq:ne-p}, with $t_fF_{x,f}+t_rF_{x,r}=\G u$ and $c_xv_x\,e_x=c_x\,e_xe_x\T v$,
+gives~\eqref{eq:plant-ph}. $\J(p)$ is skew and is the Lie--Poisson tensor~\eqref{eq:J}, so the
+Jacobi identity holds. $\R$ is a combination of outer products with coefficients $c_x\ge0$,
+$S_f/\cos\delta\ge0$ (Lemma~\ref{lem:secant} and $\cos\delta>0$) and $S_r\ge0$, so it is symmetric
+positive semi-definite. Finally $\dot H=v\T\dot p$, $v\T\J v=0$ and $v\T\G u=y\T u$.
+\end{proof}
+
+\subsection{Steering is not a power port}
+\label{sec:steer}
+In~\eqref{eq:plant-ph} the steering angle appears only inside $n_f$, $t_f$ and the front root
+$w_{0,f}$. It turns the directions along which the front tire pushes, so it modulates the
+structure. It is not an effort with a conjugate flow, and it does no work on the body. The power
+that drives the body is $y\T u=F_{x,f}\,t_f\T v+F_{x,r}\,t_r\T v$: each axle's force times its
+wheel's ground speed. With no axle force, nothing is supplied, however the wheel turns.
+
+This matters because the natural linear-tire pH form gets it wrong, and libcvc's own first pH form
+(transfix/libcvc\#748, replaced in \#831) did. With linear tires $F_{y,f}\approx C_f\alpha_f$ and
+small angles, it is tempting to take $u=(F_x,\delta)$, with input column $C_f(0,1,l_f)\T$ for
+$\delta$. The conjugate output of $\delta$ is then $C_f(v_y+l_fr)$, and the supplied power
+contains $C_f\delta(v_y+l_fr)$. This has no sign, so that model can gain kinetic energy from
+steering alone, with no drive force. It is the first-order truncation in $\delta$
+of~\eqref{eq:R}. Expanding $n_f\approx(-\delta,1,l_f)$ and $S_f/\cos\delta\approx C_f/\ub$, the
+$v_x$-column of $\tfrac{C_f}{\ub}n_fn_f\T$ contributes $+C_f\delta\,(v_x/\ub)\,(0,1,l_f)\T$ to
+$-\R v$, which is $C_f\delta\,(0,1,l_f)\T$ when $v_x\approx\ub$. The truncation moves that term out
+of $\R$ and calls it an input, and it drops the cornering drag $-F_{y,f}\sin\delta$ on $v_x$. In the modulated form, the front tire's power
+$F_{y,f}\,n_f\T v$ is the dissipation $-\tfrac{S_f}{\cos\delta}(n_f\T v)^2\le0$ plus its share of
+the floor term. Steering only redirects energy.
+
+\subsection{The speed floor}
+\label{sec:floor}
+The remainder $f_\varepsilon$ exists because the front force's root sits at
+$w_f=\ub\tan(\varsigma\delta)$, while the secant form puts it where $n_f\T v=0$, at
+$w_f=v_x\tan\delta$. Off the root branch, the rear bracket in~\eqref{eq:feps} vanishes, and
+\begin{equation}
+  f_\varepsilon=S_f\big(\ub\tan(\varsigma\delta)-v_x\tan\delta\big)\,n_f .
+  \label{eq:feps-closed}
+\end{equation}
+As $\varepsilon/\lvert v_x\rvert\to0$, $\ub\to\lvert v_x\rvert$ and $\varsigma\to\operatorname{sign}v_x$,
+and the bracket is $O(\varepsilon^2/\lvert v_x\rvert)$. So the floor's power $v\T f_\varepsilon$
+falls as $\varepsilon^2$. It is booked as its own line, not hidden in $\R$. The test
+\code{DynBikePH.TheFloorTermVanishesWithTheFloor} measures its worst share of the flow as
+$5.4\times10^{-4}$, $5.4\times10^{-6}$ and $5.4\times10^{-8}$ for
+$\varepsilon=0.5,\,0.05,\,0.005$~m/s. That is a factor of 100 per decade, as $\varepsilon^2$
+predicts. At $\varepsilon=10^{-9}$~m/s it is $2\times10^{-16}$, which is round-off.
+
+\subsection{Grade}
+On a slope, gravity along the heading does work $-mg\theta\,v_x$. The plant has no side slope and
+no height state, so $H$ carries no potential energy. The grade enters as an external power line,
+booked separately. (A plant with a height state would move it into $H$ as $mgz$. The four-wheel
+plant's suspension, Section~\ref{sec:limits}, is the natural place.)
+
+\subsection{Tangent versus secant}
+\label{sec:tangent}
+Past a tire's peak, $\lvert B_w\alpha_w\rvert>\tan(\pi/(2C))$, its force falls as its slip grows. The
+\emph{tangent} dissipation, minus the derivative of the tires' lateral force $Q_y$ and yaw moment
+$Q_r$ in $(v_y,r)$, is
+\begin{equation}
+  D_t=-\frac{\partial(Q_y,Q_r)}{\partial(v_y,r)}=k_f\,aa\T+k_r\,bb\T,\qquad a=(1,l_f),\;b=(1,-l_r),
+  \label{eq:tangent}
+\end{equation}
+with $k_w$ each tire's $\partial F_{y,w}/\partial\alpha_w$ times its slip's sensitivity
+$\ub/(\ub^2+w_w^2)$ (times $\cos\delta$ at the front). In code this is \code{dyn\_ph\_tangent\_D}.
+Since $a$ and $b$ are independent, $D_t\succeq0$ exactly when both tires are below their peak. Past
+it, the linearized motion can be locally unstable, which is sliding. That is a statement about
+stability, not about energy. The secant~\eqref{eq:R}, the dissipation in the energy
+balance~\eqref{eq:balance}, stays positive semi-definite. So a positive semi-definite dissipation of
+the form $-D(v)v$ can represent sliding: its gain falls with slip. What it cannot represent is a
+tire that supplies energy, and a Pacejka tire with $C<2$ never does.
+
+On the tests' full-size utility-vehicle preset (\code{DynBikePH.TheSecantStaysPSDWhereTheTangentDoesNot}),
+with steer ramps to the lock and swerves at 8--20~m/s:
+\begin{itemize}
+  \item The vehicle understeers: the front tire passes its peak first.
+  \item The tangent is positive semi-definite in every sample below about half the grip,
+        $0.5\mu g$. Above it, it is indefinite in up to half the samples of a lateral-$g$ bin.
+  \item The rear tire never passes its peak.
+  \item The secant is positive semi-definite in every sample, at $\mu=0.9$ and at $\mu=0.6$.
+\end{itemize}
+This bears on any learned model that constrains $D(v)\succ0$, such as the one in
+Section~\ref{sec:learned}. The constraint does not rule out sliding.
+
+\subsection{The kinematic limit and the Jacobi identity}
+The kinematic bicycle imposes a no-slip constraint at each axle. That constraint is not integrable,
+so the reduced bracket is only almost-Poisson and the Jacobi identity
+fails~\cite{vanderschaft1994nonholonomic}. The dynamic vehicle replaces the constraint by tire
+forces, its $\J$ is a genuine Lie--Poisson structure, and the kinematic bicycle is its stiff limit:
+$S_w\to\infty$ along $n_f$ and $n_r$ drives $n_w\T v$ to zero. The test
+\code{DynBike.KinematicLimitFollowsBikeStep} checks the limit numerically. It uses stiff tires
+and puts the mass at the rear axle, as the kinematic bicycle has it. Under the kinematic bicycle's
+commands, the dynamic vehicle then stays within 0.011 (normalized units) of the kinematic path
+over 200 ticks, with a mean path length of 5.6.
+
+\subsection{Externally defined ports}
+\label{sec:ports}
+The form~\eqref{eq:plant-ph} accepts further ports. Suppose an external generalized force acts on
+the body: a tow, wind, a contact, or a force defined by some other model. It enters through its
+own input map, $\G_e u_e$, and has its own conjugate output $y_e=\G_e\T v$. The balance gains one
+line, $y_e\T u_e$, which is booked as supplied power:
+\begin{equation}
+  \dot p=(\J-\R)v+\G u+\G_e u_e+f_\varepsilon-mg\theta e_x,\qquad
+  \dot H=-v\T\R v+y\T u+y_e\T u_e+v\T f_\varepsilon-mg\theta v_x .
+  \label{eq:ext-port}
+\end{equation}
+Nothing else changes: $\J$ and $\R$ are untouched, and passivity holds with the added supply. For a
+force $F=(F_X,F_Y)$ given in the world frame and applied at the centre of gravity, the body
+wrench is $(R(\psi)\T F,\,0)$. So
+\begin{equation*}
+  \G_e=\begin{pmatrix}R(\psi)\T\\0\quad0\end{pmatrix},\qquad y_e=R(\psi)\begin{pmatrix}v_x\\v_y\end{pmatrix},
+\end{equation*}
+and $y_e$ is the centre of gravity's world velocity. The supplied power is
+$F\cdot\dot x_{\mathrm{cg}}$, as it should be. Applied at a body point $(\ell_x,\ell_y)$ instead,
+the yaw row of $\G_e$ becomes $(-\ell_y,\ell_x)R(\psi)\T$, the moment arm. A port that stores
+energy, such as a spring, belongs in $H$ instead.
+
+\paragraph{Worked example: a navigation force.} GRL-SNAM and libcvc allow an external navigation
+force $F_{\mathrm{ext}}$, with its spatial Jacobian. It might come from another field, a teammate
+or a learned term. It is joined to the navigator's conservative force (\code{ext\_in} in
+\code{bike\_control}; \code{grl\_snam.ext\_rollout}, \code{material\_ext}), and it reaches the
+two models differently.
+\begin{itemize}
+  \item On the navigator's point-mass surrogate, $F_{\mathrm{ext}}$ is a port force on the point
+        mass. The per-step books (Section~\ref{sec:nav}) carry it as the port work
+        $W_{\mathrm{port}}=\tfrac h2F_{\mathrm{ext}}\cdot(v+v')$. Left out, it is work of
+        order $h$, against a bound of order $h^2$. The test
+        \code{NavPotential.UnloggedForceRaisesTheAlarm} sees exactly that: 229 of 240 steps
+        raise the alarm.
+  \item On the vehicle, $F_{\mathrm{ext}}$ acts through the controller. It changes
+        $(\delta_{\mathrm{cmd}},a_{\mathrm{cmd}})$, so it reaches the body only through the axle
+        forces, which are already booked as $y\T u$, and through steering, which does no work. The
+        plant's books need no new line: the external force's energy shows up as drive or brake.
+        A model in which the force acts on the body directly, as a physical force, would add the
+        column $\G_e$ above, with $F_{\mathrm{ext}}$ as $u_e$. libcvc does not implement such a
+        column today.
+\end{itemize}
+
+% ===========================================================================
+\section{The discrete step and its energy books}
+\label{sec:books}
+
+\subsection{The step}
+One step of length $h$ (\code{dyn\_plant}) from the commands $(\delta_{\mathrm{cmd}},a_{\mathrm{cmd}})$
+and the grade has these parts:
+\begin{enumerate}
+  \item \emph{Actuators.} The steering follows its command with an exact first-order lag,
+        $1-e^{-h/\tau}$, with its change limited smoothly to a slew rate times $h$. The force
+        follows its command with its own lag. Their outputs $(\delta_1,a_1)$ are the inputs the rest
+        of the step applies.
+  \item \emph{Loads and axle forces} from $a_1$, as in Section~\ref{sec:model}.
+  \item \emph{Speed, predicted} from the axle forces, drag, rolling resistance and grade alone.
+        Lateral forces are not read before step 4: in the stiff limit they are constraint forces.
+  \item \emph{Lateral and yaw, implicit.} $(v_y,r)$ advance by implicit Euler at the predicted
+        speed. The step is solved by a few Newton-like iterations, each linearizing the tires by
+        their secants at its iterate. A sliding tire then pulls its slip toward zero, never past
+        it, and stiff tires stay stable at the navigator's 0.06~s tick.
+  \item \emph{Speed, corrected} with the front lateral force the implicit step applied, then
+        \emph{clamped} to the vehicle's speed range.
+  \item \emph{Low-speed blend.} Below a blend speed, a sigmoid in $\lvert v_x\rvert$ blends $(v_y,r)$
+        toward the kinematic bicycle's, where slip angles mean nothing.
+\end{enumerate}
+Then the pose advances. It does not enter $H$. The step is first order in $h$.
+
+\subsection{The books}
+\code{dyn\_plant\_books} runs exactly that step and returns, in the struct \code{dyn\_ph\_books},
+\begin{equation}
+  \Delta H=\underbrace{\widehat{\textstyle\int}y\T u}_{\text{supplied}}
+  -\underbrace{\widehat{\textstyle\int}v\T\R v}_{\text{dissipated}}
+  +\underbrace{\widehat{\textstyle\int}v\T f_\varepsilon}_{\text{floor}}
+  \underbrace{-\widehat{\textstyle\int}mg\theta v_x}_{\text{grade}}
+  +W_{\mathrm{lim}}+r_h .
+  \label{eq:books}
+\end{equation}
+Each $\widehat\int$ is the trapezoid, over $h$, of that power. Its two ends are the step's start
+(the start twist, with the inputs $(\delta_1,a_1)$ the step applied) and the twist the step reached
+\emph{before} its limiters, the speed clamp and the low-speed blend. $W_{\mathrm{lim}}$ is the
+kinetic energy those limiters then changed, booked exactly as the difference of $H$ across them.
+$r_h$ is what is left, the integrator's residual. The step's arithmetic does not depend on the
+books: \code{dyn\_plant} records the pre-limiter twist only when asked, and
+\code{DynBike.Golden} pins its outputs unchanged.
+
+\begin{proposition}[The books close to second order]
+\label{prop:books}
+Where the vector field is smooth along the step, $r_h=O(h^2)$ per step, so over a fixed horizon
+$T$ the summed residual is $O(h)$.
+\end{proposition}
+
+\begin{proof}[Argument]
+Before its limiters, the step is a consistent first-order method: implicit Euler on $(v_y,r)$,
+and predicted-then-corrected Euler on $v_x$ with the same forces. So the pre-limiter twist differs
+from the exact flow's twist at $t+h$ by $O(h^2)$. Along the exact flow,
+$H(t+h)-H(t)=\int_t^{t+h}\dot H$ by~\eqref{eq:balance}, and the trapezoid of a smooth integrand
+has error $O(h^3)$. Replacing the exact end state by the step's changes $H$ by $O(h^2)$ and the
+trapezoid by $h\cdot O(h^2)$. The limiters' energy is booked exactly. Hence $r_h=O(h^2)$. The
+finite number of Newton iterations, and the branch switches (load floor, saturation, the secant's
+root branch), are part of $r_h$, not exceptions to it.
+\end{proof}
+
+\code{DynBikePH.StepBooksCloseToSecondOrder} checks this on a swerve past the tire's peak, with the
+throttle working and the actuators lagging, at $\mu=0.6$. As $h$ halves from 0.02 to 0.0025~s,
+the mean per-step $\lvert r_h\rvert$ falls by 3.83, 3.92 and 3.95. Over 6~s at $h=0.01$~s the
+summed residual is $1.2\times10^{-3}$ of the energy that moved (the flow: the sum of the magnitudes
+of every line). Braking hard to a stop in a turn makes the clamp and the blend act. The books charge
+them (for example $-354$~J at $h=0.01$~s), and the rest closes to $7\times10^{-7}$ of the flow.
+
+\subsection{The live plant}
+\label{sec:live}
+\code{cvc::physics::dyn\_bike\_plant} (libcvc \#833) makes the same vehicle a plant that a
+navigation world (\code{cvc::nav::sim\_world}) drives. It sits beside the kinematic bicycle and
+the rigid-body engine's vehicles, and needs no physics world. Agent $i$ drives one of a list of
+vehicle descriptions, with parameters from \code{nav\_plant::dyn\_bike\_si\_of}, so the dynamic
+and rigid-body plants read one description. Each tick of length $\Delta t$ runs
+$\lceil\Delta t/h\rceil$ steps under the held command, with $h=0.01$~s by default (six steps at the
+navigator's 0.06~s tick), in SI units. It books every step through \code{dyn\_plant\_books}. The
+books are kept per tick (\code{last\_tick}) and since the agent was attached (\code{books}):
+\begin{equation}
+  K-K_0=\text{drive}-\text{brake}-\text{dissipated}+\text{floor}+\text{grade}+\text{limiter}+\text{residual},
+  \label{eq:live-books}
+\end{equation}
+where drive and brake are the positive and negative parts of each step's supplied term, split step
+by step. The plant is flat (grade zero) and has no world to collide with. It is selected through
+\code{plant\_host} as \code{"dynamic"}, or \code{"dynamic:<presets>"} to cycle vehicles. It is the
+plant that the coefficient trainer's \code{rollout\_kind::dynamic} trains through, so a policy
+trained there is evaluated on its own model.
+
+% ===========================================================================
+\section{The learned plant: \texorpdfstring{\code{cvc::ph}}{cvc::ph}}
+\label{sec:learned}
+
+\code{cvc::ph::se2\_vehicle} (\code{inc/cvc/ph/se2\_vehicle.h}) is a native C++ port of the
+$SE(2)$ variant of the stochastic port-Hamiltonian Gaussian process of McLennan, Rapolu and
+Bajaj~\cite{liesphgp2026} (reference implementation in JAX: \code{CVC-Lab/LieSPHGP}). It contains
+no physical constant: everything is learned from logged runs of a vehicle. In libcvc those runs come
+from \code{cvc::physics::plant\_log}, which records the vehicles of a navigation world driving the
+rigid-body engine's plant (\code{cvc::physics::nav\_plant}, on Jolt Physics).
+
+\subsection{Model}
+The state is $(x,y,\psi,v)$ with $v=(v_x,v_y,r)$. The inputs $u$ are the logged commands divided
+by their training RMS. With $p=Mv$ and $H=\tfrac12p\T M^{-1}p+V(x,y)$,
+\begin{equation}
+\begin{gathered}
+  d(x,y)=R(\psi)(v_x,v_y)\,dt,\qquad d\psi=r\,dt,\qquad dv=M^{-1}dp+\Sigma\,dW,\\
+  dp=\Big(\operatorname{ad}^*_vp-\begin{pmatrix}R(\psi)\T\nabla V\\0\end{pmatrix}-D(v)\,v+G(v)\,u\Big)dt,
+\end{gathered}
+  \label{eq:learned}
+\end{equation}
+with $\Sigma=\operatorname{diag}(\sigma_1,\sigma_2,\sigma_3)$. Each piece is a learned level plus a
+Gaussian-process residual:
+\begin{itemize}
+  \item $M^{-1}=\operatorname{spd}(\ell_M)$, constant: a rigid body's inertia.
+  \item $D(v)=\operatorname{spd}\big(\ell_D+\mathrm{GP}_D(v/s_v)\big)$, positive definite at every
+        twist: it can only dissipate.
+  \item $G(v)=\ell_G+\mathrm{GP}_G(v/s_v)$, a $3\times n_u$ input map.
+  \item $V(x,y)=\ell_V\cdot(x,y)+\mathrm{GP}_V\big((x,y)/\lambda_V\big)$, the potential.
+\end{itemize}
+Here $s_v$ is the RMS of each twist channel over the training data. Here
+$\operatorname{spd}(\ell)=LL\T$, where $L$ is lower triangular with diagonal $e^{\ell_1},e^{\ell_2},e^{\ell_3}$
+and off-diagonal $\ell_4,\ell_5,\ell_6$ (\code{spd\_from\_levels}, \code{mat3.h}), so the result is
+symmetric positive definite for every value of the six levels. Only $M^{-1}D$, $M^{-1}G$ and
+$M^{-1}\nabla V$ are identifiable from trajectories, plus $M$'s shape through
+$\operatorname{ad}^*_vp$.
+
+\subsection{Gaussian processes on random Fourier features}
+Each GP is $\mathrm{GP}(z)=\phi(z)\T W$ on $n$ random Fourier features~\cite{rahimi2007} of a
+Mat\'ern-$\nu$ kernel with length scale $\lambda$ (\code{inc/cvc/ph/rff.h}):
+\begin{equation}
+  \phi_k(z)=\sqrt{2/n}\,\cos(\omega_k\cdot z+b_k),\qquad
+  \omega_k=\frac{w_k}{\lambda\sqrt{s_k/(2\nu)}},\quad w_k\sim\mathcal N(0,I),\;s_k\sim\chi^2_{2\nu},\;
+  b_k\sim\mathcal U(0,2\pi).
+  \label{eq:rff}
+\end{equation}
+These are the Student-$t$ spectral samples of the Mat\'ern kernel. Every derivative is bounded and
+in closed form, which the reverse pass uses. The weights have a mean-field Gaussian posterior,
+$q(W)=\mathcal N(\text{mean},\operatorname{diag}e^{2\log\text{std}})$. The defaults are $n=64$,
+$\nu=5/2$ and $\lambda=1$. The library's own generator (xoshiro256** with written-out normal and
+gamma draws) draws the same features from a seed on every compiler.
+
+\subsection{Energy balance, output and noise power}
+\label{sec:learned-energy}
+Along the drift of~\eqref{eq:learned}, $\operatorname{ad}^*_vp$ does no work, and the potential's
+force returns exactly what moving through $V$ costs. So
+\begin{equation}
+  \dot H=-v\T D(v)\,v+y\T u,\qquad y=G(v)\T v .
+  \label{eq:learned-balance}
+\end{equation}
+\code{output()} returns $y$, so $y\T u$ is the supplied power. The noise is added to the twist,
+so it supplies energy too, on average. Since $dH=v\T M\,dv+\tfrac12dv\T M\,dv$ (plus the position
+terms) and $\Sigma$ is constant, so the It\^o and Stratonovich forms agree,
+\begin{equation}
+  \mathbb E[dH]=\Big(-v\T Dv+y\T u+\tfrac12\operatorname{tr}\big(\Sigma\T M\Sigma\big)\Big)dt .
+  \label{eq:noise-power}
+\end{equation}
+\code{noise\_power()} returns $\tfrac12\operatorname{tr}(\Sigma\T M\Sigma)$. Pathwise, the drift alone is
+passive. The diffusion's power is booked as its own line, not attributed to $D$.
+
+\subsection{The step}
+One step of size $h$ is ``Lie-IMEX'': the damping is implicit and everything else is explicit. With
+$e=M^{-1}(\operatorname{ad}^*_vp-[R\T\nabla V;0]+Gu)$ and $K=M^{-1}D(v)$ evaluated at each stage,
+and the twist's noise increment $\eta=\sqrt h\,\Sigma z$,
+\begin{align}
+  (I+hK_1)\,v_p&=v+h\,e_1+\eta, &(x,y)_p&=(x,y)+hR(\psi)(v_x,v_y), \qquad \psi_p=\psi+hr,\notag\\
+  (I+\tfrac h2K_2)\,v'&=v+\tfrac h2(e_1+e_2-K_1v)+\eta, &(x,y)'&=(x,y)+\tfrac h2\big(R(\psi)v_{xy}+R(\psi_p)v_{p,xy}\big),
+  \label{eq:imex}
+\end{align}
+and $\psi'=\psi+\tfrac h2(r+r_p)$. It is a Heun predictor--corrector with implicit damping, and so
+second order. Since $SO(2)$ is abelian, the heading stays a continuous angle without a
+group-valued update. It is not structure-preserving and keeps no discrete energy identity. The
+step is templated on the scalar, so the same code runs in float and in double.
+
+\subsection{Training}
+\code{cvc::ph::se2\_rollout\_objective} (\code{inc/cvc/ph/se2\_train.h}) is the rollout loss of the
+reference package's $SE(2)$ trainer:
+\begin{equation}
+  \mathcal L=\operatorname{rollout}(\text{windows}\mid W)+\beta\,\frac{\mathrm{KL}(q\,\Vert\,p)}{6N_{\mathrm{obs}}},
+  \qquad W=\text{mean}+e^{\log\text{std}}z,\;z\sim\mathcal N(0,I).
+  \label{eq:objective}
+\end{equation}
+From each window's first sample, the model is rolled out under the recorded inputs and compared
+with every later sample (position, wrapped heading and twist): the mean over the window of the
+squared error summed over the six channels, averaged over the windows that stay finite. The
+objective takes one reparameterized weight draw per step. $\beta$ rises linearly to its maximum
+over an annealing period, and $N_{\mathrm{obs}}$ counts the training windows times their
+intervals. The gradient is a hand-written reverse pass through every step of the window: the
+$3\times3$ implicit solves, the SPD parameterization, the random-feature GPs, and $\nabla V$'s own
+derivative in position. The optimizer is the reference package's:
+\begin{itemize}
+  \item the whole gradient is clipped to global norm 1;
+  \item Adam, with a cosine-decayed learning rate, updates the GP weights and the noise scales;
+  \item Prodigy, one per subnetwork, updates the levels.
+\end{itemize}
+The command-line tool \code{cvc ph-train} fits a model to plant-log runs and writes it as JSON
+(format \code{cvc-ph-se2/1}).
+
+The rollouts in this objective run the drift alone, with no noise increment. So the objective fits
+$M^{-1}$, $D$, $G$ and $V$, but $\Sigma$ gets no gradient from it, and there is no observation
+model. Fitting those is the job of the reference package's filter-based evidence bound (an extended
+Kalman filter over the noisy trajectory, giving an ELBO). That stage is not yet ported. The model
+format already carries the observation-noise parameters it will need.
+
+\subsection{How it relates to the analytic plant}
+The learned plant's port is whatever the logs record. In libcvc's plant logs that is the
+vehicle's drive input and its steering (\code{plant\_log.h}). So its supply $y\T u$ is booked against
+a steering input, while Section~\ref{sec:steer} shows that the vehicle's steering does no work.
+Nothing in the learned structure forces the steering column's power to vanish. With its GP weights
+zero, the model reduces exactly to the linear-tire bicycle with steering as an input
+(\code{PhSe2.ReducesToTheLinearTireBicycle}), which is the truncation of Section~\ref{sec:steer}.
+A fitted model that draws substantial power through its steering column is therefore fitting that
+truncation. The split of $y\T u$ by input channel, computed from \code{output()}, is a direct
+diagnostic.
+
+% ===========================================================================
+\section{The navigator's energy identity and context work}
+\label{sec:nav}
+
+The plant's books say where the \emph{vehicle's} energy goes. The navigator has its own energy,
+$H_{\mathrm{nav}}=\tfrac m2\lVert v\rVert^2+U_{\mathrm{nav}}$, on its point-mass surrogate
+(\code{integrate\_surrogate\_material}). libcvc \#832 adds per-step books for that surrogate, and
+books across ticks for the deployed drive's potential.
+
+\subsection{The per-step identity}
+One semi-implicit step of a point mass $m$ in a potential $U$ held fixed over the step
+(coefficients frozen), with damping $\gamma$, a port force $F$ and a speed clamp, is
+\begin{equation}
+  v'=v+\tfrac hm(-g-\gamma v+F),\qquad \tilde v=\operatorname{clamp}_{v_{\max}}(v'),\qquad
+  x'=x+h\tilde v,\qquad g=\nabla U(x).
+  \label{eq:si-step}
+\end{equation}
+With $H=\tfrac m2\lVert v\rVert^2+U$, define the damping work
+$W_\gamma=\tfrac h2\gamma\,v\cdot(v+v')$, the port work $W_{\mathrm{port}}=\tfrac h2F\cdot(v+v')$, the
+clamp loss $W_{\mathrm{clamp}}=\tfrac m2(\lVert v'\rVert^2-\lVert\tilde v\rVert^2)\ge0$ and the
+clamp cross term $W_\times=h\,g\cdot(\tilde v-v')$. Then the residual is
+\begin{equation}
+  r_E=\Delta H+W_\gamma+W_{\mathrm{clamp}}-W_{\mathrm{port}}-W_\times
+  =\frac{h^2}{2}\Big[\tilde v\T\bar{\mathcal H}\,\tilde v-\frac1m\,g\cdot(g+\gamma v-F)\Big],
+  \label{eq:rE}
+\end{equation}
+exactly, with $\bar{\mathcal H}=2\int_0^1(1-s)\nabla^2U(x+s\,\Delta x)\,ds$ the averaged Hessian.
+(Expand $\tfrac m2(\lVert v'\rVert^2-\lVert v\rVert^2)=\tfrac h2(-g-\gamma v+F)\cdot(v+v')$, and
+Taylor-expand $U(x')-U(x)=h\,g\cdot\tilde v+\tfrac{h^2}2\tilde v\T\bar{\mathcal H}\tilde v$.)
+\code{book\_step} books any such step from its quantities. \code{rollout\_energy} carries the books
+for every step of the material surrogate. They are evaluated in double, so they resolve terms
+of order $h^3$ below float round-off on $U$.
+
+\subsection{Two checks}
+\begin{itemize}
+  \item \emph{The cheap bound}, every step:
+        \begin{equation*}
+          \lvert r_E\rvert\le\kappa_H\frac{h^2}2\Big[\frac{\lvert g\rvert\,(\lvert g\rvert+\gamma\lvert v\rvert+\lvert F\rvert)}m
+          +\hat L\,\lvert\tilde v\rvert^2\Big],
+        \end{equation*}
+        with the secant Lipschitz estimate $\hat L=\lvert\nabla U(x')-\nabla U(x)\rvert/\lvert x'-x\rvert$
+        and safety factor $\kappa_H=2$ (\code{energy\_residual\_bound}). It is a tolerance model,
+        not a theorem, since $\hat L$ estimates the curvature and does not bound it. It catches
+        work of order $h$ left out of the books: an unlogged force, a stale field, an unbooked
+        clamp.
+  \item \emph{The sharp check}, when asked (two extra force evaluations a step):
+        $\hat r_E=\tfrac{h^2}2\big[\tilde v\T\nabla^2U(x)\tilde v-g\cdot(g+\gamma v-F)/m\big]$,
+        with $r_E-\hat r_E=O(h^3)$. It catches anything beyond third order. Explicit Euler
+        ($x'=x+hv$) is the example: its $r_E$ sits $h^2g\cdot(g+\gamma v-F)/m$ above $\hat r_E$.
+        That is second order, the same order as the bound, so explicit Euler passes the bound
+        and fails the sharp check.
+\end{itemize}
+The explicit-Euler case matters in practice. GRL-SNAM's guide notes that \code{cvc::nav}'s
+native multi-start rollout runs explicit Euler by default, where the Python reference runs
+semi-implicit. On circular orbits of a goal spring, \code{NavPotential.ExplicitEulerRaisesTheAlarm}
+shows explicit Euler gaining energy at every step, by $\omega^2h^2$, with the sharp check at half
+the bound on every step. The semi-implicit step meets the sharp check to $4\times10^{-5}$ of the
+bound.
+
+\subsection{Context work and projection work}
+Across a tick of the deployed drive, $U_{\mathrm{nav}}$ is not fixed. The belief is re-sensed,
+the field rebuilt, the coefficients re-predicted, and the carrot moved. Those changes do work on
+the navigator's energy that no step's books see. \code{sim\_world} books them in its drive
+telemetry while it captures:
+\begin{itemize}
+  \item \code{potential\_end}: $U$ at the pose the tick ends at, against the tick's field;
+  \item \code{projection\_work}: $U$'s change across anything that moves the agent after the drive,
+        the kinematic override and the \code{min\_gap} de-overlap: \code{potential\_end} minus $U$
+        where the drive (or the plant) left the agent;
+  \item \code{context\_work}: $U$ at the tick's start pose with this tick's context, minus $U$ at
+        the same pose with last tick's context (coefficients, carrot, field, material planes),
+        evaluated as \code{step()} begins.
+\end{itemize}
+When nothing moves the agent between ticks, \code{context\_work} equals this tick's starting $U$
+minus last tick's \code{potential\_end}, bit for bit. The potential's change over a run then
+telescopes:
+\begin{equation}
+  U_K^{\mathrm{end}}-U_1^{\mathrm{start}}=\sum_{k=1}^K\big(U_k^{\mathrm{drive}}-U_k^{\mathrm{start}}\big)
+  +\sum_{k=1}^K\text{projection}_k+\sum_{k=2}^K\text{context}_k ,
+  \label{eq:telescope}
+\end{equation}
+where $U_k^{\mathrm{drive}}$ is $U$ where the drive left the agent on tick $k$. The first sum is
+what the drive's motion did under a fixed context. The other two are what the runtime did to the
+landscape. The drive itself leaves the three fields zero. The bicycle and dynamic rollouts are not
+point masses, so they reject requests for per-step point-mass books (they throw). For a vehicle,
+the plant's books of Section~\ref{sec:books} are the counterpart.
+
+\subsection{Two sets of books, not one}
+\label{sec:two-ledgers}
+When a navigation world drives the dynamic plant, there are two sets of books. The plant books
+the vehicle's kinetic energy~\eqref{eq:live-books}. The telemetry books the navigator's
+potential~\eqref{eq:telescope}. They are not one conserved quantity. $U_{\mathrm{nav}}$ is a
+learned landscape whose coefficients change every tick, not a physical energy of the vehicle. The
+two meet only through the controller, which is not a power-conserving interconnection. Keeping
+both, with their own residuals, is what makes each one checkable.
+
+% ===========================================================================
+\section{GRL-SNAM's side}
+\label{sec:grl}
+
+\subsection{The twins and their parity tiers}
+GRL-SNAM keeps Python twins of libcvc's vehicle and potential code. libcvc writes a golden file
+from its own test and GRL-SNAM copies it into \code{tests/fixtures}. The twin is then held to the
+golden at a stated tier: \emph{double} (both sides in float64 from the same parameters, $10^{-9}$
+relative) or \emph{float} (libcvc in float32, about $10^{-5}$). The torch twins differentiate with
+autograd, where libcvc uses forward-mode duals or hand-written reverses. So the gradient parity
+compares two independent derivations of one model. Table~\ref{tab:twins} lists the twins on
+\code{main}. The JAX reference for the learned plant is the other direction. The reference package
+\code{CVC-Lab/LieSPHGP} generated libcvc's golden (\code{ph\_se2\_golden.json}) once, and the C++
+port is held to it.
+
+\begin{table}[htbp]
+\centering\tablesetup
+\begin{tabularx}{\linewidth}{@{}>{\Rx}p{0.24\linewidth}>{\Rx}X>{\Rx}p{0.22\linewidth}>{\Rx}p{0.11\linewidth}@{}}
+\toprule
+\textbf{Twin} & \textbf{libcvc reference; golden; test} & \textbf{Tier and gate} & \textbf{Added} \\
+\midrule
+\code{grl\_snam/dyn\_bike.py} \code{dyn\_plant} & \code{diff::dyn\_plant} and its dual-number VJP;
+  \code{dyn\_bike\_golden.json} (\code{DynBike.Golden}, 7 cases: cruise, hard corner, braking in a
+  turn, past the peak, reversing, creeping, pulling away); \code{tests/test\_dyn\_bike\_parity.py}
+  & double: next state and VJP to $10^{-9}$ relative & GRL-SNAM \#121; golden \#134 \\
+\code{grl\_snam/dyn4.py} \code{dyn4\_plant} & \code{diff::dyn4\_plant} (four wheels, suspension);
+  \code{dyn4\_golden.json} (11 cases); \code{tests/test\_dyn4\_parity.py}
+  & double, $10^{-9}$ & \#123 \\
+\code{grl\_snam/ext\_rollout.py} \code{dyn4\_rollout\_ext} & \code{diff::dyn4\_rollout\_ext}, with an external force;
+  \code{dyn4\_ext\_rollout\_golden.json}; \code{tests/test\_dyn4\_ext\_rollout\_parity.py}
+  & C++ float vs torch float64: states $10^{-4}$, gradients $10^{-3}$ & \#136 \\
+\code{grl\_snam/material\_bike.py} \code{integrate\_dynamic\_material} & \code{integrate\_dynamic\_material};
+  the dynamic case of \code{material\_ext\_golden.json}; \code{tests/test\_material\_ext\_parity.py}
+  & forward $10^{-4}$, gradients $10^{-3}$ & \#136 \\
+\code{grl\_snam/nav\_potential.py} & \code{detail/nav\_potential.h}; \code{nav\_potential\_golden.json}
+  (\code{NavPotential.Golden}: barrier sweeps, $U$ along a material rollout, \code{drive\_potential});
+  \code{tests/test\_nav\_potential\_parity.py}; also $F=-\nabla U$ by autograd
+  & float: $2\times10^{-5}$ ($5\times10^{-5}$ along the rollout) & \#133 \\
+\midrule
+JAX reference \code{CVC-Lab/LieSPHGP} & its $SE(2)$ package against \code{cvc::ph::se2\_vehicle} and \code{se2\_train};
+  \code{ph\_se2\_golden.json}; libcvc \code{ph\_se2\_test}, \code{ph\_se2\_train\_test}
+  & double: one step $10^{-13}$, rollout $10^{-12}$, gradient $10^{-10}$ & libcvc \#758 \\
+\bottomrule
+\end{tabularx}
+\caption{GRL-SNAM's twins of libcvc's vehicle and potential code, and the JAX reference for the
+learned plant. GRL-SNAM numbers are CVC-Lab/GRL-SNAM pull requests.}
+\label{tab:twins}
+\end{table}
+
+The torch tests need only torch and the copied goldens, not \code{pycvc}. (Two tests in
+\code{test\_material\_ext\_parity.py} also hold \code{pycvc}'s bindings to the golden, and skip when the
+installed \code{pycvc} lacks the external-force channel.)
+
+\subsection{What is not twinned yet}
+The pH form itself, \code{dyn\_ph\_*} and \code{dyn\_plant\_books}, is C++ only. So are the point-mass books
+(\code{book\_step}, \code{rollout\_energy}'s book fields) and the tick telemetry (\code{potential\_end},
+\code{projection\_work}, \code{context\_work}). None of these is bound in \code{pycvc} today.
+\code{pycvc} reports a world's plant kind (\code{nav\_sim\_world\_plant\_kind} returns
+\code{"dynamic"}), but not the plant's books. The twin's plant is unchanged by the pH work: \#831
+left \code{dyn\_plant}'s outputs untouched, and \code{DynBike.Golden} and GRL-SNAM's fixture still
+hold.
+
+\subsection{Using the plant and its books from GRL-SNAM}
+What follows is what GRL-SNAM can do with what is merged today, and the small pieces it would add.
+Pieces not yet built are marked as proposals.
+
+\paragraph{Train through the dynamic plant.} The dynamic rollouts are twinned and differentiable:
+\code{integrate\_dynamic\_material} for the material bicycle, and \code{dyn4\_rollout\_ext} for the
+four-wheel vehicle with an external force. A trainer that today rolls out the kinematic bicycle can
+roll out \code{dyn\_bike.dyn\_plant} in its place, under the same \code{bike\_control} commands, and
+backpropagate through tires, load transfer and actuator lag. In C++ the same choice is
+\code{coef\_train}'s \code{rollout\_kind::dynamic}. In a live world it is
+\code{plant\_host.use(sim, "dynamic")}.
+
+\paragraph{Book the energy (proposal).} A torch twin of the books is small, because
+\code{dyn\_bike.py}'s step already computes every part: the axle forces $F_{x,w}$, the lateral forces
+$F_{y,w}$, the secants $S_w$, $\ub$ and $\varsigma$. The rates at a state are
+\begin{center}
+\begin{minipage}{0.86\linewidth}
+\small
+\begin{verbatim}
+nf = (-sin d, cos d, lf cos d);  nr = (0, 1, -lr)
+tf = (cos d, sin d, lf sin d);   tr = (1, 0, 0)
+R  = cx e_x e_x^T + (Sf / cos d) nf nf^T + Sr nr nr^T
+supplied   = v . (tf Fxf + tr Fxr)          # y^T u
+dissipated = v^T R v                        # >= 0
+floor      = v . (nf (Fyf + Sf/cos d nf.v) + nr (Fyr + Sr nr.v))
+grade      = -m g theta vx
+\end{verbatim}
+\end{minipage}
+\end{center}
+The books of a step are the trapezoid of these between the start (with the step's actuator outputs)
+and the pre-limiter twist, plus $H$'s change across the limiters (Section~\ref{sec:books}). A
+golden for it would come from \code{dyn\_plant\_books} in the same way \code{DynBike.Golden} does.
+
+\paragraph{Energy-aware objectives (proposal).} With the books available inside the rollout, a
+trainer can price energy directly:
+\begin{itemize}
+  \item $\sum\max(y\T u,0)\,h$, the drive energy, as a cost;
+  \item the dissipated energy $\sum v\T\R v\,h$ as a proxy for tire scrub and sliding (it grows
+        sharply past the peak);
+  \item the limiter energy as a penalty for leaning on the speed clamp.
+\end{itemize}
+Each is differentiable almost everywhere, as the plant is. Because steering does no work, the
+drive energy counts every joule the policy puts into the vehicle.
+
+\paragraph{Health checks.} The books double as run-time checks of a rollout:
+\begin{itemize}
+  \item the residual's share of the flow (in the tests' runs, $10^{-4}$ to $10^{-3}$ at
+        $h=0.01$~s) flags a step too long for the motion;
+  \item the floor's share flags crawling below the slips' speed floor;
+  \item a limiter line that dominates flags a policy that lives at the speed clamp.
+\end{itemize}
+On the navigator side, the cheap bound flags an unlogged force or an unbooked clamp, and the sharp
+check flags an explicit-Euler integrator.
+
+\paragraph{New force terms are ports.} GRL-SNAM's research extensions add force terms to the
+navigator: material and terrain costs, and external forces. Section~\ref{sec:ports} gives the rule.
+A conservative term goes in $U_{\mathrm{nav}}$ with its force $-\nabla U$, which the twin's
+autograd gradcheck verifies. A non-conservative term is a port, booked as $W_{\mathrm{port}}$ on
+the surrogate. On the vehicle, it is either already in $y\T u$ (if it acts through the controller)
+or a new column $\G_e$ (if it acts on the body).
+
+% ===========================================================================
+\section{Validation}
+\label{sec:validation}
+
+Tables~\ref{tab:val-plant}--\ref{tab:val-nav} map each claim to the test that checks it. They give
+the tolerance the test enforces and the value measured on libcvc \code{c1f104c0} (Windows, MSVC
+19.44, double unless stated), and on GRL-SNAM \code{0e21085} (torch 2.8 CPU). The commit is the
+squash commit of the pull request that added or last tightened the test. Every test listed passed
+in that run: 62 libcvc tests in five executables, and 53 GRL-SNAM tests, with 2 skipped for the
+\code{pycvc} reason above.
+
+\newcommand{\valtable}[3]{%
+\begin{table}[htbp]
+\centering\tablesetup
+\begin{tabularx}{\linewidth}{@{}>{\Rx}p{0.24\linewidth}>{\Rx}X>{\Rx}p{0.15\linewidth}>{\Rx}p{0.17\linewidth}>{\Rx}p{0.085\linewidth}@{}}
+\toprule
+\textbf{Test} & \textbf{What it shows} & \textbf{Tolerance} & \textbf{Measured} & \textbf{Commit} \\
+\midrule
+#1
+\bottomrule
+\end{tabularx}
+\caption{#2}
+\label{#3}
+\end{table}}
+
+\valtable{%
+\code{DynBikePH.TheStructureIsPortHamiltonianAtEverySlip} &
+  $\J$ skew, $\R$ symmetric with non-negative coefficients, $w\T\R w\ge0$, $H=\tfrac12p\cdot v$; no
+  supply without axle force (Prop.~\ref{prop:ph}, Sec.~\ref{sec:steer}); 500 states at each of
+  $\mu=0.9,0.6$, steer to 0.5~rad, forward and reversing &
+  exact for skew, symmetry and zero supply; $v\T\J v$ to $10^{-9}$; at least 100 states past a peak &
+  holds at all 1000 states; 244 of 500 past a peak at each $\mu$ &
+  \code{950154b} (\#831) \\
+\code{DynBikePH.TheVectorFieldIsThePlantsAtEverySlip} &
+  \eqref{eq:plant-ph} is the plant's vector field: a $10^{-5}$~s \code{dyn\_plant} step against
+  \code{dyn\_ph\_rhs}, flat and on 3\%, forward and reversing, 400 states per $\mu$ &
+  $10^{-3}$ of $mg$ ($mgL$ on yaw) &
+  worst $1.6\times10^{-4}mg$ ($\mu=0.9$), $1.1\times10^{-4}mg$ ($\mu=0.6$) &
+  \code{950154b} (\#831) \\
+\code{DynBikePH.StepBooksCloseToSecondOrder} &
+  the books~\eqref{eq:books} close to second order per step (Prop.~\ref{prop:books}); the
+  limiters are charged when braking to a stop in a turn &
+  per-halving ratio in $(3,5.5)$; summed residual below $5\times10^{-3}$ of the flow for $h\le0.01$ &
+  ratios 3.83, 3.92, 3.95; $1.2\times10^{-3}$ at $h=0.01$; braking: limiter $-354$~J, residual $7\times10^{-7}$ &
+  \code{950154b} (\#831) \\
+\code{DynBikePH.TheFloorTermVanishesWithTheFloor} &
+  $f_\varepsilon$ is the speed floor's and falls as $\varepsilon^2$ (Sec.~\ref{sec:floor}) &
+  decreasing in $\varepsilon$; below $10^{-7}$ at $\varepsilon=10^{-9}$ &
+  $5.4\times10^{-4}\to5.4\times10^{-6}\to5.4\times10^{-8}\to2\times10^{-16}$ &
+  \code{950154b} (\#831) \\
+\code{DynBikePH.TheSecantStaysPSDWhereTheTangentDoesNot} &
+  tangent indefinite past the peak, secant never (Sec.~\ref{sec:tangent}) &
+  tangent PSD below $0.5\mu g$; indefinite somewhere above; rear never past peak; secant never negative &
+  as stated at $\mu=0.9$ and $0.6$; indefinite in 25--50\% of samples above $0.5\mu g$ &
+  \code{950154b} (\#831) \\
+\code{DynBike.Golden} &
+  \code{dyn\_plant}'s outputs, unchanged by the books (\#831 kept it as it was) &
+  golden values &
+  holds &
+  \code{1e3ed0b} (\#714) \\
+\code{DynBike.KinematicLimitFollowsBikeStep} &
+  the kinematic bicycle is the stiff-tire limit, with the mass at the rear axle &
+  worst gap below $0.2$ of the vehicle radius; closed-loop median below $0.1$ of it &
+  within 0.011 of the kinematic path (mean path 5.6) &
+  \code{1e3ed0b} (\#714) \\
+\code{DynBikePlant.StepsAsTheDynamicPlantDoes} &
+  the live plant's ticks are \code{dyn\_plant}'s substeps &
+  bit for bit &
+  bit for bit &
+  \code{eb9187c} (\#833) \\
+\code{DynBikePlant.TheBooksClose} &
+  \eqref{eq:live-books} closes on two vehicles over 30~s of weaving and braking &
+  identity $10^{-9}$ of the flow; residual $5\times10^{-3}$ &
+  residual $1.1\times10^{-4}$ (full-size), $8.9\times10^{-4}$ (1/10 scale) of the flow &
+  \code{eb9187c} (\#833) \\
+\code{DynBikePlant.PlantHostPutsTheAgentsOnItByName} &
+  \code{plant\_host} puts a world on \code{"dynamic"} with no physics world; its books close &
+  every agent reaches its goal; books as above &
+  3 agents reach goals 120~m on in 11.5~s &
+  \code{eb9187c} (\#833) \\
+}{The analytic plant: its pH form, its books and the live plant. The tests are in libcvc's
+\code{nav\_dyn\_bike\_test} and \code{physics\_dyn\_bike\_plant\_test}. The flow is the sum of the
+magnitudes of every line of the books. \#714 is the plant itself, which predates the pH
+work.}{tab:val-plant}
+
+\valtable{%
+\code{PhSe2.MatchesJaxInDouble}, \code{PhSe2.MatchesJaxInFloat} &
+  the C++ model is the JAX reference's: every piece and one step at 16 states (a 64-feature,
+  1,691-parameter fit) &
+  $10^{-13}$ relative (double); $2\times10^{-6}$ (float) &
+  $1.9\times10^{-16}$; $1.1\times10^{-7}$ &
+  \#758 \\
+\code{PhSe2.RolloutMatchesJax} &
+  a 25-step rollout matches &
+  $10^{-12}$ &
+  $3.1\times10^{-15}$ &
+  \#758 \\
+\code{PhSe2.EnergyBalanceIsExact} &
+  \eqref{eq:learned-balance} at every golden state; $y\T u$ from \code{output()} is the supply &
+  $10^{-11}$; $10^{-12}$ &
+  holds &
+  \#758, \code{950154b} (\#831) \\
+\code{PhSe2.NoisePowerIsTheEnergyTheDiffusionAdds} &
+  \eqref{eq:noise-power}: antithetic Monte Carlo of $H$'s mean gain over one $10^{-4}$~s step &
+  4 standard errors $+2\%$ &
+  $3.585\times10^{-6}$~J against $3.564\times10^{-6}$~J predicted &
+  \code{950154b} (\#831) \\
+\code{PhSe2.StepIsSecondOrder} &
+  the Lie-IMEX step~\eqref{eq:imex} is second order &
+  ratio in $(3.5,4.5)$ per halving &
+  3.99, 3.99, 4.00 &
+  \#758 \\
+\code{PhSe2.ReducesToTheLinearTireBicycle} &
+  with the GPs off, the drift is the linear-tire bicycle with steering as an input &
+  $10^{-9}$ &
+  holds &
+  \#758 \\
+\code{PhRff.FeaturesApproachTheMaternKernel} &
+  \eqref{eq:rff} approximates the Mat\'ern kernel &
+  $0.03$ &
+  holds &
+  \#758 \\
+\code{PhSe2Train.GradientMatchesJax} &
+  the hand-written reverse pass is JAX's autodiff of~\eqref{eq:objective} &
+  $10^{-10}$ of each leaf's largest entry &
+  $8.1\times10^{-15}$ over 1,691 entries &
+  \#758 \\
+\code{PhSe2Train.GradientMatchesFiniteDifferences} &
+  the same against central differences on a small model &
+  $2\times10^{-5}$ &
+  $5.6\times10^{-6}$ &
+  \#758 \\
+\code{PhSe2Train.OptimizerMatchesOptax} &
+  clip, Adam and Prodigy match the reference optimizer over 300 steps &
+  $10^{-12}$ &
+  $1.6\times10^{-16}$ &
+  \#758 \\
+\code{PhSe2Train.ShortFitLowersTheLoss} &
+  a 1,200-step fit to another model's flights generalizes &
+  held-out loss below $0.1\times$ &
+  $1.732\to0.077$ ($22\times$) &
+  \#758 \\
+}{The learned plant (libcvc \code{ph\_se2\_test}, \code{ph\_se2\_train\_test}). libcvc \#758
+merged as \code{17adc93}, with the model in \code{0fa251b} and the trainer in \code{63651e8}.}{tab:val-learned}
+
+\valtable{%
+\code{NavPotential.SurrogateEnergyIdentityPerStep} &
+  \eqref{eq:rE}: $r_E$ is second order and $r_E-\hat r_E$ third, as $h$ halves
+  $0.02\to0.0025$, with damping and a port force &
+  orders $2\pm0.2$ and $3\pm0.3$; $\lvert r_E\rvert\le$ bound at every step &
+  1.99, 2.00, 2.00; 2.99, 2.94, 2.93 &
+  \code{09fa876} (\#832) \\
+\code{NavPotential.ClampWorkClosesTheBooks} &
+  with a hard speed clamp, the books close only with $W_\times$ (and $W_{\mathrm{clamp}}$) &
+  every clamped step within the bound; 90\% fail without $W_\times$ &
+  213 of 213 close; all 213 fail without it &
+  \code{09fa876} (\#832) \\
+\code{NavPotential.UnloggedForceRaisesTheAlarm} &
+  an unbooked port force fails the cheap bound &
+  at least 95\% of steps &
+  229 of 240 &
+  \code{09fa876} (\#832) \\
+\code{NavPotential.ExplicitEulerRaisesTheAlarm} &
+  explicit Euler gains energy every step and fails the sharp check; semi-implicit meets it &
+  sharp check above $0.3$ of the bound (explicit), below $10^{-3}$ (semi-implicit) &
+  $0.50$; $3.5\times10^{-5}$ &
+  \code{09fa876} (\#832) \\
+\code{NavPotential.SimWorldBooksTheContextWorkOfAGoalChange} &
+  a goal change between ticks is context work; the books close across the tick; capturing changes no output &
+  exact equality; byte-identical positions &
+  holds (retargeted agents: $-1.63$, $-3.27$) &
+  \code{09fa876} (\#832) \\
+\code{NavPotential.SimWorldBooksTheMinGapPushAsProjectionWork} &
+  \code{min\_gap}'s push is projection work, zero for agents it does not move &
+  nonzero for the pair, exactly zero otherwise &
+  $+0.18$, $+0.59$; others 0 &
+  \code{09fa876} (\#832) \\
+\code{NavPotential.*ForcesAreMinusGradU*}, \code{DriveForce*} &
+  each call site's conservative force is $-\nabla U_{\mathrm{nav}}$ (central differences) &
+  site-specific &
+  worst $5.7\times10^{-4}$ relative on exact planes &
+  \code{7d47b98} (\#747) \\
+\midrule
+\code{test\_dyn\_bike\_parity.py} &
+  the torch plant and its autograd gradient are libcvc's (7 cases, a batch, braking distance) &
+  $10^{-9}$ relative &
+  9 passed &
+  GRL-SNAM \code{d75eecc} (\#121) \\
+\code{test\_nav\_potential\_parity.py} &
+  the torch $U_{\mathrm{nav}}$ is libcvc's; its forces are $-\nabla U$ by autograd &
+  $2\times10^{-5}$; $5\times10^{-5}$ along the rollout &
+  8 passed &
+  \code{7e4195d} (\#133) \\
+\code{test\_dyn4\_parity.py} &
+  the four-wheel torch plant is libcvc's &
+  $10^{-9}$ &
+  14 passed (11 cases) &
+  \code{5b8e21f} (\#123) \\
+\code{test\_dyn4\_ext\_rollout\_parity.py}, \code{test\_material\_ext\_parity.py} &
+  the dynamic rollouts with an external force, forward and reverse &
+  $10^{-4}$ forward, $10^{-3}$ gradients &
+  22 passed, 2 skipped &
+  \code{0e21085} (\#136) \\
+}{The navigator's books (libcvc \code{nav\_potential\_test}) and GRL-SNAM's twins (CVC-Lab/GRL-SNAM
+\code{tests/}). GRL-SNAM numbers are its pull requests.}{tab:val-nav}
+
+\subsection{Reproducing}
+\paragraph{libcvc.} Get a dependency prefix with cvcpkg as GRL-SNAM's guide describes (its \S5),
+then build and run the five test executables:
+\begin{center}
+\begin{minipage}{0.92\linewidth}
+\small
+\begin{verbatim}
+cd libcvc            # v3.7.1 or later
+cvcpkg install-deps cvcpkg/recipes/libcvc --prefix deps --config release
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH=$PWD/deps -DCVC_BUILD_TESTS=ON
+cmake --build build --target nav_dyn_bike_test physics_dyn_bike_plant_test \
+      ph_se2_test ph_se2_train_test nav_potential_test
+./build/bin/nav_dyn_bike_test --gtest_filter='DynBikePH.*:DynBike.*'
+./build/bin/physics_dyn_bike_plant_test
+./build/bin/ph_se2_test && ./build/bin/ph_se2_train_test
+./build/bin/nav_potential_test
+\end{verbatim}
+\end{minipage}
+\end{center}
+Each test prints the measured values quoted above. The tests are registered with CTest under
+their Google Test names, so \code{ctest --test-dir build -R 'DynBikePH|PhSe2|NavPotential|DynBikePlant'}
+runs the same set.
+
+\paragraph{GRL-SNAM.} With torch installed, from a checkout of \code{main}:
+\begin{center}
+\begin{minipage}{0.92\linewidth}
+\small
+\begin{verbatim}
+pytest -v tests/test_dyn_bike_parity.py tests/test_nav_potential_parity.py \
+          tests/test_dyn4_parity.py tests/test_dyn4_ext_rollout_parity.py \
+          tests/test_material_ext_parity.py
+\end{verbatim}
+\end{minipage}
+\end{center}
+Run it with \code{-v} and confirm the tests ran. As GRL-SNAM's guide warns, a skipped test is not
+a verified one.
+
+% ===========================================================================
+\section{Limitations and future work}
+\label{sec:limits}
+
+\paragraph{The four-wheel vehicle in pH form.} libcvc's two-track vehicle
+(\code{inc/cvc/nav/detail/dyn\_4w.h}, twinned as \code{grl\_snam.dyn4}) has four contact patches with
+Ackermann front wheels, spring-damper corners, and heave, roll and pitch. Its pH form is not yet
+written. We expect it to be simpler than the single-track's in one respect. That model measures
+each wheel's lateral velocity in the wheel's own frame, $w_i=n_i\T v$. If each slip's root then sits
+at $n_i\T v=0$, the remainder vanishes, $f_\varepsilon=0$, and $\R=c_xe_xe_x\T+\sum_iS_in_in_i\T$.
+The suspension springs would add their stored energy (and a height-dependent gravity term) to $H$,
+and the dampers would add to $\R$. Writing it out, and gating it as Table~\ref{tab:val-plant}
+gates the single track, is the next piece of this line of work.
+
+\paragraph{Structure-preserving integrators.} Neither plant's integrator keeps a discrete energy
+identity. Both are first order (analytic) or second order (learned) with a booked residual. A
+discrete-gradient or implicit-midpoint step would close the books exactly. It would cost a
+nonlinear solve per step, and the analytic plant's stiff-tire stability at the navigator's tick
+would have to be re-established.
+
+\paragraph{The learned plant's evidence bound.} The rollout objective does not fit the diffusion or
+an observation model. The reference package's EKF-based ELBO is the next stage for \code{cvc::ph}.
+The fit's accuracy against the analytic plant is not reported here.
+
+\paragraph{The closed loop.} The navigator commands the vehicle through a path-following
+controller, not an energy-shaping one, so the closed loop is not port-Hamiltonian, and the two
+sets of books of Section~\ref{sec:two-ledgers} stay separate. Interconnection and damping assignment for
+a car is a research problem: with two inputs and three velocity degrees of freedom, its matching
+condition fails in general~\cite{ortega2002idapbc}.
+
+\paragraph{Python access.} The pH form, the plant's books and the tick telemetry are C++ only. A
+torch twin of the books, and \code{pycvc} bindings for \code{dyn\_bike\_plant}'s books and for
+\code{sim\_world}'s telemetry, would let GRL-SNAM's trainers and evaluations use them directly.
+
+% ===========================================================================
+\appendix
+\section{Equation-to-code map}
+\label{app:map}
+
+\begin{table}[htbp]
+\centering\tablesetup
+\begin{tabularx}{\linewidth}{@{}>{\Rx}p{0.30\linewidth}>{\Rx}X>{\Rx}p{0.27\linewidth}@{}}
+\toprule
+\textbf{Concept} & \textbf{libcvc} & \textbf{GRL-SNAM} \\
+\midrule
+The plant's step, Sec.~\ref{sec:model}, \ref{sec:books} & \code{diff::dyn\_plant}, \code{dyn\_plant\_vjp} (\code{nav/detail/dyn\_bike.h}) & \code{grl\_snam.dyn\_bike.dyn\_plant} \\
+Secant stiffness, Lemma~\ref{lem:secant} & \code{dyn\_secant\_w} & \code{dyn\_bike.\_secant\_w} \\
+$H$, $p$, $\J$, \eqref{eq:J} & \code{dyn\_ph\_hamiltonian}, \code{dyn\_ph\_momentum}, \code{dyn\_ph\_J} & --- \\
+$\R$, $\G$, $u$, $f_\varepsilon$, \eqref{eq:R}--\eqref{eq:feps} & \code{dyn\_ph\_R}, \code{dyn\_ph\_G}, \code{dyn\_ph\_input}, \code{dyn\_ph\_floor}; all parts in \code{dyn\_ph\_parts\_at} & --- (proposal, Sec.~\ref{sec:grl}) \\
+The vector field~\eqref{eq:plant-ph}; the balance~\eqref{eq:balance} & \code{dyn\_ph\_rhs}; \code{dyn\_ph\_rates\_at} (struct \code{dyn\_ph\_rates}) & --- \\
+The tangent~\eqref{eq:tangent} & \code{dyn\_ph\_tangent\_D} & --- \\
+The step's books~\eqref{eq:books} & \code{dyn\_plant\_books} (struct \code{dyn\_ph\_books}); \code{dyn\_step\_free} & --- \\
+The live plant~\eqref{eq:live-books} & \code{cvc::physics::dyn\_bike\_plant}; \code{plant\_host} \code{"dynamic"} & plant kind via \code{pycvc} \\
+External force through the controller & \code{diff::ext\_in}, \code{bike\_control}; \code{nav/ext\_rollout.h} & \code{grl\_snam.ext\_rollout}, \code{material\_ext} \\
+The learned plant~\eqref{eq:learned} & \code{cvc::ph::se2\_vehicle}, \code{se2\_model} & JAX reference \code{CVC-Lab/LieSPHGP} \\
+Output, noise power, \eqref{eq:learned-balance}--\eqref{eq:noise-power} & \code{se2\_vehicle::output}, \code{mass}, \code{noise\_power} & --- \\
+RFF features~\eqref{eq:rff}; SPD levels & \code{cvc::ph::rff}; \code{spd\_from\_levels} (\code{mat3.h}) & --- \\
+Lie-IMEX step~\eqref{eq:imex} & \code{se2\_vehicle::step}, \code{interval\_step}, \code{rollout} & --- \\
+Rollout objective~\eqref{eq:objective} & \code{se2\_rollout\_objective}, \code{se2\_optimizer}; \code{cvc ph-train} & --- \\
+$U_{\mathrm{nav}}$, \eqref{eq:unav} & \code{nav/detail/nav\_potential.h}, \code{detail::material\_energy} & \code{grl\_snam.nav\_potential} \\
+Per-step identity~\eqref{eq:rE}; checks & \code{book\_step}, \code{energy\_residual\_bound}; \code{rollout\_energy}'s book fields & --- \\
+Context and projection work~\eqref{eq:telescope} & \code{drive\_telemetry::potential\_end}, \code{projection\_work}, \code{context\_work} (\code{sim\_world}) & --- \\
+\bottomrule
+\end{tabularx}
+\caption{Where each equation lives. ``---'' marks C++-only pieces.}
+\label{tab:map}
+\end{table}
+
+% ===========================================================================
+\begin{thebibliography}{99}
+
+\bibitem{grlsnam2025}
+A.~Ellendula, Y.~Wang, M.~Nguyen, and C.~Bajaj.
+\newblock GRL-SNAM: Geometric reinforcement learning for simultaneous navigation and mapping.
+\newblock arXiv:2601.00116, December 2025.
+
+\bibitem{liesphgp2026}
+L.~McLennan, T.~Rapolu, and C.~Bajaj.
+\newblock Stochastic port-Hamiltonian Gaussian processes for learning from noisy dynamics on Lie
+groups.
+\newblock Manuscript, CVC, The University of Texas at Austin, October 2026; code
+\code{CVC-Lab/LieSPHGP}.
+
+\bibitem{pacejka2012}
+H.~B.~Pacejka.
+\newblock \emph{Tire and Vehicle Dynamics}, 3rd edition.
+\newblock Butterworth-Heinemann, 2012.
+
+\bibitem{rajamani2012}
+R.~Rajamani.
+\newblock \emph{Vehicle Dynamics and Control}, 2nd edition.
+\newblock Springer, 2012.
+
+\bibitem{rahimi2007}
+A.~Rahimi and B.~Recht.
+\newblock Random features for large-scale kernel machines.
+\newblock In \emph{Advances in Neural Information Processing Systems 20}, 2007.
+
+\bibitem{marsden1999}
+J.~E.~Marsden and T.~S.~Ratiu.
+\newblock \emph{Introduction to Mechanics and Symmetry}, 2nd edition.
+\newblock Springer, 1999.
+
+\bibitem{vanderschaft2014pht}
+A.~van der Schaft and D.~Jeltsema.
+\newblock Port-Hamiltonian systems theory: An introductory overview.
+\newblock \emph{Foundations and Trends in Systems and Control}, 1(2--3):173--378, 2014.
+
+\bibitem{vanderschaft1994nonholonomic}
+A.~J.~van der Schaft and B.~M.~Maschke.
+\newblock On the Hamiltonian formulation of nonholonomic mechanical systems.
+\newblock \emph{Reports on Mathematical Physics}, 34(2):225--233, 1994.
+
+\bibitem{ortega2002idapbc}
+R.~Ortega, A.~van der Schaft, B.~Maschke, and G.~Escobar.
+\newblock Interconnection and damping assignment passivity-based control of port-controlled
+Hamiltonian systems.
+\newblock \emph{Automatica}, 38(4):585--596, 2002.
+
+\end{thebibliography}
+
+\end{document}
