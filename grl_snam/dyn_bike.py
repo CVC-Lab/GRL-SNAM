@@ -21,8 +21,9 @@ One step of ``hdt`` from the commands ``(delta_cmd, a_cmd)`` and the grade along
 2. loads: quasi-static longitudinal load transfer, floored at ``fz_min * m * g``;
 3. the speed, predicted from the drive or brake force (each axle saturated smoothly at
    ``mu Fz``), drag, rolling resistance and grade;
-4. ``(vy, r)`` by implicit Euler, ``iters`` steps, each tire linearized by its secant through its
-   root in lateral velocity (Pacejka forces within the friction ellipse's remainder);
+4. ``(vy, r)`` by implicit Euler, ``iters`` steps, each tire's slip in its wheel's frame (as
+   :mod:`grl_snam.dyn4`'s), linearized by its secant through its root, zero sideways velocity
+   there (Pacejka forces within the friction ellipse's remainder);
 5. the speed corrected with the front lateral force the implicit step applied;
 6. below ``v_blend``, ``(vy, r)`` blended toward the kinematic bicycle's;
 7. the pose: the rear axle moves with ``(vx, vy - lr r)`` at the new heading.
@@ -34,7 +35,8 @@ The plant in port-Hamiltonian form (libcvc's ``dyn_ph_*``): with the twist ``v =
 the momenta ``p = M v``, ``M = diag(m, m, Iz)`` and ``H = 1/2 v^T M v``, the plant's vector field
 is ``p' = (J(p) - R) v + G u + f_eps - m g grade e_x`` with the axle forces ``u = (F_xf, F_xr)``
 as the port and ``y = G^T v``. ``R`` is built from the tires' secants, so it is positive
-semi-definite at every slip; ``f_eps`` is what the slips' speed floor leaves. So
+semi-definite at every slip; ``f_eps``, what the secants leave of the tires' forces, is
+round-off, since each slip's root is zero sideways velocity in its wheel's frame. So
 
     dH/dt = supplied - dissipated + floor + grade,
 
@@ -183,16 +185,16 @@ def dyn_plant(
     F_res = -p.drag * vx * u0 - p.c_rr * m * g * sg0 - m * g * grade
     vx_p = _clamp(vx + hdt * ((Fxf * cd + Fxr + F_res) / m), sp_min, lim.vmax)
 
-    # 4. Lateral and yaw.
+    # 4. Lateral and yaw, each slip in its wheel's frame.
     u = torch.sqrt(vx_p * vx_p + eps2)
-    sg = vx_p / u
-    w0f = u * torch.tan(sg * delta1)
     vy1, r1 = vy, r
     Fyf_step = torch.zeros_like(vy)
     for _ in range(max(1, p.iters)):
-        wf = vy1 + lf * r1
+        vf = vy1 + lf * r1
+        wf = -vx_p * sd + vf * cd
         wr = vy1 - lr * r1
-        af = sg * delta1 - torch.atan2(wf, u)
+        uf = torch.sqrt((vx_p * cd + vf * sd) * (vx_p * cd + vf * sd) + eps2)
+        af = -torch.atan2(wf, uf)
         ar = -torch.atan2(wr, u)
         Fyf = _lateral(af, p.B_f, Cp, Dyf)
         Fyr = _lateral(ar, p.B_r, Cp, Dyr)
@@ -200,13 +202,15 @@ def dyn_plant(
         MZ = lf * (Fxf * sd + Fyf * cd) - lr * Fyr
         f_vy = FY / m - r1 * vx_p
         f_r = MZ / Iz
-        Sf_t = _secant_w(Fyf, af, wf, w0f, p.B_f, Cp, Dyf, u)
+        Sf_t = _secant_w(Fyf, af, wf, torch.zeros_like(wf), p.B_f, Cp, Dyf, uf)
         Sr = _secant_w(Fyr, ar, wr, torch.zeros_like(wr), p.B_r, Cp, Dyr, u)
+        # dwf/d(vy, r) = cos(delta) (1, lf): Sf on the tire, Sfy on the body's y.
         Sf = Sf_t * cd
-        J11 = (-Sf - Sr) / m
-        J12 = (-Sf * lf + Sr * lr) / m - vx_p
-        J21 = (-Sf * lf + Sr * lr) / Iz
-        J22 = (-Sf * lf * lf - Sr * lr * lr) / Iz
+        Sfy = Sf * cd
+        J11 = (-Sfy - Sr) / m
+        J12 = (-Sfy * lf + Sr * lr) / m - vx_p
+        J21 = (-Sfy * lf + Sr * lr) / Iz
+        J22 = (-Sfy * lf * lf - Sr * lr * lr) / Iz
         A11, A12, A21, A22 = 1.0 - hdt * J11, -hdt * J12, -hdt * J21, 1.0 - hdt * J22
         det = A11 * A22 - A12 * A21
         det = torch.where(det < 0.05, torch.full_like(det, 0.05), det)
@@ -216,7 +220,7 @@ def dyn_plant(
         dr = (A11 * b2 - A21 * b1) / det
         vy1 = vy1 + dvy
         r1 = r1 + dr
-        Fyf_step = Fyf - Sf_t * (dvy + lf * dr)
+        Fyf_step = Fyf - Sf * (dvy + lf * dr)
 
     # 5. The speed, corrected.
     FX = Fxf * cd - Fyf_step * sd + Fxr + F_res
@@ -252,16 +256,16 @@ class DynPHParts:
     """``dyn_ph_parts``: everything the form is built from, at a state (each ``(...)``, the
     vectors ``(..., 3)`` on ``(vx, vy, r)``)."""
 
-    u: torch.Tensor  # the slips' floored speed sqrt(vx^2 + eps^2)
+    u: torch.Tensor  # the floored speed sqrt(vx^2 + eps^2) (the rear slip's)
     sg: torch.Tensor  # vx / u
+    uf: torch.Tensor  # the front wheel's floored forward speed, in its frame
     Fxf: torch.Tensor  # the axles' drive or brake forces: the inputs
     Fxr: torch.Tensor
     Fyf: torch.Tensor  # the tires' lateral forces
     Fyr: torch.Tensor
-    wf: torch.Tensor  # the axles' lateral velocities
+    wf: torch.Tensor  # the axles' sideways velocities in their wheels' frames: nf.v, nr.v
     wr: torch.Tensor
-    w0f: torch.Tensor  # the front force's root
-    Sf: torch.Tensor  # the secant stiffnesses through the roots
+    Sf: torch.Tensor  # the secant stiffnesses through wf, wr = 0
     Sr: torch.Tensor
     Dx: torch.Tensor  # drag and rolling resistance on vx
     cd: torch.Tensor  # cos delta
@@ -278,7 +282,7 @@ class DynPHRates:
 
     dissipated: torch.Tensor  # v^T R v >= 0: the tires' slip, drag and rolling resistance
     supplied: torch.Tensor  # y^T u: the axles' forces at their wheels' ground speed
-    floor: torch.Tensor  # v^T f_eps: the slips' speed floor
+    floor: torch.Tensor  # v^T f_eps: what the secants leave, round-off
     grade: torch.Tensor  # -m g grade vx: gravity along the heading
 
 
@@ -311,10 +315,11 @@ def dyn_ph_parts_at(p: DynBikeParams, state: torch.Tensor) -> DynPHParts:
     u = torch.sqrt(vx * vx + p.eps * p.eps)
     sg = vx / u
     cd, sd = torch.cos(delta), torch.sin(delta)
-    wf = vy + lf * r
+    vf = vy + lf * r
+    wf = -vx * sd + vf * cd
     wr = vy - lr * r
-    w0f = u * torch.tan(sg * delta)
-    af = sg * delta - torch.atan2(wf, u)
+    uf = torch.sqrt((vx * cd + vf * sd) * (vx * cd + vf * sd) + p.eps * p.eps)
+    af = -torch.atan2(wf, uf)
     ar = -torch.atan2(wr, u)
     Fyf = _lateral(af, p.B_f, p.C, Dyf)
     Fyr = _lateral(ar, p.B_r, p.C, Dyr)
@@ -322,14 +327,14 @@ def dyn_ph_parts_at(p: DynBikeParams, state: torch.Tensor) -> DynPHParts:
     return DynPHParts(
         u=u,
         sg=sg,
+        uf=uf,
         Fxf=Fxf,
         Fxr=Fxr,
         Fyf=Fyf,
         Fyr=Fyr,
         wf=wf,
         wr=wr,
-        w0f=w0f,
-        Sf=_secant_w(Fyf, af, wf, w0f, p.B_f, p.C, Dyf, u),
+        Sf=_secant_w(Fyf, af, wf, zero, p.B_f, p.C, Dyf, uf),
         Sr=_secant_w(Fyr, ar, wr, zero, p.B_r, p.C, Dyr, u),
         Dx=p.drag * u + p.c_rr * p.m * p.g / u,
         cd=cd,
@@ -350,21 +355,20 @@ def dyn_ph_rates_at(
     nr = q.nr.unbind(-1)
     tf = q.tf.unbind(-1)
     tr = q.tr.unbind(-1)
-    # R = Dx e_x e_x^T + (Sf / cos delta) nf nf^T + Sr nr nr^T.
-    kf = q.Sf / q.cd
+    # R = Dx e_x e_x^T + Sf nf nf^T + Sr nr nr^T.
     R = [[None] * 3 for _ in range(3)]
     for i in range(3):
         for j in range(i, 3):
-            R[i][j] = kf * (nf[i] * nf[j]) + q.Sr * (nr[i] * nr[j])
+            R[i][j] = q.Sf * (nf[i] * nf[j]) + q.Sr * (nr[i] * nr[j])
             R[j][i] = R[i][j]
     R[0][0] = R[0][0] + q.Dx
-    # f_eps: what the secants leave of the tires' forces.
+    # f_eps: what the secants leave of the tires' forces (round-off).
     nfv = torch.zeros_like(q.u)
     nrv = torch.zeros_like(q.u)
     for i in range(3):
         nfv = nfv + nf[i] * v[i]
         nrv = nrv + nr[i] * v[i]
-    ef = q.Fyf + q.Sf / q.cd * nfv
+    ef = q.Fyf + q.Sf * nfv
     er = q.Fyr + q.Sr * nrv
     f = [nf[i] * ef + nr[i] * er for i in range(3)]
     dissipated = torch.zeros_like(q.u)
