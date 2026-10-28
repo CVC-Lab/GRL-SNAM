@@ -1016,8 +1016,8 @@ gives the exact setup):
         \code{pycvc} reason above; none failed.
   \item The rows for libcvc \#852 and GRL-SNAM \#138: libcvc's branch commit \code{1a0acc77}, where
         \code{nav\_dyn\_bike\_test}'s 23 tests and \code{physics\_dyn\_bike\_plant\_test}'s 3 passed,
-        and so did the ten other suites that use the plant; and GRL-SNAM's \code{73cde65}, where the dynamic
-        twins' parity tests passed (57 passed, 6 skipped for \code{pycvc}).
+        and so did the ten other suites that use the plant; and GRL-SNAM's \code{2f76ab0}, \#138's squash
+        commit, where the dynamic twins' parity tests passed (57 passed, 6 skipped for \code{pycvc}).
 \end{itemize}
 
 \newcommand{\valtable}[3]{%
@@ -1244,7 +1244,7 @@ on its branch (Table~\ref{tab:repro-versions}).}{tab:val-steer}
   cases, a batch, and second-order books on a swerve) &
   $10^{-9}$ relative &
   18 passed; worst $7.1\times10^{-14}$ &
-  \code{73cde65} (\#138) \\
+  \code{2f76ab0} (\#138) \\
 \code{test\_nav\_potential\_parity.py} &
   the torch $U_{\mathrm{nav}}$ is libcvc's; its forces are $-\nabla U$ by autograd &
   $2\times10^{-5}$; $5\times10^{-5}$ along the rollout &
@@ -1321,7 +1321,7 @@ nor \code{plant\_host} today.)
 \textbf{Piece} & \textbf{Version} \\
 \midrule
 libcvc & \code{master} at \code{c1f104c0}; its \code{nav}, \code{ph} and \code{physics} sources and tests are identical to the v3.7.1 tag (\code{d8ca602b}). The \#851 rows: its branch commit \code{6e7ab557}, cut from \code{master} at \code{cc8800a8}. The \#852 rows (and every \code{nav\_dyn\_bike\_test} and \code{physics\_dyn\_bike\_plant\_test} line below): its branch commit \code{1a0acc77}, on \#848's head \code{d1a2a78e}, cut from \code{master} at \code{72e4c607}. \\
-GRL-SNAM & \code{main} at \code{0e21085} (\code{3a38ae4} adds only this paper). The \#138 rows: its branch commit \code{73cde65}, cut from \code{0e21085} \\
+GRL-SNAM & \code{main} at \code{0e21085} (\code{3a38ae4} adds only this paper). The \#138 rows: \code{main} at \code{2f76ab0}, \#138's squash commit \\
 Operating system & Windows 11 Pro 10.0.26100, x86-64 \\
 Compiler & MSVC 19.44 (Visual Studio 2022, toolset 14.44.35207), Release \\
 Build tools & CMake 3.31.7, Ninja 1.12.1, cvcpkg 2.5.6 \\
@@ -1464,7 +1464,7 @@ On Windows, run it from the checkout's root with \code{PYTHONPATH} set to it
 (\code{set PYTHONPATH=.}). The expected summary is \code{53 passed, 2 skipped}. The two skips are
 \code{test\_material\_ext\_parity.py}'s \code{pycvc} checks, which skip when the installed
 \code{pycvc} lacks the material external-force input. As GRL-SNAM's guide warns, a skipped test is
-not a verified one: read the \code{-v} listing. On \#138's branch, add
+not a verified one: read the \code{-v} listing. From \code{2f76ab0} (\#138) on, add
 \code{tests/test\_dyn\_bike\_ph\_parity.py}, the pH twin's 18 tests, which all pass.
 
 \section{Equation-to-code map}
