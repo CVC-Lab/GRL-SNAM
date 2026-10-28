@@ -7,6 +7,9 @@ One entry point for every workflow, from the world model to a running demo:
   grl-snam obstacles   BUNDLE            world model -> circular obstacles (.npz)
   grl-snam build-sdf   BUNDLE            world model -> navigation SDF (.npz)
   grl-snam material-raster BUNDLE        satellite -> material.json (id grid + grip/risk)
+  grl-snam austin-material-routes BUNDLE pinned public Austin bundle -> routes.json
+  grl-snam austin-material-train ...     train belief-material heads on pinned routes
+  grl-snam austin-material-evaluate ...  four-arm held-out material evaluation
   grl-snam train       SDF.npz           self-supervised SDF-coefficient training
   grl-snam capture drive|multigoal ...   drive the policy -> mp4 (offscreen, HUD)
   grl-snam pipeline    BUNDLE            world model -> SDF -> train -> video (all)
@@ -162,6 +165,79 @@ def material_raster(
     click.echo(f"wrote {op}  ({R}x{C} grid)")
     for name, frac in dist.items():
         click.echo(f"  {name:20s} {100 * frac:5.1f}%")
+
+
+@main.command("austin-material-routes")
+@click.argument("bundle", type=click.Path(exists=True, file_okay=False))
+@click.option("-o", "--out", required=True, type=click.Path(dir_okay=False))
+@click.option("--seed", default=20261015, show_default=True, type=int)
+@click.option("--train", "train_count", default=12, show_default=True, type=int)
+@click.option("--validation", "validation_count", default=6, show_default=True, type=int)
+@click.option("--test", "test_count", default=30, show_default=True, type=int)
+@click.option("--hard-train", default=2, show_default=True, type=int)
+@click.option("--hard-validation", default=2, show_default=True, type=int)
+@click.option("--hard-test", default=6, show_default=True, type=int)
+def austin_material_routes(
+    bundle: str,
+    out: str,
+    seed: int,
+    train_count: int,
+    validation_count: int,
+    test_count: int,
+    hard_train: int,
+    hard_validation: int,
+    hard_test: int,
+) -> None:
+    """Generate split-locked routes from the pinned public Austin bundle."""
+    from .material_routes import write_material_route_manifest
+    from .tools.austin_material_routes import generate_austin_material_route_manifest
+
+    counts = {"train": train_count, "validation": validation_count, "test": test_count}
+    hard_counts = {
+        "train": hard_train,
+        "validation": hard_validation,
+        "test": hard_test,
+    }
+    manifest = generate_austin_material_route_manifest(
+        bundle,
+        counts=counts,
+        hard_counts=hard_counts,
+        seed=seed,
+    )
+    write_material_route_manifest(out, manifest)
+    click.echo(
+        f"wrote {out}  "
+        f"(train={train_count}, validation={validation_count}, test={test_count}; "
+        f"hard={hard_train}/{hard_validation}/{hard_test})"
+    )
+
+
+@main.command(
+    "austin-material-train",
+    context_settings=dict(ignore_unknown_options=True, help_option_names=[]),
+    add_help_option=False,
+    short_help="Train belief-material heads from a public geometry checkpoint.",
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def austin_material_train(args) -> None:
+    """Warm-start geometry and train on the pinned Austin train split."""
+    from .tools.austin_material_training import main as run
+
+    raise SystemExit(run(list(args)))
+
+
+@main.command(
+    "austin-material-evaluate",
+    context_settings=dict(ignore_unknown_options=True, help_option_names=[]),
+    add_help_option=False,
+    short_help="Evaluate fixed-lambda, force-only, waypoint, and learned material arms.",
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def austin_material_evaluate(args) -> None:
+    """Run the pinned, sensor-limited Austin protocol; all flags pass to the evaluator."""
+    from .tools.austin_material_evaluation import main as run
+
+    raise SystemExit(run(list(args)))
 
 
 # ── training ─────────────────────────────────────────────────────────────────
