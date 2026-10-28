@@ -303,6 +303,16 @@ def integrate_surrogate_material(
     hard), and ``force`` ``(B, maxH, 2)``, the conservative force each step applied (damping and
     ``ext`` excluded). The rollout's outputs are unchanged.
 
+    With ``energy["books"]`` (or ``energy["sharp"]``) true it also receives the per-step energy
+    books (libcvc's ``rollout_energy`` books; :func:`grl_snam.nav_potential.book_step`), float64
+    and detached: ``kinetic`` ``(B, maxH+1)``, m/2 |v|^2 at the state each step starts from and at
+    the end state; ``w_damp``, ``w_port`` (the work of ``ext``), ``w_clamp`` and ``w_cross`` (zero:
+    this rollout has no speed clamp), ``residual`` (r_E) and ``bound`` (the cheap bound on |r_E|),
+    each ``(B, maxH)``; and with ``energy["sharp"]`` ``residual_sharp`` (r_hat_E), two extra force
+    evaluations a step. Each step is booked from the rollout's state with its coefficients and
+    ``ext``, in float64 (:func:`grl_snam.nav_potential.material_energy`), so the books leave out
+    the rollout's own float32 rounding. Steps past ``H`` book zero.
+
     Returns (oT, vT, min_clear_geom, cum_risk, hard_count, arc_length).
     """
     B, N = C.shape[:2]
@@ -348,6 +358,75 @@ def integrate_surrogate_material(
             )
 
         u_log, t_log, f_log = [], [], []
+    sharp = energy is not None and bool(energy.get("sharp", False))
+    books = energy is not None and (sharp or bool(energy.get("books", False)))
+    if books:
+        from grl_snam.nav_potential import book_step, material_energy
+
+        dt64, ga64 = dt.detach().double(), gamma.detach().double()
+        patch64 = rollout_patch.detach().double()
+        mass64 = float(torch.tensor(mass, dtype=torch.float32))
+
+        def _energy64(at):
+            return material_energy(
+                at,
+                goal,
+                C,
+                R,
+                mask,
+                alphas.detach(),
+                beta.detach(),
+                lam_soft.detach(),
+                lam_hard.detach(),
+                patch64,
+                o0.detach(),
+                d_hat,
+                robot_radius=rr.detach(),
+                margin_factor=margin_factor,
+                d_hat_sdf=d_hat_sdf,
+                k_sharp=k_sharp,
+            )
+
+        def _kinetic(vel):
+            v64 = vel.detach().double()
+            return 0.5 * mass64 * (v64[:, 0] * v64[:, 0] + v64[:, 1] * v64[:, 1])
+
+        kin_log = []
+        book_log = {
+            n: []
+            for n in ("w_damp", "w_port", "w_clamp", "w_cross", "residual", "bound")
+            + (("residual_sharp",) if sharp else ())
+        }
+
+        @torch.no_grad()
+        def _book(s, pos, vel, f_ext):
+            """The books of step s from the state (pos, vel) with the port force f_ext."""
+            x0, v64 = pos.detach().double(), vel.detach().double()
+            on = (s < H).unsqueeze(-1)
+            F64 = torch.zeros_like(v64)
+            if f_ext is not None:
+                F64 = torch.where(on, f_ext.detach().double(), F64)
+            U0, f0 = _energy64(x0)
+            g = -f0
+            dts = dt64.unsqueeze(-1)
+            vp = v64 + dts * (-g - ga64.unsqueeze(-1) * v64 + F64) / mass64
+            dx = dts * vp  # no speed clamp here: vt = v'
+            U1, f1 = _energy64(x0 + dx)
+            vHv = None
+            if sharp:
+                # vt' grad^2 U(x) vt from the force at x -+ dx/2, a central difference.
+                h = 0.5 * dts
+                _, fp = _energy64(x0 + h * vp)
+                _, fm = _energy64(x0 - h * vp)
+                d = fp - fm
+                vHv = -(vp[:, 0] * d[:, 0] + vp[:, 1] * d[:, 1]) / (2.0 * h.squeeze(-1))
+            k = book_step(
+                dt64, v64, vp, vp, dx, g, -f1, F64, U0, U1, mass=mass64, gamma=ga64, vHv=vHv
+            )
+            keep = on.squeeze(-1)
+            for name in book_log:
+                book_log[name].append(torch.where(keep, getattr(k, name), 0.0))
+
     for s in range(int(H.max().item())):
         active = (s < H).to(o.dtype).unsqueeze(-1)
         if energy is not None:
@@ -385,8 +464,13 @@ def integrate_surrogate_material(
         F_tot = F_goal + F_geom + F_mat_soft + F_mat_hard - gamma.unsqueeze(-1) * v
         if energy is not None:
             f_log.append(F_goal + F_geom + F_mat_soft + F_mat_hard)
+        f_ext = None
         if ext is not None:
-            F_tot = F_tot + ext_force.at(s, o)
+            f_ext = ext_force.at(s, o)
+            F_tot = F_tot + f_ext
+        if books:
+            kin_log.append(_kinetic(v))
+            _book(s, o, v, f_ext)
         a = F_tot / mass
         # Semi-implicit: the position step uses the NEW velocity (upstream ordering).
         v_new = v + active * dt.unsqueeze(-1) * a
@@ -408,6 +492,13 @@ def integrate_surrogate_material(
         energy["potential"] = torch.stack(u_log, 1)
         energy["terms"] = torch.stack(t_log, 1)
         energy["force"] = torch.stack(f_log, 1) if f_log else o.new_zeros(o.shape[0], 0, 2)
+        if books:
+            kin_log.append(_kinetic(v))
+            energy["kinetic"] = torch.stack(kin_log, 1)
+            for name, rows in book_log.items():
+                energy[name] = (
+                    torch.stack(rows, 1) if rows else o.new_zeros(B, 0, dtype=torch.float64)
+                )
     return o, v, min_clear, cum_risk, hard_count, arc_length
 
 
