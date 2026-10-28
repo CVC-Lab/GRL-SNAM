@@ -797,6 +797,64 @@ class MaterialRuntime:
             self._cost = self.grid.cost_raster()
         return self._cost
 
+    def ray_profile(
+        self,
+        pos_world,
+        ux: float,
+        uy: float,
+        max_distance_m: float,
+    ) -> tuple[float, float | None]:
+        """Return mean risk and the first hard/occupied ray distance.
+
+        The profile is evaluated on this runtime's material and gate surfaces.
+        Consequently, a belief-material runtime reads only belief risk and
+        treats unseen cells as blocked when ``unknown_gate_hard`` is enabled.
+        ``(ux, uy)`` must be a unit direction in world coordinates.
+        """
+        pos = np.asarray(pos_world, dtype=np.float64)
+        if pos.shape != (2,) or not np.isfinite(pos).all():
+            raise ValueError("pos_world must contain two finite coordinates")
+        if not (math.isfinite(ux) and math.isfinite(uy)):
+            raise ValueError("ray direction must be finite")
+        direction_norm = math.hypot(ux, uy)
+        if not math.isclose(direction_norm, 1.0, rel_tol=1e-6, abs_tol=1e-6):
+            raise ValueError("ray direction must be unit length")
+        if not math.isfinite(max_distance_m) or max_distance_m < 0.0:
+            raise ValueError("max_distance_m must be finite and >= 0")
+        if max_distance_m == 0.0:
+            return 0.0, None
+
+        grid = self.grid
+        step = grid.cell_w
+        distances = np.arange(
+            step,
+            max_distance_m + step * 0.5,
+            step,
+            dtype=np.float64,
+        )
+        if len(distances) == 0 or distances[-1] < max_distance_m - step * 0.25:
+            distances = np.append(distances, max_distance_m)
+
+        xx = pos[0] + distances * float(ux)
+        yy = pos[1] + distances * float(uy)
+        mnx, mny, mxx, mxy = grid.bounds
+        rows, cols = grid.risk.shape
+        rr = np.rint((yy - mny) / (mxy - mny) * (rows - 1)).astype(np.int64)
+        cc = np.rint((xx - mnx) / (mxx - mnx) * (cols - 1)).astype(np.int64)
+        inside = (rr >= 0) & (rr < rows) & (cc >= 0) & (cc < cols)
+        rr_clamped = np.clip(rr, 0, rows - 1)
+        cc_clamped = np.clip(cc, 0, cols - 1)
+        blocked = (~inside) | self._gate_hard[rr_clamped, cc_clamped]
+        first = np.flatnonzero(blocked)
+        stop_index = int(first[0]) if len(first) else len(distances)
+        stop = float(distances[stop_index]) if len(first) else None
+        mean_risk = (
+            float(grid.risk[rr_clamped[:stop_index], cc_clamped[:stop_index]].mean())
+            if stop_index
+            else 0.0
+        )
+        return mean_risk, stop
+
     # -- world -> continuous cell coords (f64, unrounded) -------------------
     def _world_to_cell_f(self, x: float, y: float):
         mnx, mny, mxx, mxy = self.grid.bounds
