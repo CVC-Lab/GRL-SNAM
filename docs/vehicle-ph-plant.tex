@@ -74,7 +74,9 @@ port: it only turns the directions along which the tires push, so it does no wor
 remainder from the slips' speed floor, and gravity on a grade, are booked as power lines of
 their own. The integrator's step keeps per-step energy books whose residual is second order in the
 step. We also describe the learned stochastic port-Hamiltonian plant on $SE(2)$ (\code{cvc::ph})
-and its energy balance, which includes the noise's power. We give the navigator's per-step energy
+and its energy balance, which includes the noise's power. We also describe an opt-in form of that
+plant in which steering is a modulation, so that only the drive supplies power, as in the analytic
+plant. We give the navigator's per-step energy
 identity, with its context and projection work at each tick. Every claim is tied to a test in
 libcvc or GRL-SNAM, with the tolerance the test enforces and the value measured on the released
 code (Section~\ref{sec:validation}), so it can be checked independently.
@@ -95,13 +97,13 @@ this does and does not buy. The deployed navigator is a learned-coefficient pote
 viscous damping, on top of a kinematic bicycle and a pure-pursuit controller. No Hamiltonian is
 carried through it, and no energy or passivity argument transfers to it.
 
-This paper is about the layer under the navigator: the vehicle. libcvc 3.7.1 replaces the
-kinematic update, where a policy asks for it, with a dynamic single-track vehicle (the plant). It
-writes that vehicle as a port-Hamiltonian (pH) system with a genuine Hamiltonian $H$, momenta, a
-positive semi-definite dissipation, and a power port. It keeps books of where the vehicle's
-kinetic energy goes, step by step. The same release adds two related pieces: a learned stochastic
-pH model of a vehicle, and per-step energy books for the navigator's point-mass surrogate. Across
-the navigator's ticks those books include the potential's changes of context.
+This paper is about the layer under the navigator: the vehicle. Since libcvc 3.7.0, a dynamic
+single-track vehicle (the plant) can replace the kinematic update where a policy asks for it.
+libcvc 3.7.1 writes that vehicle as a port-Hamiltonian (pH) system with a genuine Hamiltonian $H$,
+momenta, a positive semi-definite dissipation, and a power port. It keeps books of where the
+vehicle's kinetic energy goes, step by step. The same release adds two related pieces: a learned
+stochastic pH model of a vehicle, and per-step energy books for the navigator's point-mass
+surrogate. Across the navigator's ticks those books include the potential's changes of context.
 
 \paragraph{Contributions.}
 \begin{enumerate}
@@ -113,7 +115,9 @@ the navigator's ticks those books include the potential's changes of context.
         (Section~\ref{sec:books}), and a live plant that keeps them for every vehicle in a
         navigation world.
   \item The learned plant \code{cvc::ph}: its structure, its energy balance including the noise
-        power, its integrator and its training objective (Section~\ref{sec:learned}).
+        power, its integrator and its training objective (Section~\ref{sec:learned}). It also has an
+        opt-in form in which steering modulates the model instead of supplying power, as it does in
+        the analytic plant (Section~\ref{sec:learned-steer}).
   \item The navigator's per-step energy identity, the two checks built on it, and the context
         work at tick boundaries (Section~\ref{sec:nav}).
   \item GRL-SNAM's side: the torch twins and their parity tiers, what is not twinned yet, and how
@@ -129,10 +133,17 @@ structure-preserving. Both keep books with a residual instead. The learned plant
 evidence bound is not yet implemented, and the four-wheel vehicle's pH form is not yet written.
 
 \paragraph{Versions.} Every statement about code refers to libcvc 3.7.1 or later and GRL-SNAM
-\code{main} at \code{0e21085}. The pH work is in transfix/libcvc \#831, \#832 and \#833, and all
-three are in the v3.7.1 tag. The measurements in Section~\ref{sec:validation} were taken on libcvc
-\code{master} at \code{c1f104c0}, whose \code{nav}, \code{ph} and \code{physics} sources and tests
-are identical to v3.7.1's.
+\code{main} at \code{0e21085}, unless it names a later pull request.
+\begin{itemize}
+  \item The dynamic plant itself is transfix/libcvc \#714, released in 3.7.0.
+  \item The learned plant is \#758, released in 3.7.1.
+  \item The pH form and the books are \#831, \#832 and \#833, also released in 3.7.1.
+  \item Steering as a modulation of the learned plant (Section~\ref{sec:learned-steer}) is \#851,
+        which is later than 3.7.1.
+\end{itemize}
+The measurements in Section~\ref{sec:validation} were taken on libcvc \code{master} at
+\code{c1f104c0}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are identical to
+v3.7.1's, except for the rows from \#851, which were taken on its branch.
 
 % ===========================================================================
 \section{Preliminaries}
@@ -183,7 +194,7 @@ port, not part of $U$ either. libcvc evaluates $U_{\mathrm{nav}}$ along every ro
 (\code{bike\_control} in \code{diff\_rollout.h}; \code{sdf\_nav.bike\_control} in GRL-SNAM)
 turns the force $-\nabla U_{\mathrm{nav}}$, plus any external force, into a steering command
 $\delta_{\mathrm{cmd}}$ and an acceleration command $a_{\mathrm{cmd}}$. A plant then moves the
-vehicle. The default plant is the kinematic bicycle, $\dot\theta=(v/L)\tan\delta$. The dynamic plant
+vehicle. The default plant is the kinematic bicycle, $\dot\psi=(v/L)\tan\delta$. The dynamic plant
 of this paper takes the same commands, so a policy can train through tires, load transfer and
 actuator lag with the controller and its adjoint unchanged.
 
@@ -442,7 +453,7 @@ the yaw row of $\G_e$ becomes $(-\ell_y,\ell_x)R(\psi)\T$, the moment arm. A por
 energy, such as a spring, belongs in $H$ instead.
 
 \paragraph{Worked example: a navigation force.} GRL-SNAM and libcvc allow an external navigation
-force $F_{\mathrm{ext}}$, with its spatial Jacobian. It might come from another field, a teammate
+force $F_{\mathrm{ext}}$, with its spatial Jacobian. It might come from another field, a tow
 or a learned term. It is joined to the navigator's conservative force (\code{ext\_in} in
 \code{bike\_control}; \code{grl\_snam.ext\_rollout}, \code{material\_ext}), and it reaches the
 two models differently.
@@ -554,12 +565,21 @@ trained there is evaluated on its own model.
 \section{The learned plant: \texorpdfstring{\code{cvc::ph}}{cvc::ph}}
 \label{sec:learned}
 
-\code{cvc::ph::se2\_vehicle} (\code{inc/cvc/ph/se2\_vehicle.h}) is a native C++ port of the
-$SE(2)$ variant of the stochastic port-Hamiltonian Gaussian process of McLennan, Rapolu and
-Bajaj~\cite{liesphgp2026} (reference implementation in JAX: \code{CVC-Lab/LieSPHGP}). It contains
-no physical constant: everything is learned from logged runs of a vehicle. In libcvc those runs come
-from \code{cvc::physics::plant\_log}, which records the vehicles of a navigation world driving the
-rigid-body engine's plant (\code{cvc::physics::nav\_plant}, on Jolt Physics).
+\code{cvc::ph::se2\_vehicle} (\code{inc/cvc/ph/se2\_vehicle.h}) is a native C++ port of an
+$SE(2)$ vehicle model built on the stochastic port-Hamiltonian Gaussian processes of McLennan,
+Rapolu and Bajaj~\cite{liesphgp2026}. Their JAX code, \code{CVC-Lab/LieSPHGP}, models an $SO(3)$
+pendulum, $SE(3)$ quadrotors and an $SE(3)$ underwater vehicle. It has no $SE(2)$ vehicle.
+
+The port follows a separate $SE(2)$ vehicle package built on that code at commit \code{65db994}.
+That package is not part of the public repository. libcvc's golden for the port
+(\code{ph\_se2\_golden.json}) was generated once from it, and its provenance records
+``\code{CVC-Lab/LieSPHGP @ 65db994 + the SE(2) package}''. The package follows LieSPHGP's
+underwater-vehicle model reduced to $SE(2)$, with two differences: its input map reads the twist,
+where LieSPHGP's reads the pose, and its inputs are a vehicle's drive and steering.
+
+The model contains no physical constant: everything is learned from logged runs of a vehicle. In
+libcvc those runs come from \code{cvc::physics::plant\_log}. It records the vehicles of a navigation
+world driving the rigid-body engine's plant (\code{cvc::physics::nav\_plant}, on Jolt Physics).
 
 \subsection{Model}
 The state is $(x,y,\psi,v)$ with $v=(v_x,v_y,r)$. The inputs $u$ are the logged commands divided
@@ -636,7 +656,7 @@ step is templated on the scalar, so the same code runs in float and in double.
 
 \subsection{Training}
 \code{cvc::ph::se2\_rollout\_objective} (\code{inc/cvc/ph/se2\_train.h}) is the rollout loss of the
-reference package's $SE(2)$ trainer:
+$SE(2)$ package's trainer:
 \begin{equation}
   \mathcal L=\operatorname{rollout}(\text{windows}\mid W)+\beta\,\frac{\mathrm{KL}(q\,\Vert\,p)}{6N_{\mathrm{obs}}},
   \qquad W=\text{mean}+e^{\log\text{std}}z,\;z\sim\mathcal N(0,I).
@@ -649,10 +669,12 @@ objective takes one reparameterized weight draw per step. $\beta$ rises linearly
 over an annealing period, and $N_{\mathrm{obs}}$ counts the training windows times their
 intervals. The gradient is a hand-written reverse pass through every step of the window: the
 $3\times3$ implicit solves, the SPD parameterization, the random-feature GPs, and $\nabla V$'s own
-derivative in position. The optimizer is the reference package's:
+derivative in position. The optimizer is LieSPHGP's:
 \begin{itemize}
   \item the whole gradient is clipped to global norm 1;
-  \item Adam, with a cosine-decayed learning rate, updates the GP weights and the noise scales;
+  \item Adam, with a cosine-decayed learning rate, updates every leaf except the levels: the GP
+        weights, and the noise scales, although the rollout objective gives the noise scales no
+        gradient (below);
   \item Prodigy, one per subnetwork, updates the levels.
 \end{itemize}
 The command-line tool \code{cvc ph-train} fits a model to plant-log runs and writes it as JSON
@@ -660,20 +682,63 @@ The command-line tool \code{cvc ph-train} fits a model to plant-log runs and wri
 
 The rollouts in this objective run the drift alone, with no noise increment. So the objective fits
 $M^{-1}$, $D$, $G$ and $V$, but $\Sigma$ gets no gradient from it, and there is no observation
-model. Fitting those is the job of the reference package's filter-based evidence bound (an extended
-Kalman filter over the noisy trajectory, giving an ELBO). That stage is not yet ported. The model
-format already carries the observation-noise parameters it will need.
+model. LieSPHGP's own trainers fit those with an error-state extended Kalman filter: they minimize
+the filter's negative log marginal likelihood plus the KL term, a negative ELBO, which learns $\Sigma$
+and the observation noise. That stage is not yet ported. The model format already carries the
+observation-noise parameters it will need.
 
-\subsection{How it relates to the analytic plant}
-The learned plant's port is whatever the logs record. In libcvc's plant logs that is the
-vehicle's drive input and its steering (\code{plant\_log.h}). So its supply $y\T u$ is booked against
-a steering input, while Section~\ref{sec:steer} shows that the vehicle's steering does no work.
-Nothing in the learned structure forces the steering column's power to vanish. With its GP weights
-zero, the model reduces exactly to the linear-tire bicycle with steering as an input
-(\code{PhSe2.ReducesToTheLinearTireBicycle}), which is the truncation of Section~\ref{sec:steer}.
-A fitted model that draws substantial power through its steering column is therefore fitting that
-truncation. The split of $y\T u$ by input channel, computed from \code{output()}, is a direct
-diagnostic.
+\subsection{Steering: a port in the reference form, a modulation by option}
+\label{sec:learned-steer}
+\paragraph{The inconsistency.} In the reference form every input is a port. In libcvc's plant logs
+the inputs are the vehicle's drive and its steering (\code{plant\_log.h}), so the supply $y\T u$
+contains a steering term, $y_\delta u_\delta$. Section~\ref{sec:steer} shows that the vehicle's
+steering does no work on its body, and nothing in the learned structure forces that term to
+vanish. With its GP weights zero, the reference form reduces exactly to the linear-tire bicycle
+with steering as an input (\code{PhSe2.ReducesToTheLinearTireBicycle}), which is the truncation of
+Section~\ref{sec:steer}.
+
+\paragraph{The diagnostic.} Split $y\T u$ by input channel, using \code{output()}. Two measurements
+(transfix/libcvc \#851):
+\begin{itemize}
+  \item On the golden fit, steering is 13.4\% of $\lvert y\T u\rvert$ at its 16 states. With the drive
+        input at zero, steering alone supplies energy at 10 of them
+        (\code{PhSe2.TheReferenceFormBooksSteeringAsPower}).
+  \item A fresh reference-form fit to the analytic plant's own flights still books 5.6\% of
+        $\lvert y\T u\rvert$ through steering, and supplies energy by steering alone at 74 of 250
+        held-out steps, although the plant it learned from books none
+        (\code{PhSe2Train.BothFormsFitTheDynamicBicycle}). That fit is good: its held-out rollout
+        loss falls from 8.52 to 0.0006.
+\end{itemize}
+
+\paragraph{Steering as a modulation.} libcvc \#851 adds an opt-in form that mirrors
+Proposition~\ref{prop:ph}: \code{se2\_setup::modulation\_dim} (0 by default). With
+$\texttt{modulation\_dim}=1$ the last input, the road-wheel angle $\delta$, stops being a port. It is
+read by the GPs of $D$ and $G$ beside the twist:
+\begin{equation}
+  D(v,\delta)=\operatorname{spd}\big(\ell_D+\mathrm{GP}_D(v/s_v,\delta)\big),\qquad
+  G(v,\delta)=\ell_G+\mathrm{GP}_G(v/s_v,\delta),\qquad y=G(v,\delta)\T v,
+  \label{eq:learned-mod}
+\end{equation}
+with $u$ the drive alone in~\eqref{eq:learned}. The balance~\eqref{eq:learned-balance} holds
+unchanged, so with the drive at zero nothing is supplied, whatever $\delta$ is. Steering still steers,
+through $D$ and $G$, as the steered tire's secant does in~\eqref{eq:R}. The modulation is data, like
+the inputs, so the reverse pass drops its gradient.
+\begin{itemize}
+  \item A modulated model is written as \code{cvc-ph-se2/2}; models without modulations stay
+        \code{/1}, byte for byte.
+  \item \code{cvc ph-train --steer-modulates} fits it from plant logs recorded with the actual
+        road-wheel angle, which is \code{cvc-plant-log}'s default.
+  \item The reference form stays the default and keeps its JAX parity. The modulated form has no
+        JAX golden. It is held to central differences and to the analytic identities
+        (Table~\ref{tab:val-steer}).
+  \item On the analytic plant's flights, it learns as well (held-out loss $7.63\to0.0092$) with
+        steering's share at zero. The reference form fits those flights more closely, so the
+        modulation is a matter of correct books, not of accuracy.
+  \item At Adam's default learning rate of $3\times10^{-3}$, the reference form's gradient norm blew
+        up ($10^6$--$10^9$) in all three runs tried on that data, while the modulated form
+        converged in all four configurations tried. That is one dataset and one seed, so it is
+        reported here, not claimed.
+\end{itemize}
 
 % ===========================================================================
 \section{The navigator's energy identity and context work}
@@ -722,7 +787,7 @@ of order $h^3$ below float round-off on $U$.
         clamp.
   \item \emph{The sharp check}, when asked (two extra force evaluations a step):
         $\hat r_E=\tfrac{h^2}2\big[\tilde v\T\nabla^2U(x)\tilde v-g\cdot(g+\gamma v-F)/m\big]$,
-        with $r_E-\hat r_E=O(h^3)$. It catches anything beyond third order. Explicit Euler
+        with $r_E-\hat r_E=O(h^3)$. It catches a second-order error the identity does not predict. Explicit Euler
         ($x'=x+hv$) is the example: its $r_E$ sits $h^2g\cdot(g+\gamma v-F)/m$ above $\hat r_E$.
         That is second order, the same order as the bound, so explicit Euler passes the bound
         and fails the sharp check.
@@ -731,11 +796,11 @@ The explicit-Euler case matters in practice. GRL-SNAM's guide notes that \code{c
 native multi-start rollout runs explicit Euler by default, where the Python reference runs
 semi-implicit. On circular orbits of a goal spring, \code{NavPotential.ExplicitEulerRaisesTheAlarm}
 shows explicit Euler gaining energy at every step, by $\omega^2h^2$, with the sharp check at half
-the bound on every step. The semi-implicit step meets the sharp check to $4\times10^{-5}$ of the
+the bound on every step. The semi-implicit step meets the sharp check to $3.5\times10^{-5}$ of the
 bound.
 
 \subsection{Context work and projection work}
-Across a tick of the deployed drive, $U_{\mathrm{nav}}$ is not fixed. The belief is re-sensed,
+Across a tick of the deployed drive, $U_{\mathrm{nav}}$ is not fixed. The occupancy map is re-sensed,
 the field rebuilt, the coefficients re-predicted, and the carrot moved. Those changes do work on
 the navigator's energy that no step's books see. \code{sim\_world} books them in its drive
 telemetry while it captures:
@@ -763,7 +828,7 @@ point masses, so they reject requests for per-step point-mass books (they throw)
 the plant's books of Section~\ref{sec:books} are the counterpart.
 
 \subsection{Two sets of books, not one}
-\label{sec:two-ledgers}
+\label{sec:two-books}
 When a navigation world drives the dynamic plant, there are two sets of books. The plant books
 the vehicle's kinetic energy~\eqref{eq:live-books}. The telemetry books the navigator's
 potential~\eqref{eq:telescope}. They are not one conserved quantity. $U_{\mathrm{nav}}$ is a
@@ -778,13 +843,20 @@ both, with their own residuals, is what makes each one checkable.
 \subsection{The twins and their parity tiers}
 GRL-SNAM keeps Python twins of libcvc's vehicle and potential code. libcvc writes a golden file
 from its own test and GRL-SNAM copies it into \code{tests/fixtures}. The twin is then held to the
-golden at a stated tier: \emph{double} (both sides in float64 from the same parameters, $10^{-9}$
-relative) or \emph{float} (libcvc in float32, about $10^{-5}$). The torch twins differentiate with
-autograd, where libcvc uses forward-mode duals or hand-written reverses. So the gradient parity
-compares two independent derivations of one model. Table~\ref{tab:twins} lists the twins on
-\code{main}. The JAX reference for the learned plant is the other direction. The reference package
-\code{CVC-Lab/LieSPHGP} generated libcvc's golden (\code{ph\_se2\_golden.json}) once, and the C++
-port is held to it.
+golden at a stated tier:
+\begin{itemize}
+  \item \emph{double}: both sides in float64 from the same parameters, to $10^{-9}$ relative;
+  \item \emph{float}: libcvc in float32 against the twin in float32, to about $10^{-5}$;
+  \item \emph{mixed}: libcvc's float rollouts against the twin in float64, to $10^{-4}$ on values and
+        $10^{-3}$ on gradients.
+\end{itemize}
+The torch twins differentiate with autograd, where libcvc uses forward-mode duals or hand-written
+reverses. So the gradient parity compares two independent derivations of one model.
+Table~\ref{tab:twins} lists the twins on \code{main}.
+
+The JAX reference for the learned plant runs the other way. The $SE(2)$ vehicle package built on
+\code{CVC-Lab/LieSPHGP} (Section~\ref{sec:learned}) generated libcvc's golden
+(\code{ph\_se2\_golden.json}) once, and the C++ port is held to it.
 
 \begin{table}[htbp]
 \centering\tablesetup
@@ -801,16 +873,16 @@ port is held to it.
   & double, $10^{-9}$ & \#123 \\
 \code{grl\_snam/ext\_rollout.py} \code{dyn4\_rollout\_ext} & \code{diff::dyn4\_rollout\_ext}, with an external force;
   \code{dyn4\_ext\_rollout\_golden.json}; \code{tests/test\_dyn4\_ext\_rollout\_parity.py}
-  & C++ float vs torch float64: states $10^{-4}$, gradients $10^{-3}$ & \#136 \\
+  & mixed: states $10^{-4}$, gradients $10^{-3}$ & \#136 \\
 \code{grl\_snam/material\_bike.py} \code{integrate\_dynamic\_material} & \code{integrate\_dynamic\_material};
   the dynamic case of \code{material\_ext\_golden.json}; \code{tests/test\_material\_ext\_parity.py}
-  & forward $10^{-4}$, gradients $10^{-3}$ & \#136 \\
+  & mixed: forward $10^{-4}$, gradients $10^{-3}$ & \#136 \\
 \code{grl\_snam/nav\_potential.py} & \code{detail/nav\_potential.h}; \code{nav\_potential\_golden.json}
   (\code{NavPotential.Golden}: barrier sweeps, $U$ along a material rollout, \code{drive\_potential});
   \code{tests/test\_nav\_potential\_parity.py}; also $F=-\nabla U$ by autograd
   & float: $2\times10^{-5}$ ($5\times10^{-5}$ along the rollout) & \#133 \\
 \midrule
-JAX reference \code{CVC-Lab/LieSPHGP} & its $SE(2)$ package against \code{cvc::ph::se2\_vehicle} and \code{se2\_train};
+JAX reference: the $SE(2)$ package built on \code{CVC-Lab/LieSPHGP} at \code{65db994} (not public) & that package against \code{cvc::ph::se2\_vehicle} and \code{se2\_train};
   \code{ph\_se2\_golden.json}; libcvc \code{ph\_se2\_test}, \code{ph\_se2\_train\_test}
   & double: one step $10^{-13}$, rollout $10^{-12}$, gradient $10^{-10}$ & libcvc \#758 \\
 \bottomrule
@@ -822,7 +894,7 @@ learned plant. GRL-SNAM numbers are CVC-Lab/GRL-SNAM pull requests.}
 
 The torch tests need only torch and the copied goldens, not \code{pycvc}. (Two tests in
 \code{test\_material\_ext\_parity.py} also hold \code{pycvc}'s bindings to the golden, and skip when the
-installed \code{pycvc} lacks the external-force channel.)
+installed \code{pycvc} lacks the external-force input.)
 
 \subsection{What is not twinned yet}
 The pH form itself, \code{dyn\_ph\_*} and \code{dyn\_plant\_books}, is C++ only. So are the point-mass books
@@ -879,8 +951,8 @@ drive energy counts every joule the policy puts into the vehicle.
 
 \paragraph{Health checks.} The books double as run-time checks of a rollout:
 \begin{itemize}
-  \item the residual's share of the flow (in the tests' runs, $10^{-4}$ to $10^{-3}$ at
-        $h=0.01$~s) flags a step too long for the motion;
+  \item the residual's share of the flow (in the tests' runs, $1.1\times10^{-4}$ to
+        $1.2\times10^{-3}$ at $h=0.01$~s) flags a step too long for the motion;
   \item the floor's share flags crawling below the slips' speed floor;
   \item a limiter line that dominates flags a policy that lives at the speed clamp.
 \end{itemize}
@@ -899,11 +971,19 @@ or a new column $\G_e$ (if it acts on the body).
 \label{sec:validation}
 
 Tables~\ref{tab:val-plant}--\ref{tab:val-nav} map each claim to the test that checks it. They give
-the tolerance the test enforces and the value measured on libcvc \code{c1f104c0} (Windows, MSVC
-19.44, double unless stated), and on GRL-SNAM \code{0e21085} (torch 2.8 CPU). The commit is the
-squash commit of the pull request that added or last tightened the test. Every test listed passed
-in that run: 62 libcvc tests in five executables, and 53 GRL-SNAM tests, with 2 skipped for the
-\code{pycvc} reason above.
+the tolerance the test enforces and the measured value. The commit is the squash commit of the
+pull request that added or last tightened the test.
+
+Where the values were measured (Windows, MSVC 19.44, double unless stated; Appendix~\ref{app:repro}
+gives the exact setup):
+\begin{itemize}
+  \item libcvc \code{c1f104c0}: all 62 tests of the five executables passed. The tables list the ones
+        this paper relies on.
+  \item The rows for \#851: its branch commit, where the same executables' 69 tests passed (plus
+        the CLI's four \code{PhTrain} tests).
+  \item GRL-SNAM \code{0e21085} (torch 2.8 CPU): 53 tests passed and 2 were skipped for the
+        \code{pycvc} reason above; none failed.
+\end{itemize}
 
 \newcommand{\valtable}[3]{%
 \begin{table}[htbp]
@@ -1032,12 +1112,41 @@ work.}{tab:val-plant}
   $1.6\times10^{-16}$ &
   \#758 \\
 \code{PhSe2Train.ShortFitLowersTheLoss} &
-  a 1,200-step fit to another model's flights generalizes &
+  a 1,200-step fit to trajectories simulated from a second random model generalizes to held-out ones &
   held-out loss below $0.1\times$ &
   $1.732\to0.077$ ($22\times$) &
   \#758 \\
 }{The learned plant (libcvc \code{ph\_se2\_test}, \code{ph\_se2\_train\_test}). libcvc \#758
 merged as \code{17adc93}, with the model in \code{0fa251b} and the trainer in \code{63651e8}.}{tab:val-learned}
+
+\valtable{%
+\code{PhSe2.TheReferenceFormBooksSteeringAsPower} &
+  in the reference form, steering alone supplies power (Sec.~\ref{sec:learned-steer}) &
+  nonzero &
+  share $0.134$; supplies energy at 10 of 16 states &
+  \#851 \\
+\code{PhSe2.ModulatedSteeringSuppliesNoPower} &
+  \eqref{eq:learned-mod}: the balance holds; no supply at zero drive, whatever $\delta$; steering still changes the motion &
+  balance $10^{-11}$; supply exactly 0 &
+  holds at 200 states; a 0.5 steer step changes the twist's rate by at least 0.18 &
+  \#851 \\
+\code{PhSe2.ModulatedModelRoundTripsExactly}, \code{PhSe2.ModulatedStepIsSecondOrder} &
+  the \code{/2} file round-trips; models without modulations stay \code{/1}; the step stays second order &
+  exact; ratio in $(3.5,4.5)$ &
+  exact; $4.29$, $4.08$, $4.02$ &
+  \#851 \\
+\code{PhSe2Train.ModulatedGradientMatchesFiniteDifferences}, \code{PhSe2Train.ModulatedShortFitLowersTheLoss} &
+  the modulated reverse pass is the gradient; the modulated form trains &
+  $2\times10^{-5}$; held-out loss below $0.1\times$ &
+  $3.9\times10^{-7}$ over 68 entries; $1.417\to0.070$ &
+  \#851 \\
+\code{PhSe2Train.BothFormsFitTheDynamicBicycle} &
+  both forms fit the analytic plant's flights; only the reference form books steering power &
+  held-out loss below $0.01\times$; share $>0$ (reference), $=0$ (modulated) &
+  reference $8.52\to0.0006$, share $0.056$, supplies energy at 74 of 250 steps; modulated $7.63\to0.0092$, share 0 &
+  \#851 \\
+}{The learned plant's steering (Section~\ref{sec:learned-steer}): transfix/libcvc \#851, measured
+on its branch (Table~\ref{tab:repro-versions}).}{tab:val-steer}
 
 \valtable{%
 \code{NavPotential.SurrogateEnergyIdentityPerStep} &
@@ -1071,7 +1180,7 @@ merged as \code{17adc93}, with the model in \code{0fa251b} and the trainer in \c
   nonzero for the pair, exactly zero otherwise &
   $+0.18$, $+0.59$; others 0 &
   \code{09fa876} (\#832) \\
-\code{NavPotential.*ForcesAreMinusGradU*}, \code{DriveForce*} &
+\code{NavPotential.*ForcesAreMinusGradU*}, \code{NavPotential.DriveForce*} &
   each call site's conservative force is $-\nabla U_{\mathrm{nav}}$ (central differences) &
   site-specific &
   worst $5.7\times10^{-4}$ relative on exact planes &
@@ -1100,43 +1209,8 @@ merged as \code{17adc93}, with the model in \code{0fa251b} and the trainer in \c
 }{The navigator's books (libcvc \code{nav\_potential\_test}) and GRL-SNAM's twins (CVC-Lab/GRL-SNAM
 \code{tests/}). GRL-SNAM numbers are its pull requests.}{tab:val-nav}
 
-\subsection{Reproducing}
-\paragraph{libcvc.} Get a dependency prefix with cvcpkg as GRL-SNAM's guide describes (its \S5),
-then build and run the five test executables:
-\begin{center}
-\begin{minipage}{0.92\linewidth}
-\small
-\begin{verbatim}
-cd libcvc            # v3.7.1 or later
-cvcpkg install-deps cvcpkg/recipes/libcvc --prefix deps --config release
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_PREFIX_PATH=$PWD/deps -DCVC_BUILD_TESTS=ON
-cmake --build build --target nav_dyn_bike_test physics_dyn_bike_plant_test \
-      ph_se2_test ph_se2_train_test nav_potential_test
-./build/bin/nav_dyn_bike_test --gtest_filter='DynBikePH.*:DynBike.*'
-./build/bin/physics_dyn_bike_plant_test
-./build/bin/ph_se2_test && ./build/bin/ph_se2_train_test
-./build/bin/nav_potential_test
-\end{verbatim}
-\end{minipage}
-\end{center}
-Each test prints the measured values quoted above. The tests are registered with CTest under
-their Google Test names, so \code{ctest --test-dir build -R 'DynBikePH|PhSe2|NavPotential|DynBikePlant'}
-runs the same set.
-
-\paragraph{GRL-SNAM.} With torch installed, from a checkout of \code{main}:
-\begin{center}
-\begin{minipage}{0.92\linewidth}
-\small
-\begin{verbatim}
-pytest -v tests/test_dyn_bike_parity.py tests/test_nav_potential_parity.py \
-          tests/test_dyn4_parity.py tests/test_dyn4_ext_rollout_parity.py \
-          tests/test_material_ext_parity.py
-\end{verbatim}
-\end{minipage}
-\end{center}
-Run it with \code{-v} and confirm the tests ran. As GRL-SNAM's guide warns, a skipped test is not
-a verified one.
+Appendix~\ref{app:repro} gives the exact versions, the commands that produced these values, and
+the lines each test prints.
 
 % ===========================================================================
 \section{Limitations and future work}
@@ -1159,12 +1233,17 @@ nonlinear solve per step, and the analytic plant's stiff-tire stability at the n
 would have to be re-established.
 
 \paragraph{The learned plant's evidence bound.} The rollout objective does not fit the diffusion or
-an observation model. The reference package's EKF-based ELBO is the next stage for \code{cvc::ph}.
-The fit's accuracy against the analytic plant is not reported here.
+an observation model. LieSPHGP's EKF-based ELBO is the next stage for \code{cvc::ph}. Beyond the
+synthetic comparison of Section~\ref{sec:learned-steer}, the fit's accuracy against the analytic
+plant is not reported here.
+
+\paragraph{The learned plant's steering, upstream.} The modulated form of
+Section~\ref{sec:learned-steer} exists only in libcvc. It has no JAX golden, and whether
+LieSPHGP or the $SE(2)$ package adopts it is for their authors to decide.
 
 \paragraph{The closed loop.} The navigator commands the vehicle through a path-following
 controller, not an energy-shaping one, so the closed loop is not port-Hamiltonian, and the two
-sets of books of Section~\ref{sec:two-ledgers} stay separate. Interconnection and damping assignment for
+sets of books of Section~\ref{sec:two-books} stay separate. Interconnection and damping assignment for
 a car is a research problem: with two inputs and three velocity degrees of freedom, its matching
 condition fails in general~\cite{ortega2002idapbc}.
 
@@ -1174,6 +1253,158 @@ torch twin of the books, and \code{pycvc} bindings for \code{dyn\_bike\_plant}'s
 
 % ===========================================================================
 \appendix
+\section{Reproducing the validation tables}
+\label{app:repro}
+
+\subsection{What was run}
+\begin{table}[htbp]
+\centering\tablesetup
+\begin{tabularx}{\linewidth}{@{}>{\Rx}p{0.26\linewidth}>{\Rx}X@{}}
+\toprule
+\textbf{Piece} & \textbf{Version} \\
+\midrule
+libcvc & \code{master} at \code{c1f104c0}; its \code{nav}, \code{ph} and \code{physics} sources and tests are identical to the v3.7.1 tag (\code{d8ca602b}). The \#851 rows: its branch commit \code{6e7ab557}, cut from \code{master} at \code{cc8800a8}. \\
+GRL-SNAM & \code{main} at \code{0e21085} (\code{3a38ae4} adds only this paper) \\
+Operating system & Windows 11 Pro 10.0.26100, x86-64 \\
+Compiler & MSVC 19.44 (Visual Studio 2022, toolset 14.44.35207), Release \\
+Build tools & CMake 3.31.7, Ninja 1.12.1, cvcpkg 2.5.6 \\
+Dependencies & \code{cvcpkg install-deps} of libcvc's recipe: 38 packages for windows/x86\_64/release/shared, among them Boost, googletest and HDF5 \\
+Python & 3.11.13, torch 2.8.0+cpu, numpy 2.4.6, pytest 9.1.1 \\
+\bottomrule
+\end{tabularx}
+\caption{The setup behind every measured value in Tables~\ref{tab:val-plant}--\ref{tab:val-nav}.}
+\label{tab:repro-versions}
+\end{table}
+
+\subsection{libcvc}
+From a libcvc checkout at v3.7.1 or later, in a Visual Studio 2022 x64 developer prompt (or after
+\code{vcvars64.bat}), the commands used were these, with the paths shortened:
+\begin{center}
+\begin{minipage}{0.95\linewidth}
+\small
+\begin{verbatim}
+cvcpkg install-deps cvcpkg\recipes\libcvc --prefix deps --config release
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=%CD%\deps ^
+      -DCVC_BUILD_TESTS=ON -DCVC_BUILD_CVCGL=OFF -DCVC_ENABLE_CUDA=OFF ^
+      -DCVC_BUILD_PYCVC=OFF -DCVC_BUILD_PYCVC_GL=OFF -DCVC_WITH_JOLT=ON
+cmake --build build --target nav_dyn_bike_test physics_dyn_bike_plant_test ^
+      ph_se2_test ph_se2_train_test nav_potential_test
+set PATH=%CD%\deps\bin;%CD%\build\bin;%PATH%
+for %t in (nav_dyn_bike_test physics_dyn_bike_plant_test ph_se2_test
+           ph_se2_train_test nav_potential_test) do build\bin\%t.exe
+\end{verbatim}
+\end{minipage}
+\end{center}
+The extra CMake flags only switch off what these tests do not need: the graphics library, CUDA and
+the Python bindings. \code{CVC\_WITH\_JOLT=ON} builds the rigid-body backend that
+\code{physics\_dyn\_bike\_plant\_test} links against, although the dynamic plant itself needs no
+physics world. If CMake finds no Python 3, add \code{-DPython3\_EXECUTABLE=\textit{path}}.
+
+On Linux or macOS the same steps are
+\begin{center}
+\begin{minipage}{0.95\linewidth}
+\small
+\begin{verbatim}
+cvcpkg install-deps cvcpkg/recipes/libcvc --prefix deps --config release
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$PWD/deps \
+      -DCVC_BUILD_TESTS=ON -DCVC_BUILD_CVCGL=OFF -DCVC_ENABLE_CUDA=OFF \
+      -DCVC_BUILD_PYCVC=OFF -DCVC_BUILD_PYCVC_GL=OFF -DCVC_WITH_JOLT=ON
+cmake --build build --target nav_dyn_bike_test physics_dyn_bike_plant_test \
+      ph_se2_test ph_se2_train_test nav_potential_test
+for t in nav_dyn_bike_test physics_dyn_bike_plant_test ph_se2_test \
+         ph_se2_train_test nav_potential_test; do ./build/bin/$t; done
+\end{verbatim}
+\end{minipage}
+\end{center}
+These were not run verbatim for this paper, since no Linux machine was available where it was
+written. libcvc's CI builds every test and runs it under CTest on Linux, macOS and Windows for each
+pull request, \#851 included. The tests are registered with CTest under their Google Test names,
+so \code{ctest --test-dir build -R 'DynBike|PhSe2|PhRff|PhMat3|PhRng|NavPotential'} runs these
+suites. That is a superset of the tables' rows.
+
+\subsection{What the libcvc tests print}
+Each test prints its measured values. These are the lines behind the tables, from the run of
+Table~\ref{tab:repro-versions}, with long lines cut at ``\code{...}''. Lines that name the vehicle
+preset are summarized rather than quoted.
+
+Other compilers and platforms can differ in the last digits. The training runs (the held-out losses)
+can differ more, since a long optimization amplifies rounding. The tolerances in the tables are what
+the tests enforce.
+\begin{center}
+\begin{minipage}{0.98\linewidth}
+\scriptsize
+\begin{verbatim}
+nav_dyn_bike_test (21 tests):
+  kinematic limit, 200 ticks (mean path 5.624), bike_step's commands through the plant:
+    the kinematic bicycle's vehicle: within 0.01074 of its path (mean worst 0.00185)
+  mu 0.9: 244 of 500 states have a tire past its peak
+  mu 0.6: 244 of 500 states have a tire past its peak
+  vector field vs dyn_plant at every slip, mu 0.9: worst |dp/dt - pH| = 1.62e-04 m g
+  vector field vs dyn_plant at every slip, mu 0.6: worst |dp/dt - pH| = 1.06e-04 m g
+  swerve past the peak, hdt 0.0200 s: ... mean |residual| per step 3.320e+00 J, |sum| / flow 2.24e-03
+  swerve past the peak, hdt 0.0100 s: ... mean |residual| per step 8.664e-01 J, |sum| / flow 1.21e-03
+  swerve past the peak, hdt 0.0050 s: ... mean |residual| per step 2.209e-01 J, |sum| / flow 6.25e-04
+  swerve past the peak, hdt 0.0025 s: ... mean |residual| per step 5.593e-02 J, |sum| / flow 3.19e-04
+  braking to a stop, hdt 0.0100 s: dH -1.084e+05 J, limiters -353.5 J, |sum residual| / flow 7.23e-07
+  speed floor 5e-01 m/s: worst |floor power| / (dissipated + |supplied|) = 5.35e-04
+  speed floor 5e-02 m/s: worst |floor power| / (dissipated + |supplied|) = 5.42e-06
+  speed floor 5e-03 m/s: worst |floor power| / (dissipated + |supplied|) = 5.42e-08
+  speed floor 1e-09 m/s: worst |floor power| / (dissipated + |supplied|) = 1.95e-16
+  (then the tangent's table by lateral g, at mu 0.9 and 0.6: 0% indefinite below 0.5 mu g)
+physics_dyn_bike_plant_test (3 tests):
+  RoboRacer, 30 s: drive 845.6 J, ..., residual -1.49 (8.86e-04 of the flow)
+  (and the full-size preset's line: residual 1.10e-04 of the flow; all agents reached in 11.5 s)
+ph_se2_test (14 tests; 18 with #851):
+  one step, double vs JAX float64: worst |d| / (1 + |x|) 1.87e-16 over 16 states
+  one step, float vs JAX float64: worst |d| / (1 + |x|) 1.08e-07
+  25-step rollout, double vs JAX: worst 3.13e-15
+  noise energy over 1e-04 s: 3.5851e-06 J measured (se 2.6e-08), noise_power h = 3.5643e-06 J
+  substeps x2: error 2.570e-06 -> 6.442e-07 (x3.99)       (and x3.99, x4.00)
+  [#851] steering's share of |y.u| at the golden states 0.134; it supplies energy at 10 of 16 ...
+  [#851] modulated, substeps x2: error 3.028e-04 -> 7.055e-05 (x4.29)   (and x4.08, x4.02)
+ph_se2_train_test (8 tests; 11 with #851):
+  reference: 71 entries against central differences: worst relative 5.57e-06
+  1,691 entries against JAX: worst |d| / max|leaf| 8.05e-15
+  300 optimizer steps against optax: worst 1.58e-16 at 13 checkpoints
+  held-out rollout loss 1.7320 -> 0.0773
+  [#851] modulated: 68 entries against central differences: worst relative 3.87e-07
+  [#851] reference form on the dynamic bicycle: held-out rollout loss 8.5199 -> 0.0006;
+         steering's share of |y.u| 0.056, supplying energy at 74 of 250 steps
+  [#851] modulated form on the dynamic bicycle: held-out rollout loss 7.6348 -> 0.0092; ... 0.000
+nav_potential_test (16 tests):
+  books, dt 0.0200 -> 0.0100: order of r_E 1.987, of r_E - r_hat_E 2.993
+  books, dt 0.0100 -> 0.0050: order of r_E 1.997, of r_E - r_hat_E 2.943
+  books, dt 0.0050 -> 0.0025: order of r_E 2.000, of r_E - r_hat_E 2.930
+  clamp: 213 steps (76 in the barrier); |r_E|/bound worst 0.473; without W_cross 213 fail; ...
+  unlogged port: 229/240 steps raise the alarm; smallest |r_E + W_port|/bound 0.44
+  explicit Euler, 157 steps: ... (r_E - r_hat_E)/bound from 4.99e-01, |.| up to 4.99e-01; ...
+  semi-implicit Euler, 157 steps: ... (r_E - r_hat_E)/bound from -3.54e-05, |.| up to 3.54e-05; ...
+  agent 0 (retargeted): context work -1.6294 (without the goal change +0.0000), U 73.1821 -> 71.5528
+  agent 2 (retargeted): context work -3.2729 (without the goal change +0.0871), U 74.8257 -> 71.5528
+  min_gap push: projection work +0.1842, +0.5935
+\end{verbatim}
+\end{minipage}
+\end{center}
+
+\subsection{GRL-SNAM}
+From a GRL-SNAM checkout of \code{main}, with torch installed and no other setup (the parity tests
+need the copied goldens, not \code{pycvc}):
+\begin{center}
+\begin{minipage}{0.95\linewidth}
+\small
+\begin{verbatim}
+python -m pytest -v -p no:cacheprovider tests/test_dyn_bike_parity.py \
+    tests/test_nav_potential_parity.py tests/test_dyn4_parity.py \
+    tests/test_dyn4_ext_rollout_parity.py tests/test_material_ext_parity.py
+\end{verbatim}
+\end{minipage}
+\end{center}
+On Windows, run it from the checkout's root with \code{PYTHONPATH} set to it
+(\code{set PYTHONPATH=.}). The expected summary is \code{53 passed, 2 skipped}. The two skips are
+\code{test\_material\_ext\_parity.py}'s \code{pycvc} checks, which skip when the installed
+\code{pycvc} lacks the material external-force input. As GRL-SNAM's guide warns, a skipped test is
+not a verified one: read the \code{-v} listing.
+
 \section{Equation-to-code map}
 \label{app:map}
 
@@ -1192,7 +1423,8 @@ The tangent~\eqref{eq:tangent} & \code{dyn\_ph\_tangent\_D} & --- \\
 The step's books~\eqref{eq:books} & \code{dyn\_plant\_books} (struct \code{dyn\_ph\_books}); \code{dyn\_step\_free} & --- \\
 The live plant~\eqref{eq:live-books} & \code{cvc::physics::dyn\_bike\_plant}; \code{plant\_host} \code{"dynamic"} & plant kind via \code{pycvc} \\
 External force through the controller & \code{diff::ext\_in}, \code{bike\_control}; \code{nav/ext\_rollout.h} & \code{grl\_snam.ext\_rollout}, \code{material\_ext} \\
-The learned plant~\eqref{eq:learned} & \code{cvc::ph::se2\_vehicle}, \code{se2\_model} & JAX reference \code{CVC-Lab/LieSPHGP} \\
+The learned plant~\eqref{eq:learned} & \code{cvc::ph::se2\_vehicle}, \code{se2\_model}; its golden from the $SE(2)$ package built on \code{CVC-Lab/LieSPHGP} & --- \\
+Steering as a modulation~\eqref{eq:learned-mod} & \code{se2\_setup::modulation\_dim}, \code{cvc-ph-se2/2}, \code{cvc ph-train --steer-modulates} (\#851) & --- \\
 Output, noise power, \eqref{eq:learned-balance}--\eqref{eq:noise-power} & \code{se2\_vehicle::output}, \code{mass}, \code{noise\_power} & --- \\
 RFF features~\eqref{eq:rff}; SPD levels & \code{cvc::ph::rff}; \code{spd\_from\_levels} (\code{mat3.h}) & --- \\
 Lie-IMEX step~\eqref{eq:imex} & \code{se2\_vehicle::step}, \code{interval\_step}, \code{rollout} & --- \\
@@ -1210,8 +1442,9 @@ Context and projection work~\eqref{eq:telescope} & \code{drive\_telemetry::poten
 \begin{thebibliography}{99}
 
 \bibitem{grlsnam2025}
-A.~Ellendula, Y.~Wang, M.~Nguyen, and C.~Bajaj.
-\newblock GRL-SNAM: Geometric reinforcement learning for simultaneous navigation and mapping.
+A.~S.~Ellendula, Y.~Wang, M.~Nguyen, and C.~Bajaj.
+\newblock GRL-SNAM: Geometric reinforcement learning with path differential Hamiltonians for
+simultaneous navigation and mapping in unknown environments.
 \newblock arXiv:2601.00116, December 2025.
 
 \bibitem{liesphgp2026}
