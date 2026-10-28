@@ -809,6 +809,10 @@ device path is `CVC_ENABLE_CUDA`-gated and auto-skips without a device.
 - `GRL-SNAM/docs/CVCNAV_CPP_PORT_ROADMAP.md` — the C++ port design record (phases
   P0–P8, the fidelity boundary, `.cvcnav` format, `sim_world`/`sim_thread`).
 - `GRL-SNAM/docs/PERFORMANCE.md` — measured kernel speedups and the scaling wall.
+- [`GRL-SNAM/docs/vehicle-ph-plant.pdf`](vehicle-ph-plant.pdf) — the vehicle under the navigator,
+  written as a port-Hamiltonian system: the dynamic single-track plant's exact pH form, its
+  per-step energy books, the learned plant `cvc::ph`, the navigator's energy identity, and how to
+  reproduce every measured value (LaTeX source beside it).
 - `libcvc/docs/NAV_TRAINING.md` — the torch-free trainer's API.
 - `libcvc/docs/NAV_MATERIAL.md` — material-aware navigation.
 - Headers: `libcvc/inc/cvc/nav/` · Demos: `libcvc/examples/nav_*_demo.cpp`
