@@ -906,6 +906,13 @@ The JAX reference for the learned plant runs the other way. The $SE(2)$ vehicle 
   (\code{NavPotential.Golden}: barrier sweeps, $U$ along a material rollout, \code{drive\_potential});
   \code{tests/test\_nav\_potential\_parity.py}; also $F=-\nabla U$ by autograd
   & float: $2\times10^{-5}$ ($5\times10^{-5}$ along the rollout) & \#133 \\
+\code{grl\_snam/nav\_potential.py} \code{book\_step}, \code{energy\_residual\_bound}, \code{material\_energy}; \code{integrate\_surrogate\_material}'s books
+  & \code{book\_step}, \code{energy\_residual\_bound}, \code{rollout\_energy}'s book fields;
+  \code{nav\_energy\_books\_golden.json} (\code{NavPotential.BooksGolden}: the bound on a sweep, a
+  \code{diff::surr\_step} rollout whose speed clamp cuts every step, the material surrogate with a
+  port force and the sharp check, an unlogged port); \code{tests/test\_nav\_energy\_books\_parity.py}
+  & double: \code{book\_step} on libcvc's arguments to $10^{-12}$; float: books to $10^{-5}$ of
+  the step's bound ($2\times10^{-5}$ clamped) & \#139; golden libcvc \#849 \\
 \midrule
 JAX reference: the $SE(2)$ package built on \code{CVC-Lab/LieSPHGP} at \code{65db994} (not public) & that package against \code{cvc::ph::se2\_vehicle} and \code{se2\_train};
   \code{ph\_se2\_golden.json}; libcvc \code{ph\_se2\_test}, \code{ph\_se2\_train\_test}
@@ -923,10 +930,14 @@ installed \code{pycvc} lacks the external-force input.)
 
 \subsection{What is not twinned yet}
 The pH form's parts, rates and step books are twinned in CVC-Lab/GRL-SNAM \#138, held to libcvc's
-\code{DynBikePH.Golden}; the tangent \code{dyn\_ph\_tangent\_D} is not. The point-mass books
-(\code{book\_step}, \code{rollout\_energy}'s book fields) and the tick telemetry (\code{potential\_end},
-\code{projection\_work}, \code{context\_work}) are C++ only. None of these is bound in \code{pycvc}
-today. \code{pycvc} reports a world's plant kind (\code{nav\_sim\_world\_plant\_kind} returns
+\code{DynBikePH.Golden}; the tangent \code{dyn\_ph\_tangent\_D} is not. The navigator's point-mass
+books (\code{book\_step}, the cheap bound, the sharp check and \code{rollout\_energy}'s book fields)
+are twinned in \#139, held to libcvc's \code{NavPotential.BooksGolden}. The tick telemetry
+(\code{potential\_end}, \code{projection\_work}, \code{context\_work}) is a running world's, not a
+function's, so it has no twin. libcvc \#857 binds it in \code{pycvc} instead:
+\code{nav\_sim\_world\_set\_capture\_drive\_telemetry} and \code{nav\_sim\_world\_drive\_telemetry} read
+a \code{sim\_world}'s last tick, the three books included, from the first \code{pycvc} release that
+carries it. \code{pycvc} reports a world's plant kind (\code{nav\_sim\_world\_plant\_kind} returns
 \code{"dynamic"}), but not the plant's books. \#831 left \code{dyn\_plant}'s outputs untouched.
 libcvc \#852's wheel-frame front slip changes them, and \#138 moves the twin's plant with it,
 along with its three fixtures (\code{dyn\_bike\_golden.json}, \code{dyn\_bike\_ph\_golden.json}, and
@@ -968,6 +979,23 @@ the step's actuator outputs) and the pre-limiter twist, plus $H$'s change across
 \code{DynBikePH.Golden} in double: the worst relative difference is $7.1\times10^{-14}$ on the
 books and $4.4\times10^{-14}$ on their gradient, which autograd takes and libcvc takes by dual
 numbers.
+
+\paragraph{Book the navigator's energy.} The point-mass surrogate's books come with its rollout.
+Given \code{energy=\{"books": True, "sharp": True\}}, \code{integrate\_surrogate\_material} fills
+\code{kinetic}, \code{w\_damp}, \code{w\_port}, \code{w\_clamp}, \code{w\_cross}, \code{residual},
+\code{bound} and \code{residual\_sharp} for every step, in float64 and detached, as libcvc's
+\code{rollout\_energy} does. The rollout's outputs are unchanged bit for bit.
+\code{nav\_potential.book\_step} books any other such step; the parity test books
+\code{sdf\_rollout}'s clamped surrogate with it. \code{tests/test\_nav\_energy\_books\_parity.py}
+holds the books to \code{NavPotential.BooksGolden}. \code{book\_step} on libcvc's arguments agrees
+bit for bit, and the books agree to $1.1\times10^{-6}$ of the step's bound on the clamped rollout
+and $8.3\times10^{-8}$ on the material surrogate. The books see only the integrator when the
+patch's gradient channels are its values' gradients. Otherwise each step also books the gap
+between the force and $-\nabla U$, work of order $h$, which the cheap bound reads as a stale field:
+on \code{NavPotential.Golden}'s curved patch it fills 99.65\% of the bound at $h=0.002$. Across
+ticks, a live world's books come from \code{pycvc} (libcvc \#857). With capture on,
+\code{nav\_sim\_world\_drive\_telemetry} gives each agent's \code{projection\_work} and
+\code{context\_work}, the terms of the last two sums of~\eqref{eq:telescope}.
 
 \paragraph{Energy-aware objectives (proposal).} With the books available inside the rollout, a
 trainer can price energy directly:
@@ -1302,11 +1330,11 @@ sets of books of Section~\ref{sec:two-books} stay separate. Interconnection and 
 a car is a research problem: with two inputs and three velocity degrees of freedom, its matching
 condition fails in general~\cite{ortega2002idapbc}.
 
-\paragraph{Python access.} The step's books have a torch twin (GRL-SNAM \#138), but the live
-plant's books and the tick telemetry are C++ only. \code{pycvc} bindings for
-\code{dyn\_bike\_plant}'s books and for \code{sim\_world}'s telemetry would let GRL-SNAM's
-evaluations read them from a running world. (\code{pycvc} binds neither \code{dyn\_bike\_plant}
-nor \code{plant\_host} today.)
+\paragraph{Python access.} The plant step's books and the navigator's point-mass books have torch
+twins (GRL-SNAM \#138 and \#139), and \code{pycvc} reads a running world's tick telemetry
+(libcvc \#857). The live plant's books are still C++ only: \code{pycvc} bindings for
+\code{dyn\_bike\_plant}'s books would let GRL-SNAM's evaluations read them from a running world.
+(\code{pycvc} binds neither \code{dyn\_bike\_plant} nor \code{plant\_host} today.)
 
 % ===========================================================================
 \appendix
@@ -1492,8 +1520,8 @@ RFF features~\eqref{eq:rff}; SPD levels & \code{cvc::ph::rff}; \code{spd\_from\_
 Lie-IMEX step~\eqref{eq:imex} & \code{se2\_vehicle::step}, \code{interval\_step}, \code{rollout} & --- \\
 Rollout objective~\eqref{eq:objective} & \code{se2\_rollout\_objective}, \code{se2\_optimizer}; \code{cvc ph-train} & --- \\
 $U_{\mathrm{nav}}$, \eqref{eq:unav} & \code{nav/detail/nav\_potential.h}, \code{detail::material\_energy} & \code{grl\_snam.nav\_potential} \\
-Per-step identity~\eqref{eq:rE}; checks & \code{book\_step}, \code{energy\_residual\_bound}; \code{rollout\_energy}'s book fields & --- \\
-Context and projection work~\eqref{eq:telescope} & \code{drive\_telemetry::potential\_end}, \code{projection\_work}, \code{context\_work} (\code{sim\_world}) & --- \\
+Per-step identity~\eqref{eq:rE}; checks & \code{book\_step}, \code{energy\_residual\_bound}; \code{rollout\_energy}'s book fields & \code{nav\_potential.book\_step}, \code{energy\_residual\_bound}; \code{integrate\_surrogate\_material(energy=...)} (\#139) \\
+Context and projection work~\eqref{eq:telescope} & \code{drive\_telemetry::potential\_end}, \code{projection\_work}, \code{context\_work} (\code{sim\_world}) & read via \code{pycvc} \code{nav\_sim\_world\_drive\_telemetry} (libcvc \#857) \\
 \bottomrule
 \end{tabularx}
 \caption{Where each equation lives. ``---'' marks C++-only pieces.}
