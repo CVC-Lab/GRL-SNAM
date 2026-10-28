@@ -508,3 +508,31 @@ def test_model_checkpoint_key_contract():
         "mu_lat_head.0",
     ):
         assert any(k.startswith(prefix) for k in keys), prefix
+
+
+def test_geometry_warm_start_translates_legacy_obstacle_encoder(tmp_path):
+    source = mnav.CoefEnergyNetMaterial()
+    geometry_prefixes = (
+        "obs_enc.",
+        "goal_enc.",
+        "fuser.",
+        "alpha_head.",
+        "beta_head.",
+        "gamma_head.",
+    )
+    state = {}
+    for name, value in source.state_dict().items():
+        if not name.startswith(geometry_prefixes):
+            continue
+        legacy_name = name.replace("obs_enc.", "obs_enc.mlp.", 1)
+        state[legacy_name] = torch.full_like(value, 0.125)
+    checkpoint = tmp_path / "geometry.pt"
+    torch.save({"model_state_dict": state}, checkpoint)
+    target = mnav.CoefEnergyNetMaterial()
+
+    matched = mnav.load_geometry_weights(target, checkpoint)
+
+    assert matched == len(state)
+    for name, value in target.state_dict().items():
+        if name.startswith(geometry_prefixes):
+            assert torch.equal(value, torch.full_like(value, 0.125)), name
