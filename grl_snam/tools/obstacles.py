@@ -24,11 +24,12 @@ def extract(
     cell becomes one circular obstacle at the cell centre with radius
     ``radius_frac * cell_size``. Free cells become the drivable pool. Needs the
     ``pycvc_gl`` scene helpers (VTK rasterization); imported lazily."""
-    from pycvc_gl.scenes import building_occupancy, terrain_grid
+    from pycvc_gl.scenes import building_occupancy
 
-    terrain = os.path.join(bundle_dir, "terrain.json")
+    from .sdf import terrain_bounds
+
     glb = os.path.join(bundle_dir, "buildings.glb")
-    _, bounds, _, _ = terrain_grid(terrain)
+    bounds = terrain_bounds(bundle_dir)
     mnx, mny, mxx, mxy = bounds
 
     occ = building_occupancy(glb, bounds, grid, grid, inflate_m=0.0)

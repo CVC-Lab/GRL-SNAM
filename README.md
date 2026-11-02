@@ -2,7 +2,7 @@
 
 This repository contains the implementation of **GRL-SNAM**, a geometric reinforcement learning framework for simultaneous navigation and mapping in unknown environments using Hamiltonian mechanics and differential policy optimization.
 
-📖 **Documentation:** [Developer Guide](docs/developer-guide.md) · [Native `cvc::nav` acceleration](docs/NATIVE_CVC_NAV.md) · [Material-aware navigation](docs/MATERIAL_NAV.md) · [Vehicle refinements](docs/VEHICLE_REFINEMENTS.md) · [Navigation stats & scorecard](docs/NAV_STATS.md) · [PyPI Publishing Roadmap](docs/pypi-publishing-roadmap.md) · [Headless server quickstart](docs/headless-quickstart.md) · [The vehicle plant in port-Hamiltonian form (PDF)](docs/vehicle-ph-plant.pdf)
+📖 **Documentation:** [Developer Guide](docs/developer-guide.md) · [Native `cvc::nav` acceleration](docs/NATIVE_CVC_NAV.md) · [Running on a vehicle plant (kinematic, dynamic, Jolt)](docs/PLANTS.md) · [Material-aware navigation](docs/MATERIAL_NAV.md) · [Vehicle refinements](docs/VEHICLE_REFINEMENTS.md) · [Navigation stats & scorecard](docs/NAV_STATS.md) · [PyPI Publishing Roadmap](docs/pypi-publishing-roadmap.md) · [Headless server quickstart](docs/headless-quickstart.md) · [The vehicle plant in port-Hamiltonian form (PDF)](docs/vehicle-ph-plant.pdf)
 
 ## Overview
 
@@ -110,6 +110,12 @@ not a screen grab) and draws a **live metrics HUD** on every frame: the network'
 predicted coefficients (α, β, γ), wall clearance, speed, escape mode, and building
 penetration. `--source cvc` on `build-sdf` uses CVC's mesh-exact 3-D SDF instead of the
 footprint EDT. See [docs/training-navigation-on-geometry.md](docs/training-navigation-on-geometry.md).
+
+`--plant kinematic|dynamic|jolt` drives the same policy on a vehicle instead of the point
+surrogate: nav's kinematic bicycle, libcvc's dynamic single-track vehicle, or a Jolt vehicle
+(`--vehicle humvee`, `--mu` the ground's grip). The HUD then adds the vehicle's sideslip, tire
+use and energy books. [docs/PLANTS.md](docs/PLANTS.md) covers every demo and bench on a plant,
+and training through Jolt.
 
 ### Live inside VolRover3
 

@@ -22,6 +22,7 @@ importing this module is always safe.
 
 from __future__ import annotations
 
+import math
 import os
 
 import numpy as np
@@ -509,7 +510,7 @@ class NativeSimWorld:
     def __init__(self, handle, n):
         self._h = handle
         self.n = int(n)
-        self.plant = None  # a JoltPlant once set_plant() gives one
+        self.plant = None  # a JoltPlant or DynamicPlant once set_plant() gives one
 
     def step(self, num_threads=0):
         _pycvc.nav_sim_world_step(self._h, int(num_threads))
@@ -529,15 +530,17 @@ class NativeSimWorld:
 
     @property
     def plant_kind(self):
-        """``"kinematic"`` (nav's bicycle) or ``"jolt"`` (a :class:`JoltPlant`)."""
+        """``"kinematic"`` (nav's bicycle), ``"jolt"`` (a :class:`JoltPlant`) or ``"dynamic"``
+        (a :class:`DynamicPlant`)."""
         if not HAS_PLANT:
             return "kinematic"
         return str(_pycvc.nav_sim_world_plant_kind(self._h))
 
     def set_plant(self, plant):
-        """Drive the agents as ``plant``'s vehicles (a :class:`JoltPlant`), or as nav's
-        kinematic bicycle with ``None``. The plant is attached at the agents' current
-        poses, at rest; the world holds it alive while it is set."""
+        """Drive the agents as ``plant``'s vehicles (a :class:`JoltPlant` or
+        :class:`DynamicPlant`), or as nav's kinematic bicycle with ``None``. The plant is
+        attached at the agents' current poses, at rest; the world holds it alive while it is
+        set."""
         if plant is None:
             if HAS_PLANT:
                 _pycvc.nav_sim_world_set_plant(self._h, None)
@@ -746,15 +749,23 @@ def sim_world_from_swarm(sw, weights_path, *, truth, freeze_sense=False, sense_e
     init (same poses, goals, colors, field prior, sensor / vehicle params and the
     same ``.cvcnav`` policy) — the pure-C++ counterpart of the torch swarm.
 
-    ``plant`` (a :class:`JoltPlant`) makes the agents drive its physics vehicles;
-    the torch Swarm itself stays kinematic (it is what trains)."""
+    ``plant`` makes the agents drive a plant's vehicles: a :class:`JoltPlant` or
+    :class:`DynamicPlant`, or a name :func:`make_plant` takes (built over the swarm's bounds
+    with ``truth`` as its obstacles). On a plant the navigator plans with the vehicles'
+    limits, never more than the swarm's (as ``Squad(plant=...)`` does). The torch Swarm
+    itself stays kinematic (it is what trains)."""
     o = np.ascontiguousarray(sw.o.detach().cpu().numpy(), np.float32)
     goal = np.ascontiguousarray(sw.goal.detach().cpu().numpy(), np.float32)
     color = np.ascontiguousarray(sw.color.detach().cpu().numpy(), np.float32)
     tr = np.ascontiguousarray(truth, np.uint8)
     H, W = tr.shape
-    v, k = sw.veh, sw.kw
+    v, k = dict(sw.veh), sw.kw
     mnx, mny, mxx, mxy = sw.bounds
+    plant = make_plant(plant, bounds=sw.bounds, obstacles=np.asarray(truth, bool))
+    if plant is not None:
+        lim = plant.nav_limits(sw.scale)
+        v["a_max"] = min(float(v["a_max"]), lim["a_max"])
+        v["a_lat_max"] = min(float(v["a_lat_max"]), lim["a_lat_max"])
     h = _pycvc.nav_sim_world_create(
         tr,
         tr,
@@ -905,38 +916,12 @@ class JoltPlant:
                 "pycvc lacks the physics bindings (physics_world, nav_plant) — install a pycvc "
                 "built from libcvc with P6."
             )
-        vs = vehicles if isinstance(vehicles, list | tuple) else [vehicles]
-        if not vs:
-            raise ValueError("JoltPlant needs at least one vehicle")
-        self.descs = [vehicle_desc(v) for v in vs]
+        self.descs = _descs_of(vehicles, type(self).__name__)
         self.a_lat_g = float(a_lat_g)
-        self.world = _pycvc.physics_world(backend="jolt", fixed_dt=float(fixed_dt))
-        ground = self.world.add_material(
-            "ground", friction=float(ground_mu), rolling_resistance=float(rolling_resistance)
+        self.ground_mu = float(ground_mu)
+        self.world, self.ground, self.obstacles = _physics_scene(
+            bounds, obstacles, ground_mu, rolling_resistance, obstacle_height_m, fixed_dt
         )
-        if bounds is not None:
-            mnx, mny, mxx, mxy = (float(b) for b in bounds)
-            cx, cy = 0.5 * (mnx + mxx), 0.5 * (mny + mxy)
-            hx, hy = 0.5 * (mxx - mnx) + 50.0, 0.5 * (mxy - mny) + 50.0
-        else:
-            cx = cy = 0.0
-            hx = hy = 1000.0
-        self.world.add_box((hx, hy, 0.5), position=(cx, cy, -0.5), motion="static", material=ground)
-        self.obstacles = []
-        if obstacles is not None:
-            if bounds is None:
-                raise ValueError("JoltPlant: obstacles need the grid's bounds")
-            building = self.world.add_material("building", friction=0.6)
-            h = float(obstacle_height_m)
-            for x0, y0, x1, y1 in obstacle_boxes(obstacles, bounds):
-                self.obstacles.append(
-                    self.world.add_box(
-                        (0.5 * (x1 - x0), 0.5 * (y1 - y0), 0.5 * h),
-                        position=(0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * h),
-                        motion="static",
-                        material=building,
-                    )
-                )
         self.plant = _pycvc.nav_plant(
             self.world,
             self.descs,
@@ -980,19 +965,233 @@ class JoltPlant:
     def state_hash(self):
         return int(self.world.state_hash())
 
+    def telemetry(self, i):
+        """Agent ``i``'s vehicle for a HUD, in SI: ``slip_deg`` (the chassis' sideslip, its
+        velocity's angle off its heading), ``tire_use`` (the most used tire's slip over its
+        peak; past 1 it slides), ``lateral_g`` (speed x yaw rate over g), ``speed_mps``, and
+        ``books`` (J since the start): what the source drew and where it went (tire, brake,
+        aero, rolling), and the kinetic energy now. ``touching`` is whether its chassis touched an
+        obstacle box in the tick's last physics step."""
+        vs = self.vehicle_state(i)
+        e = vs["energy"]
+        vx, vy, _ = vs["linear_velocity"]
+        w, qx, qy, qz = vs["rotation"]
+        head = math.atan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+        t = _telemetry(
+            vx,
+            vy,
+            head,
+            vs["angular_velocity"][2],
+            self.state(i)["tire_use"],
+            {k: float(e[k]) for k in ("source", "tire", "brake", "aero", "rolling", "kinetic")},
+        )
+        ch, boxes = vs["chassis"], set(self.obstacles)
+        t["touching"] = any(
+            c["type"] != "removed"
+            and (
+                (c["body_a"] == ch and c["body_b"] in boxes)
+                or (c["body_b"] == ch and c["body_a"] in boxes)
+            )
+            for c in self.world.contacts()
+        )
+        return t
 
-def make_plant(plant, *, bounds=None, obstacles=None):
-    """``None`` / ``"kinematic"`` -> None (nav's bicycle); ``"jolt"`` or a preset name ->
-    a :class:`JoltPlant` over ``bounds`` with ``obstacles``; a JoltPlant as it is."""
+
+def _descs_of(vehicles, who):
+    vs = vehicles if isinstance(vehicles, list | tuple) else [vehicles]
+    if not vs:
+        raise ValueError(f"{who} needs at least one vehicle")
+    return [vehicle_desc(v) for v in vs]
+
+
+def _physics_scene(bounds, obstacles, ground_mu, rolling_resistance, obstacle_height_m, fixed_dt):
+    """A Jolt world for a plant: a flat static ground box (``ground_mu``, ``rolling_resistance``)
+    over ``bounds`` and the occupied cells of ``obstacles`` as static boxes
+    ``obstacle_height_m`` tall (:func:`obstacle_boxes`). Returns (world, ground, obstacles), the
+    last two body ids."""
+    world = _pycvc.physics_world(backend="jolt", fixed_dt=float(fixed_dt))
+    gm = world.add_material(
+        "ground", friction=float(ground_mu), rolling_resistance=float(rolling_resistance)
+    )
+    if bounds is not None:
+        mnx, mny, mxx, mxy = (float(b) for b in bounds)
+        cx, cy = 0.5 * (mnx + mxx), 0.5 * (mny + mxy)
+        hx, hy = 0.5 * (mxx - mnx) + 50.0, 0.5 * (mxy - mny) + 50.0
+    else:
+        cx = cy = 0.0
+        hx = hy = 1000.0
+    ground = world.add_box((hx, hy, 0.5), position=(cx, cy, -0.5), motion="static", material=gm)
+    boxes = []
+    if obstacles is not None:
+        if bounds is None:
+            raise ValueError("a plant's obstacles need the grid's bounds")
+        building = world.add_material("building", friction=0.6)
+        h = float(obstacle_height_m)
+        for x0, y0, x1, y1 in obstacle_boxes(obstacles, bounds):
+            boxes.append(
+                world.add_box(
+                    (0.5 * (x1 - x0), 0.5 * (y1 - y0), 0.5 * h),
+                    position=(0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * h),
+                    motion="static",
+                    material=building,
+                )
+            )
+    return world, ground, boxes
+
+
+def _telemetry(vx, vy, heading, yaw_rate, tire_use, books):
+    """The HUD's plant dict from a body's world velocity (vx, vy, m/s), heading, yaw rate."""
+    speed = math.hypot(vx, vy)
+    fwd = vx * math.cos(heading) + vy * math.sin(heading)
+    lat = -vx * math.sin(heading) + vy * math.cos(heading)
+    slip = math.degrees(math.atan2(lat, abs(fwd))) if speed > 0.5 else 0.0
+    return {
+        "slip_deg": slip,
+        "tire_use": float(tire_use),
+        "lateral_g": speed * float(yaw_rate) / 9.80665,
+        "speed_mps": speed,
+        "books": books,
+    }
+
+
+#: The pycvc build binds libcvc's dynamic single-track plant (``pycvc.dyn_bike_plant``).
+HAS_DYN_PLANT = HAS_PLANT and hasattr(_pycvc, "dyn_bike_plant")
+
+
+class DynamicPlant:
+    """libcvc's dynamic single-track vehicle (``dyn_bike_plant``) as a :class:`NativeSimWorld`'s
+    plant: the navigator's command drives a bicycle with tires (Pacejka, from the vehicle's
+    ``vehicle_desc``), load transfer and actuator lag, and the plant keeps its
+    port-Hamiltonian energy books. It is the plant libcvc's coefficient trainer's
+    ``rollout_kind::dynamic`` trains through.
+
+    ``vehicles``, ``bounds``, ``obstacles``, ``ground_mu`` and the governors are
+    :class:`JoltPlant`'s. With ``collide`` (the default) each chassis is a box in a Jolt world
+    holding the same ground and obstacle boxes, so a vehicle that leaves the plan hits the
+    building it would have met and the books gain a contact line; without it nothing collides
+    and no Jolt is needed. ``substep`` is the model's step (the world's ``fixed_dt`` with one).
+    """
+
+    kind = "dynamic"
+
+    def __init__(
+        self,
+        vehicles="roboracer",
+        *,
+        bounds=None,
+        obstacles=None,
+        ground_mu=0.9,
+        rolling_resistance=0.015,
+        obstacle_height_m=6.0,
+        latency=0.1,
+        brake_margin=0.8,
+        substep=0.01,
+        metres_per_world_unit=1.0,
+        a_lat_g=0.5,
+        collide=True,
+    ):
+        if not HAS_DYN_PLANT:
+            raise RuntimeError(
+                "pycvc lacks the dynamic plant (pycvc.dyn_bike_plant) — install a pycvc built "
+                "from libcvc with it."
+            )
+        self.descs = _descs_of(vehicles, type(self).__name__)
+        self.a_lat_g = float(a_lat_g)
+        self.ground_mu = float(ground_mu)
+        self.world = self.ground = None
+        self.obstacles = []
+        if collide:
+            self.world, self.ground, self.obstacles = _physics_scene(
+                bounds, obstacles, ground_mu, rolling_resistance, obstacle_height_m, substep
+            )
+        self.plant = _pycvc.dyn_bike_plant(
+            self.descs,
+            world=self.world,
+            ground_bodies=[self.ground] if self.world is not None else None,
+            mu=float(ground_mu),
+            substep=float(substep),
+            latency=float(latency),
+            brake_margin=float(brake_margin),
+            metres_per_world_unit=float(metres_per_world_unit),
+        )
+
+    nav_limits = JoltPlant.nav_limits
+
+    def state(self, i):
+        """Agent ``i`` as nav reads it (normalized frame), with its tire use."""
+        return self.plant.state(int(i))
+
+    def body(self, i):
+        """Agent ``i``'s model state in SI: x, y, psi, vx, vy (body frame, at the centre of
+        gravity), r (yaw rate), delta (steering), a (drive actuator)."""
+        return self.plant.body(int(i))
+
+    def books(self, i):
+        """Agent ``i``'s energy books (J) since the start: kinetic, drive, brake, dissipated,
+        floor, grade, limiter, contact, residual and flow."""
+        return self.plant.books(int(i))
+
+    def energy_J(self, i):
+        """What agent ``i``'s axles delivered where they pushed (the books' drive line), J."""
+        return float(self.books(i)["drive"])
+
+    def collisions(self, i):
+        """Substeps since the start in which agent ``i``'s chassis collided (0 without a world)."""
+        return int(self.plant.collisions(int(i)))
+
+    def state_hash(self):
+        return int(self.world.state_hash()) if self.world is not None else 0
+
+    def telemetry(self, i):
+        """:meth:`JoltPlant.telemetry`'s dict from the model: the sideslip is atan(vy / vx) at
+        the centre of gravity, the lateral g vx r / g, and the books are the plant's
+        (drive, brake, dissipated, contact, residual, kinetic; J); ``touching`` is whether the
+        chassis collided in the last tick."""
+        b = self.body(i)
+        c, s = math.cos(b["psi"]), math.sin(b["psi"])
+        bk = self.books(i)
+        t = _telemetry(
+            b["vx"] * c - b["vy"] * s,
+            b["vx"] * s + b["vy"] * c,
+            b["psi"],
+            b["r"],
+            self.state(i)["tire_use"],
+            {
+                k: float(bk[k])
+                for k in ("drive", "brake", "dissipated", "contact", "residual", "kinetic")
+            },
+        )
+        t["touching"] = self.world is not None and self.plant.collisions_tick(int(i)) > 0
+        return t
+
+
+#: The plants :func:`make_plant` builds by name, besides a vehicle preset (a Jolt plant).
+PLANTS = ("kinematic", "dynamic", "jolt")
+
+
+def make_plant(plant, *, bounds=None, obstacles=None, **kw):
+    """``None`` / ``"kinematic"`` -> None (nav's bicycle); ``"jolt"`` or a preset name -> a
+    :class:`JoltPlant` over ``bounds`` with ``obstacles``; ``"dynamic"`` or
+    ``"dynamic:<preset>"`` -> a :class:`DynamicPlant`; ``"jolt:<preset>"`` names the Jolt
+    plant's vehicle. Without a preset both are RoboRacers. A plant object passes through.
+    ``kw`` (``ground_mu``, ``latency``, ...) goes to the plant's constructor."""
     if plant is None or plant == "kinematic":
         return None
-    if isinstance(plant, JoltPlant):
+    if isinstance(plant, JoltPlant | DynamicPlant):
         return plant
-    if plant == "jolt":
-        plant = "roboracer"
     if isinstance(plant, str):
-        return JoltPlant(plant, bounds=bounds, obstacles=obstacles)
-    raise ValueError("plant is None, 'kinematic', 'jolt', a vehicle preset name or a JoltPlant")
+        kind, _, vehicle = plant.partition(":")
+        if kind in VEHICLE_PRESETS and not vehicle:
+            kind, vehicle = "jolt", plant
+        vehicles = vehicle.split(",") if vehicle else "roboracer"
+        if kind == "jolt":
+            return JoltPlant(vehicles, bounds=bounds, obstacles=obstacles, **kw)
+        if kind == "dynamic":
+            return DynamicPlant(vehicles, bounds=bounds, obstacles=obstacles, **kw)
+    raise ValueError(
+        "plant is None, 'kinematic', 'jolt', 'dynamic' (each optionally ':<presets>'), a vehicle "
+        "preset name, a JoltPlant or a DynamicPlant"
+    )
 
 
 # ── vehicle routes on a plant (libcvc's plan_vehicle_route + route_follower, P9 R1/R2) ──────
@@ -1250,7 +1449,31 @@ def train_coef_mlp(
     or ``"bicycle"`` (the deployment integrator — needs a much lower ``lr``, ~1e-5);
     ``use_cuda`` picks the device-resident GPU trainer when this pycvc has CUDA + a device.
     This is the native trainer behind ``GRL_SNAM_TRAIN_BACKEND=native``; torch
-    :mod:`grl_snam.tools.coef_train` stays canonical. Returns ``out_path``."""
+    :mod:`grl_snam.tools.coef_train` stays canonical. ``rollout="jolt"`` trains through Jolt
+    instead (:func:`train_coef_mlp_jolt`, with its defaults; CPU only). Returns ``out_path``."""
+    if str(rollout).lower() == "jolt":
+        if use_cuda:
+            raise ValueError("the Jolt rollout trains on the CPU only")
+        train_coef_mlp_jolt(
+            occ,
+            out_path,
+            bounds=bounds,
+            scale=scale,
+            rr=rr,
+            d_hat=d_hat,
+            dt=dt,
+            vmax=vmax,
+            steps=steps,
+            horizon=horizon,
+            n=n,
+            window=window,
+            hidden=hidden,
+            lr=lr,
+            w_coll=w_coll,
+            grad_clip=grad_clip,
+            seed=seed,
+        )
+        return out_path
     mnx, mny, mxx, mxy = (float(b) for b in bounds)
     rk = 1 if str(rollout).lower() == "bicycle" else 0
     _pycvc.nav_train_coef_mlp(
@@ -1278,6 +1501,104 @@ def train_coef_mlp(
         str(out_path),
     )
     return out_path
+
+
+#: The pycvc build trains through Jolt (libcvc's ``rollout_kind::jolt``).
+HAS_TRAIN_JOLT = AVAILABLE and hasattr(_pycvc, "nav_train_coef_mlp_jolt")
+
+
+def wheelbase_m(vehicle):
+    """A vehicle's wheelbase (m): the distance between its outermost axles."""
+    d = vehicle_desc(vehicle)
+    xs = [d.axle(k)["x"] for k in range(d.axle_count())]
+    return max(xs) - min(xs)
+
+
+def train_coef_mlp_jolt(
+    occ,
+    out_path,
+    *,
+    bounds,
+    scale,
+    rr=0.15,
+    d_hat=0.35,
+    dt=0.06,
+    vmax=0.9,
+    steps=400,
+    horizon=28,
+    n=192,
+    window=7,
+    hidden=64,
+    lr=5e-5,
+    w_coll=3.0,
+    w_energy=0.0,
+    grad_clip=5.0,
+    seed=0,
+    vehicle="roboracer",
+    veh_L=None,
+    veh_a_max=None,
+    veh_a_lat_max=None,
+    a_lat_g=0.5,
+    calib_agents=16,
+    calib_steps=200,
+):
+    """Train the CoefMLP through Jolt (libcvc's ``rollout_kind::jolt``, docs/NAV_TRAINING.md
+    "Training on Jolt"): Jolt drives ``vehicle`` (``"roboracer"`` or ``"humvee"``) in a copy of
+    the scene per agent, the scene's occupied cells as static boxes, and the gradient is the
+    four-wheel port-Hamiltonian model's along Jolt's trajectory, after the model is calibrated
+    to Jolt's energy ledger on ``calib_agents`` vehicles for ``calib_steps`` steps.
+
+    ``veh_L`` is the vehicle's wheelbase in normalized units (default: its own, at ``scale``),
+    ``veh_a_max`` and ``veh_a_lat_max`` the controller's limits (default: :class:`JoltPlant`'s,
+    0.8 x its ``max_accel`` and ``a_lat_g`` g); ``w_energy`` > 0 prices the energy Jolt's
+    source draws. CPU only, no torch. Writes the ``.cvcnav`` to ``out_path`` and returns the
+    calibration (a dict: the drive's gain, brake gain, trim and lag, the factors on the tires,
+    drag, rolling resistance and dampers, the price, and the fit's errors)."""
+    if not HAS_TRAIN_JOLT:
+        raise RuntimeError(
+            "pycvc lacks nav_train_coef_mlp_jolt — install a pycvc built from libcvc with the "
+            "Jolt rollout's bindings"
+        )
+    if vehicle not in VEHICLE_PRESETS:
+        raise ValueError(f"the Jolt rollout's vehicle is one of {VEHICLE_PRESETS}")
+    S = float(scale)
+    d = vehicle_desc(vehicle)
+    if veh_L is None:
+        veh_L = wheelbase_m(d) * S
+    if veh_a_max is None:
+        veh_a_max = 0.8 * d.max_accel * S
+    if veh_a_lat_max is None:
+        veh_a_lat_max = float(a_lat_g) * 9.80665 * S
+    mnx, mny, mxx, mxy = (float(b) for b in bounds)
+    return _pycvc.nav_train_coef_mlp_jolt(
+        np.ascontiguousarray(occ, np.uint8),
+        mnx,
+        mny,
+        mxx,
+        mxy,
+        S,
+        float(rr),
+        float(d_hat),
+        float(dt),
+        float(vmax),
+        int(steps),
+        int(horizon),
+        int(n),
+        int(window),
+        int(hidden),
+        float(lr),
+        float(w_coll),
+        float(w_energy),
+        float(grad_clip),
+        int(seed),
+        str(vehicle),
+        float(veh_L),
+        float(veh_a_max),
+        float(veh_a_lat_max),
+        int(calib_agents),
+        int(calib_steps),
+        str(out_path),
+    )
 
 
 # ── material-aware kernels (cvc::nav material) ──────────────────────────────
