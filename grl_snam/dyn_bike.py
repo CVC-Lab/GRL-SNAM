@@ -61,6 +61,11 @@ port-Hamiltonian form the wheels' angular momenta join the state, the longitudin
 each term returned by :func:`dyn_spin_ph_rates_at`, and :func:`dyn_spin_plant_books` books one
 step as :func:`dyn_plant_books` does. The parity gate is ``tests/test_dyn_spin_ph_parity.py``,
 against libcvc's ``dyn_spin_ph_golden.json``.
+
+Both plants take an optional external ``wrench`` ``(F_x, F_y, M_z)`` on the body, held over the
+step: the pH form's external port, such as the compliant contact's (:mod:`grl_snam.dyn_contact`).
+Their books then gain its energy, ``port`` = the trapezoid of ``v^T W`` (:func:`dyn_ph_port_work`),
+and the residual is what that leaves.
 """
 
 from __future__ import annotations
@@ -272,10 +277,11 @@ def _spin_long_step(p: DynBikeParams, hdt, vx0, vy, r, om0, a1, cd, sd, cap_f, c
     return vx, torch.stack((of, orr), dim=-1), Fxf, Fxr
 
 
-def _plant(p: DynBikeParams, lim: PlantLimits, state, om0, delta_cmd, a_cmd, grade):
+def _plant(p: DynBikeParams, lim: PlantLimits, state, om0, delta_cmd, a_cmd, grade, wrench=None):
     """``dyn_plant_core``: one step of the plant (``om0`` None) or of the wheel-spin plant
-    (``om0`` the wheels' speeds ``(..., 2)``). Gives the next ``(..., 8)``, the twist the step
-    reached before its limiters ``(..., 3)``, and the wheels' new speeds (None without them)."""
+    (``om0`` the wheels' speeds ``(..., 2)``), under the external ``wrench`` ``(..., 3)`` when
+    given. Gives the next ``(..., 8)``, the twist the step reached before its limiters
+    ``(..., 3)``, and the wheels' new speeds (None without them)."""
     x, y, psi, vx, vy, r, delta, a = state.unbind(-1)
     grade = torch.as_tensor(grade, dtype=state.dtype, device=state.device)
     hdt = lim.hdt
@@ -302,6 +308,9 @@ def _plant(p: DynBikeParams, lim: PlantLimits, state, om0, delta_cmd, a_cmd, gra
     u0 = torch.sqrt(vx * vx + eps2)
     sg0 = vx / u0
     F_res = -p.drag * vx * u0 - p.c_rr * m * g * sg0 - m * g * grade
+    # An external wrench's force along the body (the external port), held over the step.
+    if wrench is not None:
+        F_res = F_res + wrench[..., 0]
     if om0 is None:
         Fxf, Fxr, Dyf, Dyr = _axles(p, a1)
         vx_p = _clamp(vx + hdt * ((Fxf * cd + Fxr + F_res) / m), sp_min, lim.vmax)
@@ -332,6 +341,9 @@ def _plant(p: DynBikeParams, lim: PlantLimits, state, om0, delta_cmd, a_cmd, gra
         Fyr = _lateral(ar, p.B_r, Cp, Dyr)
         FY = Fxf * sd + Fyf * cd + Fyr
         MZ = lf * (Fxf * sd + Fyf * cd) - lr * Fyr
+        if wrench is not None:
+            FY = FY + wrench[..., 1]
+            MZ = MZ + wrench[..., 2]
         f_vy = FY / m - r1 * vx_p
         f_r = MZ / Iz
         Sf_t = _secant_w(Fyf, af, wf, torch.zeros_like(wf), p.B_f, Cp, Dyf, uf)
@@ -387,13 +399,18 @@ def dyn_plant(
     grade: torch.Tensor | float = 0.0,
     *,
     with_free: bool = False,
+    wrench: torch.Tensor | None = None,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """One step of the plant: ``state`` ``(..., 8)`` to the next ``(..., 8)``.
 
     With ``with_free``, also the twist ``(vx, vy, r)`` ``(..., 3)`` the step reached before its
-    limiters (the speed clamp, the low-speed blend): libcvc's ``dyn_step_free``.
+    limiters (the speed clamp, the low-speed blend): libcvc's ``dyn_step_free``. ``wrench``, when
+    given, is an external wrench ``(..., 3)`` on the body (F_x, F_y, M_z: body axes, at the centre
+    of gravity) held over the step, the pH form's external port, such as the contact's
+    (:mod:`grl_snam.dyn_contact`): it joins the resistances along the body and the lateral
+    solve's force and moment.
     """
-    nxt, free, _ = _plant(p, lim, state, None, delta_cmd, a_cmd, grade)
+    nxt, free, _ = _plant(p, lim, state, None, delta_cmd, a_cmd, grade, wrench)
     return (nxt, free) if with_free else nxt
 
 
@@ -406,12 +423,13 @@ def dyn_spin_plant(
     grade: torch.Tensor | float = 0.0,
     *,
     with_free: bool = False,
+    wrench: torch.Tensor | None = None,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """One step of the wheel-spin plant: ``state`` ``(..., 10)`` (:data:`SPIN_ORDER`) to the
     next ``(..., 10)``, the wheels' speeds advanced with the speed. The low-speed blend and the
-    speed clamp act on the body alone. ``with_free`` as :func:`dyn_plant`'s.
+    speed clamp act on the body alone. ``with_free`` and ``wrench`` as :func:`dyn_plant`'s.
     """
-    nxt, free, om1 = _plant(p, lim, state[..., :8], state[..., 8:], delta_cmd, a_cmd, grade)
+    nxt, free, om1 = _plant(p, lim, state[..., :8], state[..., 8:], delta_cmd, a_cmd, grade, wrench)
     nxt = torch.cat((nxt, om1), dim=-1)
     return (nxt, free) if with_free else nxt
 
@@ -459,7 +477,7 @@ class DynPHRates:
 @dataclass(frozen=True)
 class DynPHBooks:
     """``dyn_ph_books``, one step's books in J: dH = supplied - dissipated + floor + grade +
-    limiter + residual."""
+    limiter (+ port) + residual."""
 
     dH: torch.Tensor
     dissipated: torch.Tensor
@@ -468,6 +486,7 @@ class DynPHBooks:
     grade: torch.Tensor
     limiter: torch.Tensor  # the kinetic energy the speed clamp and the low-speed blend added
     residual: torch.Tensor  # the integrator's error, second order in hdt per step
+    port: torch.Tensor | None = None  # an external wrench's energy, v^T W over the step
 
 
 def dyn_ph_hamiltonian(p: DynBikeParams, state: torch.Tensor) -> torch.Tensor:
@@ -560,6 +579,12 @@ def dyn_ph_rates_at(
     )
 
 
+def dyn_ph_port_work(hdt: float, vx0, vy0, r0, vx1, vy1, r1, W: torch.Tensor) -> torch.Tensor:
+    """The external port's energy over a step, ``W`` ``(..., 3)`` held: the trapezoid of its
+    power v^T W between the step's start and the twist it reached before its limiters."""
+    return 0.5 * hdt * ((vx0 + vx1) * W[..., 0] + (vy0 + vy1) * W[..., 1] + (r0 + r1) * W[..., 2])
+
+
 def dyn_plant_books(
     p: DynBikeParams,
     lim: PlantLimits,
@@ -567,14 +592,18 @@ def dyn_plant_books(
     delta_cmd: torch.Tensor,
     a_cmd: torch.Tensor,
     grade: torch.Tensor | float = 0.0,
+    *,
+    wrench: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, DynPHBooks]:
     """:func:`dyn_plant`'s step, unchanged, and its books.
 
     The powers are the trapezoid between the step's start, with the inputs it applied (the
     actuators' outputs ``delta1``, ``a1``), and the twist it reached before its limiters;
-    ``limiter`` is dH across the clamp and the blend; ``residual`` is the rest.
+    ``limiter`` is dH across the clamp and the blend; ``residual`` is the rest. With ``wrench``
+    (the external port, held over the step) the books gain its energy, ``port``
+    (:func:`dyn_ph_port_work`), and the residual is what that leaves.
     """
-    nxt, free = dyn_plant(p, lim, state, delta_cmd, a_cmd, grade, with_free=True)
+    nxt, free = dyn_plant(p, lim, state, delta_cmd, a_cmd, grade, with_free=True, wrench=wrench)
     s0 = torch.cat((state[..., :6], nxt[..., 6:]), dim=-1)
     e = torch.cat((nxt[..., :3], free, nxt[..., 6:]), dim=-1)
     r0, r1 = dyn_ph_rates_at(p, s0, grade), dyn_ph_rates_at(p, e, grade)
@@ -589,6 +618,12 @@ def dyn_plant_books(
     dH = h1 - h0
     limiter = h1 - he
     residual = dH - (supplied - dissipated + floor + grade_w + limiter)
+    port = None
+    if wrench is not None:
+        port = dyn_ph_port_work(
+            lim.hdt, state[..., 3], state[..., 4], state[..., 5], *free.unbind(-1), wrench
+        )
+        residual = residual - port
     return nxt, DynPHBooks(
         dH=dH,
         dissipated=dissipated,
@@ -597,6 +632,7 @@ def dyn_plant_books(
         grade=grade_w,
         limiter=limiter,
         residual=residual,
+        port=port,
     )
 
 
@@ -642,7 +678,7 @@ class DynSpinPHRates:
 @dataclass(frozen=True)
 class DynSpinPHBooks:
     """``dyn_spin_ph_books``, one step's books in J: dH = supplied - braked - dissipated - slip +
-    floor + grade + limiter + residual."""
+    floor + grade + limiter (+ port) + residual."""
 
     dH: torch.Tensor
     dissipated: torch.Tensor
@@ -653,6 +689,7 @@ class DynSpinPHBooks:
     grade: torch.Tensor
     limiter: torch.Tensor  # the kinetic energy the speed clamp and the low-speed blend added
     residual: torch.Tensor  # the integrator's error, second order in hdt per step
+    port: torch.Tensor | None = None  # an external wrench's energy, v^T W over the step
 
 
 def dyn_spin_ph_hamiltonian(p: DynBikeParams, state: torch.Tensor) -> torch.Tensor:
@@ -726,11 +763,15 @@ def dyn_spin_plant_books(
     delta_cmd: torch.Tensor,
     a_cmd: torch.Tensor,
     grade: torch.Tensor | float = 0.0,
+    *,
+    wrench: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, DynSpinPHBooks]:
     """:func:`dyn_spin_plant`'s step, unchanged, and its books: as :func:`dyn_plant_books`, the
     trapezoid running to the state the step reached before its limiters, the wheels' new speeds
-    included (the limiters act on the body alone)."""
-    nxt, free = dyn_spin_plant(p, lim, state, delta_cmd, a_cmd, grade, with_free=True)
+    included (the limiters act on the body alone). ``wrench`` as :func:`dyn_plant_books`'."""
+    nxt, free = dyn_spin_plant(
+        p, lim, state, delta_cmd, a_cmd, grade, with_free=True, wrench=wrench
+    )
     s0 = torch.cat((state[..., :6], nxt[..., 6:8], state[..., 8:]), dim=-1)
     e = torch.cat((nxt[..., :3], free, nxt[..., 6:]), dim=-1)
     r0, r1 = dyn_spin_ph_rates_at(p, s0, grade), dyn_spin_ph_rates_at(p, e, grade)
@@ -747,6 +788,12 @@ def dyn_spin_plant_books(
     dH = h1 - h0
     limiter = h1 - he
     residual = dH - (supplied - braked - dissipated - slip + floor + grade_w + limiter)
+    port = None
+    if wrench is not None:
+        port = dyn_ph_port_work(
+            lim.hdt, state[..., 3], state[..., 4], state[..., 5], *free.unbind(-1), wrench
+        )
+        residual = residual - port
     return nxt, DynSpinPHBooks(
         dH=dH,
         dissipated=dissipated,
@@ -757,4 +804,5 @@ def dyn_spin_plant_books(
         grade=grade_w,
         limiter=limiter,
         residual=residual,
+        port=port,
     )
