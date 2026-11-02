@@ -24,6 +24,7 @@
 
 \newtheorem{proposition}{Proposition}
 \newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
 \theoremstyle{remark}
 \newtheorem{remark}{Remark}
 
@@ -66,8 +67,9 @@ Theory, Implementation and Validation for GRL-SNAM}
 GRL-SNAM navigates by learning the coefficients of a potential field and driving a vehicle with
 a bicycle controller. The vehicle under that controller is now a dynamic single-track model with
 Pacejka tires, load transfer and actuator lag, implemented in libcvc and twinned in GRL-SNAM's
-torch code. This paper writes that model as a port-Hamiltonian system on $\se^*$
-\emph{exactly}, at every tire slip and not only in the linear-tire regime. The dissipation is the
+torch code. This paper writes that model as a port-Hamiltonian system on $T^*SE(2)$
+\emph{exactly}, at every tire slip and not only in the linear-tire regime. On level ground it
+reduces to $\se^*$, with the pose recovered by reconstruction. The dissipation is the
 tires' secant stiffness, which is positive semi-definite even when a tire slides. The port is
 the pair of axle forces, with the wheels' ground speeds as its conjugate output. Steering is not a
 port: it only turns the directions along which the tires push, so it does no work. Each tire's
@@ -334,31 +336,74 @@ these are \code{dyn\_ph\_J},
 \begin{proposition}[The dynamic single-track vehicle is port-Hamiltonian at every slip]
 \label{prop:ph}
 Under the conditions of Lemma~\ref{lem:secant}, with $c_d,c_{rr}\ge0$, the vehicle's equations
-of motion~\eqref{eq:ne} are exactly
+of motion~\eqref{eq:ne}, with its pose's kinematics, are exactly the pH system on
+$SE(2)\times\se^*$
 \begin{equation}
-  \dot p=\big(\J(p)-\R(v;\delta,a)\big)v+\G(\delta)\,u+f_\varepsilon-mg\theta\,e_x,\qquad
-  y=\G(\delta)\T v,
+  \begin{pmatrix}\dot q\\\dot p\end{pmatrix}=\left[\begin{pmatrix}0&T(q)\\-T(q)\T&\J(p)\end{pmatrix}
+  -\begin{pmatrix}0&0\\0&\R(v;\delta,a)\end{pmatrix}\right]
+  \begin{pmatrix}\nabla_qH\\\nabla_pH\end{pmatrix}
+  +\begin{pmatrix}0\\\G(\delta)\,u+f_\varepsilon+f_g\end{pmatrix},\qquad y=\G(\delta)\T v,
+  \label{eq:plant-full}
+\end{equation}
+with $q=(x,y,\psi)$ the pose, $T(q)$ its velocity map (below), $H=\tfrac12p\T M^{-1}p$, and
+$f_g=-mg\theta\,e_x$ the grade's force. The structure matrix is skew and satisfies the Jacobi
+identity, and $\R=\R\T\succeq0$ at every state, slip and input. Since $H$ does not depend on $q$,
+$\nabla_qH=0$: the first row is the reconstruction $\dot q=T(q)v$, and the second is
+\begin{equation}
+  \dot p=\big(\J(p)-\R(v;\delta,a)\big)v+\G(\delta)\,u+f_\varepsilon-mg\theta\,e_x .
   \label{eq:plant-ph}
 \end{equation}
-with $H=\tfrac12p\T M^{-1}p$, $\J=-\J\T$ the Lie--Poisson structure of $\se^*$, and $\R=\R\T\succeq0$
-at every state, slip and input. Consequently
+Consequently
 \begin{equation}
-  \dot H=-v\T\R v+y\T u+v\T f_\varepsilon-mg\theta\,v_x .
+  \dot H=-v\T\R v+y\T u+v\T f_\varepsilon-mg\theta\,v_x ,
   \label{eq:balance}
 \end{equation}
-The vehicle is passive with respect to the supply $y\T u+v\T f_\varepsilon-mg\theta v_x$. Since
-$f_\varepsilon$ is zero but for the secants' rounding at the root, on level ground it is passive
-from the drive port $(u,y)$ alone, at every speed and every floor $\varepsilon$.
+and the vehicle is passive with respect to the supply $y\T u+v\T f_\varepsilon-mg\theta v_x$.
 \end{proposition}
 
 \begin{proof}
-By~\eqref{eq:feps}, $n_fF_{y,f}+n_rF_{y,r}=-\big(S_fn_fn_f\T+S_rn_rn_r\T\big)v+f_\varepsilon$.
+The first row is the pose's kinematics, since $\nabla_pH=v$ and $\nabla_qH=0$. For the second,
+by~\eqref{eq:feps}, $n_fF_{y,f}+n_rF_{y,r}=-\big(S_fn_fn_f\T+S_rn_rn_r\T\big)v+f_\varepsilon$.
 Substituting this into~\eqref{eq:ne-p}, with $t_fF_{x,f}+t_rF_{x,r}=\G u$ and $c_xv_x\,e_x=c_x\,e_xe_x\T v$,
-gives~\eqref{eq:plant-ph}. $\J(p)$ is skew and is the Lie--Poisson tensor~\eqref{eq:J}, so the
-Jacobi identity holds. $\R$ is a combination of outer products with coefficients $c_x\ge0$,
+gives~\eqref{eq:plant-ph}. The structure matrix is the canonical structure of $T^*SE(2)$ (below),
+so it is skew and satisfies the Jacobi identity; its lower block $\J(p)$ is the Lie--Poisson
+tensor~\eqref{eq:J}. $\R$ is a combination of outer products with coefficients $c_x\ge0$,
 $S_f\ge0$ and $S_r\ge0$ (Lemma~\ref{lem:secant}), so it is symmetric positive semi-definite. Finally
-$\dot H=v\T\dot p$, $v\T\J v=0$ and $v\T\G u=y\T u$.
+$\dot H=\nabla_qH\T\dot q+v\T\dot p=v\T\dot p$, $v\T\J v=0$ and $v\T\G u=y\T u$.
 \end{proof}
+
+\paragraph{The pose and $T(q)$.} $SE(2)\times\se^*$ is the cotangent bundle $T^*SE(2)$, trivialized
+by left translation, and the block matrix in~\eqref{eq:plant-full} is its canonical
+structure~\cite{marsden1999}. The off-diagonal blocks pair the pose with its momenta, and the
+lower block is the Lie--Poisson structure of $\se^*$. For the pose of the centre of gravity,
+$T(q)=R(\psi)\oplus1$, so $\dot q=T(q)v$ is $(\dot x,\dot y)=R(\psi)(v_x,v_y)$, $\dot\psi=r$. The
+plant's pose is the rear axle's instead (\code{dyn\_bike.h}), as \code{bike\_step}'s is. That pose
+is the centre of gravity's moved $l_r$ back along the body's axis, a fixed right translation on
+$SE(2)$, so its block is
+\begin{equation*}
+  T(q)=\begin{pmatrix}\cos\psi&-\sin\psi&l_r\sin\psi\\\sin\psi&\cos\psi&-l_r\cos\psi\\0&0&1\end{pmatrix},
+\end{equation*}
+which gives $\dot x=\cos\psi\,v_x-\sin\psi\,(v_y-l_rr)$, $\dot y=\sin\psi\,v_x+\cos\psi\,(v_y-l_rr)$
+and $\dot\psi=r$: the rear axle's velocity, as the step moves it (Section~\ref{sec:books}). The
+two are one system. The change of pose is a diffeomorphism of the phase space that leaves $p$
+alone, and it carries the canonical structure to the one with the rear axle's $T(q)$, which is
+therefore skew and satisfies the Jacobi identity too. We use the rear axle's, since it is the
+plant's state. The pose's kinematics has no test of its own yet: it is checked through
+\code{DynBike.Golden}, whose outputs include the pose, and in the kinematic limit through
+\code{DynBike.KinematicLimitFollowsBikeStep} (Table~\ref{tab:val-plant}).
+
+\begin{corollary}[Level ground: the reduced system]
+\label{cor:level}
+On level ground ($\theta\equiv0$), $H$ and every force in~\eqref{eq:plant-ph} are independent of
+$q$, so the momentum equation closes on $\se^*$. It is then a pH system on $\se^*$ alone, with the
+Lie--Poisson structure $\J(p)$, and the pose follows from its solution by the reconstruction
+$\dot q=T(q)v$. Since $f_\varepsilon$ is zero but for the secants' rounding at the root, the
+vehicle is then passive from the drive port $(u,y)$ alone, at every speed and every floor
+$\varepsilon$.
+\end{corollary}
+
+With a grade, $\theta$ is read from the world at the vehicle's position, so the momentum equation
+is coupled to the pose through that input (Section~\ref{sec:grade}).
 
 \subsection{Steering is not a power port}
 \label{sec:steer}
@@ -404,10 +449,22 @@ the change moves the plant little: the vector field, the books' order and the ki
 Table~\ref{tab:val-plant} measure the same before and after it.
 
 \subsection{Grade}
-On a slope, gravity along the heading does work $-mg\theta\,v_x$. The plant has no side slope and
-no height state, so $H$ carries no potential energy. The grade enters as an external power line,
-booked separately. (A plant with a height state can move it into $H$ as $mgz$. The four-wheel
-plant does, by option, through its suspension: Section~\ref{sec:four-wheel}.)
+\label{sec:grade}
+On a slope, gravity along the heading does work $-mg\theta\,v_x$. In the plant the grade is data:
+\code{dyn\_plant} takes $\theta$, the sine of the slope along the heading (positive uphill), sampled
+from the world each step, and does not differentiate it. So in~\eqref{eq:plant-full} it is an
+outside, time-varying input $\theta(t)$, with the force $f_g=-mg\theta\,e_x$ and its own power line
+$-mg\theta\,v_x$. It is not the gradient of a potential, because the plant has no side slope. In
+the centre of gravity's pose, gravity on a terrain $z(x,y)$ has the in-plane force
+$-T(q)\T\nabla_q(mgz)=-mg\big(R(\psi)\T\nabla z,\,0\big)$. That force has a component along the
+heading and one across it, and the plant keeps only the first. So $-mg\theta\,v_x=-\tfrac
+d{dt}(mgz)$ only where $v_y$ or the side slope is zero (and to $O(\text{slope}^3)$, below).
+
+A side slope, which work under way in libcvc adds as an option, would move gravity into
+$H$ as $V(q)=mg\,z(q)$, and the grade line would become $-\Delta V$. That statement holds for the potential
+in projected coordinates, whose force along the heading is $mg$ times the slope's tangent. The
+plant's $\theta$ is its sine, and the two agree to $O(\text{slope}^3)$. The four-wheel plant already
+puts its terrain in $H$, by option, through its suspension (Section~\ref{sec:four-wheel}).
 
 \subsection{Tangent versus secant}
 \label{sec:tangent}
@@ -528,7 +585,10 @@ and the grade has these parts:
   \item \emph{Low-speed blend.} Below a blend speed, a sigmoid in $\lvert v_x\rvert$ blends $(v_y,r)$
         toward the kinematic bicycle's, where slip angles mean nothing.
 \end{enumerate}
-Then the pose advances. It does not enter $H$. The step is first order in $h$.
+Then the pose advances by the reconstruction $\dot q=T(q)v$ of Proposition~\ref{prop:ph}, at the new
+heading and twist: $\psi'=\psi+hr'$, and the rear axle moves by $h$ times its velocity
+$\big(v_x',\,v_y'-l_rr'\big)$ turned by $\psi'$. The pose does not enter $H$. The step is first
+order in $h$.
 
 \subsection{The books}
 \code{dyn\_plant\_books} runs exactly that step and returns, in the struct \code{dyn\_ph\_books},
@@ -606,7 +666,9 @@ does not depend on either: \code{Dyn4.Golden} and \code{Dyn4ExtRollout.Golden} p
 \paragraph{State and structure.} The state is $x=(q,p)$, nine coordinates: $q=(z,\phi,\vartheta)$
 is the body's heave, roll and pitch from rest, and $p=M\xi$ the momenta of its twist
 $\xi=(v_x,v_y,r,\dot z,\dot\phi,\dot\vartheta)$, with $M=\operatorname{diag}(m,m,I_z,m,I_x,I_y)$.
-The pose enters only through the ground under the wheels. With $\nabla H=(\partial H/\partial
+The pose, the rear axle's as in the single track, follows from the twist by the same
+reconstruction $\dot q=T(q)\,(v_x,v_y,r)$ (Proposition~\ref{prop:ph}), and enters only through the
+ground under the wheels. With $\nabla H=(\partial H/\partial
 q,\,\xi)$ and $u=(F_{x,1},\dots,F_{x,4})$ the wheels' drive or brake forces,
 \begin{equation}
   H=\tfrac12\xi\T M\xi+\textstyle\sum_i\tfrac12k_il_i^2+mgz,\qquad
