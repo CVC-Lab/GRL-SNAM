@@ -24,6 +24,7 @@
 
 \newtheorem{proposition}{Proposition}
 \newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
 \theoremstyle{remark}
 \newtheorem{remark}{Remark}
 
@@ -55,7 +56,7 @@ Theory, Implementation and Validation for GRL-SNAM}
 \author{Joe Rivera\\
 \normalsize Computational Visualization Center\\
 \normalsize The University of Texas at Austin}
-\date{October 2026\\[2pt]
+\date{October 2026; revised November 2026\\[2pt]
 \small libcvc 3.7.1 (\code{transfix/libcvc}) $\cdot$ GRL-SNAM \code{main} at \code{0e21085}
 (\code{CVC-Lab/GRL-SNAM})}
 
@@ -66,14 +67,17 @@ Theory, Implementation and Validation for GRL-SNAM}
 GRL-SNAM navigates by learning the coefficients of a potential field and driving a vehicle with
 a bicycle controller. The vehicle under that controller is now a dynamic single-track model with
 Pacejka tires, load transfer and actuator lag, implemented in libcvc and twinned in GRL-SNAM's
-torch code. This paper writes that model as a port-Hamiltonian system on $\se^*$
-\emph{exactly}, at every tire slip and not only in the linear-tire regime. The dissipation is the
+torch code. This paper writes that model as a port-Hamiltonian system on $T^*SE(2)$
+\emph{exactly}, at every tire slip and not only in the linear-tire regime. On level ground it
+reduces to $\se^*$, with the pose recovered by reconstruction. The dissipation is the
 tires' secant stiffness, which is positive semi-definite even when a tire slides. The port is
 the pair of axle forces, with the wheels' ground speeds as its conjugate output. Steering is not a
 port: it only turns the directions along which the tires push, so it does no work. Each tire's
 slip is measured in its wheel's frame, so the secant form leaves no remainder, and gravity on a
 grade is booked as a power line of its own. The integrator's step keeps per-step energy books whose residual is second order in the
-step. We also describe the learned stochastic port-Hamiltonian plant on $SE(2)$ (\code{cvc::ph})
+step. libcvc's four-wheel vehicle with suspension has the same form, with one term the single
+track lacks: the moments of the tires' lateral forces on roll and pitch, a one-way coupling that is
+booked on its own line. We also describe the learned stochastic port-Hamiltonian plant on $SE(2)$ (\code{cvc::ph})
 and its energy balance, which includes the noise's power. We also describe an opt-in form of that
 plant in which steering is a modulation, so that only the drive supplies power, as in the analytic
 plant. We give the navigator's per-step energy
@@ -110,7 +114,9 @@ surrogate. Across the navigator's ticks those books include the potential's chan
   \item An exact pH form of the dynamic single-track vehicle, valid at every slip
         (Proposition~\ref{prop:ph}). The dissipation is built from the tires' secants, the port
         is the axle forces, and steering is shown not to be a power port
-        (Section~\ref{sec:ph}).
+        (Section~\ref{sec:ph}). The same form, with its books, for the four-wheel vehicle with
+        suspension, and an opt-in grade force that puts the terrain's energy in $H$
+        (Section~\ref{sec:four-wheel}).
   \item The discrete step's energy books, with a residual that is second order per step
         (Section~\ref{sec:books}), and a live plant that keeps them for every vehicle in a
         navigation world.
@@ -130,7 +136,10 @@ surrogate. Across the navigator's ticks those books include the potential's chan
 port-Hamiltonian. The controller is a path follower, not an energy-shaping controller
 (Section~\ref{sec:limits}). Neither the analytic plant's integrator nor the learned plant's is
 structure-preserving. Both keep books with a residual instead. The learned plant's filter-based
-evidence bound is not yet implemented, and the four-wheel vehicle's pH form is not yet written.
+evidence bound is not yet implemented. The four-wheel vehicle's pH form
+(Section~\ref{sec:four-wheel}) is passive with respect to its wheels' forces except for a one-way
+lever term, and it has no GRL-SNAM twin yet. Neither analytic plant models wheel spin or
+contact, and the learned plant is trained on neither (Section~\ref{sec:review}).
 
 \paragraph{Versions.} Every statement about code refers to libcvc 3.7.1 or later and GRL-SNAM
 \code{main} at \code{0e21085}, unless it names a later pull request.
@@ -138,15 +147,18 @@ evidence bound is not yet implemented, and the four-wheel vehicle's pH form is n
   \item The dynamic plant itself is transfix/libcvc \#714, released in 3.7.0.
   \item The learned plant is \#758, released in 3.7.1.
   \item The pH form and the books are \#831, \#832 and \#833, also released in 3.7.1.
-  \item Steering as a modulation of the learned plant (Section~\ref{sec:learned-steer}) is \#851,
-        which is later than 3.7.1.
   \item The front slip in its wheel's frame (Sections~\ref{sec:model} and~\ref{sec:floor}) is
-        \#852, also later than 3.7.1. It changes the plant's outputs; its golden for the pH form
-        is \#848's.
+        \#852, merged as \code{140bc2d0} and released in 3.7.2. It changes the plant's outputs;
+        its golden for the pH form is \#848's.
+  \item The four-wheel vehicle's pH form and books (Section~\ref{sec:four-wheel}) are \#850, merged
+        as \code{45dab152} and released in 3.7.2.
+  \item Steering as a modulation of the learned plant (Section~\ref{sec:learned-steer}) is \#851,
+        merged as \code{b8ac9975} and released in 3.7.3.
 \end{itemize}
 The measurements in Section~\ref{sec:validation} were taken on libcvc \code{master} at
 \code{c1f104c0}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are identical to
-v3.7.1's, except for the rows from \#851 and \#852, which were taken on their branches.
+v3.7.1's, except for the rows from \#850, \#851 and \#852. Appendix~\ref{app:repro} gives the
+commit each of those was measured on.
 
 % ===========================================================================
 \section{Preliminaries}
@@ -267,7 +279,7 @@ In momenta and the directions above, \eqref{eq:ne} reads
   \label{eq:ne-p}
 \end{equation}
 Left out on purpose: wheel spin, suspension, lateral load transfer and contact loss. The
-four-wheel model (Section~\ref{sec:limits}) adds some of these.
+four-wheel model (Section~\ref{sec:four-wheel}) adds some of these.
 
 % ===========================================================================
 \section{The port-Hamiltonian form}
@@ -324,31 +336,74 @@ these are \code{dyn\_ph\_J},
 \begin{proposition}[The dynamic single-track vehicle is port-Hamiltonian at every slip]
 \label{prop:ph}
 Under the conditions of Lemma~\ref{lem:secant}, with $c_d,c_{rr}\ge0$, the vehicle's equations
-of motion~\eqref{eq:ne} are exactly
+of motion~\eqref{eq:ne}, with its pose's kinematics, are exactly the pH system on
+$SE(2)\times\se^*$
 \begin{equation}
-  \dot p=\big(\J(p)-\R(v;\delta,a)\big)v+\G(\delta)\,u+f_\varepsilon-mg\theta\,e_x,\qquad
-  y=\G(\delta)\T v,
+  \begin{pmatrix}\dot q\\\dot p\end{pmatrix}=\left[\begin{pmatrix}0&T(q)\\-T(q)\T&\J(p)\end{pmatrix}
+  -\begin{pmatrix}0&0\\0&\R(v;\delta,a)\end{pmatrix}\right]
+  \begin{pmatrix}\nabla_qH\\\nabla_pH\end{pmatrix}
+  +\begin{pmatrix}0\\\G(\delta)\,u+f_\varepsilon+f_g\end{pmatrix},\qquad y=\G(\delta)\T v,
+  \label{eq:plant-full}
+\end{equation}
+with $q=(x,y,\psi)$ the pose, $T(q)$ its velocity map (below), $H=\tfrac12p\T M^{-1}p$, and
+$f_g=-mg\theta\,e_x$ the grade's force. The structure matrix is skew and satisfies the Jacobi
+identity, and $\R=\R\T\succeq0$ at every state, slip and input. Since $H$ does not depend on $q$,
+$\nabla_qH=0$: the first row is the reconstruction $\dot q=T(q)v$, and the second is
+\begin{equation}
+  \dot p=\big(\J(p)-\R(v;\delta,a)\big)v+\G(\delta)\,u+f_\varepsilon-mg\theta\,e_x .
   \label{eq:plant-ph}
 \end{equation}
-with $H=\tfrac12p\T M^{-1}p$, $\J=-\J\T$ the Lie--Poisson structure of $\se^*$, and $\R=\R\T\succeq0$
-at every state, slip and input. Consequently
+Consequently
 \begin{equation}
-  \dot H=-v\T\R v+y\T u+v\T f_\varepsilon-mg\theta\,v_x .
+  \dot H=-v\T\R v+y\T u+v\T f_\varepsilon-mg\theta\,v_x ,
   \label{eq:balance}
 \end{equation}
-The vehicle is passive with respect to the supply $y\T u+v\T f_\varepsilon-mg\theta v_x$. Since
-$f_\varepsilon$ is zero but for the secants' rounding at the root, on level ground it is passive
-from the drive port $(u,y)$ alone, at every speed and every floor $\varepsilon$.
+and the vehicle is passive with respect to the supply $y\T u+v\T f_\varepsilon-mg\theta v_x$.
 \end{proposition}
 
 \begin{proof}
-By~\eqref{eq:feps}, $n_fF_{y,f}+n_rF_{y,r}=-\big(S_fn_fn_f\T+S_rn_rn_r\T\big)v+f_\varepsilon$.
+The first row is the pose's kinematics, since $\nabla_pH=v$ and $\nabla_qH=0$. For the second,
+by~\eqref{eq:feps}, $n_fF_{y,f}+n_rF_{y,r}=-\big(S_fn_fn_f\T+S_rn_rn_r\T\big)v+f_\varepsilon$.
 Substituting this into~\eqref{eq:ne-p}, with $t_fF_{x,f}+t_rF_{x,r}=\G u$ and $c_xv_x\,e_x=c_x\,e_xe_x\T v$,
-gives~\eqref{eq:plant-ph}. $\J(p)$ is skew and is the Lie--Poisson tensor~\eqref{eq:J}, so the
-Jacobi identity holds. $\R$ is a combination of outer products with coefficients $c_x\ge0$,
+gives~\eqref{eq:plant-ph}. The structure matrix is the canonical structure of $T^*SE(2)$ (below),
+so it is skew and satisfies the Jacobi identity; its lower block $\J(p)$ is the Lie--Poisson
+tensor~\eqref{eq:J}. $\R$ is a combination of outer products with coefficients $c_x\ge0$,
 $S_f\ge0$ and $S_r\ge0$ (Lemma~\ref{lem:secant}), so it is symmetric positive semi-definite. Finally
-$\dot H=v\T\dot p$, $v\T\J v=0$ and $v\T\G u=y\T u$.
+$\dot H=\nabla_qH\T\dot q+v\T\dot p=v\T\dot p$, $v\T\J v=0$ and $v\T\G u=y\T u$.
 \end{proof}
+
+\paragraph{The pose and $T(q)$.} $SE(2)\times\se^*$ is the cotangent bundle $T^*SE(2)$, trivialized
+by left translation, and the block matrix in~\eqref{eq:plant-full} is its canonical
+structure~\cite{marsden1999}. The off-diagonal blocks pair the pose with its momenta, and the
+lower block is the Lie--Poisson structure of $\se^*$. For the pose of the centre of gravity,
+$T(q)=R(\psi)\oplus1$, so $\dot q=T(q)v$ is $(\dot x,\dot y)=R(\psi)(v_x,v_y)$, $\dot\psi=r$. The
+plant's pose is the rear axle's instead (\code{dyn\_bike.h}), as \code{bike\_step}'s is. That pose
+is the centre of gravity's moved $l_r$ back along the body's axis, a fixed right translation on
+$SE(2)$, so its block is
+\begin{equation*}
+  T(q)=\begin{pmatrix}\cos\psi&-\sin\psi&l_r\sin\psi\\\sin\psi&\cos\psi&-l_r\cos\psi\\0&0&1\end{pmatrix},
+\end{equation*}
+which gives $\dot x=\cos\psi\,v_x-\sin\psi\,(v_y-l_rr)$, $\dot y=\sin\psi\,v_x+\cos\psi\,(v_y-l_rr)$
+and $\dot\psi=r$: the rear axle's velocity, as the step moves it (Section~\ref{sec:books}). The
+two are one system. The change of pose is a diffeomorphism of the phase space that leaves $p$
+alone, and it carries the canonical structure to the one with the rear axle's $T(q)$, which is
+therefore skew and satisfies the Jacobi identity too. We use the rear axle's, since it is the
+plant's state. The pose's kinematics has no test of its own yet: it is checked through
+\code{DynBike.Golden}, whose outputs include the pose, and in the kinematic limit through
+\code{DynBike.KinematicLimitFollowsBikeStep} (Table~\ref{tab:val-plant}).
+
+\begin{corollary}[Level ground: the reduced system]
+\label{cor:level}
+On level ground ($\theta\equiv0$), $H$ and every force in~\eqref{eq:plant-ph} are independent of
+$q$, so the momentum equation closes on $\se^*$. It is then a pH system on $\se^*$ alone, with the
+Lie--Poisson structure $\J(p)$, and the pose follows from its solution by the reconstruction
+$\dot q=T(q)v$. Since $f_\varepsilon$ is zero but for the secants' rounding at the root, the
+vehicle is then passive from the drive port $(u,y)$ alone, at every speed and every floor
+$\varepsilon$.
+\end{corollary}
+
+With a grade, $\theta$ is read from the world at the vehicle's position, so the momentum equation
+is coupled to the pose through that input (Section~\ref{sec:grade}).
 
 \subsection{Steering is not a power port}
 \label{sec:steer}
@@ -394,10 +449,22 @@ the change moves the plant little: the vector field, the books' order and the ki
 Table~\ref{tab:val-plant} measure the same before and after it.
 
 \subsection{Grade}
-On a slope, gravity along the heading does work $-mg\theta\,v_x$. The plant has no side slope and
-no height state, so $H$ carries no potential energy. The grade enters as an external power line,
-booked separately. (A plant with a height state would move it into $H$ as $mgz$. The four-wheel
-plant's suspension, Section~\ref{sec:limits}, is the natural place.)
+\label{sec:grade}
+On a slope, gravity along the heading does work $-mg\theta\,v_x$. In the plant the grade is data:
+\code{dyn\_plant} takes $\theta$, the sine of the slope along the heading (positive uphill), sampled
+from the world each step, and does not differentiate it. So in~\eqref{eq:plant-full} it is an
+outside, time-varying input $\theta(t)$, with the force $f_g=-mg\theta\,e_x$ and its own power line
+$-mg\theta\,v_x$. It is not the gradient of a potential, because the plant has no side slope. In
+the centre of gravity's pose, gravity on a terrain $z(x,y)$ has the in-plane force
+$-T(q)\T\nabla_q(mgz)=-mg\big(R(\psi)\T\nabla z,\,0\big)$. That force has a component along the
+heading and one across it, and the plant keeps only the first. So $-mg\theta\,v_x=-\tfrac
+d{dt}(mgz)$ only where $v_y$ or the side slope is zero (and to $O(\text{slope}^3)$, below).
+
+A side slope, which work under way in libcvc adds as an option, would move gravity into
+$H$ as $V(q)=mg\,z(q)$, and the grade line would become $-\Delta V$. That statement holds for the potential
+in projected coordinates, whose force along the heading is $mg$ times the slope's tangent. The
+plant's $\theta$ is its sine, and the two agree to $O(\text{slope}^3)$. The four-wheel plant already
+puts its terrain in $H$, by option, through its suspension (Section~\ref{sec:four-wheel}).
 
 \subsection{Tangent versus secant}
 \label{sec:tangent}
@@ -518,7 +585,10 @@ and the grade has these parts:
   \item \emph{Low-speed blend.} Below a blend speed, a sigmoid in $\lvert v_x\rvert$ blends $(v_y,r)$
         toward the kinematic bicycle's, where slip angles mean nothing.
 \end{enumerate}
-Then the pose advances. It does not enter $H$. The step is first order in $h$.
+Then the pose advances by the reconstruction $\dot q=T(q)v$ of Proposition~\ref{prop:ph}, at the new
+heading and twist: $\psi'=\psi+hr'$, and the rear axle moves by $h$ times its velocity
+$\big(v_x',\,v_y'-l_rr'\big)$ turned by $\psi'$. The pose does not enter $H$. The step is first
+order in $h$.
 
 \subsection{The books}
 \code{dyn\_plant\_books} runs exactly that step and returns, in the struct \code{dyn\_ph\_books},
@@ -581,6 +651,100 @@ by step. The plant is flat (grade zero) and has no world to collide with. It is 
 \code{plant\_host} as \code{"dynamic"}, or \code{"dynamic:<presets>"} to cycle vehicles. It is the
 plant that the coefficient trainer's \code{rollout\_kind::dynamic} trains through, so a policy
 trained there is evaluated on its own model.
+
+% ===========================================================================
+\section{The four-wheel vehicle}
+\label{sec:four-wheel}
+
+libcvc's two-track vehicle, \code{diff::dyn4\_plant} (\code{inc/cvc/nav/detail/dyn\_4w.h}, twinned
+as \code{grl\_snam.dyn4}), has four contact patches with Ackermann front wheels, a spring and a
+damper at each corner, and heave, roll and pitch. It leaves out wheel spin, the unsprung masses,
+camber and the anti-roll bars. libcvc \#850 writes it in pH form at every slip, with per-step
+books, as Sections~\ref{sec:ph} and~\ref{sec:books} do for the single track. The plant's arithmetic
+does not depend on either: \code{Dyn4.Golden} and \code{Dyn4ExtRollout.Golden} pass unchanged.
+
+\paragraph{State and structure.} The state is $x=(q,p)$, nine coordinates: $q=(z,\phi,\vartheta)$
+is the body's heave, roll and pitch from rest, and $p=M\xi$ the momenta of its twist
+$\xi=(v_x,v_y,r,\dot z,\dot\phi,\dot\vartheta)$, with $M=\operatorname{diag}(m,m,I_z,m,I_x,I_y)$.
+The pose, the rear axle's as in the single track, follows from the twist by the same
+reconstruction $\dot q=T(q)\,(v_x,v_y,r)$ (Proposition~\ref{prop:ph}), and enters only through the
+ground under the wheels. With $\nabla H=(\partial H/\partial
+q,\,\xi)$ and $u=(F_{x,1},\dots,F_{x,4})$ the wheels' drive or brake forces,
+\begin{equation}
+  H=\tfrac12\xi\T M\xi+\textstyle\sum_i\tfrac12k_il_i^2+mgz,\qquad
+  \dot x=(\J-\R)\nabla H+\G u+f_{\mathrm{lever}},\qquad y=\G\T\nabla H,
+  \label{eq:4w}
+\end{equation}
+where $l_i$ is corner $i$'s spring compression; the springs' preloads hold the body at $q=0$ on
+flat ground. This is the default plant, without the grade force described below.
+\begin{itemize}
+  \item $\J=\begin{pmatrix}0&0&I\\0&\J_h(p_h)&0\\-I&0&0\end{pmatrix}$ over $(q,p_h,p_v)$, the
+        horizontal and vertical momenta: canonical in the vertical, and the Lie--Poisson
+        structure~\eqref{eq:J} in the horizontal.
+  \item $\R=\operatorname{blockdiag}\big(0,\;c_xe_xe_x\T+\sum_iS_in_in_i\T,\;\sum_ic'_ic_ic_i\T\big)$.
+        Here $n_i=(-\sin d_i,\cos d_i,x_i\cos d_i+y_i\sin d_i)$ carries wheel $i$'s lateral force,
+        at its offset $(x_i,y_i)$ and angle $d_i$, onto $(v_x,v_y,r)$. So $n_i\T v$ is the lateral
+        velocity $w_i$ in that wheel's frame, where its slip is measured, and $S_i=-F_{y,i}/w_i\ge0$
+        is its secant (Lemma~\ref{lem:secant}). The last block is the dampers: $c'_i$ is corner
+        $i$'s damping and $c_i=(1,y_i,-x_i)$ takes $\dot q$ to its vertical rate. So $\R$ is
+        positive semi-definite at every slip and every steering angle.
+  \item $\G$'s columns are $T_i=(\cos d_i,\sin d_i,x_i\sin d_i-y_i\cos d_i,0,h\sin d_i,-h\cos d_i)$
+        on the twist: wheel $i$'s force along the wheel, at its contact patch, $h$ below the centre
+        of gravity. So $y_i$ is that patch's speed along its wheel, roll and pitch included, and
+        $y\T u$ is the forces' whole power. Steering is not an input: the angles $d_i$ only turn
+        $n_i$ and $T_i$.
+  \item $f_\varepsilon=0$. Each slip is in its wheel's frame and rooted at $w_i=0$, and the form
+        takes the exact secant, so nothing is left at the speed floor.
+\end{itemize}
+
+\paragraph{The lever.} One term fits neither $\J$ nor $\R$:
+\begin{equation*}
+  f_{\mathrm{lever}}=\big(0,\;h\textstyle\sum_iF_{y,i}\cos d_i,\;h\sum_iF_{y,i}\sin d_i\big)
+  \quad\text{on }(p_z,p_\phi,p_\vartheta),
+\end{equation*}
+the moments of the tires' lateral forces on roll and pitch. The slips do
+not see the body's roll and pitch rates (a patch's lateral velocity has no $h\dot\phi$ in it), so
+the coupling runs one way. It is neither skew nor dissipative, and it is booked on its own line,
+$\xi\T f_{\mathrm{lever}}$, which vanishes with $h$. So
+\begin{equation}
+  \dot H=-\nabla H\T\R\nabla H+y\T u+\xi\T f_{\mathrm{lever}}+\textstyle\sum_ik_il_i\,\dot h_{g,i},
+  \label{eq:4w-balance}
+\end{equation}
+and the vehicle is passive with respect to its wheels' forces except for the lever. The last term
+is the ground under wheel $i$, at height $h_{g,i}$, lifting its spring as the wheel rolls over it;
+it is zero on flat ground. The lever is small: over 8~s of swerving past the tires' peak on the
+tests' full-size preset at $\mu=0.6$, it books about 1.0~kJ against 277~kJ dissipated.
+
+\paragraph{Grade.} By default the plant has no grade force on its horizontal motion. The terrain's
+height enters only the springs, whose bases it moves, and $z$ is heave from rest, not elevation. A
+vehicle then climbs a hill for free, and the books show that energy as the ground line
+of~\eqref{eq:4w-balance}, from outside. The opt-in \code{dyn4\_params::grade\_force} adds each
+spring's horizontal reaction on the slope under its wheel, $f_{\mathrm{grade}}$, on $(v_x,v_y,r)$.
+It is minus the gradient of the springs' energy in the pose, through the ground under the wheels.
+With the pose in the state, $T^*SE(2)$'s canonical structure puts it in $\J$, and the terrain's
+energy is in $H$. Its power, booked as a grade line, cancels the ground line:
+$\xi\T f_{\mathrm{grade}}=-\sum_ik_il_i\dot h_{g,i}$. Coasting up a 5\% ramp for 2~s from 10~m/s,
+with drag, rolling resistance and the dampers off, the vehicle keeps its speed without the force
+while $H$ gains $mg$ times the climb. With it, it loses 0.986~m/s, against $g\,s\,t=0.981$, and $H$
+holds to within 0.8\%. The option is off by default, so the plant's goldens and GRL-SNAM's
+\code{dyn4.py} twin are unchanged; the twin does not have it.
+
+\paragraph{The books.} \code{dyn4\_plant\_books} runs \code{dyn4\_plant}'s step, to the last bit, and
+returns
+\begin{equation}
+  \Delta H=\text{supplied}-\text{dissipated}+\text{lever}+\text{grade}+\text{ground}+W_{\mathrm{lim}}+r_h .
+  \label{eq:4w-books}
+\end{equation}
+As in~\eqref{eq:books}, each power is the trapezoid between the step's start and its pre-limiter
+state, both on the ground the step stood on, and $W_{\mathrm{lim}}$ is the limiters' change of $H$.
+The ground line is the springs' energy that the new ground under the wheels adds at the step's end.
+The step holds the ground and the wheels' loads at its start; that is integrator error, so it lands
+in $r_h$. On an 8~s weave at 0.2~Hz to near full lock at $\mu=0.6$, with a tire past its peak in
+about 27\% of the steps, $\lvert r_h\rvert$ falls 3.84 to 3.98 times per halving of $h$ from 0.02 to
+0.0025~s, flat and over hills. At $h=0.01$~s the summed residual is $5.0\times10^{-4}$ of the flow
+on flat ground and $1.0\times10^{-3}$ over hills. With the grade force on, the grade and ground
+lines cancel to second order: their per-step sum falls 4.0 times per halving.
+Table~\ref{tab:val-4w} gives the gates.
 
 % ===========================================================================
 \section{The learned plant: \texorpdfstring{\code{cvc::ph}}{cvc::ph}}
@@ -724,11 +888,12 @@ Section~\ref{sec:steer}.
   \item On the golden fit, steering is 13.4\% of $\lvert y\T u\rvert$ at its 16 states. With the drive
         input at zero, steering alone supplies energy at 10 of them
         (\code{PhSe2.TheReferenceFormBooksSteeringAsPower}).
-  \item A fresh reference-form fit to the analytic plant's own flights still books 5.6\% of
-        $\lvert y\T u\rvert$ through steering, and supplies energy by steering alone at 74 of 250
+  \item A fresh reference-form fit to the analytic plant's own flights still books 5.9\% of
+        $\lvert y\T u\rvert$ through steering, and supplies energy by steering alone at 33 of 250
         held-out steps, although the plant it learned from books none
         (\code{PhSe2Train.BothFormsFitTheDynamicBicycle}). That fit is good: its held-out rollout
-        loss falls from 8.52 to 0.0006.
+        loss falls from 8.52 to 0.0006. (These are the flights of the plant since \#852. On
+        \#851's branch, before \#852's wheel-frame slip, they were 5.6\% and 74 of 250.)
 \end{itemize}
 
 \paragraph{Steering as a modulation.} libcvc \#851 adds an opt-in form that mirrors
@@ -752,13 +917,13 @@ the inputs, so the reverse pass drops its gradient.
   \item The reference form stays the default and keeps its JAX parity. The modulated form has no
         JAX golden. It is held to central differences and to the analytic identities
         (Table~\ref{tab:val-steer}).
-  \item On the analytic plant's flights, it learns as well (held-out loss $7.63\to0.0092$) with
-        steering's share at zero. The reference form fits those flights more closely, so the
+  \item On the analytic plant's flights, it learns as well (held-out loss $7.63\to0.0167$;
+        $0.0092$ before \#852) with steering's share at zero. The reference form fits those flights more closely, so the
         modulation is a matter of correct books, not of accuracy.
   \item At Adam's default learning rate of $3\times10^{-3}$, the reference form's gradient norm blew
         up ($10^6$--$10^9$) in all three runs tried on that data, while the modulated form
-        converged in all four configurations tried. That is one dataset and one seed, so it is
-        reported here, not claimed.
+        converged in all four configurations tried. That is one dataset (the flights before
+        \#852) and one seed, so it is reported here, not claimed.
 \end{itemize}
 
 % ===========================================================================
@@ -930,14 +1095,16 @@ installed \code{pycvc} lacks the external-force input.)
 
 \subsection{What is not twinned yet}
 The pH form's parts, rates and step books are twinned in CVC-Lab/GRL-SNAM \#138, held to libcvc's
-\code{DynBikePH.Golden}; the tangent \code{dyn\_ph\_tangent\_D} is not. The navigator's point-mass
+\code{DynBikePH.Golden}; the tangent \code{dyn\_ph\_tangent\_D} is not. Nor is the four-wheel form
+(Section~\ref{sec:four-wheel}): \code{grl\_snam.dyn4} twins \code{dyn4\_plant}, not
+\code{dyn4\_ph\_*} or \code{dyn4\_plant\_books}, and it has no grade-force option. The navigator's point-mass
 books (\code{book\_step}, the cheap bound, the sharp check and \code{rollout\_energy}'s book fields)
 are twinned in \#139, held to libcvc's \code{NavPotential.BooksGolden}. The tick telemetry
 (\code{potential\_end}, \code{projection\_work}, \code{context\_work}) is a running world's, not a
 function's, so it has no twin. libcvc \#857 binds it in \code{pycvc} instead:
 \code{nav\_sim\_world\_set\_capture\_drive\_telemetry} and \code{nav\_sim\_world\_drive\_telemetry} read
-a \code{sim\_world}'s last tick, the three books included, from the first \code{pycvc} release that
-carries it. \code{pycvc} reports a world's plant kind (\code{nav\_sim\_world\_plant\_kind} returns
+a \code{sim\_world}'s last tick, the three books included. \#857 merged as \code{713a14af}, and
+\code{pycvc} carries it from libcvc 3.7.2 on. \code{pycvc} reports a world's plant kind (\code{nav\_sim\_world\_plant\_kind} returns
 \code{"dynamic"}), but not the plant's books. \#831 left \code{dyn\_plant}'s outputs untouched.
 libcvc \#852's wheel-frame front slip changes them, and \#138 moves the twin's plant with it,
 along with its three fixtures (\code{dyn\_bike\_golden.json}, \code{dyn\_bike\_ph\_golden.json}, and
@@ -1039,13 +1206,23 @@ gives the exact setup):
   \item libcvc \code{c1f104c0}: all 62 tests of the five executables passed. The tables list the ones
         this paper relies on.
   \item The rows for \#851: its branch commit, where the same executables' 69 tests passed (plus
-        the CLI's four \code{PhTrain} tests).
+        the CLI's four \code{PhTrain} tests). Its \code{ph} sources and tests are those of its
+        squash commit \code{b8ac9975}, but the branch predates \#852, so the analytic plant it fits
+        in \code{PhSe2Train.BothFormsFitTheDynamicBicycle} had the old front slip. That row is
+        measured on \code{master} at \code{6cc8cfdc} instead, whose \code{ph} sources and tests and
+        whose single-track plant are \code{b8ac9975}'s.
   \item GRL-SNAM \code{0e21085} (torch 2.8 CPU): 53 tests passed and 2 were skipped for the
         \code{pycvc} reason above; none failed.
   \item The rows for libcvc \#852 and GRL-SNAM \#138: libcvc's branch commit \code{1a0acc77}, where
         \code{nav\_dyn\_bike\_test}'s 23 tests and \code{physics\_dyn\_bike\_plant\_test}'s 3 passed,
         and so did the ten other suites that use the plant; and GRL-SNAM's \code{2f76ab0}, \#138's squash
         commit, where the dynamic twins' parity tests passed (57 passed, 6 skipped for \code{pycvc}).
+        \code{1a0acc77}'s \code{nav} and \code{physics} sources and tests are those of \#852's squash
+        commit \code{140bc2d0}.
+  \item The rows for \#850 (Table~\ref{tab:val-4w}): libcvc \code{master} at \code{6cc8cfdc}, where
+        \code{nav\_dyn\_4w\_test}'s 23 tests passed. Its pH form and books are those of \#850's
+        squash commit \code{45dab152}; a later change (\#940) adds a drive response to the plant
+        that passes the command through by default, and the plant's goldens pass unchanged.
 \end{itemize}
 
 \newcommand{\valtable}[3]{%
@@ -1081,17 +1258,17 @@ gives the exact setup):
   limiters are charged when braking to a stop in a turn &
   per-halving ratio in $(3,5.5)$; summed residual below $5\times10^{-3}$ of the flow for $h\le0.01$ &
   ratios 3.83, 3.92, 3.95; $1.2\times10^{-3}$ at $h=0.01$; braking: limiter $-358$~J, residual $4\times10^{-6}$ &
-  \code{950154b} (\#831), \code{1a0acc77} (\#852) \\
+  \code{950154b} (\#831), \code{140bc2d0} (\#852) \\
 \code{DynBikePH.TheFloorTermIsRoundOff} &
   $f_\varepsilon$ is the secants' rounding (Sec.~\ref{sec:floor}) &
   $10^{-12}$ of the flow, $\varepsilon=0.5$ to $10^{-9}$ &
   at most $2.2\times10^{-16}$ &
-  \code{1a0acc77} (\#852) \\
+  \code{140bc2d0} (\#852) \\
 \code{DynBikePH.TheTangentIsTheTiresDerivative} &
   \eqref{eq:tangent}--\eqref{eq:kf} is $-\partial(Q_y,Q_r)/\partial(v_y,r)$ at 300 states &
   $10^{-6}$ (central differences) &
   $1.4\times10^{-7}$ &
-  \code{1a0acc77} (\#852) \\
+  \code{140bc2d0} (\#852) \\
 \code{DynBikePH.TheSecantStaysPSDWhereTheTangentDoesNot} &
   tangent indefinite past the peak, secant never (Sec.~\ref{sec:tangent}) &
   tangent PSD below $0.5\mu g$; indefinite somewhere above; rear never past peak; secant never negative &
@@ -1102,7 +1279,7 @@ gives the exact setup):
   slip (\#852) &
   golden values &
   holds &
-  \code{1e3ed0b} (\#714), \code{1a0acc77} (\#852) \\
+  \code{1e3ed0b} (\#714), \code{140bc2d0} (\#852) \\
 \code{DynBike.KinematicLimitFollowsBikeStep} &
   the kinematic bicycle is the stiff-tire limit, with the mass at the rear axle &
   worst gap below $0.2$ of the vehicle radius; closed-loop median below $0.1$ of it &
@@ -1134,6 +1311,57 @@ unchanged.}{tab:val-plant}
 }{The live plant (libcvc's \code{physics\_dyn\_bike\_plant\_test}). Its floor line is
 $5\times10^{-15}$~J over the full-size run since \#852 (1.1~J before); the residuals are
 unchanged.}{tab:val-live}
+
+\valtable{%
+\code{Dyn4PH.TheStructureIsPortHamiltonianAtEverySlip} &
+  $\J$ skew, $\R$ symmetric positive semi-definite with secants $S_i\ge0$, $\nabla H$ against $H$'s
+  central differences, no supply without wheel forces (Sec.~\ref{sec:four-wheel}); 500 states each
+  on flat ground at $\mu=0.9$ and $0.6$ and on a friction split with a bump, sprung and with rigid
+  corners &
+  exact for skew, symmetry and zero supply; least eigenvalue of $\R$ at least $-10^{-9}\lVert\R\rVert$;
+  $\nabla H$ to $10^{-6}$ of its scale; at least 100 states past a peak &
+  holds at all 2000 states; 267 of 500 past a peak on each ground; $\nabla H$ within
+  $6.0\times10^{-8}$ &
+  \code{45dab152} (\#850) \\
+\code{Dyn4PH.TheVectorFieldIsThePlantsAtEverySlip} &
+  \eqref{eq:4w} is the plant's vector field: a $10^{-5}$~s \code{dyn4\_plant} step against
+  \code{dyn4\_ph\_rhs}, 400 states per ground, forward and reversing, flat and on the split with a
+  bump, with and without the grade force &
+  $10^{-3}$ of each row's scale ($mg$, $mgL$ on yaw) &
+  worst $1.5\times10^{-4}$ (flat), $2.0\times10^{-4}$ (split and bump) &
+  \code{45dab152} (\#850) \\
+\code{Dyn4PH.StepBooksCloseToSecondOrder} &
+  the books~\eqref{eq:4w-books} close to second order per step on an 8~s weave past the peak,
+  flat and over hills; the limiters are charged when braking to a stop in a turn; no lever with the
+  centre of gravity on the ground &
+  per-halving ratio in $(3,5)$; summed residual below $5\times10^{-3}$ of the flow for $h\le0.01$;
+  lever exactly 0 &
+  ratios 3.92, 3.95, 3.98 (flat), 3.84, 3.91, 3.95 (hills); $5.0\times10^{-4}$ and
+  $1.0\times10^{-3}$ at $h=0.01$; braking: limiter $-340$~J, residual $7.3\times10^{-5}$ &
+  \code{45dab152} (\#850) \\
+\code{Dyn4PH.TheGradeForceIsMinusTheSpringsGradientInThePose} &
+  with \code{grade\_force}, $f_{\mathrm{grade}}$ is $-\partial H/\partial(\text{pose})$ (central
+  differences) on the bump and on hills; zero without it &
+  $10^{-5}$ of $mg$ ($mgL$ on yaw) &
+  within $3.6\times10^{-7}mg$ and $2.1\times10^{-8}mg$ &
+  \code{45dab152} (\#850) \\
+\code{Dyn4PH.TheGradeForcePutsTheTerrainInH} &
+  with it, the grade line cancels the ground line to second order; up a 5\% ramp the coast pays
+  the climb from its speed, and without it the speed holds &
+  per-halving ratio in $(3,5)$; $\lvert\text{ground}+\text{grade}\rvert$ below $0.05$ of the ground
+  line; ramp within 1\%, halving with $h$ &
+  ratios 4.00, 4.00, 4.00; ground $+3373$~J, grade $-3372$~J at $h=0.01$; ramp: 0.986~m/s lost
+  against 0.981 &
+  \code{45dab152} (\#850) \\
+\code{Dyn4.Golden}, \code{Dyn4ExtRollout.Golden} &
+  \code{dyn4\_plant}'s outputs and its rollout with an external force, unchanged by the form and
+  the books &
+  golden values &
+  hold &
+  \code{2e02c3eb} (\#731), \code{c48d5a11} (\#798) \\
+}{The four-wheel vehicle's pH form and books (libcvc's \code{nav\_dyn\_4w\_test}), measured on
+\code{master} at \code{6cc8cfdc} (Table~\ref{tab:repro-versions}). The flow is the sum of the
+magnitudes of every line of the books.}{tab:val-4w}
 
 \valtable{%
 \code{PhSe2.MatchesJaxInDouble}, \code{PhSe2.MatchesJaxInFloat} &
@@ -1200,29 +1428,31 @@ merged as \code{17adc93}, with the model in \code{0fa251b} and the trainer in \c
   in the reference form, steering alone supplies power (Sec.~\ref{sec:learned-steer}) &
   nonzero &
   share $0.134$; supplies energy at 10 of 16 states &
-  \#851 \\
+  \code{b8ac9975} (\#851) \\
 \code{PhSe2.ModulatedSteeringSuppliesNoPower} &
   \eqref{eq:learned-mod}: the balance holds; no supply at zero drive, whatever $\delta$; steering still changes the motion &
   balance $10^{-11}$; supply exactly 0 &
   holds at 200 states; a 0.5 steer step changes the twist's rate by at least 0.18 &
-  \#851 \\
+  \code{b8ac9975} (\#851) \\
 \code{PhSe2.ModulatedModelRoundTripsExactly}, \code{PhSe2.ModulatedStepIsSecondOrder} &
   the \code{/2} file round-trips; models without modulations stay \code{/1}; the step stays second order &
   exact; ratio in $(3.5,4.5)$ &
   exact; $4.29$, $4.08$, $4.02$ &
-  \#851 \\
+  \code{b8ac9975} (\#851) \\
 \code{PhSe2Train.ModulatedGradientMatchesFiniteDifferences}, \code{PhSe2Train.ModulatedShortFitLowersTheLoss} &
   the modulated reverse pass is the gradient; the modulated form trains &
   $2\times10^{-5}$; held-out loss below $0.1\times$ &
   $3.9\times10^{-7}$ over 68 entries; $1.417\to0.070$ &
-  \#851 \\
+  \code{b8ac9975} (\#851) \\
 \code{PhSe2Train.BothFormsFitTheDynamicBicycle} &
   both forms fit the analytic plant's flights; only the reference form books steering power &
   held-out loss below $0.01\times$; share $>0$ (reference), $=0$ (modulated) &
-  reference $8.52\to0.0006$, share $0.056$, supplies energy at 74 of 250 steps; modulated $7.63\to0.0092$, share 0 &
-  \#851 \\
+  reference $8.52\to0.0006$, share $0.059$, supplies energy at 33 of 250 steps; modulated $7.63\to0.0167$, share 0 &
+  \code{b8ac9975} (\#851) \\
 }{The learned plant's steering (Section~\ref{sec:learned-steer}): transfix/libcvc \#851, measured
-on its branch (Table~\ref{tab:repro-versions}).}{tab:val-steer}
+on its branch, except the last row, measured on \code{master} at \code{6cc8cfdc} with \#852's
+plant (Table~\ref{tab:repro-versions}). On the branch, before \#852, that row measured share
+$0.056$, 74 of 250 steps, and $7.63\to0.0092$.}{tab:val-steer}
 
 \valtable{%
 \code{NavPotential.SurrogateEnergyIdentityPerStep} &
@@ -1298,22 +1528,24 @@ the lines each test prints.
 \section{Limitations and future work}
 \label{sec:limits}
 
-\paragraph{The four-wheel vehicle in pH form.} libcvc's two-track vehicle
-(\code{inc/cvc/nav/detail/dyn\_4w.h}, twinned as \code{grl\_snam.dyn4}) has four contact patches with
-Ackermann front wheels, spring-damper corners, and heave, roll and pitch. Its pH form is not yet
-written. Since libcvc \#852 the single track measures its slips as that model does, each wheel's
-sideways velocity in its own frame, $w_i=n_i\T v$, with each slip's root at $n_i\T v=0$. So the
-single track's form should carry over directly: $f_\varepsilon=0$ but for the secants' rounding,
-and $\R=c_xe_xe_x\T+\sum_iS_in_in_i\T$.
-The suspension springs would add their stored energy (and a height-dependent gravity term) to $H$,
-and the dampers would add to $\R$. Writing it out, and gating it as Table~\ref{tab:val-plant}
-gates the single track, is the next piece of this line of work.
+\paragraph{The four-wheel vehicle's form.} Three choices in Section~\ref{sec:four-wheel} are left
+as the plant makes them, since changing any of them changes the plant, its goldens and GRL-SNAM's
+\code{dyn4.py} twin:
+\begin{itemize}
+  \item The lever is one-way. Making it reciprocal means adding the roll and pitch rates to each
+        contact patch's lateral velocity.
+  \item The grade force is off by default, so a vehicle climbs a hill for free unless its host
+        turns it on.
+  \item The dampers act on the body's own vertical rates, not on its rates relative to the ground,
+        so a steady climb pays them too. The books show that as dissipation.
+\end{itemize}
+The four-wheel form and its books have no torch twin yet.
 
 \paragraph{Structure-preserving integrators.} Neither plant's integrator keeps a discrete energy
 identity. Both are first order (analytic) or second order (learned) with a booked residual. A
 discrete-gradient or implicit-midpoint step would close the books exactly. It would cost a
 nonlinear solve per step, and the analytic plant's stiff-tire stability at the navigator's tick
-would have to be re-established.
+would have to be re-established. Section~\ref{sec:review} describes work under way on such a step.
 
 \paragraph{The learned plant's evidence bound.} The rollout objective does not fit the diffusion or
 an observation model. LieSPHGP's EKF-based ELBO is the next stage for \code{cvc::ph}. Beyond the
@@ -1336,6 +1568,32 @@ twins (GRL-SNAM \#138 and \#139), and \code{pycvc} reads a running world's tick 
 \code{dyn\_bike\_plant}'s books would let GRL-SNAM's evaluations read them from a running world.
 (\code{pycvc} binds neither \code{dyn\_bike\_plant} nor \code{plant\_host} today.)
 
+\subsection{Gaps raised in review, and the work under way}
+\label{sec:review}
+Review of this paper raised three gaps between the models it describes and the motion they are
+meant to capture. Each is being worked on in libcvc. None of that work is merged, so nothing here
+is a result.
+\begin{enumerate}
+  \item \emph{Actuation.} Neither analytic plant has wheel spin. The drive and brake forces are set
+        within the tires' grip, with no wheel speed or longitudinal slip in the state. The learned
+        plant's training rows have no wheel speeds either: \code{cut\_flights} writes the pose,
+        the twist, the drive and the steering. Its potential $V(x,y)$ depends on world position,
+        so a fit can tie energy to where the vehicle drove rather than to how. The work under way
+        adds wheel-speed states with a (torque, wheel speed) port, secants for the longitudinal
+        slip in $\R$, wheel speeds in the rigid-body simulator's logs, and an option to drop $V$.
+  \item \emph{Collisions.} The dynamic plants have no contact, and \code{cut\_flights} drops every
+        window with a contact, an impact or a wheel off the ground, so the learned plant never
+        sees one. The work under way adds compliant contact, with a barrier energy in $H$ and
+        contact damping in $\R$, entering as an external port (Section~\ref{sec:ports}).
+  \item \emph{Integration.} libcvc's native multi-start rollout of the navigator defaults to
+        explicit Euler (\code{geom\_rollout\_params::semi\_implicit} is false), which gains energy
+        at every step on the orbits of Section~\ref{sec:nav}. The work under way makes
+        semi-implicit the default, with an A/B comparison, and adds an opt-in discrete-gradient
+        step for the single-track plant, meant to close its books exactly.
+\end{enumerate}
+Recordings of successful and failed rollouts in the rigid-body simulator are being prepared, to be
+linked from a later revision.
+
 % ===========================================================================
 \appendix
 \section{Reproducing the validation tables}
@@ -1348,7 +1606,7 @@ twins (GRL-SNAM \#138 and \#139), and \code{pycvc} reads a running world's tick 
 \toprule
 \textbf{Piece} & \textbf{Version} \\
 \midrule
-libcvc & \code{master} at \code{c1f104c0}; its \code{nav}, \code{ph} and \code{physics} sources and tests are identical to the v3.7.1 tag (\code{d8ca602b}). The \#851 rows: its branch commit \code{6e7ab557}, cut from \code{master} at \code{cc8800a8}. The \#852 rows (and every \code{nav\_dyn\_bike\_test} and \code{physics\_dyn\_bike\_plant\_test} line below): its branch commit \code{1a0acc77}, on \#848's head \code{d1a2a78e}, cut from \code{master} at \code{72e4c607}. \\
+libcvc & \code{master} at \code{c1f104c0}; its \code{nav}, \code{ph} and \code{physics} sources and tests are identical to the v3.7.1 tag (\code{d8ca602b}). The \#851 rows: its branch commit \code{6e7ab557}, cut from \code{master} at \code{cc8800a8}, whose \code{ph} sources and tests are those of its squash commit \code{b8ac9975}. The \#852 rows (and every \code{nav\_dyn\_bike\_test} and \code{physics\_dyn\_bike\_plant\_test} line below): its branch commit \code{1a0acc77}, on \#848's head \code{d1a2a78e}, cut from \code{master} at \code{72e4c607}, whose \code{nav} and \code{physics} sources and tests are those of its squash commit \code{140bc2d0}. The \#850 rows, and \code{PhSe2Train.BothFormsFitTheDynamicBicycle}: \code{master} at \code{6cc8cfdc}, after v3.7.8. \\
 GRL-SNAM & \code{main} at \code{0e21085} (\code{3a38ae4} adds only this paper). The \#138 rows: \code{main} at \code{2f76ab0}, \#138's squash commit \\
 Operating system & Windows 11 Pro 10.0.26100, x86-64 \\
 Compiler & MSVC 19.44 (Visual Studio 2022, toolset 14.44.35207), Release \\
@@ -1372,11 +1630,12 @@ cvcpkg install-deps cvcpkg\recipes\libcvc --prefix deps --config release
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=%CD%\deps ^
       -DCVC_BUILD_TESTS=ON -DCVC_BUILD_CVCGL=OFF -DCVC_ENABLE_CUDA=OFF ^
       -DCVC_BUILD_PYCVC=OFF -DCVC_BUILD_PYCVC_GL=OFF -DCVC_WITH_JOLT=ON
-cmake --build build --target nav_dyn_bike_test physics_dyn_bike_plant_test ^
-      ph_se2_test ph_se2_train_test nav_potential_test
+cmake --build build --target nav_dyn_bike_test nav_dyn_4w_test ^
+      physics_dyn_bike_plant_test ph_se2_test ph_se2_train_test ^
+      nav_potential_test
 set PATH=%CD%\deps\bin;%CD%\build\bin;%PATH%
-for %t in (nav_dyn_bike_test physics_dyn_bike_plant_test ph_se2_test
-           ph_se2_train_test nav_potential_test) do build\bin\%t.exe
+for %t in (nav_dyn_bike_test nav_dyn_4w_test physics_dyn_bike_plant_test
+           ph_se2_test ph_se2_train_test nav_potential_test) do build\bin\%t.exe
 \end{verbatim}
 \end{minipage}
 \end{center}
@@ -1394,17 +1653,18 @@ cvcpkg install-deps cvcpkg/recipes/libcvc --prefix deps --config release
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$PWD/deps \
       -DCVC_BUILD_TESTS=ON -DCVC_BUILD_CVCGL=OFF -DCVC_ENABLE_CUDA=OFF \
       -DCVC_BUILD_PYCVC=OFF -DCVC_BUILD_PYCVC_GL=OFF -DCVC_WITH_JOLT=ON
-cmake --build build --target nav_dyn_bike_test physics_dyn_bike_plant_test \
-      ph_se2_test ph_se2_train_test nav_potential_test
-for t in nav_dyn_bike_test physics_dyn_bike_plant_test ph_se2_test \
-         ph_se2_train_test nav_potential_test; do ./build/bin/$t; done
+cmake --build build --target nav_dyn_bike_test nav_dyn_4w_test \
+      physics_dyn_bike_plant_test ph_se2_test ph_se2_train_test \
+      nav_potential_test
+for t in nav_dyn_bike_test nav_dyn_4w_test physics_dyn_bike_plant_test \
+         ph_se2_test ph_se2_train_test nav_potential_test; do ./build/bin/$t; done
 \end{verbatim}
 \end{minipage}
 \end{center}
 These were not run verbatim for this paper, since no Linux machine was available where it was
 written. libcvc's CI builds every test and runs it under CTest on Linux, macOS and Windows for each
-pull request, \#851 included. The tests are registered with CTest under their Google Test names,
-so \code{ctest --test-dir build -R 'DynBike|PhSe2|PhRff|PhMat3|PhRng|NavPotential'} runs these
+pull request, \#850 and \#851 included. The tests are registered with CTest under their Google
+Test names, so \code{ctest --test-dir build -R 'DynBike|Dyn4|PhSe2|PhRff|PhMat3|PhRng|NavPotential'} runs these
 suites. That is a superset of the tables' rows.
 
 \subsection{What the libcvc tests print}
@@ -1443,6 +1703,40 @@ physics_dyn_bike_plant_test (3 tests, at 1a0acc77):
   RoboRacer, 30 s: drive 845.1 J, ..., floor 6.02e-16, ..., residual -1.49 (8.88e-04 of the flow)
   (and the full-size preset's line: floor -5.44e-15, residual 1.10e-04 of the flow; all agents
    reached in 11.5 s. On c1f104c0: RoboRacer 8.86e-04, full-size floor 1.14 J)
+nav_dyn_4w_test (23 tests, on master at 6cc8cfdc; the Dyn4PH lines):
+  flat, mu 0.9: 267 of 500 states have a tire past its peak; R's least eigenvalue on the twist
+    4.68e-04 |R|; dH/dx within 6.0e-08 of H's differences
+  (and 267 and 6.0e-08 at mu 0.6 and on the split and bump, sprung and with rigid corners)
+  vector field vs dyn4_plant at every slip, flat, mu 0.6: worst |dx/dt - pH| = 1.53e-04 of its scale
+  vector field vs dyn4_plant at every slip, split and bump: worst |dx/dt - pH| = 1.96e-04 of its scale
+  (and 1.96e-04 on the split and bump with the grade force)
+  flat, mu 0.6, swerving, hdt 0.0200 s: ... mean |residual| per step 2.331e+00 J, |sum| / flow 9.48e-04
+  flat, mu 0.6, swerving, hdt 0.0100 s: dH -2.306e+05 J, supplied 4.566e+04, dissipated 2.771e+05,
+    lever 1044, ground 0; mean |residual| per step 5.948e-01 J, |sum| / flow 5.01e-04; 214 of 800 ...
+  flat, mu 0.6, swerving, hdt 0.0050 s: ... mean |residual| per step 1.504e-01 J, |sum| / flow 2.57e-04
+  flat, mu 0.6, swerving, hdt 0.0025 s: ... mean |residual| per step 3.782e-02 J, |sum| / flow 1.30e-04
+  hills, mu 0.6, swerving, hdt 0.0200 s: ... mean |residual| per step 5.124e+00 J, |sum| / flow 1.89e-03
+  hills, mu 0.6, swerving, hdt 0.0100 s: ... ground 2868; mean |residual| per step 1.333e+00 J,
+    |sum| / flow 1.03e-03
+  hills, mu 0.6, swerving, hdt 0.0050 s: ... mean |residual| per step 3.409e-01 J, |sum| / flow 5.39e-04
+  hills, mu 0.6, swerving, hdt 0.0025 s: ... mean |residual| per step 8.633e-02 J, |sum| / flow 2.76e-04
+  braking to a stop, hdt 0.0100 s: ... limiters -339.8 J (|.| 709.1 J), |sum residual| / flow 7.27e-05
+  centre of gravity on the ground, hdt 0.0050 s: lever 0 J, |sum residual| / flow 3.38e-04
+  split and bump: the grade force is within 3.6e-07 m g of -dH/dpose (largest 0.024 m g)
+  hills: the grade force is within 2.1e-08 m g of -dH/dpose (largest 0.018 m g)
+  hills, swerving, hdt 0.0100 s: without the grade force ground 2868 J, grade 0; with it ground 3373 J,
+    grade -3372, mean |ground + grade| per step 5.941e-01 J; ...
+  (mean |ground + grade| per step 2.378e+00, 5.941e-01, 1.485e-01, 3.714e-02 J at hdt 0.02 to 0.0025)
+  coasting up a 5% ramp for 2 s from 10 m/s, hdt 0.0025 s: without the grade force 10.0000 m/s,
+    dH 2.625e+04 J (ground 2.636e+04, m g climb 2.624e+04); with it 9.0137 m/s (lost 0.9863,
+    g s t 0.9807), dH -202.9 J (ground 2.499e+04, grade -2.499e+04)
+\end{verbatim}
+\end{minipage}
+\end{center}
+\begin{center}
+\begin{minipage}{0.98\linewidth}
+\scriptsize
+\begin{verbatim}
 ph_se2_test (14 tests; 18 with #851):
   one step, double vs JAX float64: worst |d| / (1 + |x|) 1.87e-16 over 16 states
   one step, float vs JAX float64: worst |d| / (1 + |x|) 1.08e-07
@@ -1457,9 +1751,10 @@ ph_se2_train_test (8 tests; 11 with #851):
   300 optimizer steps against optax: worst 1.58e-16 at 13 checkpoints
   held-out rollout loss 1.7320 -> 0.0773
   [#851] modulated: 68 entries against central differences: worst relative 3.87e-07
-  [#851] reference form on the dynamic bicycle: held-out rollout loss 8.5199 -> 0.0006;
-         steering's share of |y.u| 0.056, supplying energy at 74 of 250 steps
-  [#851] modulated form on the dynamic bicycle: held-out rollout loss 7.6348 -> 0.0092; ... 0.000
+  [#851, on 6cc8cfdc] reference form on the dynamic bicycle: held-out rollout loss 8.5199 -> 0.0006;
+         steering's share of |y.u| 0.059, supplying energy at 33 of 250 steps
+  [#851, on 6cc8cfdc] modulated form on the dynamic bicycle: held-out rollout loss 7.6348 -> 0.0167; ...
+  (on #851's branch, before #852's slip: share 0.056, 74 of 250 steps; modulated 7.6348 -> 0.0092)
 nav_potential_test (16 tests):
   books, dt 0.0200 -> 0.0100: order of r_E 1.987, of r_E - r_hat_E 2.993
   books, dt 0.0100 -> 0.0050: order of r_E 1.997, of r_E - r_hat_E 2.943
@@ -1512,6 +1807,7 @@ The vector field~\eqref{eq:plant-ph}; the balance~\eqref{eq:balance} & \code{dyn
 The tangent~\eqref{eq:tangent}, \eqref{eq:kf} & \code{dyn\_ph\_tangent\_D} & --- \\
 The step's books~\eqref{eq:books} & \code{dyn\_plant\_books} (struct \code{dyn\_ph\_books}); \code{dyn\_step\_free} & \code{dyn\_bike.dyn\_plant\_books}; \code{dyn\_plant(..., with\_free=True)} (\#138) \\
 The live plant~\eqref{eq:live-books} & \code{cvc::physics::dyn\_bike\_plant}; \code{plant\_host} \code{"dynamic"} & plant kind via \code{pycvc} \\
+The four-wheel form~\eqref{eq:4w}--\eqref{eq:4w-books}, Sec.~\ref{sec:four-wheel} & \code{dyn4\_ph\_hamiltonian}, \code{dyn4\_ph\_J}, \code{dyn4\_ph\_R}, \code{dyn4\_ph\_G}, \code{dyn4\_ph\_lever}, \code{dyn4\_ph\_grade}, \code{dyn4\_ph\_rhs}, \code{dyn4\_ph\_rates\_at}; \code{dyn4\_plant\_books} (\code{nav/detail/dyn\_4w.h}, \#850) & --- (the plant: \code{grl\_snam.dyn4}) \\
 External force through the controller & \code{diff::ext\_in}, \code{bike\_control}; \code{nav/ext\_rollout.h} & \code{grl\_snam.ext\_rollout}, \code{material\_ext} \\
 The learned plant~\eqref{eq:learned} & \code{cvc::ph::se2\_vehicle}, \code{se2\_model}; its golden from the $SE(2)$ package built on \code{CVC-Lab/LieSPHGP} & --- \\
 Steering as a modulation~\eqref{eq:learned-mod} & \code{se2\_setup::modulation\_dim}, \code{cvc-ph-se2/2}, \code{cvc ph-train --steer-modulates} (\#851) & --- \\
