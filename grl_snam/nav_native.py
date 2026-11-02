@@ -651,9 +651,63 @@ class NativeSimWorld:
             float(progress_slack_cells),
         )
 
+    def set_material_grid(self, grid):
+        """:meth:`set_material` from a :class:`grl_snam.material.MaterialGrid`: its raw risk,
+        hard cells and blur, and its params' forces and witness gate (the horizon in this
+        grid's cells), one surface shared by every agent."""
+        p, g = grid.params, grid.params.gate
+        self.set_material(
+            grid.risk_raw,
+            grid.hard,
+            planes=1,
+            lam_soft=p.lam_soft,
+            lam_hard=p.lam_hard,
+            k_sharp=p.k_sharp,
+            d_hat_m=p.d_hat_sdf_m,
+            sigma=grid.sigma,
+            gate_enabled=p.gate_enabled,
+            primitive_count=g.primitive_count,
+            horizon_cells=max(1, int(round(g.horizon_m / grid.cell_w))),
+            hard_margin_m=g.hard_margin_m if g.hard_margin_m is not None else -1.0,
+            improvement_margin=g.improvement_margin,
+            material_trigger=g.material_trigger,
+            progress_slack_cells=g.progress_slack_cells,
+        )
+
     def clear_material(self):
         """Detach material; later steps are byte-identical to the plain drive."""
         _pycvc.nav_sim_world_clear_material(self._h)
+
+    # ── fog of war (libcvc: a world that changes under its agents; opt-in) ──
+    def truth(self):
+        """The world as it is now, (rows, cols) bool."""
+        return _pycvc.nav_sim_world_truth(self._h).astype(bool)
+
+    def set_truth(self, truth):
+        """Replace the world as it is (a wall raised, a vehicle's footprint): the agents sense
+        it from the next sense tick, never under ``freeze_sense``."""
+        _pycvc.nav_sim_world_set_truth(self._h, np.ascontiguousarray(truth, np.uint8))
+
+    def add_obstacle(self, r0, r1, c0, c1):
+        """Stamp a decaying obstacle blob over the cell rect into every plane's dynamic layer
+        (believed from the next sense tick until ``ttl_s`` passes)."""
+        _pycvc.nav_sim_world_add_obstacle(self._h, int(r0), int(r1), int(c0), int(c1))
+
+    def belief_occ(self, m=0):
+        """Plane ``m``'s planning raster (its belief with the dynamic marks), (rows, cols) bool."""
+        return _pycvc.nav_sim_world_belief_occ(self._h, int(m)).astype(bool)
+
+    def ever_seen(self, m=0):
+        """Plane ``m``'s remembered field of view, (rows, cols) bool."""
+        return _pycvc.nav_sim_world_ever_seen(self._h, int(m)).astype(bool)
+
+    def last_visible(self, m=0):
+        """Plane ``m``'s field of view at its last sense tick, (rows, cols) bool."""
+        return _pycvc.nav_sim_world_last_visible(self._h, int(m)).astype(bool)
+
+    def dynamic_stamps(self, m=0):
+        """Plane ``m``'s dynamic layer: the sim time each cell was last marked, -inf never."""
+        return _pycvc.nav_sim_world_dynamic_stamps(self._h, int(m))
 
     def material_gate_active(self):
         """(n,) bool — last tick's per-agent witness-gate decision.
@@ -744,7 +798,9 @@ class NativeSimWorld:
         )
 
 
-def sim_world_from_swarm(sw, weights_path, *, truth, freeze_sense=False, sense_every=4, plant=None):
+def sim_world_from_swarm(
+    sw, weights_path, *, truth, freeze_sense=False, sense_every=4, plant=None, material=None
+):
     """Build a :class:`NativeSimWorld` mirroring a shared-belief :class:`Swarm`'s
     init (same poses, goals, colors, field prior, sensor / vehicle params and the
     same ``.cvcnav`` policy) — the pure-C++ counterpart of the torch swarm.
@@ -752,8 +808,10 @@ def sim_world_from_swarm(sw, weights_path, *, truth, freeze_sense=False, sense_e
     ``plant`` makes the agents drive a plant's vehicles: a :class:`JoltPlant` or
     :class:`DynamicPlant`, or a name :func:`make_plant` takes (built over the swarm's bounds
     with ``truth`` as its obstacles). On a plant the navigator plans with the vehicles'
-    limits, never more than the swarm's (as ``Squad(plant=...)`` does). The torch Swarm
-    itself stays kinematic (it is what trains)."""
+    limits, never more than the swarm's (as ``Squad(plant=...)`` does). ``material`` (a
+    :class:`grl_snam.material.MaterialGrid`) attaches its risk and hard cells to the world
+    (:meth:`NativeSimWorld.set_material_grid`). The torch Swarm itself stays kinematic (it is
+    what trains)."""
     o = np.ascontiguousarray(sw.o.detach().cpu().numpy(), np.float32)
     goal = np.ascontiguousarray(sw.goal.detach().cpu().numpy(), np.float32)
     color = np.ascontiguousarray(sw.color.detach().cpu().numpy(), np.float32)
@@ -810,6 +868,8 @@ def sim_world_from_swarm(sw, weights_path, *, truth, freeze_sense=False, sense_e
     w = NativeSimWorld(h, sw.N)
     if plant is not None:
         w.set_plant(plant)
+    if material is not None:
+        w.set_material_grid(material)
     return w
 
 
@@ -822,6 +882,8 @@ HAS_PLANT = (
 )
 #: ``nav_sim_world_create`` takes a per-agent ``map_id`` (private / clustered belief).
 HAS_SIM_WORLD_PLANES = HAS_PLANT  # both arrived with libcvc P6's bindings
+#: The sim_world's fog-of-war surface: truth edits, the fog tiers, the dynamic marks.
+HAS_FOG = HAS_SIM_WORLD and hasattr(_pycvc, "nav_sim_world_set_truth")
 
 #: The vehicle presets libcvc ships (``pycvc.vehicle_desc.<name>()``).
 VEHICLE_PRESETS = ("roboracer", "humvee")
@@ -874,7 +936,34 @@ def obstacle_boxes(occ, bounds):
     return out
 
 
-class JoltPlant:
+class _SceneBoxes:
+    """What a plant's physics world can gain mid-run: a wall raised (a static box) or a moving
+    vehicle (a kinematic box moved every tick). A plant without a world (a DynamicPlant built
+    with ``collide=False``) has nothing to add to: the calls return None and do nothing."""
+
+    def add_box(self, x0, y0, x1, y1, *, height_m=None, motion="static"):
+        """A box over the world rectangle (x0, y0)-(x1, y1), ``height_m`` tall (the obstacles'
+        height by default), ``motion`` "static" or "kinematic". Returns its body id."""
+        if self.world is None:
+            return None
+        h = float(height_m if height_m is not None else self.obstacle_height_m)
+        x0, x1 = sorted((float(x0), float(x1)))
+        y0, y1 = sorted((float(y0), float(y1)))
+        return self.world.add_box(
+            (0.5 * (x1 - x0), 0.5 * (y1 - y0), 0.5 * h),
+            position=(0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * h),
+            motion=motion,
+        )
+
+    def move_box(self, body, x, y, vx=0.0, vy=0.0):
+        """Put kinematic box ``body``'s centre at (x, y), moving at (vx, vy) m/s."""
+        if self.world is None or body is None:
+            return
+        z = self.world.state(body)["position"][2]
+        self.world.set_state(body, position=(float(x), float(y), z), linear_velocity=(vx, vy, 0.0))
+
+
+class JoltPlant(_SceneBoxes):
     """A ``cvc::physics`` world whose vehicles a :class:`NativeSimWorld`'s agents drive
     (libcvc's ``nav_plant``, P4): the navigator computes each agent's command, the
     vehicle's driver model and Jolt integrate it, and nav reads the rear axle back.
@@ -919,6 +1008,7 @@ class JoltPlant:
         self.descs = _descs_of(vehicles, type(self).__name__)
         self.a_lat_g = float(a_lat_g)
         self.ground_mu = float(ground_mu)
+        self.obstacle_height_m = float(obstacle_height_m)
         self.world, self.ground, self.obstacles = _physics_scene(
             bounds, obstacles, ground_mu, rolling_resistance, obstacle_height_m, fixed_dt
         )
@@ -1058,7 +1148,7 @@ def _telemetry(vx, vy, heading, yaw_rate, tire_use, books):
 HAS_DYN_PLANT = HAS_PLANT and hasattr(_pycvc, "dyn_bike_plant")
 
 
-class DynamicPlant:
+class DynamicPlant(_SceneBoxes):
     """libcvc's dynamic single-track vehicle (``dyn_bike_plant``) as a :class:`NativeSimWorld`'s
     plant: the navigator's command drives a bicycle with tires (Pacejka, from the vehicle's
     ``vehicle_desc``), load transfer and actuator lag, and the plant keeps its
@@ -1098,6 +1188,7 @@ class DynamicPlant:
         self.descs = _descs_of(vehicles, type(self).__name__)
         self.a_lat_g = float(a_lat_g)
         self.ground_mu = float(ground_mu)
+        self.obstacle_height_m = float(obstacle_height_m)
         self.world = self.ground = None
         self.obstacles = []
         if collide:

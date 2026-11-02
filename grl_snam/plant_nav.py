@@ -56,8 +56,12 @@ class PlantNavigator:
     plant the wheelbase is the vehicle's and the limits never exceed its own. ``known_map``
     False starts the belief empty (fog of war): the agent maps the buildings with its sensor
     (``sensor``: range_m, n_rays, fov_rad) as it drives, while the plant's boxes are there
-    from the start. ``weights`` (a ``.cvcnav``, e.g. one trained through Jolt) is the policy
-    the world drives instead of ``model``, which then only frames the run (``meta``)."""
+    from the start. ``prior`` (rows, cols) is the belief's start instead (a stale map; the
+    agent senses from it), with ``sense_every``, the ``unknown`` policy ("optimistic" or
+    "pessimistic") and ``ttl_s``, how long a dynamic mark lasts. ``weights`` (a ``.cvcnav``,
+    e.g. one trained through Jolt) is the policy the world drives instead of ``model``, which
+    then only frames the run (``meta``). ``material`` (a
+    :class:`~grl_snam.material.MaterialGrid`) attaches its forces and witness gate."""
 
     def __init__(
         self,
@@ -76,6 +80,11 @@ class PlantNavigator:
         obstacle_height_m: float = 6.0,
         known_map: bool = True,
         weights: str | None = None,
+        prior=None,
+        sense_every: int = 4,
+        unknown: str = "optimistic",
+        ttl_s: float = 4.0,
+        material=None,
     ):
         if not _native.HAS_SIM_WORLD or not _native.HAS_PLANT:
             raise RuntimeError(
@@ -106,6 +115,13 @@ class PlantNavigator:
         self._obstacle_h = float(obstacle_height_m)
         self.known_map = bool(known_map)
         self.weights = weights
+        self.prior = (
+            None if prior is None else np.ascontiguousarray(np.asarray(prior, bool), np.uint8)
+        )
+        self.sense_every = int(sense_every)
+        self.unknown = str(unknown)
+        self.ttl_s = float(ttl_s)
+        self.material = material
         self.plant = None
         self.world = None
         self._routes = None
@@ -163,9 +179,14 @@ class PlantNavigator:
         mnx, mny, mxx, mxy = self.bounds
         o = self.w2n(start_world)[None].astype(np.float32)
         g = self.w2n(goal_world)[None].astype(np.float32)
+        frozen = self.known_map and self.prior is None
+        if self.prior is not None:
+            prior = self.prior
+        else:
+            prior = self.occ if self.known_map else np.zeros_like(self.occ)
         h = _native._pycvc.nav_sim_world_create(
             self.occ,
-            self.occ if self.known_map else np.zeros_like(self.occ),
+            prior,
             weights_path,
             o,
             g,
@@ -194,18 +215,20 @@ class PlantNavigator:
             self.nsub,
             int(bool(v["allow_reverse"])),
             self.reach_tol,
-            4,
-            1 if self.known_map else 0,  # a known map is the prior, never sensed again
+            self.sense_every,
+            1 if frozen else 0,  # a known map is the prior, never sensed again
             2.2,
             -1.4,
             8.0,
-            1,
+            1 if self.unknown == "optimistic" else 0,
             0.5,
             0.15,
-            4.0,
+            self.ttl_s,
         )
         self.world = _native.NativeSimWorld(h, 1)
         self.world.set_plant(self.plant)
+        if self.material is not None:
+            self.world.set_material_grid(self.material)
         if _native.HAS_SIM_WORLD_NAVSTATS:
             # The world's own collector: it counts the plant's building and vehicle contacts.
             self.world.begin_nav_stats(scene_id="capture", contact_r=0.0)
@@ -235,6 +258,13 @@ class PlantNavigator:
                 self._routes = _native.VehicleRoutes(self.world, self.bounds, [0])
             head = self.world.snapshot()[1]
             self._routes.start(pos[None], np.asarray(head), {0: self._gw}, t=self.step_i * self.dt)
+
+    def track_goal(self, goal_world):
+        """Move the goal without restarting the leg (a moving target): the progress and stall
+        accounting carry on."""
+        self._gw = (float(goal_world[0]), float(goal_world[1]))
+        gn = self.w2n(self._gw)
+        self.world.retarget(0, float(gn[0]), float(gn[1]))
 
     # ── stepping ────────────────────────────────────────────────────────────
     def step(self) -> NavMetrics:
