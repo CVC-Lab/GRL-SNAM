@@ -92,8 +92,11 @@ def build_convoy(occ, bounds, *, n: int = N_VEHICLES):
 
 def record_convoy(
     bundle_dir: str, out_dir, *, n: int = N_VEHICLES, max_steps: int = 3200,
-    use_planner: bool = True, progress=None,
+    use_planner: bool = True, progress=None, plant=None,
 ):  # fmt: skip
+    """Record the convoy. ``plant`` runs it on libcvc's sim_world and that plant
+    (:func:`~grl_snam.tools.squad_record.record_squad`); the followers' moving goals are their
+    leaders' positions there too."""
     occ, bounds = occupancy(bundle_dir)
     story0, _s, _g = austin_story(occ, bounds, key="convoy", fog=True)
     agents, _goal = build_convoy(occ, bounds, n=n)
@@ -124,5 +127,5 @@ def record_convoy(
     )
     return record_squad(
         story, agents, out_dir, max_steps=max_steps, truth_occ=occ, prior_occ=None,
-        progress=progress,
+        progress=progress, plant=plant,
     )  # fmt: skip

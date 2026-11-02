@@ -3,6 +3,7 @@ frozen so a Swarm tick is only sample -> CoefMLP -> bicycle_rollout.
 
     python -m grl_snam.tools.drive_bench            # compare torch vs native across N
     GRL_SNAM_NAV_DRIVE=native python -m grl_snam.tools.drive_bench --once --n 8
+    python -m grl_snam.tools.drive_bench --plant jolt --n 8   # sim_world's tick on Jolt
 
 This is "C++ for inference" (GRL_SNAM_NAV_DRIVE=native, the opt-in native drive),
 distinct from the kernels (which are the default; see squad_bench). torch pays a
@@ -20,12 +21,12 @@ import sys
 import time
 
 
-def _run_once(n: int, ticks: int):
+def _run_once(n: int, ticks: int, plant=None):
     import numpy as np
     import torch
 
     import grl_snam.sdf_nav as sdf_nav
-    from grl_snam import planner
+    from grl_snam import nav_native, planner
     from grl_snam.fog_stories import STORIES, shrunk
     from grl_snam.squad import AgentSpec
     from grl_snam.swarm import Swarm
@@ -43,6 +44,9 @@ def _run_once(n: int, ticks: int):
 
     rng = np.random.default_rng(0)
     s, g = rng.integers(0, len(rows), n), rng.integers(0, len(rows), n)
+    if plant is not None:
+        # Physics bodies cannot share a start: draw the starts without repeats.
+        s = rng.choice(len(rows), n, replace=False)
     specs = [
         AgentSpec(f"a{i}", w(rows[s[i]], cols[s[i]]), w(rows[g[i]], cols[g[i]])) for i in range(n)
     ]
@@ -50,12 +54,25 @@ def _run_once(n: int, ticks: int):
     model = sdf_nav.CoefMLP().eval()
     sw = Swarm(story, specs, model=model, truth_occ=truth, prior_occ=truth, belief_mode="shared")
     sw._sense_shared = lambda: None  # freeze sense: the tick is now ONLY the drive
+    step = sw.step
+    if plant is not None:
+        # The same swarm in libcvc's sim_world, its drive on the plant (sense frozen too).
+        import tempfile
+
+        from grl_snam.tools.coef_export import write_coef_mlp
+
+        path = os.path.join(tempfile.mkdtemp(), "drive_bench.cvcnav")
+        write_coef_mlp(model, path)
+        world = nav_native.sim_world_from_swarm(
+            sw, path, truth=truth, freeze_sense=True, plant=plant
+        )
+        step = world.step
 
     for _ in range(3):
-        sw.step()
+        step()
     t0 = time.perf_counter()
     for _ in range(ticks):
-        sw.step()
+        step()
     return (time.perf_counter() - t0) / ticks, sw._native_drive
 
 
@@ -65,8 +82,18 @@ def main(argv=None) -> None:
     ap.add_argument("--ticks", type=int, default=200)
     ap.add_argument("--sizes", type=int, nargs="*", default=[1, 8, 64, 1024])
     ap.add_argument("--once", action="store_true", help="time the CURRENT backend at --n only")
+    ap.add_argument(
+        "--plant",
+        default=None,
+        help="time libcvc's sim_world tick with the agents on this plant (kinematic, "
+        "dynamic[:preset], jolt[:preset]) at --n, in this process",
+    )
     args = ap.parse_args(argv)
 
+    if args.plant:
+        dt, _ = _run_once(args.n, args.ticks, plant=args.plant)
+        print(f"[plant={args.plant}] N={args.n:5d}: {dt*1000:8.3f} ms/tick")
+        return
     if args.once:
         dt, native = _run_once(args.n, args.ticks)
         be = "native" if native else "torch"

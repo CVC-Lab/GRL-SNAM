@@ -21,7 +21,7 @@ API reference for the trainer lives in libcvc `docs/NAV_TRAINING.md`.
 | **Kernels** — EDT, `build_sdf`, inflate, line-of-sight, `nearest_free`, A*, string-pull, `sense_batch`, neighbours | `grl_snam/planner.py`, `sdf_nav.py`, `belief.py` | `nav_native.*` → `pycvc.nav_*` | `GRL_SNAM_NAV_BACKEND` (default `native`; `python` forces off) | **bit-identical** |
 | **Drive** — sample → CoefMLP → bicycle rollout, carrot FSM, `sim_world`, `sim_thread` | `sdf_nav.py`, `swarm.py` | `nav_native.drive_step` / `sim_world_*` | `GRL_SNAM_NAV_DRIVE=native` (Swarm; default `torch`) | float-equivalent (~1e-4) |
 | **Trainer** — self-supervised CoefMLP training | `grl_snam/tools/coef_train.py` (torch) | `nav_native.train_coef_mlp` → `cvc::nav::coef_train` | `GRL_SNAM_TRAIN_BACKEND=native` (or `--backend native`) | torch-independent (gradcheck) |
-| **Plant** — the vehicles agents drive: nav's bicycle, or `cvc::physics` vehicles on Jolt | the kinematic bicycle (`sdf_nav.py`) | `nav_native.JoltPlant` → `pycvc.nav_plant`; `Squad(plant=...)` | `plant=` (`Squad`, `sim_world_from_swarm`); default none | a different runtime: physics, measured against the bicycle |
+| **Plant** — the vehicles agents drive: nav's bicycle, the dynamic single track, or `cvc::physics` vehicles on Jolt | the kinematic bicycle (`sdf_nav.py`) | `nav_native.JoltPlant` → `pycvc.nav_plant`, `nav_native.DynamicPlant` → `pycvc.dyn_bike_plant`; `Squad(plant=...)`, `plant_nav.PlantNavigator` | `plant=` (`Squad`, `sim_world_from_swarm`), `--plant` (`capture`, `pipeline`, `finale`, the benches); default none | a different runtime: physics, measured against the bicycle ([PLANTS.md](PLANTS.md)) |
 
 **Nothing above is on by default that changes results.** The kernels are a
 bit-identical drop-in (so they *can* be the default when present); the drive and
@@ -155,8 +155,9 @@ w = nav_native.sim_world_from_swarm(sw, weights, truth=truth,
 ```
 
 - **`plant=`** is `"jolt"` (RoboRacers), a preset name (`"roboracer"`, `"humvee"`), a
-  `JoltPlant`, or `"kinematic"` for nav's C++ bicycle without physics. `None`, the
-  default, keeps the Python path.
+  `JoltPlant`, `"dynamic"` or `"dynamic:<preset>"` for libcvc's dynamic single-track
+  vehicle (a `DynamicPlant`), or `"kinematic"` for nav's C++ bicycle without physics. `None`,
+  the default, keeps the Python path. [PLANTS.md](PLANTS.md) runs every demo on them.
 - **The runtime.** `Squad(plant=...)` runs the squad in libcvc's pure-C++ `sim_world`, with
   one private belief plane per agent. It keeps `step`, `run`, `done`, the per-agent records
   and `SquadResult` (plus `energy_J`). It does not keep the Python path's route spine: the

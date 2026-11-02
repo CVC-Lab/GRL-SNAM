@@ -32,19 +32,38 @@ def record_squad(
     truth_occ=None,
     prior_occ=None,
     route_clearance: tuple[float, float] | None = (6.0, 1.5),
+    plant=None,
+    vehicle_routes: bool | None = None,
 ) -> Path:
+    """Run the squad and write its traces to ``out_dir``. ``plant`` (``"kinematic"``,
+    ``"dynamic[:preset]"``, ``"jolt[:preset]"``, a preset name or a plant object) runs it in
+    libcvc's sim_world on that plant instead of the Python path (``Squad(plant=...)``, with
+    ``vehicle_routes``). The native world keeps its belief to itself and steers by its own
+    carrot or vehicle routes, so its traces carry no map updates, field-of-view or route
+    spine: the map stays the prior (pass ``prior_occ``; None is an empty one)."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    squad = Squad(story, agents, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ)
+    squad = Squad(
+        story,
+        agents,
+        model,
+        seed=seed,
+        truth_occ=truth_occ,
+        prior_occ=prior_occ,
+        plant=plant,
+        vehicle_routes=vehicle_routes,
+    )
+    native = squad.native is not None
     # Bias each agent's global route toward obstacle standoff — the lever that
     # lifts route-guided reach (the local policy is already near its ceiling):
     # ~0.80 -> ~0.90 on the procedural city squad, and visibly smoother paths.
     # ON by default because every caller here is a RECORDING, where route quality
     # is the product. Pass None for the shortest-path spine — which is what a
     # fixed-tick-budget benchmark wants, since the standoff route is longer and
-    # can regress when there is no headroom to finish it.
-    if route_clearance is not None:
+    # can regress when there is no headroom to finish it. (The native world plans
+    # its own way, so it has no spine to bias.)
+    if route_clearance is not None and not native:
         attach_clearance_routing(squad, *route_clearance)
     clock = WorldClock(fixed_dt=story.dt, mode="replay")
 
@@ -82,8 +101,14 @@ def record_squad(
 
         for key, rec in recs.items():
             sc = squad.scenarios[key]
+            # The Python scenario's own pose, or (native) the record's: its nav never moves.
+            o = (
+                torch.from_numpy(sc.nav.w2n((rec.x, rec.y))).unsqueeze(0).float()
+                if native
+                else sc.nav.o
+            )
             with torch.no_grad():
-                phi, _ = sc.nav.field.sample(sc.nav.o)
+                phi, _ = sc.nav.field.sample(o)
             r = rows[key]
             r["tick"].append(tick)
             r["t"].append(clock.t())
@@ -96,9 +121,9 @@ def record_squad(
             r["goal_index"].append(rec.goal_index)
             r["belief_version"].append(rec.belief_version)
             r["rebuilt"].append(bool(rec.rebuilt))
-            r["sensed"].append(sc.step_i % story.sense_every == 0)
+            r["sensed"].append(not native and sc.step_i % story.sense_every == 0)
             r["truth_penetration"].append(bool(rec.truth_penetration))
-            gx, gy = sc.waypoints[sc.wp_i]
+            gx, gy = squad.goal_of(key) if native else sc.waypoints[sc.wp_i]
             goal_x[key].append(float(gx))
             goal_y[key].append(float(gy))
 
@@ -173,7 +198,7 @@ def record_squad(
                 "world_seconds": round(n * story.dt, 3),
                 "map_updates": len(snaps[k]["tick"]) - 1,
                 "penetration_steps": int(np.sum(rows[k]["truth_penetration"])),
-                "reached_goal": bool(squad.scenarios[k].done),
+                "reached_goal": squad.reached_of(k),
                 "path_length_m": round(float(np.hypot(np.diff(xs), np.diff(ys)).sum()), 1),
             },
         }
@@ -193,7 +218,8 @@ def record_squad(
                     for a in agents
                 ],
                 "ticks": len(rows[agents[0].key]["tick"]),
-                "all_reached": all(sc.done for sc in squad.scenarios.values()),
+                "all_reached": all(squad.reached_of(a.key) for a in agents),
+                "plant": squad.native.plant_kind if native else "python",
             },
             indent=2,
         )

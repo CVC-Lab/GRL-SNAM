@@ -46,6 +46,10 @@ class NavMetrics:
     material_risk: float = 0.0  # smoothed material risk r~ at the agent (0 without material)
     material_gate: bool = False  # witness gate active this step (False without material)
     material_id: int = -1  # discrete material class 0..NUM_MATERIALS-1 at the agent (-1 unknown)
+    # The vehicle plant's read-out (grl_snam.plant_nav.PlantNavigator): its name, and on the
+    # dynamic and Jolt plants slip_deg, tire_use, lateral_g, speed_mps and books (J). None on
+    # the Python navigator.
+    plant: dict | None = None
 
     def as_dict(self) -> dict:
         return self.__dict__.copy()
@@ -151,5 +155,42 @@ def hud_lines(m: NavMetrics, stats: NavStats | None = None) -> list[str]:
         lines.append(
             f"reached {stats.goals_reached}   penetration {stats.penetration_pct:4.1f}%"
             f"   min clr {stats.min_clearance_m:4.1f} m"
+        )
+    if m.plant is not None:
+        lines += plant_hud_lines(m.plant)
+    return lines
+
+
+def plant_hud_lines(p: dict) -> list[str]:
+    """The HUD's lines for a vehicle plant's read-out (``NavMetrics.plant``): the plant, then on
+    a plant with tires the sideslip, the tire use against its peak and the lateral g, then the
+    energy books in kJ (the Jolt vehicle's ledger, or the dynamic plant's port-Hamiltonian
+    books)."""
+    name = p.get("name", "")
+    if "slip_deg" not in p:
+        return [f"plant {name}: kinematic bicycle, no tires"]
+    flags = ""
+    if p["tire_use"] > 1.0:
+        flags += "  [PAST PEAK]"
+    if abs(p["slip_deg"]) > 20.0:
+        flags += "  [SPIN]"
+    if p.get("touching"):
+        flags += "  [CONTACT]"
+    b = {k: v / 1e3 for k, v in p.get("books", {}).items()}
+    lines = [
+        f"plant {name}   mu {p.get('mu', float('nan')):4.2f}",
+        f"slip {p['slip_deg']:5.1f} deg  tire {p['tire_use']:4.2f} of peak"
+        f"  lat {p['lateral_g']:4.2f} g{flags}",
+    ]
+    if "source" in b:
+        lines.append(
+            f"energy kJ  drawn {b['source']:6.1f}  tire {b['tire']:5.1f}  brake {b['brake']:5.1f}"
+            f"  aero {b['aero']:4.1f}"
+        )
+    elif "drive" in b:
+        lines.append(
+            f"books kJ  drive {b['drive']:6.1f}  brake {b['brake']:5.1f}  slip+drag "
+            f"{b['dissipated']:5.1f}  KE {b['kinetic']:5.1f}"
+            + (f"  hit {b['contact']:+.1f}" if b.get("contact") else "")
         )
     return lines

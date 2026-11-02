@@ -74,8 +74,11 @@ def staging_line(snap):
     return [snap(LINE_X, y) for y in np.linspace(-LINE_HALF, LINE_HALF, N_AGENTS)]
 
 
-def record_rendezvous(bundle_dir: str, out_dir, *, max_steps: int = 3000, progress=None):
-    """Act one: enter blind from the west, converge on the staging line."""
+def record_rendezvous(
+    bundle_dir: str, out_dir, *, max_steps: int = 3000, progress=None, plant=None
+):
+    """Act one: enter blind from the west, converge on the staging line. ``plant`` runs the
+    squad on libcvc's sim_world and that plant (:func:`record_squad`)."""
     occ, bounds = occupancy(bundle_dir)
     story0, _s, _g = austin_story(occ, bounds, key="finale", fog=True)
     snap = _free_snapper(occ, bounds)
@@ -96,12 +99,13 @@ def record_rendezvous(bundle_dir: str, out_dir, *, max_steps: int = 3000, progre
     )
     return record_squad(
         story, agents, out_dir, max_steps=max_steps, truth_occ=occ, prior_occ=None,
-        progress=progress, route_clearance=(6.0, 1.5),
+        progress=progress, route_clearance=(6.0, 1.5), plant=plant,
     )  # fmt: skip
 
 
-def record_pursuit(bundle_dir: str, out_dir, *, max_steps: int = 2400, progress=None):
-    """Act two: break north from the staging line after four moving targets."""
+def record_pursuit(bundle_dir: str, out_dir, *, max_steps: int = 2400, progress=None, plant=None):
+    """Act two: break north from the staging line after four moving targets. ``plant`` as
+    :func:`record_rendezvous`'s."""
     occ, bounds = occupancy(bundle_dir)
     story0, _s, _g = austin_story(occ, bounds, key="finale2", fog=True)
     snap = _free_snapper(occ, bounds)
@@ -138,13 +142,21 @@ def record_pursuit(bundle_dir: str, out_dir, *, max_steps: int = 2400, progress=
     )
     return record_squad(
         story, agents, out_dir, max_steps=max_steps, stall_ticks=260,
-        truth_occ=occ, prior_occ=None, progress=progress,
+        truth_occ=occ, prior_occ=None, progress=progress, plant=plant,
     )  # fmt: skip
 
 
-def record_both(bundle_dir: str, out_root, *, progress=None) -> dict[str, Path]:
+def record_both(
+    bundle_dir: str, out_root, *, progress=None, plant=None, max_steps: int | None = None
+) -> dict[str, Path]:
+    """Both acts. ``max_steps`` caps each (default: 3000 and 2400)."""
     out = Path(out_root)
+    caps = {} if max_steps is None else {"max_steps": int(max_steps)}
     return {
-        "rendezvous": record_rendezvous(bundle_dir, out / "finale_rendezvous", progress=progress),
-        "pursuit": record_pursuit(bundle_dir, out / "finale_pursuit", progress=progress),
+        "rendezvous": record_rendezvous(
+            bundle_dir, out / "finale_rendezvous", progress=progress, plant=plant, **caps
+        ),
+        "pursuit": record_pursuit(
+            bundle_dir, out / "finale_pursuit", progress=progress, plant=plant, **caps
+        ),
     }

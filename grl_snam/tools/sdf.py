@@ -11,6 +11,7 @@ Both emit the same normalized ``phi`` + unit-normal grids + meta that
 
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
@@ -18,6 +19,14 @@ import numpy as np
 import grl_snam.sdf_nav as sdf_nav
 
 TARGET_EXTENT = 10.0  # the surrogate's normalized working scale (~10 units across the region)
+
+
+def terrain_bounds(bundle_dir: str):
+    """The bundle's world extent ``(min_x, min_y, max_x, max_y)``, from its ``terrain.json``
+    (pycvc_gl.scenes retired its ``terrain_grid`` reader; libcvc #670)."""
+    with open(os.path.join(bundle_dir, "terrain.json")) as f:
+        b = json.load(f)["bounds"]
+    return (float(b["min_x"]), float(b["min_y"]), float(b["max_x"]), float(b["max_y"]))
 
 
 def _gltf_mesh(glb_path: str):
@@ -56,11 +65,10 @@ def build(
 ) -> str:
     """Build the navigation SDF for a scene bundle and save ``nav_sdf.npz``. Returns the
     output path. Needs the ``pycvc_gl`` scene helpers (imported lazily)."""
-    from pycvc_gl.scenes import building_occupancy, terrain_grid
+    from pycvc_gl.scenes import building_occupancy
 
-    terrain = os.path.join(bundle_dir, "terrain.json")
     glb = os.path.join(bundle_dir, "buildings.glb")
-    _, bounds, _, _ = terrain_grid(terrain)
+    bounds = terrain_bounds(bundle_dir)
     mnx, mny, mxx, mxy = bounds
     cx, cy = 0.5 * (mnx + mxx), 0.5 * (mny + mxy)
     scale = TARGET_EXTENT / (2.0 * region)
