@@ -190,8 +190,9 @@ def dyn_contact_field(
 
 def dyn_rounded_box_sdf(f: DynFootprint, rho: float, lx: torch.Tensor, ly: torch.Tensor):
     """A rounded rectangle's signed distance at (lx, ly) in its body's axes (the footprint's
-    outline with corners of radius rho, at most the half width), and its gradient there (body
-    axes): (d, gx, gy)."""
+    outline with corners of radius rho, held to the half width and half length), and its gradient
+    there (body axes): (d, gx, gy)."""
+    rho = max(0.0, min(rho, min(f.half_width, 0.5 * (f.front + f.rear))))
     cx0 = 0.5 * (f.front - f.rear)
     a = 0.5 * (f.front + f.rear) - rho
     bb = f.half_width - rho

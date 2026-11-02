@@ -9,8 +9,7 @@ libcvc's ``dyn_footprint_points``, ``dyn_contact_field``, ``dyn_contact_pair`` a
 the damper's wrenches, the barrier's energy, the dissipation, the points touching) against an
 analytic wall and a pillar at five poses and against another Humvee at three; and one
 ``dyn_plant_books`` step under a wrench, with the port's energy. That step's plant is
-``DynBikePH.Golden``'s Humvee, whose parameters the golden does not repeat: they are read from
-``dyn_bike_ph_golden.json``.
+``DynBikePH.Golden``'s Humvee, its parameters recorded with the step.
 
 Tier: DOUBLE contract. libcvc's contact is double, and its plant runs in double from the same float
 parameters, so every value agrees to 1e-9 relative. libcvc does not differentiate the contact;
@@ -37,11 +36,10 @@ from grl_snam.dyn_contact import (  # noqa: E402
     dyn_contact_field,
     dyn_contact_pair,
     dyn_footprint_points,
+    dyn_rounded_box_sdf,
 )
 
-FIXTURES = Path(__file__).parent / "fixtures"
-GOLDEN = FIXTURES / "dyn_contact_golden.json"
-PLANT = FIXTURES / "dyn_bike_ph_golden.json"
+GOLDEN = Path(__file__).parent / "fixtures" / "dyn_contact_golden.json"
 RTOL = 1e-9
 BOOKS = ("dH", "dissipated", "supplied", "floor", "grade", "limiter", "residual", "port")
 GROUPS = ("points", "field", "pair", "next", "books", "free")
@@ -85,7 +83,7 @@ def _step(data):
     """The golden's plant step under its wrench: (next, books, free, whether the books' step is
     the plant's to the last bit)."""
     st = data["step"]
-    p = DynBikeParams(**json.loads(PLANT.read_text(encoding="utf-8"))["params"])
+    p = DynBikeParams(**st["params"])
     lim = st["limits"]
     limits = PlantLimits(
         L=lim["L"], vmax=lim["vmax"], hdt=lim["hdt"], allow_reverse=bool(lim["allow_reverse"])
@@ -263,12 +261,23 @@ def test_a_pair_keeps_its_momentum():
     assert int(keep.sum()) > 50
 
 
+def test_the_corner_radius_is_held_to_the_outline():
+    # As libcvc's dyn_rounded_box_sdf: rho is held to [0, min(half width, half length)].
+    f = DynFootprint(**_golden()["footprint"])
+    gen = torch.Generator().manual_seed(7)
+    lx, ly = 4.0 * _uniform(gen, 64), 2.5 * _uniform(gen, 64)
+    for rho, held in ((5.0, f.half_width), (-0.2, 0.0)):
+        got, want = dyn_rounded_box_sdf(f, rho, lx, ly), dyn_rounded_box_sdf(f, held, lx, ly)
+        for g, w in zip(got, want):
+            assert torch.equal(g, w), rho
+
+
 def test_no_wrench_and_a_zero_wrench_step_alike():
     # The port is opt-in: without a wrench the step and the books are dyn_plant's as before, and a
     # zero wrench adds exactly nothing.
     data = _golden()
     st = data["step"]
-    p = DynBikeParams(**json.loads(PLANT.read_text(encoding="utf-8"))["params"])
+    p = DynBikeParams(**st["params"])
     limits = PlantLimits(L=st["limits"]["L"], vmax=st["limits"]["vmax"], hdt=st["limits"]["hdt"])
     s = torch.tensor(st["state"], dtype=torch.float64)
     dcmd = torch.tensor(st["delta_cmd"], dtype=torch.float64)
