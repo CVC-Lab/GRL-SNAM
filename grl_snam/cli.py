@@ -205,6 +205,26 @@ def coef_train_cmd(args) -> None:
     raise SystemExit(_run(list(args)))
 
 
+@main.command(
+    "ariadne",
+    # Every arg passes straight through to grl_snam.ariadne's own parsers, as coef-train does, so
+    # `grl-snam ariadne --list` and `grl-snam ariadne <port> --help` reach them.
+    context_settings=dict(ignore_unknown_options=True, help_option_names=[]),
+    add_help_option=False,
+    short_help="Run a demo as a Python host of an Ariadne document (live/fog/squad/fleet/...).",
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def ariadne_cmd(args) -> None:
+    """Run one of GRL-SNAM's demos as a Python host of an Ariadne (.ari) document: `grl-snam
+    ariadne --list` names the ports (live, fog, squad, fleet, material), `grl-snam ariadne <port>
+    --help` explains one. The same as `python -m grl_snam.ariadne`; needs pycvc_gl's Python host
+    (pycvc_gl.ariadne). See grl_snam/ariadne/README.md.
+    """
+    from .ariadne.__main__ import main as _run
+
+    raise SystemExit(_run(list(args)))
+
+
 # ── drive + render ───────────────────────────────────────────────────────────
 @main.group()
 def capture() -> None:

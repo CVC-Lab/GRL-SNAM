@@ -1,0 +1,87 @@
+# material.ari — the material-aware navigation demo. grl_snam/ariadne/material.py registers the two
+# stories as async functions, (run-scenario) and (run-swarm), and runs both when this document
+# starts; each publishes a picture and a table of the material off / on numbers.
+#
+#   python -m grl_snam.ariadne material
+
+meta:
+  name: GRL-SNAM material demo
+  min_libcvc: 3.4.0
+
+requires:
+  - run-scenario
+  - run-swarm
+
+init: |
+  (begin
+    (state-set "scenario" "0")
+    (state-set "swarm" "0"))
+
+menubar:
+  - menu: Demo
+    items:
+      - menu_item: Quit
+        on: quit
+
+windows:
+  - window: "Scenario: belief + planner + drive"
+    id: scenario
+    pos: [16, 30]
+    size: [420, 600]
+    children:
+      - text: "Mud on the direct route, a water strip with a dry gap."
+      - text: "Red: material off. Green: material on."
+      - spinner: running
+        visible_when: (= (state-get "scenario_status") "running")
+      - image: Scenario
+        src: scenario
+        size: 384
+      - type: group
+        layout: { kind: grid, col_widths: [140, 90, 90] }
+        children:
+          - text: ""
+          - text: "material off"
+          - text: "material on"
+      - type: group
+        repeat: (state-get "scenario")
+        layout: { kind: grid, col_widths: [140, 90, 90] }
+        children:
+          - text: ""
+            bind: scenario.{i}.what
+          - text: ""
+            bind: scenario.{i}.off
+          - text: ""
+            bind: scenario.{i}.on
+      - button: Run again
+        on: (begin (state-set "scenario_status" "running") (state-set "scenario_status" (run-scenario)))
+
+  - window: "Swarm: reactive, no planner"
+    id: swarm
+    pos: [452, 30]
+    size: [420, 600]
+    children:
+      - text: "Six vehicles in lanes past mud and a lake."
+      - text: "Red: material off. Green: material on."
+      - spinner: running
+        visible_when: (= (state-get "swarm_status") "running")
+      - image: Swarm
+        src: swarm
+        size: 384
+      - type: group
+        layout: { kind: grid, col_widths: [140, 90, 90] }
+        children:
+          - text: ""
+          - text: "material off"
+          - text: "material on"
+      - type: group
+        repeat: (state-get "swarm")
+        layout: { kind: grid, col_widths: [140, 90, 90] }
+        children:
+          - text: ""
+            bind: swarm.{i}.what
+          - text: ""
+            bind: swarm.{i}.off
+          - text: ""
+            bind: swarm.{i}.on
+      - button: Run again
+        on: (begin (state-set "swarm_status" "running") (state-set "swarm_status" (run-swarm)))
