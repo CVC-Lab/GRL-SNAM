@@ -122,6 +122,33 @@ def _plant_run(truth, material, start, goal, plant, ground_mu, max_steps):
 def scenario_story(out_dir, plant=None, ground_mu=0.9):
     """Fog scenario: mud field + hazard strip with a gap; planner + forces. On ``plant`` one
     agent on libcvc's sim_world drives it with the forces and the gate."""
+    risk, hard, plain, mat = scenario_runs(plant, ground_mu)
+    on = "" if plant is None else f" on {plant}, mu {ground_mu}"
+    print("scenario (belief + planner + drive):" if plant is None else f"scenario{on}:")
+    print("                       material OFF   material ON")
+    print(f"  waypoint reached     {plain[1]:>9}      {mat[1]:>9}")
+    print(f"  mud exposure         {plain[2]:>9.1f}      {mat[2]:>9.1f}")
+    print(f"  hazard-cell steps    {plain[3]:>9}      {mat[3]:>9}")
+    path = _render(
+        f"{out_dir}/material_scenario.png",
+        (
+            "FogScenario: planner + forces route around mud, through the dry gap"
+            if plant is None
+            else f"sim_world{on}: forces + gate around mud and the water"
+        ),
+        risk,
+        hard,
+        np.zeros((N, N), bool),
+        [("material OFF", plain[0], "#c0392b"), ("material ON", mat[0], "#1e8449")],
+    )
+    print(f"  wrote {path}")
+    return mat[3] == 0
+
+
+def scenario_runs(plant=None, ground_mu=0.9):
+    """The scenario story's world and both runs: ``(risk, hard, plain, mat)``, each run
+    ``(positions (N, 2), waypoints reached, mud exposure, hazard-cell steps)``. On ``plant``
+    the agent is libcvc's sim_world driving that plant (see :func:`_plant_run`)."""
     from grl_snam.material import MaterialGrid
     from grl_snam.scenario import FogScenario
 
@@ -166,32 +193,40 @@ def scenario_story(out_dir, plant=None, ground_mu=0.9):
     plain = run(None)
     grid = MaterialGrid(risk, hard, BOUNDS, (0, 0), SCALE)
     mat = run(grid)
+    return risk, hard, plain, mat
 
-    on = "" if plant is None else f" on {plant}, mu {ground_mu}"
-    print("scenario (belief + planner + drive):" if plant is None else f"scenario{on}:")
+
+def swarm_story(out_dir, plant=None, ground_mu=0.9):
+    """Reactive swarm (no planner): forces + gate detour a lane of vehicles. On ``plant`` the
+    same swarm runs on libcvc's sim_world and drives that plant's vehicles."""
+    risk, hard, plain, mat = swarm_runs(plant=plant, ground_mu=ground_mu)
+    n = risk.shape[0]
+    print(
+        "swarm (reactive, no planner):" if plant is None else f"swarm on {plant}, mu {ground_mu}:"
+    )
     print("                       material OFF   material ON")
-    print(f"  waypoint reached     {plain[1]:>9}      {mat[1]:>9}")
+    print(f"  agents reached       {plain[1]:>7}/6      {mat[1]:>7}/6")
     print(f"  mud exposure         {plain[2]:>9.1f}      {mat[2]:>9.1f}")
     print(f"  hazard-cell steps    {plain[3]:>9}      {mat[3]:>9}")
     path = _render(
-        f"{out_dir}/material_scenario.png",
+        f"{out_dir}/material_swarm.png",
         (
-            "FogScenario: planner + forces route around mud, through the dry gap"
+            "Swarm: reactive detours around mud + a water lake"
             if plant is None
-            else f"sim_world{on}: forces + gate around mud and the water"
+            else f"sim_world swarm on {plant}: detours around mud + a water lake"
         ),
         risk,
         hard,
-        np.zeros((N, N), bool),
+        np.zeros((n, n), bool),
         [("material OFF", plain[0], "#c0392b"), ("material ON", mat[0], "#1e8449")],
     )
     print(f"  wrote {path}")
     return mat[3] == 0
 
 
-def swarm_story(out_dir, plant=None, ground_mu=0.9):
-    """Reactive swarm (no planner): forces + gate detour a lane of vehicles. On ``plant`` the
-    same swarm runs on libcvc's sim_world and drives that plant's vehicles."""
+def swarm_runs(steps=700, plant=None, ground_mu=0.9):
+    """The swarm story's world and both runs, as :func:`scenario_runs` gives them (reached is
+    the agents that arrived, of 6). On ``plant`` the swarm runs on libcvc's sim_world."""
     import torch
 
     from grl_snam.fog_stories import STORIES, shrunk
@@ -215,7 +250,7 @@ def swarm_story(out_dir, plant=None, ground_mu=0.9):
         AgentSpec(f"a{i}", (-45.0, -30.0 + 12.0 * i), (45.0, -30.0 + 12.0 * i)) for i in range(6)
     ]
 
-    def run(material, steps=700):
+    def run(material, steps=steps):
         torch.manual_seed(0)
         s = Swarm(
             story, specs, _model(), seed=0, truth_occ=np.zeros((n, n), bool), material=material
@@ -272,28 +307,7 @@ def swarm_story(out_dir, plant=None, ground_mu=0.9):
     plain = run(None)
     grid = MaterialGrid(risk, hard, story.bounds, (0, 0), story.scale)
     mat = run(grid)
-
-    print(
-        "swarm (reactive, no planner):" if plant is None else f"swarm on {plant}, mu {ground_mu}:"
-    )
-    print("                       material OFF   material ON")
-    print(f"  agents reached       {plain[1]:>7}/6      {mat[1]:>7}/6")
-    print(f"  mud exposure         {plain[2]:>9.1f}      {mat[2]:>9.1f}")
-    print(f"  hazard-cell steps    {plain[3]:>9}      {mat[3]:>9}")
-    path = _render(
-        f"{out_dir}/material_swarm.png",
-        (
-            "Swarm: reactive detours around mud + a water lake"
-            if plant is None
-            else f"sim_world swarm on {plant}: detours around mud + a water lake"
-        ),
-        risk,
-        hard,
-        np.zeros((n, n), bool),
-        [("material OFF", plain[0], "#c0392b"), ("material ON", mat[0], "#1e8449")],
-    )
-    print(f"  wrote {path}")
-    return mat[3] == 0
+    return risk, hard, plain, mat
 
 
 def main(out_dir: str = "material_demo", plant=None, ground_mu: float = 0.9) -> int:

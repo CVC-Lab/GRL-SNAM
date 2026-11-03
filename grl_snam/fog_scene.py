@@ -206,6 +206,8 @@ def _hide_chrome(lab):
     scene = lab._scene
     for n in list(scene.graphics_names()):
         g = scene.geometry_node(n)
+        if g is None:  # not geometry: a light, say, which a host's scene may hold
+            continue
         g.setShowBBox(False)
         g.setShowExtentLabels(False)
         g.setShowLabel(False)

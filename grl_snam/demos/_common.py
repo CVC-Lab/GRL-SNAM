@@ -102,6 +102,27 @@ def default_scene_bundle():
     )
 
 
+def bundle_occupancy(bundle_dir, bounds, nx, ny, *, inflate_m=0.0):
+    """The bundle's buildings as a boolean (ny, nx) occupancy grid over ``bounds``, row 0 at min
+    y: libcvc's nav rasterizer (``pycvc.nav_world_rasterize``, no VTK) when the installed pycvc
+    has it, else ``pycvc_gl.scenes.building_occupancy`` (a VTK render). ``inflate_m`` dilates the
+    buildings by that many metres."""
+    import numpy as np
+    import pycvc
+
+    if hasattr(pycvc, "nav_world_rasterize") and hasattr(pycvc, "load_city_bundle"):
+        city = pycvc.load_city_bundle(str(bundle_dir))
+        cell = (bounds[2] - bounds[0]) / max(nx - 1, 1)
+        planes = pycvc.nav_world_rasterize(
+            city.world(), int(ny), int(nx), *bounds, int(round(float(inflate_m) / cell))
+        )
+        return planes["occupancy"].astype(bool)
+    from pycvc_gl.scenes import building_occupancy
+
+    glb = os.path.join(str(bundle_dir), "buildings.glb")
+    return np.asarray(building_occupancy(glb, bounds, nx, ny, inflate_m=inflate_m), bool)
+
+
 def require_host():
     """Return ``(pycvc, vrhost)`` or raise a clear error outside VolRover3."""
     try:
