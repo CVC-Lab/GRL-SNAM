@@ -1,6 +1,7 @@
 """grl-snam material-raster: satellite -> material palette segmentation + grip/risk (nav-stats item 2)."""
 
 import json
+import re
 
 import numpy as np
 
@@ -150,3 +151,67 @@ def test_from_bundle_falls_back_to_satellite_without_masks(tmp_path):
     iio.imwrite(tmp_path / "satellite.png", np.full((4, 4, 3), (150, 150, 150), dtype=np.uint8))
     out, dist = mr.from_bundle(str(tmp_path))  # no masks -> satellite classify
     assert "open_air" in dist
+
+
+def test_austin_bundle_fails_loudly_instead_of_using_lean_fallback(tmp_path):
+    (tmp_path / "terrain.json").write_text(
+        json.dumps(
+            {"rows": 2, "cols": 2, "bounds": {"min_x": 0, "min_y": 0, "max_x": 2, "max_y": 2}}
+        )
+    )
+
+    with np.testing.assert_raises_regex(
+        FileNotFoundError,
+        rf"foliage_mask.png.*{re.escape(mr.AUSTIN_BUNDLE_VERSION)}.*{mr.AUSTIN_BUNDLE_SHA256}",
+    ):
+        mr.from_austin_bundle(str(tmp_path))
+
+    assert not (tmp_path / "material.json").exists()
+
+
+def test_austin_bundle_uses_shared_palette_and_authoritative_mask_priority(tmp_path):
+    import imageio.v3 as iio
+
+    (tmp_path / "terrain.json").write_text(
+        json.dumps(
+            {"rows": 2, "cols": 2, "bounds": {"min_x": 0, "min_y": 0, "max_x": 2, "max_y": 2}}
+        )
+    )
+    # North-up source: tree and water in the north row, bare soil and a road in the south row.
+    iio.imwrite(tmp_path / "foliage_mask.png", np.array([[1, 0], [5, 0]], dtype=np.uint8))
+    iio.imwrite(tmp_path / "open_fields.png", _rgba_mask(2, 2, []))
+    iio.imwrite(tmp_path / "water.png", _rgba_mask(2, 2, [(0, 1)]))
+    iio.imwrite(tmp_path / "roads.png", _rgba_mask(2, 2, [(1, 1)]))
+
+    mr.from_austin_bundle(str(tmp_path))
+
+    material_id = np.asarray(json.loads((tmp_path / "material.json").read_text())["material_id"])
+    np.testing.assert_array_equal(
+        material_id,
+        [
+            [mp.MATERIAL_ID["soil"], mp.OPEN_AIR_ID],
+            [mp.MATERIAL_ID["foliage"], mp.MATERIAL_ID["water"]],
+        ],
+    )
+    assert mp.terrain_risk(mp.MATERIAL_ID["foliage"]) == 0.30
+    assert mp.terrain_risk(mp.MATERIAL_ID["water"]) == 1.0
+
+
+def test_austin_raster_can_be_loaded_without_writing_derived_files(tmp_path):
+    import imageio.v3 as iio
+
+    (tmp_path / "terrain.json").write_text(
+        json.dumps(
+            {"rows": 2, "cols": 2, "bounds": {"min_x": 0, "min_y": 0, "max_x": 2, "max_y": 2}}
+        )
+    )
+    iio.imwrite(tmp_path / "foliage_mask.png", np.array([[1, 0], [5, 0]], dtype=np.uint8))
+    iio.imwrite(tmp_path / "open_fields.png", _rgba_mask(2, 2, []))
+    iio.imwrite(tmp_path / "water.png", _rgba_mask(2, 2, [(0, 1)]))
+    iio.imwrite(tmp_path / "roads.png", _rgba_mask(2, 2, []))
+
+    material_id, bounds = mr.load_austin_material_raster(str(tmp_path))
+
+    assert material_id.shape == (2, 2)
+    assert bounds == {"min_x": 0.0, "min_y": 0.0, "max_x": 2.0, "max_y": 2.0}
+    assert not (tmp_path / "material.json").exists()
