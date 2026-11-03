@@ -20,10 +20,14 @@ Every port takes `--offscreen` (GL, no window), `--headless` (no GL: the readout
 - pycvc_gl with its Python host, `pycvc_gl.ariadne` (libcvc 3.7.9+, transfix/libcvc#985). With an
   older pycvc_gl the ports refuse to start and say so; their tests skip.
 - torch (every port but `live austin-planner`).
-- Austin (`scene-austin-south`, or `scene-austin-south-small`) for `live`, `squad` and `fleet`,
-  found as `grl-snam demo` finds it: `GRL_SNAM_SCENE_BUNDLE`, else
-  `<prefix>/share/cvc-scenes/austin_south`. The Humvee comes from `vehicle-humvee`
-  (`share/cvc-scenes/shared/Humvee.glb`) or the bundle's own copy.
+- Austin, for `live`, `squad` and `fleet`:
+  - `live`'s document names its city itself: the `scene-austin-south-small` package on
+    cvcpkg.org, which the host downloads once (libcvc's Ariadne data, transfix/libcvc#998).
+  - `squad` and `fleet` find a bundle as `grl-snam demo` does: `GRL_SNAM_SCENE_BUNDLE`, else
+    `<prefix>/share/cvc-scenes/austin_south` (`scene-austin-south`, or
+    `scene-austin-south-small`).
+  - The Humvee comes from the city's package when it carries one (the small one does), else
+    `vehicle-humvee` (`share/cvc-scenes/shared/Humvee.glb`) or the bundle's own copy.
 - The published policy (`grl-snam-weights`) for `live austin-freedrive` / `austin-learned`; `fleet`
   uses it when installed.
 
@@ -48,6 +52,18 @@ navigator's HUD as panels (its NavMetrics, clearance and speed plots, progress),
 sim speed and camera controls. On Austin the box becomes a Humvee. Windowed or `--offscreen`
 only. The published policy's metric (scale 1/300) lets it reach 270 m/s on Austin; the Sim speed
 slider goes down to 0.1x.
+
+The city is the document's (`docs/live.ari`'s `data:` block):
+- **Where it comes from:** the host downloads the package once, and later runs read the local
+  cache. It unpacks the package into the state tree and decodes it.
+- **What draws it:** the scene's `city` node draws the terrain, with the package's aerial image
+  draped over it, and the buildings.
+- **What the demo reads:** the same objects, through `DemoHost.city`. Its terrain sampler,
+  occupancy grids and SDF come from that one load, so no bundle file is read twice.
+- **A local bundle instead:** `--bundle DIR` (or `GRL_SNAM_SCENE_BUNDLE`) points the document's
+  city at a bundle on disk, with nothing downloaded.
+- **When the package cannot load** (offline, no cache), the installed bundle stands in.
+- **`austin-planner`** drives a world of its own, so the city never loads for it.
 
 ### `fog`: the fog-of-war stories
 

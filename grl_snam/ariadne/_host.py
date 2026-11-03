@@ -78,16 +78,20 @@ def finish(host, args) -> int:
 HUMVEE_LEN_M = 4.72
 
 
-def humvee_model(bundle=None):
-    """The ``vehicle-humvee`` package's ``Humvee.glb`` (beside the scene bundle, or in a
-    prefix's ``share/cvc-scenes/shared``) as a ``pycvc_gl.vehicle.VehicleModel`` at its real
-    length, or None when there is none (then :func:`add_vehicle` draws a box of its size)."""
+def humvee_model(bundle=None, host=None):
+    """A ``Humvee.glb`` as a ``pycvc_gl.vehicle.VehicleModel`` at its real length.
+
+    It comes from the document's city when ``host`` is given and the city's package carries one
+    (the small Austin package does). Otherwise it is the ``vehicle-humvee`` package's (beside the
+    scene bundle, or in a prefix's ``share/cvc-scenes/shared``). None when there is none, and then
+    :func:`add_vehicle` draws a box of its size."""
     try:
         from pycvc_gl.scenes import find_vehicle_model
         from pycvc_gl.vehicle import VehicleModel
     except ImportError:  # pragma: no cover - an older pycvc_gl
         return None
-    path = find_vehicle_model(bundle)
+    path = city_file(host, "Humvee.glb") if host is not None else None
+    path = path or find_vehicle_model(bundle)
     return VehicleModel(path, HUMVEE_LEN_M) if path else None
 
 
@@ -127,6 +131,110 @@ def publish_metrics(host, m, prefix="nav"):
         values[k] = f"{v:.3f}" if isinstance(v, float) else v
     host.set_many(values, prefix=prefix)
     host.set_tree(f"{prefix}.hud", hud_lines(m))
+
+
+# ── the document's city ────────────────────────────────────────────────────────────────────────
+# A port's document names its city in its data: block (docs/live.ari): the Austin scene package on
+# cvcpkg.org. The host's data store downloads it once (later runs read its cache), unpacks it into
+# the state tree and decodes it; the document's scene draws it and the demo reads the same objects
+# (document_city). libcvc's docs/ARIADNE.md 5.17 has the data: block.
+
+REGISTRY = "https://cvcpkg.org"
+
+
+def registry_origin():
+    """The origin of the cvcpkg registry the data store reaches: ``CVCPKG_URL``'s, else
+    https://cvcpkg.org."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(os.environ.get("CVCPKG_URL") or REGISTRY)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def load_document(host, doc, *, bundle=None, city=True):
+    """Load ``doc`` (a file in ``docs/``), whose data: block names the city.
+
+    With a local ``bundle`` (a directory, or ``GRL_SNAM_SCENE_BUNDLE``), ``data.city`` points
+    there instead and nothing is downloaded. Otherwise the data store may reach the registry for
+    the package. With ``city`` False, neither happens: the document's city never loads, and its
+    node stays empty (a demo with a world of its own)."""
+    import pycvc
+
+    local = (bundle or os.environ.get("GRL_SNAM_SCENE_BUNDLE")) if city else None
+    if city and not local and hasattr(pycvc, "data_allow_network"):
+        pycvc.data_allow_network(host.app, [registry_origin()])
+    host.load(str(DOCS / doc))
+    if local and hasattr(pycvc, "data_load"):
+        pycvc.data_load(
+            host.app, str(local), decoder="city_bundle", name="city", prefix=host.prefix
+        )
+
+
+def _data_error(host, path):
+    """Why the dataset at ``path`` (a document's link) failed, as its store node says."""
+    import pycvc
+
+    try:
+        target = pycvc.State.instance(host.app).child(path).linkTarget() or path
+        return pycvc.state_get(host.app, target + ".error")
+    except RuntimeError:
+        return pycvc.data_status(host.app, path) or "not loaded"
+
+
+def document_city(host, name="city", timeout=600.0):
+    """The city the document's data: block loaded, which its scene draws.
+
+    Returns a :class:`~grl_snam.demos._common.City` over the same objects (the terrain sampler,
+    its bounds, occupancy from the world), so no file is read again. Returns None when the
+    document names no city, or when this pycvc has no data store. When the city cannot load
+    (offline, no cache), the installed bundle stands in. Waits for the load."""
+    import pycvc
+
+    from grl_snam.demos._common import City
+
+    if not hasattr(pycvc, "data_world"):
+        return None
+    path = f"{host.prefix}.data.{name}"
+    if not pycvc.data_status(host.app, path):
+        return None
+    if not pycvc.data_wait(host.app, path, timeout=timeout):
+        why = _data_error(host, path)
+        local = bundle_or_none()
+        if local is None:
+            raise RuntimeError(f"the document's {name} did not load: {why}")
+        print(f"grl_snam: the document's {name} did not load ({why}); using {local}", flush=True)
+        pycvc.data_load(host.app, str(local), decoder="city_bundle", name=name, prefix=host.prefix)
+        if not pycvc.data_wait(host.app, path, timeout=timeout):
+            raise RuntimeError(f"{local} did not load as a city: {_data_error(host, path)}")
+    return City.of_world(pycvc.data_world(host.app, path), pycvc.data_height_field(host.app, path))
+
+
+_CITY_FILES = None  # a temporary directory for files a path-based reader needs (city_file)
+
+
+def city_file(host, file, name="city"):
+    """A file of the document's city's package (``Humvee.glb``) as a local path a path-based
+    reader opens, or None when the package has none. Written once, to a directory removed when
+    the process ends."""
+    import tempfile
+
+    import pycvc
+
+    global _CITY_FILES
+    if not hasattr(pycvc, "data_file"):
+        return None
+    path = f"{host.prefix}.data.{name}"
+    if pycvc.data_status(host.app, path) != "ready":
+        return None
+    data = pycvc.data_file(host.app, path, file)
+    if data is None:
+        return None
+    if _CITY_FILES is None:
+        _CITY_FILES = tempfile.TemporaryDirectory(prefix="grl-snam-city-")
+    out = os.path.join(_CITY_FILES.name, os.path.basename(file))
+    with open(out, "wb") as f:
+        f.write(data)
+    return out
 
 
 def bundle_or_none(bundle=None):
@@ -169,16 +277,22 @@ class _Metrics:
 
 
 class DemoHost:
-    """The demo-host interface :mod:`grl_snam.demos` expects (``make_lab``, ``camera``,
-    ``metrics``, ``run``), over an Ariadne Host: the demo's scene is the document's, its
-    metrics are the document's readouts, and its ``step(dt)`` runs every frame (scaled by the
-    document's ``view.speed``, skipped while ``view.paused``)."""
+    """The demo-host interface :mod:`grl_snam.demos` expects (``make_lab``, ``city``, ``camera``,
+    ``metrics``, ``run``), over an Ariadne Host: the demo's scene is the document's, its city the
+    one the document's data: block loaded, its metrics the document's readouts, and its
+    ``step(dt)`` runs every frame (scaled by the document's ``view.speed``, skipped while
+    ``view.paused``)."""
 
     def __init__(self, host):
         self.host = host
 
     def make_lab(self):
         return self.host.lab
+
+    def city(self):
+        """The document's city (:func:`document_city`), which the scene already draws, or None:
+        the demo then loads the bundle itself (``grl_snam.demos._common.open_city``)."""
+        return document_city(self.host)
 
     def camera(self, fov=60.0):
         return _TrackCamera(self.host)

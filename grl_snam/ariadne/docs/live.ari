@@ -6,12 +6,24 @@
 # - HUD: the navigator's live NavMetrics (the network's alpha / beta / gamma, clearance, mode,
 #   speed, progress), as nav.*, and the HUD's lines at nav.hud;
 # - View: pause, the sim speed, and the camera (follow the vehicle, or orbit freely);
-# - the scene: the demo's own city and vehicle under a soft afternoon light (pale sky, low warm
-#   sun, cool fill, soft-edged shadows that follow the camera).
+# - the scene: the city this document names (data: below), the demo's vehicle, under a soft
+#   afternoon light (pale sky, low warm sun, cool fill, soft-edged shadows that follow the camera).
+#
+# The city is the Austin scene package on cvcpkg.org. The host downloads it once (later runs read
+# its cache), unpacks it into the state tree and decodes it: the terrain with its aerial image, and
+# the buildings. The city node draws that, and the demo reads the same objects for its terrain,
+# occupancy and SDF (grl_snam.ariadne._host.document_city), so the bundle is never read twice.
+# live.py's --bundle (or GRL_SNAM_SCENE_BUNDLE) points data.city at a local bundle instead.
 
 meta:
   name: GRL-SNAM live demo
   min_libcvc: 3.4.0
+
+data:
+  city:
+    uri: cvcpkg://cy-pca/scene-austin-south-small
+    path: share/cvc-scenes/austin_south
+    as: city_bundle
 
 init: |
   (begin
@@ -80,7 +92,7 @@ scene:
     update_interval: 2
     softness: 3
     focus: { follow: camera, min_radius: 60, max_radius: 600, per_distance: 3, lead: 0.5,
-             lift: 20, ground: world }
+             lift: 20, ground: city }
   lights:
     - light: sun
       rig: three_point
@@ -92,3 +104,6 @@ scene:
       warmth: 0.5
       environment: 0.5
       ambient: 0.32
+  nodes:
+    - node: city
+      source: { data: city }     # the terrain (aerial image draped) and the buildings, when loaded
