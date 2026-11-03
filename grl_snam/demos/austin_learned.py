@@ -18,6 +18,8 @@ import torch
 import grl_snam.sdf_nav as sdf_nav
 from grl_snam.demos._common import (
     SimPacer,
+    bundle_bounds,
+    bundle_occupancy,
     current_host,
     default_nav_weights_pt,
     default_scene_bundle,
@@ -36,11 +38,9 @@ def setup() -> None:
     host = current_host()
     from pycvc_gl.camera import NativeChaseCamera as ChaseCamera
     from pycvc_gl.scenes import (
-        building_occupancy,
         load_geometry_bundle,
         plan_ground_route,
         resample_polyline,
-        terrain_grid,
     )
     from pycvc_gl.vehicle import VehiclePose
 
@@ -68,15 +68,11 @@ def setup() -> None:
     lab = host.make_lab()
     lab.set_axis_visible(False)
     sample = load_geometry_bundle(lab, bundle)
-    bounds = terrain_grid(os.path.join(bundle, "terrain.json"))[1]
+    bounds = bundle_bounds(bundle)
     mnx, mny, mxx, mxy = bounds
     print("grl_snam austin_learned: occupancy + SDF + route...", flush=True)
-    occ_r = building_occupancy(
-        os.path.join(bundle, "buildings.glb"), bounds, 512, 512, inflate_m=12.0
-    )
-    occ0 = building_occupancy(
-        os.path.join(bundle, "buildings.glb"), bounds, 512, 512, inflate_m=0.0
-    )
+    occ_r = bundle_occupancy(bundle, bounds, 512, 512, inflate_m=12.0)
+    occ0 = bundle_occupancy(bundle, bounds, 512, 512, inflate_m=0.0)
     ny, nx = occ0.shape
     sdf_npz = os.environ.get("GRL_SNAM_SDF", "")
     if sdf_npz and os.path.exists(sdf_npz):

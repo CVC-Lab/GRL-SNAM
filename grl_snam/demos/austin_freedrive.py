@@ -28,6 +28,8 @@ import torch
 import grl_snam.sdf_nav as sdf_nav
 from grl_snam.demos._common import (
     SimPacer,
+    bundle_bounds,
+    bundle_occupancy,
     current_host,
     default_nav_weights_pt,
     default_scene_bundle,
@@ -54,7 +56,7 @@ def _xy(env, default):
 def setup() -> None:
     host = current_host()
     from pycvc_gl.camera import NativeChaseCamera as ChaseCamera
-    from pycvc_gl.scenes import building_occupancy, load_geometry_bundle, terrain_grid
+    from pycvc_gl.scenes import load_geometry_bundle
     from pycvc_gl.vehicle import VehiclePose
 
     bundle = default_scene_bundle()
@@ -69,16 +71,14 @@ def setup() -> None:
     lab = host.make_lab()
     lab.set_axis_visible(False)
     sample = load_geometry_bundle(lab, bundle)
-    bounds = terrain_grid(os.path.join(bundle, "terrain.json"))[1]
+    bounds = bundle_bounds(bundle)
     sdf_npz = os.environ.get("GRL_SNAM_SDF", "")
     if sdf_npz and os.path.exists(sdf_npz):
         d = np.load(sdf_npz)
         phi, nxg, nyg = d["phi"], d["normal_x"], d["normal_y"]
     else:
         print("grl_snam austin_freedrive: rasterizing occupancy + building SDF...", flush=True)
-        occ = building_occupancy(
-            os.path.join(bundle, "buildings.glb"), bounds, 512, 512, inflate_m=0.0
-        )
+        occ = bundle_occupancy(bundle, bounds, 512, 512, inflate_m=0.0)
         phi, nxg, nyg = sdf_nav.build_sdf(occ, bounds, float(meta["scale"]))
     field = sdf_nav.SDFField(
         phi, nxg, nyg, bounds, meta["center"], float(meta["scale"]), device="cpu"

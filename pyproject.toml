@@ -105,6 +105,7 @@ ignore = [
 source = ["grl_snam"]
 omit = [
     "grl_snam/demos/*",               # runnable GL / matplotlib demos
+    "grl_snam/ariadne/*",             # the demos as Ariadne hosts (need pycvc_gl.ariadne)
     "grl_snam/tools/capture.py",      # video capture (renders frames)
     "grl_snam/tools/*_capture.py",    # fog_ / squad_ / finale_ capture
     "grl_snam/tools/*_bench.py",      # timing benchmarks
