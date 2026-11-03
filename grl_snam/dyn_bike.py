@@ -66,6 +66,13 @@ Both plants take an optional external ``wrench`` ``(F_x, F_y, M_z)`` on the body
 step: the pH form's external port, such as the compliant contact's (:mod:`grl_snam.dyn_contact`).
 Their books then gain its energy, ``port`` = the trapezoid of ``v^T W`` (:func:`dyn_ph_port_work`),
 and the residual is what that leaves.
+
+The full (q, p) form (libcvc's ``dyn_ph_rhs_full``): with the pose in the state and the ground's
+height under the centre of gravity in H, ``q' = T(q) v`` and ``p' = -T(q)^T dV/dq + (J(p) - R) v +
+G u + f_eps`` (:func:`dyn_ph_T`, :func:`dyn_ph_rhs_full`). On a ground, :func:`dyn_plant_ground`
+applies gravity along and across the heading (the ``side`` slope, opt-in on :func:`dyn_plant`), and
+:func:`dyn_plant_books_ground` books it with the grade line ``-dV``. The parity gate is
+``tests/test_dyn_ph_full_parity.py``, against libcvc's ``dyn_ph_full_golden.json``.
 """
 
 from __future__ import annotations
@@ -277,13 +284,18 @@ def _spin_long_step(p: DynBikeParams, hdt, vx0, vy, r, om0, a1, cd, sd, cap_f, c
     return vx, torch.stack((of, orr), dim=-1), Fxf, Fxr
 
 
-def _plant(p: DynBikeParams, lim: PlantLimits, state, om0, delta_cmd, a_cmd, grade, wrench=None):
+def _plant(
+    p: DynBikeParams, lim: PlantLimits, state, om0, delta_cmd, a_cmd, grade, wrench=None, side=None
+):
     """``dyn_plant_core``: one step of the plant (``om0`` None) or of the wheel-spin plant
     (``om0`` the wheels' speeds ``(..., 2)``), under the external ``wrench`` ``(..., 3)`` when
-    given. Gives the next ``(..., 8)``, the twist the step reached before its limiters
-    ``(..., 3)``, and the wheels' new speeds (None without them)."""
+    given, and with gravity across the heading when ``side`` (the ground's slope across it, +
+    rising to the left) is given. Gives the next ``(..., 8)``, the twist the step reached before
+    its limiters ``(..., 3)``, and the wheels' new speeds (None without them)."""
     x, y, psi, vx, vy, r, delta, a = state.unbind(-1)
     grade = torch.as_tensor(grade, dtype=state.dtype, device=state.device)
+    if side is not None:
+        side = torch.as_tensor(side, dtype=state.dtype, device=state.device)
     hdt = lim.hdt
     m, Iz, lf, lr, g, Cp = p.m, p.Iz, p.lf, p.lr, p.g, p.C
     L = lf + lr
@@ -344,6 +356,8 @@ def _plant(p: DynBikeParams, lim: PlantLimits, state, om0, delta_cmd, a_cmd, gra
         if wrench is not None:
             FY = FY + wrench[..., 1]
             MZ = MZ + wrench[..., 2]
+        if side is not None:
+            FY = FY - m * g * side
         f_vy = FY / m - r1 * vx_p
         f_r = MZ / Iz
         Sf_t = _secant_w(Fyf, af, wf, torch.zeros_like(wf), p.B_f, Cp, Dyf, uf)
@@ -400,6 +414,7 @@ def dyn_plant(
     *,
     with_free: bool = False,
     wrench: torch.Tensor | None = None,
+    side: torch.Tensor | float | None = None,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """One step of the plant: ``state`` ``(..., 8)`` to the next ``(..., 8)``.
 
@@ -408,9 +423,11 @@ def dyn_plant(
     given, is an external wrench ``(..., 3)`` on the body (F_x, F_y, M_z: body axes, at the centre
     of gravity) held over the step, the pH form's external port, such as the contact's
     (:mod:`grl_snam.dyn_contact`): it joins the resistances along the body and the lateral
-    solve's force and moment.
+    solve's force and moment. ``side``, when given, is the ground's slope across the heading:
+    gravity's body-y component, ``- m g side``, joins the lateral solve's force
+    (:func:`dyn_plant_ground`).
     """
-    nxt, free, _ = _plant(p, lim, state, None, delta_cmd, a_cmd, grade, wrench)
+    nxt, free, _ = _plant(p, lim, state, None, delta_cmd, a_cmd, grade, wrench, side)
     return (nxt, free) if with_free else nxt
 
 
@@ -424,12 +441,16 @@ def dyn_spin_plant(
     *,
     with_free: bool = False,
     wrench: torch.Tensor | None = None,
+    side: torch.Tensor | float | None = None,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """One step of the wheel-spin plant: ``state`` ``(..., 10)`` (:data:`SPIN_ORDER`) to the
     next ``(..., 10)``, the wheels' speeds advanced with the speed. The low-speed blend and the
-    speed clamp act on the body alone. ``with_free`` and ``wrench`` as :func:`dyn_plant`'s.
+    speed clamp act on the body alone. ``with_free``, ``wrench`` and ``side`` as
+    :func:`dyn_plant`'s.
     """
-    nxt, free, om1 = _plant(p, lim, state[..., :8], state[..., 8:], delta_cmd, a_cmd, grade, wrench)
+    nxt, free, om1 = _plant(
+        p, lim, state[..., :8], state[..., 8:], delta_cmd, a_cmd, grade, wrench, side
+    )
     nxt = torch.cat((nxt, om1), dim=-1)
     return (nxt, free) if with_free else nxt
 
@@ -594,6 +615,7 @@ def dyn_plant_books(
     grade: torch.Tensor | float = 0.0,
     *,
     wrench: torch.Tensor | None = None,
+    side: torch.Tensor | float | None = None,
 ) -> tuple[torch.Tensor, DynPHBooks]:
     """:func:`dyn_plant`'s step, unchanged, and its books.
 
@@ -601,9 +623,13 @@ def dyn_plant_books(
     actuators' outputs ``delta1``, ``a1``), and the twist it reached before its limiters;
     ``limiter`` is dH across the clamp and the blend; ``residual`` is the rest. With ``wrench``
     (the external port, held over the step) the books gain its energy, ``port``
-    (:func:`dyn_ph_port_work`), and the residual is what that leaves.
+    (:func:`dyn_ph_port_work`), and the residual is what that leaves. ``side`` is
+    :func:`dyn_plant`'s; the grade line books only the slope along the heading (gravity across it
+    is booked as a potential by :func:`dyn_plant_books_ground`).
     """
-    nxt, free = dyn_plant(p, lim, state, delta_cmd, a_cmd, grade, with_free=True, wrench=wrench)
+    nxt, free = dyn_plant(
+        p, lim, state, delta_cmd, a_cmd, grade, with_free=True, wrench=wrench, side=side
+    )
     s0 = torch.cat((state[..., :6], nxt[..., 6:]), dim=-1)
     e = torch.cat((nxt[..., :3], free, nxt[..., 6:]), dim=-1)
     r0, r1 = dyn_ph_rates_at(p, s0, grade), dyn_ph_rates_at(p, e, grade)
@@ -633,6 +659,202 @@ def dyn_plant_books(
         limiter=limiter,
         residual=residual,
         port=port,
+    )
+
+
+# ── The full (q, p) form: the pose, and gravity as a potential ──────────────────────────────
+# libcvc's dyn_ph_T, dyn_ph_rhs_full and their ground overloads: with the pose q = (x, y, psi)
+# (the rear axle) in the state and the ground's height h under the centre of gravity in H,
+#
+#   H(q, p) = 1/2 p^T M^-1 p + m g h(x + lr cos psi, y + lr sin psi)
+#   q' = T(q) v,   p' = -T(q)^T dV/dq + (J(p) - R) v + G u + f_eps + f_g,
+#
+# T(q) = [[c, -s, lr s], [s, c, -lr c], [0, 0, 1]], and the structure [[0, T], [-T^T, J(p)]] skew
+# and Poisson. -T^T dV/dq = -m g (along, across, 0): the ground's gradient at the centre of
+# gravity along and across the heading, the slopes' tangents (the force whose work over the planar
+# pose is -dV), by central differences over 1e-3 (lf + lr), so any ground serves. Without a
+# ground, f_g = -m g (grade, side, 0) carries gravity as data. A ground here is a callable
+# ``ground(x, y) -> height``. Each function mirrors its namesake's arithmetic.
+
+
+def dyn_ph_T(p: DynBikeParams, psi: torch.Tensor) -> torch.Tensor:
+    """``T(q)`` ``(..., 3, 3)``: the twist at the centre of gravity to the rear axle's pose
+    rates, ``q' = T(q) v``. :func:`dyn_plant`'s pose update is ``q1 = q0 + hdt T(q1) v1``."""
+    c, sn = torch.cos(psi), torch.sin(psi)
+    zero, one = torch.zeros_like(c), torch.ones_like(c)
+    lr = p.lr
+    return torch.stack(
+        (
+            torch.stack((c, -sn, lr * sn), dim=-1),
+            torch.stack((sn, c, -lr * c), dim=-1),
+            torch.stack((zero, zero, one), dim=-1),
+        ),
+        dim=-2,
+    )
+
+
+def dyn_ph_ground(p: DynBikeParams, ground, state: torch.Tensor):
+    """The ground's height at the centre of gravity and its gradient there by central
+    differences: ``(h, gx, gy)``."""
+    x, y, psi = state[..., 0], state[..., 1], state[..., 2]
+    lr = p.lr
+    e = 1e-3 * (p.lf + lr)
+    cx = x + lr * torch.cos(psi)
+    cy = y + lr * torch.sin(psi)
+    h = ground(cx, cy)
+    gx = (ground(cx + e, cy) - ground(cx - e, cy)) / (2.0 * e)
+    gy = (ground(cx, cy + e) - ground(cx, cy - e)) / (2.0 * e)
+    return h, gx, gy
+
+
+def dyn_ph_slope(p: DynBikeParams, ground, state: torch.Tensor):
+    """The ground's slopes at the centre of gravity: along the heading (+ rising ahead) and
+    across it (+ rising to the left)."""
+    _, gx, gy = dyn_ph_ground(p, ground, state)
+    c, sn = torch.cos(state[..., 2]), torch.sin(state[..., 2])
+    return c * gx + sn * gy, c * gy - sn * gx
+
+
+def dyn_ph_potential(p: DynBikeParams, ground, state: torch.Tensor) -> torch.Tensor:
+    """``V(q) = m g h`` at the centre of gravity."""
+    x, y, psi = state[..., 0], state[..., 1], state[..., 2]
+    return p.m * p.g * ground(x + p.lr * torch.cos(psi), y + p.lr * torch.sin(psi))
+
+
+def dyn_ph_hamiltonian_ground(p: DynBikeParams, ground, state: torch.Tensor) -> torch.Tensor:
+    """``H(q, p) = 1/2 p^T M^-1 p + V(q)`` (libcvc's ground overload of ``dyn_ph_hamiltonian``)."""
+    return dyn_ph_hamiltonian(p, state) + dyn_ph_potential(p, ground, state)
+
+
+def dyn_ph_grad_q(p: DynBikeParams, ground, state: torch.Tensor) -> torch.Tensor:
+    """``dV/dq = m g (dh/dx, dh/dy, lr (dh/dy cos psi - dh/dx sin psi))`` ``(..., 3)``."""
+    _, gx, gy = dyn_ph_ground(p, ground, state)
+    mg = p.m * p.g
+    psi = state[..., 2]
+    return torch.stack(
+        (mg * gx, mg * gy, mg * p.lr * (torch.cos(psi) * gy - torch.sin(psi) * gx)), dim=-1
+    )
+
+
+def dyn_ph_rhs(p: DynBikeParams, state: torch.Tensor, grade=0.0) -> torch.Tensor:
+    """The momentum-only form's vector field ``(..., 3)``: ``p' = (J - R) v + G u + f_eps -
+    m g grade e_x`` at the state."""
+    q = dyn_ph_parts_at(p, state)
+    v = (state[..., 3], state[..., 4], state[..., 5])
+    pm = (p.m * v[0], p.m * v[1], p.Iz * v[2])
+    zero = torch.zeros_like(q.u)
+    J = ((zero, zero, pm[1]), (zero, zero, -pm[0]), (-pm[1], pm[0], zero))
+    nf, nr = q.nf.unbind(-1), q.nr.unbind(-1)
+    tf, tr = q.tf.unbind(-1), q.tr.unbind(-1)
+    R = [[None] * 3 for _ in range(3)]
+    for i in range(3):
+        for j in range(i, 3):
+            R[i][j] = q.Sf * (nf[i] * nf[j]) + q.Sr * (nr[i] * nr[j])
+            R[j][i] = R[i][j]
+    R[0][0] = R[0][0] + q.Dx
+    nfv = torch.zeros_like(q.u)
+    nrv = torch.zeros_like(q.u)
+    for i in range(3):
+        nfv = nfv + nf[i] * v[i]
+        nrv = nrv + nr[i] * v[i]
+    ef = q.Fyf + q.Sf * nfv
+    er = q.Fyr + q.Sr * nrv
+    out = []
+    for i in range(3):
+        acc = tf[i] * q.Fxf + tr[i] * q.Fxr + (nf[i] * ef + nr[i] * er)
+        for j in range(3):
+            acc = acc + (J[i][j] - R[i][j]) * v[j]
+        out.append(acc)
+    grade = torch.as_tensor(grade, dtype=state.dtype, device=state.device)
+    out[0] = out[0] - p.m * p.g * grade
+    return torch.stack(out, dim=-1)
+
+
+def dyn_ph_rhs_full(
+    p: DynBikeParams, state: torch.Tensor, grade=0.0, side=0.0, *, ground=None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The full form's vector field ``(q', p')``, each ``(..., 3)``.
+
+    Without ``ground``, gravity as data, ``f_g = -m g (grade, side, 0)``: ``q' = T(q) v`` and
+    :func:`dyn_ph_rhs`'s ``p'`` with the slope across the heading on ``p_y``. With a ground,
+    gravity is in H: ``p' = -T(q)^T dV/dq + (J(p) - R) v + G u + f_eps`` (``grade`` and ``side``
+    are not read).
+    """
+    if ground is not None:
+        qd, pd = dyn_ph_rhs_full(p, state, 0.0, 0.0)
+        T = dyn_ph_T(p, state[..., 2])
+        dV = dyn_ph_grad_q(p, ground, state)
+        pd = pd - (
+            T[..., 0, :] * dV[..., 0:1] + T[..., 1, :] * dV[..., 1:2] + T[..., 2, :] * dV[..., 2:3]
+        )
+        return qd, pd
+    T = dyn_ph_T(p, state[..., 2])
+    v = state[..., 3:6]
+    qd = T[..., :, 0] * v[..., 0:1] + T[..., :, 1] * v[..., 1:2] + T[..., :, 2] * v[..., 2:3]
+    pd = dyn_ph_rhs(p, state, grade)
+    side = torch.as_tensor(side, dtype=state.dtype, device=state.device)
+    pd = torch.stack((pd[..., 0], pd[..., 1] - p.m * p.g * side, pd[..., 2]), dim=-1)
+    return qd, pd
+
+
+def dyn_ph_rates_ground(p: DynBikeParams, ground, state: torch.Tensor) -> DynPHRates:
+    """The power balance on a ground (libcvc's ground overload of ``dyn_ph_rates_at``): the grade
+    line is gravity's power along and across the heading, ``-m g (along vx + across vy) =
+    -dV/dt``."""
+    along, across = dyn_ph_slope(p, ground, state)
+    r = dyn_ph_rates_at(p, state, along)
+    return DynPHRates(
+        dissipated=r.dissipated,
+        supplied=r.supplied,
+        floor=r.floor,
+        grade=-p.m * p.g * (along * state[..., 3] + across * state[..., 4]),
+    )
+
+
+def dyn_plant_ground(
+    p: DynBikeParams,
+    lim: PlantLimits,
+    ground,
+    state: torch.Tensor,
+    delta_cmd: torch.Tensor,
+    a_cmd: torch.Tensor,
+    *,
+    with_free: bool = False,
+    wrench: torch.Tensor | None = None,
+):
+    """One step of :func:`dyn_plant` on a ground: gravity along and across the heading, from
+    the slopes under the centre of gravity at the step's start (:func:`dyn_ph_slope`)."""
+    along, across = dyn_ph_slope(p, ground, state)
+    return dyn_plant(
+        p, lim, state, delta_cmd, a_cmd, along, with_free=with_free, wrench=wrench, side=across
+    )
+
+
+def dyn_plant_books_ground(
+    p: DynBikeParams,
+    lim: PlantLimits,
+    ground,
+    state: torch.Tensor,
+    delta_cmd: torch.Tensor,
+    a_cmd: torch.Tensor,
+    *,
+    wrench: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, DynPHBooks]:
+    """:func:`dyn_plant_ground`'s step and its books: :func:`dyn_plant_books`', with gravity in
+    H, so the grade line is ``-dV``, the potential's change over the step (``dH`` stays the
+    kinetic energy's: ``dH - grade`` is the change of :func:`dyn_ph_hamiltonian_ground`)."""
+    along, across = dyn_ph_slope(p, ground, state)
+    nxt, b = dyn_plant_books(p, lim, state, delta_cmd, a_cmd, along, wrench=wrench, side=across)
+    dV = dyn_ph_potential(p, ground, nxt) - dyn_ph_potential(p, ground, state)
+    return nxt, DynPHBooks(
+        dH=b.dH,
+        dissipated=b.dissipated,
+        supplied=b.supplied,
+        floor=b.floor,
+        grade=-dV,
+        limiter=b.limiter,
+        residual=b.residual + b.grade + dV,
+        port=b.port,
     )
 
 
