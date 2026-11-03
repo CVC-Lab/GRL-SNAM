@@ -58,13 +58,20 @@ def selftest() -> None:
     "or jolt[:preset] (RoboRacers by default)",
 )
 @click.option("--mu", "ground_mu", default=0.9, show_default=True, help="--plant: the grip")
-def material_demo(out_dir: str, plant, ground_mu) -> None:
+@click.option(
+    "--governor/--no-governor",
+    default=None,
+    help="--plant: libcvc's risk governor, so the material's risk slows the vehicles (default: on "
+    "for the dynamic and Jolt plants where the running pycvc has it); --no-governor shows the "
+    "forces alone",
+)
+def material_demo(out_dir: str, plant, ground_mu, governor) -> None:
     """Material-aware navigation demo (pure Python): two stories run with and
     without a MaterialGrid, rendered as top-down trajectory PNGs + stats.
     Set GRL_SNAM_MATERIAL_BACKEND=native to run through the C++ kernels."""
     from grl_snam.tools.material_demo import main as run
 
-    raise SystemExit(run(out_dir, plant=plant, ground_mu=ground_mu))
+    raise SystemExit(run(out_dir, plant=plant, ground_mu=ground_mu, governor=governor))
 
 
 @main.command("lab-demo")

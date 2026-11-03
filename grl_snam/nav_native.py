@@ -678,6 +678,23 @@ class NativeSimWorld:
         """Detach material; later steps are byte-identical to the plain drive."""
         _pycvc.nav_sim_world_clear_material(self._h)
 
+    def set_risk_governor(self, on=True, vmin=0.0, onset=0.3, lookahead=0.0, probes=3):
+        """libcvc's risk governor (``sim_world::set_risk_governor``), from the next step: the
+        material's risk caps each agent's speed, down to ``vmin`` at risk 1, and ``probes``
+        points out to ``lookahead`` ahead slow it before it gets there (speeds and look-ahead
+        normalized). The material's forces steer an agent off risky ground, but they slow it only
+        by what they take from its goal pull's surplus over its top speed: a vehicle at its top
+        speed driving square at a hazard is not slowed at all. The governor slows it there; it
+        does not stop it short of a hazard its goal lies beyond. Needs ``HAS_RISK_GOVERNOR``."""
+        if not HAS_RISK_GOVERNOR:
+            raise RuntimeError(
+                "pycvc lacks nav_sim_world_set_risk_governor — install a pycvc built from a "
+                "libcvc that has sim_world::set_risk_governor"
+            )
+        _pycvc.nav_sim_world_set_risk_governor(
+            self._h, 1 if on else 0, float(vmin), float(onset), float(lookahead), int(probes)
+        )
+
     # ── fog of war (libcvc: a world that changes under its agents; opt-in) ──
     def truth(self):
         """The world as it is now, (rows, cols) bool."""
@@ -884,6 +901,8 @@ HAS_PLANT = (
 HAS_SIM_WORLD_PLANES = HAS_PLANT  # both arrived with libcvc P6's bindings
 #: The sim_world's fog-of-war surface: truth edits, the fog tiers, the dynamic marks.
 HAS_FOG = HAS_SIM_WORLD and hasattr(_pycvc, "nav_sim_world_set_truth")
+# The risk governor switched on at run time (libcvc's sim_world::set_risk_governor).
+HAS_RISK_GOVERNOR = HAS_SIM_WORLD and hasattr(_pycvc, "nav_sim_world_set_risk_governor")
 
 #: The vehicle presets libcvc ships (``pycvc.vehicle_desc.<name>()``).
 VEHICLE_PRESETS = ("roboracer", "humvee")
@@ -1012,13 +1031,17 @@ class JoltPlant(_SceneBoxes):
         self.world, self.ground, self.obstacles = _physics_scene(
             bounds, obstacles, ground_mu, rolling_resistance, obstacle_height_m, fixed_dt
         )
-        self.plant = _pycvc.nav_plant(
-            self.world,
-            self.descs,
+        kw = dict(
             latency=float(latency),
             brake_margin=float(brake_margin),
             metres_per_world_unit=float(metres_per_world_unit),
         )
+        try:
+            # The ground is what the wheels drive on, not a building: a chassis scraping it is
+            # no building contact in nav_stats.
+            self.plant = _pycvc.nav_plant(self.world, self.descs, ground_bodies=[self.ground], **kw)
+        except TypeError:  # a pycvc before nav_plant's ground_bodies: the ground counts too
+            self.plant = _pycvc.nav_plant(self.world, self.descs, **kw)
 
     def nav_limits(self, scale):
         """The navigator's acceleration limits for these vehicles, normalized at ``scale``
