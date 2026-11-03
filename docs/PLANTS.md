@@ -24,6 +24,8 @@ Contents:
 - [`capture`: one vehicle, rendered with its read-out](#capture-one-vehicle-rendered-with-its-read-out)
 - [`pipeline`](#pipeline)
 - [The finale, the squad, the convoy and the pursuit](#the-finale-the-squad-the-convoy-and-the-pursuit)
+- [The fog-of-war stories](#the-fog-of-war-stories)
+- [The material demo](#the-material-demo)
 - [The benches](#the-benches)
 - [Not on a plant yet](#not-on-a-plant-yet)
 - [Training through Jolt](#training-through-jolt)
@@ -142,7 +144,50 @@ record_pursuit_v2("path/to/austin_south", "pursuit", plant="jolt:humvee", runner
 ```
 
 `squad_record.record_squad(..., plant=...)` is what all three use. `Squad(plant=...)` refuses
-material grids and per-agent `vmax` or sensor overrides, and a start inside a building.
+per-agent `vmax` or sensor overrides, and a start inside a building. A material grid
+(`material=`) attaches to the native world: its forces and witness gate, without the Python
+path's route surcharge.
+
+## The fog-of-war stories
+
+```bash
+grl-snam fog record blocker --plant jolt -o traces/blocker_jolt
+grl-snam fog record traffic --plant dynamic --mu 0.6 -o traces/traffic_dynamic
+grl-snam fog all --plant jolt -o fog_jolt          # every story, then the reel
+```
+
+`--plant` runs the story's one agent on libcvc's sim_world (RoboRacers unless the name says
+`:humvee`) and writes the same trace the Python scenario does, so `fog capture` and `fog play`
+replay it. All six stories run: `ghost`, `blocker`, `unit`, `city`, `traffic` and `pursuit`.
+The recorder keeps the native world honest to the story:
+
+- **A wall raised mid-run** (`blocker`) goes into the world's truth (`sim_world::set_truth`,
+  transfix/libcvc#986), and on a physics plant it is a box in the physics world from then on.
+  The agent learns it by sensing, as in the Python scenario.
+- **A unit's marks** (`unit`) are the native world's decaying marks (`add_obstacle`), believed
+  until `unit_ttl_s` passes.
+- **Moving vehicles** (`traffic`) join the truth each tick and are kinematic boxes in the
+  physics world.
+- **A moving target** (`pursuit`) is retargeted each tick.
+
+The native world steers by its own carrot with no route spine, so the trace's routes are empty.
+A mover it sees is believed as a wall until it sees those cells free again; the Python scenario
+demotes it to the decaying layer instead. The trace's clearance is each tick's distance to the
+truth, less the body radius, and `trace.json` adds the plant and the world's own episode record
+(`native_nav_stats`). Needs a pycvc with transfix/libcvc#986 (`nav_native.HAS_FOG`).
+
+## The material demo
+
+```bash
+grl-snam material-demo --plant jolt --out-dir material_jolt
+```
+
+Both stories run on libcvc's sim_world, their agents driving the plant with the material's forces
+and witness gate attached (`NativeSimWorld.set_material_grid`). The native world has no route
+spine, so the scenario story's planner surcharge, which routes the Python agent through the dry
+gap, does not apply: the agent meets the water strip head on. The demo prints the same table and
+writes the same two PNGs, and exits 1 when material leaves a vehicle in hazard cells, as without
+a plant.
 
 ## The benches
 
@@ -156,13 +201,9 @@ replaces only the drive, which `drive_bench --plant` times, so they take none.
 
 ## Not on a plant yet
 
-- **`grl-snam fog`.** The stories are one `FogScenario` with scripted events (the blocker, the
-  unit) and movers, which libcvc's world does not have, and the recorder reads the Python
-  belief and route the native world keeps to itself. For a fog-of-war run on a plant, use
-  `capture drive --fog`, or a `Squad(plant=...)` with `prior_occ=None`.
-- **`grl-snam material-demo`.** It drives a `FogScenario` and a `Swarm` with a material grid,
-  and `Squad(plant=...)` refuses material grids.
-- **A pursuit with a quicker quarry**, as above.
+- **A pursuit with a quicker quarry**, as above: the native world has one top speed.
+- **A fog story with a wall taken down** (`remove_rect`) on a physics plant: none of the stories
+  has one, and the recorder refuses it rather than leave the box standing.
 
 ## Training through Jolt
 
@@ -238,3 +279,20 @@ within 0.8 units, 240 m. It does not transfer to a vehicle that has to arrive wi
   meets walls it cannot stop for.
 
 The city story's squads arrive on Jolt RoboRacers ([NATIVE_CVC_NAV.md](NATIVE_CVC_NAV.md#a-physics-plant--squadplant)).
+
+**The fog-of-war stories** (RoboRacers, an untrained policy, `fog record --plant`, at most 1500
+ticks): all six arrive on the kinematic bicycle, the dynamic plant and Jolt. Only `traffic` puts
+the vehicle inside the truth: a moving vehicle drives onto it for 3 ticks on Jolt and 8 on the
+dynamic plant. The physics plants take two to three times the bicycle's ticks (blocker: 357 on
+the bicycle, 826 dynamic, 893 Jolt).
+
+**The material demo** (RoboRacers, `material-demo --plant`):
+
+| | swarm, material on | scenario, material on |
+|---|---|---|
+| Jolt | no hazard or mud cells; 2 of 6 arrive (6 of 6 without material, through the water) | no hazard cells, but it never reaches the goal |
+| dynamic | no hazard cells; 4 of 6 arrive | 14 hazard steps, the same run as without material |
+
+Off the goal line the forces and the gate keep both physics plants' vehicles out of the hazards.
+Square across it, without the planner, they do not hold the dynamic plant's vehicle out, and do
+not change its run at all.

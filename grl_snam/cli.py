@@ -51,13 +51,20 @@ def selftest() -> None:
 
 @main.command("material-demo")
 @click.option("--out-dir", default="material_demo", show_default=True, help="Output directory.")
-def material_demo(out_dir: str) -> None:
+@click.option(
+    "--plant",
+    default=None,
+    help="run both stories on libcvc's sim_world and this plant: kinematic, dynamic[:preset] "
+    "or jolt[:preset] (RoboRacers by default)",
+)
+@click.option("--mu", "ground_mu", default=0.9, show_default=True, help="--plant: the grip")
+def material_demo(out_dir: str, plant, ground_mu) -> None:
     """Material-aware navigation demo (pure Python): two stories run with and
     without a MaterialGrid, rendered as top-down trajectory PNGs + stats.
     Set GRL_SNAM_MATERIAL_BACKEND=native to run through the C++ kernels."""
     from grl_snam.tools.material_demo import main as run
 
-    raise SystemExit(run(out_dir))
+    raise SystemExit(run(out_dir, plant=plant, ground_mu=ground_mu))
 
 
 @main.command("lab-demo")
@@ -398,20 +405,33 @@ def fog_list_cmd() -> None:
 
 
 @fog.command("record")
-@click.argument("story", type=click.Choice(["ghost", "blocker", "unit"]))
+@click.argument(
+    "story", type=click.Choice(["ghost", "blocker", "unit", "city", "traffic", "pursuit"])
+)
 @click.option("-o", "--out", "out_dir", default=None, help="trace dir (default traces/<story>)")
 @click.option("--seed", default=0, show_default=True)
 @click.option("--max-steps", default=None, type=int)
-def fog_record_cmd(story, out_dir, seed, max_steps) -> None:
+@click.option(
+    "--plant",
+    default=None,
+    help="drive the story on libcvc's sim_world and this plant: kinematic, dynamic[:preset] "
+    "or jolt[:preset] (RoboRacers by default). Default: the Python scenario",
+)
+@click.option("--mu", "ground_mu", default=0.9, show_default=True, help="--plant: the grip")
+def fog_record_cmd(story, out_dir, seed, max_steps, plant, ground_mu) -> None:
     """Run the scenario once and write the measured trace bundle."""
     from .tools import fog_record
 
-    out = fog_record.record(story, out_dir, seed=seed, max_steps=max_steps)
+    out = fog_record.record(
+        story, out_dir, seed=seed, max_steps=max_steps, plant=plant, ground_mu=ground_mu
+    )
     click.echo(f"trace={out}")
 
 
 @fog.command("capture")
-@click.argument("story", type=click.Choice(["ghost", "blocker", "unit"]))
+@click.argument(
+    "story", type=click.Choice(["ghost", "blocker", "unit", "city", "traffic", "pursuit"])
+)
 @click.option("--trace", "trace_dir", default=None, help="trace dir (default traces/<story>)")
 @click.option("-o", "--out", default=None, help="mp4 (default fog_<story>.mp4)")
 @click.option("--fps", default=20, show_default=True)
@@ -435,7 +455,9 @@ def fog_capture_cmd(story, trace_dir, out, fps, speed, no_captions, keep_frames)
 
 
 @fog.command("play")
-@click.argument("story", type=click.Choice(["ghost", "blocker", "unit"]))
+@click.argument(
+    "story", type=click.Choice(["ghost", "blocker", "unit", "city", "traffic", "pursuit"])
+)
 @click.option("--trace", "trace_dir", default=None)
 @click.option("--speed", default=0.5, show_default=True)
 @click.option("--loop", is_flag=True)
@@ -451,8 +473,10 @@ def fog_play_cmd(story, trace_dir, speed, loop) -> None:
 @click.option("-o", "--out-dir", default="fog", show_default=True)
 @click.option("--fps", default=20, show_default=True)
 @click.option("--speed", default=0.5, show_default=True)
-def fog_all_cmd(out_dir, fps, speed) -> None:
-    """Record and capture all three stories, then concatenate the reel."""
+@click.option("--plant", default=None, help="record every story on this plant (see fog record)")
+@click.option("--mu", "ground_mu", default=0.9, show_default=True, help="--plant: the grip")
+def fog_all_cmd(out_dir, fps, speed, plant, ground_mu) -> None:
+    """Record and capture every story, then concatenate the reel."""
     from .fog_stories import STORIES
     from .tools import fog_capture, fog_record
 
@@ -460,7 +484,7 @@ def fog_all_cmd(out_dir, fps, speed) -> None:
     out.mkdir(parents=True, exist_ok=True)
     mp4s = []
     for key in STORIES:
-        trace = fog_record.record(key, out / "traces" / key)
+        trace = fog_record.record(key, out / "traces" / key, plant=plant, ground_mu=ground_mu)
         mp4s.append(fog_capture.capture(key, trace, out / f"fog_{key}.mp4", fps=fps, speed=speed))
         click.echo(f"  {key} -> {mp4s[-1]}")
     reel = fog_capture.concat(mp4s, out / "fog_demo.mp4")

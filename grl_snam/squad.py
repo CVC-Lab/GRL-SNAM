@@ -236,8 +236,6 @@ class Squad:
                 "Squad(plant=...) needs a pycvc with libcvc's P6 bindings (nav_sim_world_create "
                 "with map_id, nav_sim_world_set_plant)"
             )
-        if material is not None:
-            raise NotImplementedError("Squad(plant=...) with a material grid is a follow-up")
         scs = list(self.scenarios.values())
         sc0 = scs[0]
         nav0 = sc0.nav
@@ -329,6 +327,10 @@ class Squad:
                         "physics vehicle cannot be added there"
                     )
         self.native.set_plant(self.plant)
+        if material is not None:
+            # One shared surface: the material forces and the witness gate, as on the Python path
+            # (the native world has no route spine for the risk surcharge to bias).
+            self.native.set_material_grid(material)
         self._native_dt = float(nav0.dt)
         self._native_reached = np.zeros(n, bool)
         self._native_tick = 0

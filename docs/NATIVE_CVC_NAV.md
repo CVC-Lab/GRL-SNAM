@@ -163,7 +163,8 @@ w = nav_native.sim_world_from_swarm(sw, weights, truth=truth,
   and `SquadResult` (plus `energy_J`). It does not keep the Python path's route spine: the
   C++ world drives its own carrot toward each goal. Peers meet as bodies in the physics
   world, not as stamps in each other's truth. Moving goals and `FollowGoal` work.
-  Per-agent `vmax` or sensor overrides and material grids are refused for now.
+  Per-agent `vmax` or sensor overrides are refused for now; a material grid attaches to the
+  native world (its forces and witness gate, not the route surcharge).
 - **The world.** `JoltPlant` builds a flat ground (`ground_mu`, `rolling_resistance`) and
   turns the truth grid's occupied cells into static boxes, merged into rectangles
   (`obstacle_boxes`). A vehicle that leaves the plan then meets the building it would have
