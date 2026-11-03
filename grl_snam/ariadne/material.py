@@ -22,6 +22,7 @@ import numpy as np
 from grl_snam.ariadne import _host
 
 OFF, ON = (192, 57, 43), (30, 132, 73)  # the original's colours
+RUN_LIMITS = {"action_max_time": 0, "action_max_steps": 0}  # ariadne.limits: 0 = no cap
 
 
 def _args(p):
@@ -57,8 +58,13 @@ def main(argv=None) -> int:
     args = _host.parse(argv, _args)
     from grl_snam.tools import material_demo as md
 
-    host = _host.open_host("material.ari", "material", args, load=False)
+    # The stories end on their own step budgets, so their runs have no time cap: Host's default
+    # 30 s stopped a scenario run on a busy machine.
+    host = _host.open_host(
+        "material.ari", "material", args, load=False, limits=dict(RUN_LIMITS)
+    )  # fmt: skip
     ready = {}  # a story's finished results, for the next frame to publish
+    ended = {}  # story -> "" when its first run finished, else why not
 
     # The runs take seconds of torch, so they are async functions: each runs on the app's
     # background pool while its program waits and the window keeps drawing. A picture is
@@ -90,19 +96,29 @@ def main(argv=None) -> int:
             host.publish_image(story, img)
             host.set_table(story, rows)
 
+    def ended_with(story):
+        def done(how):
+            ended[story] = how
+            if how:  # the spinner stops, and the window says why
+                host.set(f"{story}_status", f"failed: {how}")
+
+        return done
+
     host.load(str(_host.DOCS / "material.ari"))  # now that what it requires is registered
     for story in ("scenario", "swarm"):  # as the Run buttons do
         host.run_program(
             f'(begin (state-set "{story}_status" "running") '
-            f'(state-set "{story}_status" (run-{story})))'
+            f'(state-set "{story}_status" (run-{story})))',
+            ended_with(story),
         )
     if args.mode != "window":  # run until both are back, then the asked-for frames
-        host.run(
-            until=lambda: host.get("scenario_status") == "done"
-            and host.get("swarm_status") == "done",
-            realtime=False,
-            frames=10**9,
-        )
+        host.run(until=lambda: len(ended) == 2, realtime=False, frames=10**9)
+        failed = {story: how for story, how in ended.items() if how}
+        for story, how in failed.items():
+            print(f"grl_snam material: the {story} run did not finish: {how}", file=sys.stderr)
+        if failed:
+            host.close()
+            return 1
     return _host.finish(host, args)
 
 

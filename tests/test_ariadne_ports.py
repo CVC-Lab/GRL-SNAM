@@ -94,6 +94,26 @@ def test_material_runs_both_stories():
     assert ports_main(["material", "--headless", "--frames", "2", "--swarm-steps", "20"]) == 0
 
 
+def test_material_returns_when_a_run_is_stopped(monkeypatch, capsys):
+    import time
+
+    from grl_snam.ariadne import material
+    from grl_snam.tools import material_demo as md
+
+    def slow(*_a, **_k):
+        time.sleep(1.0)
+        raise AssertionError("the cap should have stopped this run's program first")
+
+    monkeypatch.setattr(md, "scenario_runs", slow)
+    monkeypatch.setattr(md, "swarm_runs", slow)
+    monkeypatch.setattr(material, "RUN_LIMITS", {"action_max_time": 0.2, "action_max_steps": 0})
+    t0 = time.monotonic()
+    assert ports_main(["material", "--headless", "--frames", "2"]) == 1
+    assert time.monotonic() - t0 < 30
+    err = capsys.readouterr().err
+    assert "the scenario run did not finish" in err and "the swarm run did not finish" in err
+
+
 def test_fleet_runs_on_austin():
     if _host.bundle_or_none() is None:
         pytest.skip("no Austin scene bundle (scene-austin-south)")
