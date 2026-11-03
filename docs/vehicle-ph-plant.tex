@@ -160,8 +160,9 @@ that section and its tables, are without them. The four-wheel plant has no compl
         merged as \code{b8ac9975} and released in 3.7.3.
   \item The live plant's ground and rigid-body world (Section~\ref{sec:live}) are \#869, merged as
         \code{5ca26cf6} and released in 3.7.2, and its driver is \#873, merged as \code{462d8229}
-        and released in 3.7.3. Its \code{pycvc} binding is \#979, merged as \code{781b9a2f}, in no
-        release yet.
+        and released in 3.7.3. Its \code{pycvc} binding is \#979, merged as \code{781b9a2f}, and
+        the binding of the options of Section~\ref{sec:ext} is \#1002, merged as \code{1ded7bed};
+        neither is in a release yet.
   \item Wheel spin (Section~\ref{sec:spin}) is \#982, merged as \code{4b640693}; compliant contact
         (Section~\ref{sec:contact}) is \#983, merged as \code{2728bca8}; the full form and the side
         slope (Section~\ref{sec:full}) are \#987, merged as \code{b89992ef}. None of the three is in
@@ -2186,11 +2187,11 @@ twins (GRL-SNAM \#138 and \#139), and \code{pycvc} reads a running world's tick 
 (libcvc \#857). \code{pycvc.dyn\_bike\_plant} (libcvc \#979, \code{781b9a2f}, on \code{master}
 and in no release yet) puts a navigation world on the live plant, optionally in a rigid-body world
 the caller builds, and reads its books per tick and since attach. GRL-SNAM's \code{capture} shows
-them while it drives (GRL-SNAM \#143). On \code{master} it does not expose the options of
-Section~\ref{sec:ext}, nor the slip and compliant-contact lines of the books. libcvc \#1002, open,
-binds them, with a ground height from a \code{pycvc.height\_field} and a contact field copied from
-a \code{sim\_world}. It does not bind \code{contact\_step\_depth} (\#1004), whose default applies. \code{pycvc} does not bind
-\code{dyn\_4w\_plant} or \code{plant\_host}.
+them while it drives (GRL-SNAM \#143). libcvc \#1002 (merged as \code{1ded7bed}, in no release
+yet) binds the options of Section~\ref{sec:ext} and the slip and compliant-contact lines of the
+books, with a ground height from a \code{pycvc.height\_field} and a contact field copied from a
+\code{sim\_world}. It does not bind \code{contact\_step\_depth} (\#1004), whose default applies.
+\code{pycvc} does not bind \code{dyn\_4w\_plant} or \code{plant\_host}.
 
 \subsection{Gaps raised in review, and the work on them}
 \label{sec:review}
@@ -2580,7 +2581,7 @@ $\R$, $\G$, $u$, $f_\varepsilon$, \eqref{eq:R}--\eqref{eq:feps} & \code{dyn\_ph\
 The vector field~\eqref{eq:plant-ph}; the balance~\eqref{eq:balance} & \code{dyn\_ph\_rhs}; \code{dyn\_ph\_rates\_at} (struct \code{dyn\_ph\_rates}) & the balance: \code{dyn\_bike.dyn\_ph\_rates\_at} (\#138) \\
 The tangent~\eqref{eq:tangent}, \eqref{eq:kf} & \code{dyn\_ph\_tangent\_D} & --- \\
 The step's books~\eqref{eq:books} & \code{dyn\_plant\_books} (struct \code{dyn\_ph\_books}); \code{dyn\_step\_free} & \code{dyn\_bike.dyn\_plant\_books}; \code{dyn\_plant(..., with\_free=True)} (\#138) \\
-The live plant~\eqref{eq:live-books} & \code{cvc::physics::dyn\_bike\_plant}; \code{plant\_host} \code{"dynamic"}; the options \code{wheel\_spin}, \code{side\_slope}, \code{contact} & \code{pycvc.dyn\_bike\_plant} (libcvc \#979), without those options \\
+The live plant~\eqref{eq:live-books} & \code{cvc::physics::dyn\_bike\_plant}; \code{plant\_host} \code{"dynamic"}; the options \code{wheel\_spin}, \code{side\_slope}, \code{contact} & \code{pycvc.dyn\_bike\_plant} (libcvc \#979; the options \#1002) \\
 The four-wheel form~\eqref{eq:4w}--\eqref{eq:4w-books}, Sec.~\ref{sec:four-wheel} & \code{dyn4\_ph\_hamiltonian}, \code{dyn4\_ph\_J}, \code{dyn4\_ph\_R}, \code{dyn4\_ph\_G}, \code{dyn4\_ph\_lever}, \code{dyn4\_ph\_grade}, \code{dyn4\_ph\_rhs}, \code{dyn4\_ph\_rates\_at}; \code{dyn4\_plant\_books} (\code{nav/detail/dyn\_4w.h}, \#850) & --- (the plant: \code{grl\_snam.dyn4}) \\
 Wheel spin~\eqref{eq:spin-tire}--\eqref{eq:spin-balance}, Sec.~\ref{sec:spin} & \code{dyn\_spin\_plant}, \code{dyn\_spin\_ph\_J}, \code{dyn\_spin\_ph\_R}, \code{dyn\_spin\_ph\_G}, \code{dyn\_spin\_ph\_rates\_at}, \code{dyn\_spin\_plant\_books}; \code{dyn4\_spin\_plant}, \code{dyn4\_spin\_plant\_books} (\#982) & \code{dyn\_bike.dyn\_spin\_plant}, \code{dyn\_spin\_plant\_books}; \code{dyn4.dyn4\_spin\_plant}, \code{dyn4\_spin\_plant\_books} (\#146) \\
 The full form and the side slope~\eqref{eq:plant-ground}, Sec.~\ref{sec:full} & \code{dyn\_ph\_T}, \code{dyn\_ph\_J\_full}, \code{dyn\_ph\_rhs\_full}, \code{dyn\_plant\_ground}, \code{dyn\_plant\_books\_ground}; \code{dyn4\_ph\_J\_full}, \code{dyn4\_ph\_rhs\_full} (\#987) & \code{dyn\_bike.dyn\_ph\_rhs\_full}, \code{dyn\_plant\_ground}, \code{dyn\_plant\_books\_ground} (\#146); four wheels: --- \\
