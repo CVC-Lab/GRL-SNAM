@@ -10,13 +10,7 @@ from __future__ import annotations
 import math
 import os
 
-from grl_snam.demos._common import (
-    bundle_occupancy,
-    current_host,
-    default_scene_bundle,
-    vehicle_box_mesh,
-)
-from grl_snam.tools.sdf import terrain_bounds
+from grl_snam.demos._common import current_host, open_city, vehicle_box_mesh
 
 _S: dict = {}
 
@@ -24,22 +18,17 @@ _S: dict = {}
 def setup() -> None:
     host = current_host()
     from pycvc_gl.camera import NativeChaseCamera as ChaseCamera
-    from pycvc_gl.scenes import (
-        load_geometry_bundle,
-        plan_ground_route,
-        resample_polyline,
-    )
+    from pycvc_gl.scenes import plan_ground_route, resample_polyline
     from pycvc_gl.vehicle import VehiclePose
 
     from grl_snam.route import cells_for_metres, plan_clearance_route
 
-    bundle = default_scene_bundle()
     lab = host.make_lab()
     lab.set_axis_visible(False)
-    sample = load_geometry_bundle(lab, bundle)
-    bounds = terrain_bounds(bundle)
+    city = open_city(host, lab)  # the host's (already drawn), else the installed bundle
+    sample, bounds = city.sample, city.bounds
     print("grl_snam austin_patrol: building occupancy + A* patrol route...", flush=True)
-    occ = bundle_occupancy(bundle, bounds, 512, 512, inflate_m=12.0)
+    occ = city.occupancy(bounds, 512, 512, inflate_m=12.0)
     r = 430.0
     waypts = [
         (r * math.cos(a), r * math.sin(a))

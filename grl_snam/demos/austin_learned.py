@@ -18,14 +18,12 @@ import torch
 import grl_snam.sdf_nav as sdf_nav
 from grl_snam.demos._common import (
     SimPacer,
-    bundle_occupancy,
     current_host,
     default_nav_weights_pt,
-    default_scene_bundle,
+    open_city,
     vehicle_box_mesh,
 )
 from grl_snam.metrics import NavMetrics
-from grl_snam.tools.sdf import terrain_bounds
 
 # Sim playback rate relative to the world clock: 1.0 == real time, matching the
 # native cvc::nav demos. Raise for a faster pace without re-coupling to framerate.
@@ -37,16 +35,11 @@ _S: dict = {}
 def setup() -> None:
     host = current_host()
     from pycvc_gl.camera import NativeChaseCamera as ChaseCamera
-    from pycvc_gl.scenes import (
-        load_geometry_bundle,
-        plan_ground_route,
-        resample_polyline,
-    )
+    from pycvc_gl.scenes import plan_ground_route, resample_polyline
     from pycvc_gl.vehicle import VehiclePose
 
     from grl_snam.route import cells_for_metres, plan_clearance_route
 
-    bundle = default_scene_bundle()
     ckpt = default_nav_weights_pt()
     torch.set_num_threads(2)
     ck = torch.load(ckpt, map_location="cpu")
@@ -67,12 +60,12 @@ def setup() -> None:
 
     lab = host.make_lab()
     lab.set_axis_visible(False)
-    sample = load_geometry_bundle(lab, bundle)
-    bounds = terrain_bounds(bundle)
+    city = open_city(host, lab)  # the host's (already drawn), else the installed bundle
+    sample, bounds = city.sample, city.bounds
     mnx, mny, mxx, mxy = bounds
     print("grl_snam austin_learned: occupancy + SDF + route...", flush=True)
-    occ_r = bundle_occupancy(bundle, bounds, 512, 512, inflate_m=12.0)
-    occ0 = bundle_occupancy(bundle, bounds, 512, 512, inflate_m=0.0)
+    occ_r = city.occupancy(bounds, 512, 512, inflate_m=12.0)
+    occ0 = city.occupancy(bounds, 512, 512, inflate_m=0.0)
     ny, nx = occ0.shape
     sdf_npz = os.environ.get("GRL_SNAM_SDF", "")
     if sdf_npz and os.path.exists(sdf_npz):

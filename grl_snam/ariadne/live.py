@@ -13,9 +13,14 @@ NavMetrics, a clearance and a speed plot), pause / sim-speed / camera controls, 
 afternoon light with shadows. On Austin the vehicle is a Humvee at its real size (the
 ``vehicle-humvee`` package's model, else a box its size) in place of the demos' box.
 
-Data: the Austin demos need ``scene-austin-south`` (``GRL_SNAM_SCENE_BUNDLE`` or an installed
-prefix) and the learned ones ``grl-snam-weights``, as ``grl-snam demo`` does. ``lab`` stays a
-VolRover3 demo (it drives VolRover3's own scene).
+Data: the document names the city. ``docs/live.ari``'s data: block points at the Austin scene
+package on cvcpkg.org, which the host downloads once (later runs read the cache), unpacks and
+decodes. The scene draws it, and the demo takes the same objects (``DemoHost.city``) for its
+terrain, occupancy and SDF, so no bundle is read twice. ``--bundle DIR`` (or
+``GRL_SNAM_SCENE_BUNDLE``) points the document's city at a local bundle instead, with no
+download, and an installed bundle stands in when the package cannot load. The learned demos also
+need ``grl-snam-weights``, as ``grl-snam demo`` does. ``lab`` stays a VolRover3 demo (it drives
+VolRover3's own scene).
 """
 
 from __future__ import annotations
@@ -36,6 +41,9 @@ HUMVEE_DEMOS = ("austin-freedrive", "austin-learned", "austin-patrol")
 
 def _args(p):
     p.add_argument("demo", choices=sorted(DEMOS), help="which live demo")
+    p.add_argument(
+        "--bundle", default=None, help="a local Austin bundle for the city (default: the package)"
+    )
 
 
 def main(argv=None) -> int:
@@ -43,7 +51,13 @@ def main(argv=None) -> int:
     from grl_snam.demos import _common
 
     module = importlib.import_module(DEMOS[args.demo][0])
-    host = _host.open_host("live.ari", "live", args)
+    if args.mode == "headless":  # before the document, whose city would start loading
+        raise RuntimeError(
+            "the live demos draw into the scene: run them in a window or --offscreen"
+        )
+    host = _host.open_host("live.ari", "live", args, load=False)
+    # The planner drives a world of its own, so the document's city stays unloaded for it.
+    _host.load_document(host, "live.ari", bundle=args.bundle, city=args.demo in HUMVEE_DEMOS)
     host.set("demo.title", f"{args.demo}: {DEMOS[args.demo][1]}")
     demo_host = _host.DemoHost(host)
     series = {"clearance": [], "speed": []}
@@ -57,13 +71,10 @@ def main(argv=None) -> int:
 
     _common._STANDALONE = demo_host  # current_host() hands the demo this host
     try:
-        if host.mode == "headless":
-            raise RuntimeError(
-                "the live demos draw into the scene: run them in a window or --offscreen"
-            )
         module.setup()
         if args.demo in HUMVEE_DEMOS:  # the demo's box -> a Humvee, posed by the same VehiclePose
-            _host.add_vehicle(host, "agent0", _host.humvee_model(_host.bundle_or_none()))
+            model = _host.humvee_model(_host.bundle_or_none(args.bundle), host=host)
+            _host.add_vehicle(host, "agent0", model)
         # The published policy's metric (scale 1/300) lets it drive at up to 270 m/s on Austin,
         # so the chase sits well back and catches up quickly.
         host.set_many(
