@@ -117,6 +117,14 @@ surrogate: nav's kinematic bicycle, libcvc's dynamic single-track vehicle, or a 
 use and energy books. [docs/PLANTS.md](docs/PLANTS.md) covers every demo and bench on a plant,
 and training through Jolt.
 
+**On video:** the [plant reel](https://github.com/CVC-Lab/GRL-SNAM/releases/tag/plant-reel-2026-11)
+has eight clips of the shipped checkpoint on Austin, each with its measured outcome and the command
+that made it:
+- **three successes:** the surrogate's multi-goal drive, and the kinematic bicycle and a Jolt Humvee
+  on grip 0.3 arriving;
+- **five failures:** a dead end, an orbit, sliding past the tire's peak, a spin-out on low grip, and
+  a collision with the map unknown.
+
 ### Live inside VolRover3
 
 ```bash

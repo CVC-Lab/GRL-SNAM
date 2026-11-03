@@ -278,6 +278,10 @@ within 0.8 units, 240 m. It does not transfer to a vehicle that has to arrive wi
   slides past the tire's peak and spins out (sideslip near 90 degrees); with the map unknown it
   meets walls it cannot stop for.
 
+Each of these failures is on video in the
+[plant reel](https://github.com/CVC-Lab/GRL-SNAM/releases/tag/plant-reel-2026-11), next to three
+successes. Each clip comes with the `capture` command that made it and its measured outcome.
+
 The city story's squads arrive on Jolt RoboRacers ([NATIVE_CVC_NAV.md](NATIVE_CVC_NAV.md#a-physics-plant--squadplant)).
 
 **The fog-of-war stories** (RoboRacers, an untrained policy, `fog record --plant`, at most 1500
