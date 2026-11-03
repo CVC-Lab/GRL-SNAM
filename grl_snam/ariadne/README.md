@@ -101,6 +101,9 @@ python -m grl_snam.ariadne material
 `grl-snam material-demo`'s two stories (the fog scenario and the reactive swarm), each with
 material off and on, run as async functions on the app's background pool while the window
 draws; each shows a picture (drawn with numpy, no matplotlib) and the off/on numbers.
+The runs have no time cap, since each story ends on its own step budget. With
+`--headless` or `--offscreen`, a run that does not finish ends the port with exit code 1 and
+the reason.
 
 ## Every demo and its port
 
