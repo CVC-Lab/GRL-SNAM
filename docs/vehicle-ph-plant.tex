@@ -165,7 +165,8 @@ that section and its tables, are without them. The four-wheel plant has no compl
   \item Wheel spin (Section~\ref{sec:spin}) is \#982, merged as \code{4b640693}; compliant contact
         (Section~\ref{sec:contact}) is \#983, merged as \code{2728bca8}; the full form and the side
         slope (Section~\ref{sec:full}) are \#987, merged as \code{b89992ef}. None of the three is in
-        a release yet. CVC-Lab/GRL-SNAM \#146 (\code{b6ddb801}) twins all three.
+        a release yet. CVC-Lab/GRL-SNAM \#146 (\code{b6ddb801}) twins all three. The contact's
+        implicit damper and its substeps are \#1004 (open).
 \end{itemize}
 The measurements in Section~\ref{sec:validation} were taken on libcvc \code{master} at
 \code{c1f104c0}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are identical to
@@ -974,15 +975,32 @@ does in~\eqref{eq:plant-ground}. The damping and friction are $-\R_cv$, and $\R_
 semi-definite. So contact stores energy in $H$ and dissipates it in $\R$; it supplies none.
 
 \paragraph{The plant and its books.} The plant applies the contact's wrench as the external port,
-held over each substep from its start, and books its power $y_e\T u_e$. The contact's books split
-that into the barrier's change and the damper's work. Held from the substep's start while the step
-moves the pose with its new twist, the barrier's work differs from its change by second order per
-step, so the books still close to second order. That holds while the damper, held over a substep,
-does not overshoot, and libcvc's tests impact at 5~m/s. Driven into a wall at 7.8~m/s by the
-navigator, at the default 0.01~s substep, the full-size preset rebounds at 3.2~m/s, the books show
-the contact supplying $1.5\times10^{5}$~J, and the residual is $3.1\times10^{-2}$ of the flow. At a
-0.005~s substep the impact is resolved, and the residual is $2.4\times10^{-3}$ of the flow, falling
-to $2.6\times10^{-4}$ at 0.00125~s. Between two vehicles, each one's points meet the
+held over each substep, and books its power $y_e\T u_e$. The contact's books split that into the
+barrier's change and the damper's work. The barrier is held from the substep's start while the step
+moves the pose with its new twist, so its work differs from its change by second order per step.
+The damper and the friction are implicit (libcvc \#1004, \code{diff::dyn\_contact\_implicit}): the
+step solves $(M+h\R_c)\,v_d=Mv_0+hW_c$, with $M=\operatorname{diag}(m,m,I_z)$ and $W_c$ the
+barrier's wrench, and holds $W_d=-\R_cv_d$, taking the friction's secant again at the sliding speed
+$v_d$ reaches. So $W_d\T v_d\le0$, and without the barrier the step never raises the kinetic
+energy, at any $h$. Touching vehicles are solved together, so their forces stay equal and
+opposite. A substep in which a point would close more than \code{contact\_step\_depth} (0.1~m by
+default) on what it meets is cut into equal pieces, until nothing touches or closes. The books
+then close to second order through fast impacts at the default 0.01~s substep.
+
+Before \#1004 the damper and friction were held from the substep's start. Their coefficients grow
+with the penetration, so past some depth $h\R_c/m$ exceeded 2 and they reversed the approach
+within a step. Driven by the navigator into a wall at 7.8~m/s at 0.01~s, the full-size preset
+then rebounded at 3.2~m/s, the books showed the contact supplying $1.5\times10^{5}$~J, and
+$3.1\times10^{-2}$ of the flow went unbooked. With \#1004 the same impact dissipates
+$8.16\times10^{4}$~J in the contact, against $8.19\times10^{4}$~J at a 0.00125~s substep. The
+speed clamp takes nothing, the slowest speed is $-0.47$~m/s, as at the fine step, and the books
+leave $1.3\times10^{-3}$ of the flow. The navigation world's own field made the overshoot worse.
+Its grid signed distance runs from $+1$ to $-1$ cell across the cell at an obstacle's face, so
+$\lvert\nabla\phi\rvert=2$ there. Against it, the barrier is four times and the damper eight times
+as stiff per metre as against an exact wall. Inside a wall two cells thick the field is flat at
+$-1$ cell, so a vehicle that got half a cell in would feel no barrier.
+
+Between two vehicles, each one's points meet the
 other's outline, a rounded rectangle's signed distance, both ways. Each force acts on both bodies,
 equal and opposite at the point, so the pair keeps its momentum. The barrier's energy depends only
 on the pair's relative pose, and it is shared half to each vehicle's books, as the damper's power
@@ -993,8 +1011,8 @@ contacts. Summed over a pair, the exchange is the integrator's error alone.
 \paragraph{Against the rigid-body world.} Coasting from 5~m/s into a wall head on, the full-size
 preset rebounds from the compliant barrier with 0.19 of its approach speed; the rigid-body world's
 box keeps none of it. At $30^\circ$ to the wall, the rigid-body world's friction yaws the vehicle
-$2.8^\circ$ into the wall, where the compliant plant turns $0.4^\circ$ the other way, and turns
-$0.1^\circ$ toward the wall with its friction raised from 0.2 to 0.6. Into a parked vehicle of the
+$2.8^\circ$ into the wall, where the compliant plant turns $0.3^\circ$ the other way, and turns
+$0.5^\circ$ toward the wall with its friction raised from 0.2 to 0.6. Into a parked vehicle of the
 same preset, the compliant plant leaves the two at 1.90 and 2.88~m/s, and the rigid-body world at
 2.27 and 2.28~m/s. The compliant contact is the more elastic.
 
@@ -1002,8 +1020,8 @@ same preset, the compliant plant leaves the two at 1.90 and 2.88~m/s, and the ri
 plant-log --keep-contact}) keeps the windows with a contact or an impact, with a last column that
 counts the contacts each interval began. A learned plant can read it as a port or a modulation and
 so fit the mean response of the intervals in contact. It cannot learn where or when a contact
-happens, nor its direction: the rows carry no obstacle. Table~\ref{tab:val-contact} gives the
-gates.
+happens, nor its direction: the rows carry no obstacle. Tables~\ref{tab:val-contact}
+and~\ref{tab:val-contact-plant} give the gates.
 
 % ===========================================================================
 \section{The learned plant: \texorpdfstring{\code{cvc::ph}}{cvc::ph}}
@@ -1551,18 +1569,26 @@ gives the exact setup):
   \item The rows for \#869 and \#873 (Table~\ref{tab:val-live-world}): libcvc \code{master} at
         \code{6cc8cfdc}, where \code{physics\_dyn\_bike\_plant\_test}'s 8 tests passed. Its
         \code{physics} sources and tests are those of \code{master} at \code{09dcfa76}.
-  \item The rows for \#982, \#983 and \#987 (Tables~\ref{tab:val-spin}--\ref{tab:val-contact} and
-        the potential's row of Table~\ref{tab:val-steer}): libcvc \code{master} at
+  \item The rows for \#982, \#983 and \#987 (Tables~\ref{tab:val-spin} and~\ref{tab:val-full}, the
+        values before \#1004 in Table~\ref{tab:val-contact-plant}'s caption, and the potential's row of
+        Table~\ref{tab:val-steer}): libcvc \code{master} at
         \code{3d5c15c6}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are those
         of \#987's squash commit \code{b89992ef}. There \code{nav\_dyn\_spin\_test}'s 13 tests
         passed, \code{nav\_dyn\_ph\_full\_test}'s 8, \code{physics\_dyn\_contact\_test}'s 7,
         \code{physics\_dyn\_bike\_plant\_test}'s 10 and \code{ph\_se2\_train\_test}'s 13, and so
         did \code{nav\_dyn\_bike\_test}'s and \code{nav\_dyn\_4w\_test}'s 23 each, the defaults'
         goldens among them. Table~\ref{tab:val-live-world}'s rows measure there as they did on
-        \code{6cc8cfdc}. The fast impact of Section~\ref{sec:contact} is that commit's plant,
-        driven from Python through libcvc \#1002's binding of the new options (\code{01d77192},
-        on \code{3d5c15c6}; Section~\ref{sec:limits}), on \code{make\_sim}'s world in libcvc's
-        \code{test\_pycvc\_physics.py} with a wall across the road. The GRL-SNAM \#146 rows: \code{main} at \code{41ddf84}, where the four
+        \code{6cc8cfdc}. The fast impact before \#1004 (Section~\ref{sec:contact}) is that
+        commit's plant, driven from Python through libcvc \#1002's binding of the new options
+        (\code{01d77192}, on \code{3d5c15c6}; Section~\ref{sec:limits}), on \code{make\_sim}'s
+        world in libcvc's \code{test\_pycvc\_physics.py} with a wall across the road.
+  \item The rows for \#1004 (Tables~\ref{tab:val-contact} and~\ref{tab:val-contact-plant}, and
+        Section~\ref{sec:contact}'s fast
+        impact): its branch commit \code{a61d981c}, on \code{3d5c15c6}, where
+        \code{physics\_dyn\_contact\_test}'s 9 tests passed, and
+        \code{physics\_dyn\_bike\_plant\_test}'s 10, \code{nav\_dyn\_spin\_test}'s 13 and
+        \code{nav\_dyn\_ph\_full\_test}'s 8 still pass. \code{DynContact.Golden} is byte-identical
+        there, so GRL-SNAM's contact fixture stands. The GRL-SNAM \#146 rows: \code{main} at \code{41ddf84}, where the four
         parity files of \#146 passed all 65 of their tests.
 \end{itemize}
 
@@ -1863,19 +1889,47 @@ sum of the magnitudes of every line of the books.}{tab:val-spin}
   $10^{-9}$; $10^{-5}$ &
   balance over 168 touching pairs; barrier within $3.3\times10^{-10}$ &
   \code{2728bca8} (\#983) \\
+\code{DynContact.TheImplicitDamperOnlyDissipates} &
+  the implicit damper and friction: the rows' $\R_cv$ is $-W_d$, the solve holds, $W_d\T v_d\le0$, a
+  pair balances, and without the barrier the step never raises the kinetic energy; 846 wall and
+  638 pair poses at $h=0.01$, 0.1 and 1~s &
+  $10^{-12}$; $10^{-9}$; power $\le10^{-9}$ of the scale; $10^{-9}$; $10^{-12}$ of the kinetic energy &
+  $7.9\times10^{-16}$; $4.9\times10^{-10}$; holds; $1.8\times10^{-15}$; holds &
+  \#1004 \\
+\code{DynContact.Golden} &
+  the golden of GRL-SNAM's twin: the footprint, field and pair cases, and a plant step &
+  golden values &
+  holds &
+  \code{2728bca8} (\#983) \\
+}{Compliant contact's model (Section~\ref{sec:contact}; libcvc's
+\code{physics\_dyn\_contact\_test}), measured with libcvc \#1004's implicit damper
+(Table~\ref{tab:repro-versions}). The gates and the golden are \#983's; \#1004 adds the implicit
+damper's.}{tab:val-contact}
+
+\valtable{%
 \code{DynContactPlant.TheBooksCloseToSecondOrder} &
   the live plant's books close to second order through 5~m/s impacts: a wall head on and at
   $30^\circ$, and a parked vehicle; substep 0.01 to 0.0025~s &
   identity $10^{-8}$ of the flow; ratio in $(3,5.5)$; residual below $5\times10^{-3}$ of the flow;
   exchange below $2\times10^{-2}$ of it, falling at least 2.5 times per halving &
-  head on 4.58, 4.40, $4.0\times10^{-3}$ at 0.01; $30^\circ$: 4.15, 4.13, $3.0\times10^{-3}$;
-  parked: 4.61, 4.23, $2.5\times10^{-5}$, exchange $-237$, $-84.5$, $-20.3$~J &
+  head on 4.74, 4.20, $4.0\times10^{-3}$ at 0.01; $30^\circ$: 4.10, 4.32, $2.8\times10^{-3}$;
+  parked: 4.35, 4.19, $1.7\times10^{-5}$, exchange $-242$, $-84.4$, $-20.3$~J &
   \code{2728bca8} (\#983) \\
+\code{DynContactPlant.AFastImpactAtTheDefaultSubstep} &
+  at the default 0.01~s substep, each against the same run at 0.00125~s: the navigator driving
+  into the navigation world's wall from 20 and 30~m, raw drives into it at 8.5, 10.4 and
+  12.1~m/s, an exact wall at $30^\circ$ and a parked vehicle at 10.4~m/s &
+  identity $10^{-8}$ of the flow; contact dissipation $>0$; limiter no more than at 0.00125~s;
+  residual below $5\times10^{-3}$ of the flow; rebound within 0.02 &
+  navigator: $8.16\times10^{4}$~J ($8.19\times10^{4}$), slowest $-0.47$~m/s at both,
+  $1.3\times10^{-3}$ and $3.9\times10^{-3}$; raw: rebound 0.050, 0.040, $-0.018$, as at
+  0.00125~s, residual $4.1\times10^{-3}$, $7.9\times10^{-4}$, $1.7\times10^{-3}$ &
+  \#1004 \\
 \code{DynContactPlant.ComparesWithJoltOnImpacts} &
   the same impacts in the rigid-body world, coasting: both stop at the wall, the parked vehicle
   moves, and the heading turns little &
   normal speed below half the approach's; over 0.5~m/s; under 0.2~rad &
-  rebound 0.19 (compliant), 0.00 (rigid); at $30^\circ$, $+0.4^\circ$ and $-2.8^\circ$; parked: 1.90
+  rebound 0.19 (compliant), 0.00 (rigid); at $30^\circ$, $+0.3^\circ$ and $-2.8^\circ$; parked: 1.90
   and 2.88~m/s against 2.27 and 2.28 &
   \code{2728bca8} (\#983) \\
 \code{DynContactPlant.ReadsNavsSignedDistanceGrid} &
@@ -1886,16 +1940,14 @@ sum of the magnitudes of every line of the books.}{tab:val-spin}
 \code{DynContactPlant.StopsAtAWallInSimWorldsField} &
   in the navigation world's own field, a vehicle at 5~m/s stops at a wall 25~m on &
   $\phi$ within 1~m; front between 24 and 25.4~m &
-  $\phi=5.000$~m 5~m out, gradient $(-1,0)$; front at 24.50~m &
+  $\phi=5.000$~m 5~m out, gradient $(-1,0)$; front at 24.53~m &
   \code{2728bca8} (\#983) \\
-\code{DynContact.Golden} &
-  the golden of GRL-SNAM's twin: the footprint, field and pair cases, and a plant step &
-  golden values &
-  holds &
-  \code{2728bca8} (\#983) \\
-}{Compliant contact (Section~\ref{sec:contact}; libcvc's \code{physics\_dyn\_contact\_test}),
-measured on \code{master} at \code{3d5c15c6}, on the full-size preset. The ratios are the mean
-per-step residual's fall per halving of the substep.}{tab:val-contact}
+}{Compliant contact in the live plant (Section~\ref{sec:contact}; libcvc's
+\code{physics\_dyn\_contact\_test}),
+measured with libcvc \#1004's implicit damper on the full-size preset (Table~\ref{tab:repro-versions}).
+The ratios are the mean per-step residual's fall per halving of the substep. Before \#1004, on
+\code{3d5c15c6}, the head-on residuals per step were 3.23, 0.70 and 0.16~J, and at $30^\circ$ the
+compliant plant turned $+0.4^\circ$ ($-0.1^\circ$ at friction 0.6); the gates are unchanged.}{tab:val-contact-plant}
 
 \valtable{%
 \code{PhSe2.MatchesJaxInDouble}, \code{PhSe2.MatchesJaxInFloat} &
@@ -2137,7 +2189,7 @@ the caller builds, and reads its books per tick and since attach. GRL-SNAM's \co
 them while it drives (GRL-SNAM \#143). On \code{master} it does not expose the options of
 Section~\ref{sec:ext}, nor the slip and compliant-contact lines of the books. libcvc \#1002, open,
 binds them, with a ground height from a \code{pycvc.height\_field} and a contact field copied from
-a \code{sim\_world}. \code{pycvc} does not bind
+a \code{sim\_world}. It does not bind \code{contact\_step\_depth} (\#1004), whose default applies. \code{pycvc} does not bind
 \code{dyn\_4w\_plant} or \code{plant\_host}.
 
 \subsection{Gaps raised in review, and the work on them}
@@ -2163,9 +2215,10 @@ result.
         compliant contact to the single track's form, with a barrier energy in $H$ and the
         contact's damping and friction in $\R$, entering as an external port, against the scene
         and between vehicles (Section~\ref{sec:contact}); and the logs keep the contact windows on
-        request. The four-wheel plant has no compliant contact, a learned plant can fit a
-        contact's mean response but not where it is, and at the default substep a fast impact
-        overshoots (Section~\ref{sec:contact}).
+        request; libcvc \#1004 makes the contact's damper and friction implicit, so fast impacts
+        close their books at the default substep. The four-wheel plant has no compliant contact,
+        a learned plant can fit a contact's mean response but not where it is, and inside a thick
+        wall the navigation world's field is flat (Section~\ref{sec:contact}).
   \item \emph{Integration.} libcvc's native multi-start rollout of the navigator defaults to
         explicit Euler (\code{geom\_rollout\_params::semi\_implicit} is false), which gains energy
         at every step on the orbits of Section~\ref{sec:nav}. The work under way makes
@@ -2216,7 +2269,7 @@ and none with the live plant or the rigid-body vehicle on grip 0.9 (GRL-SNAM's
 \toprule
 \textbf{Piece} & \textbf{Version} \\
 \midrule
-libcvc & \code{master} at \code{c1f104c0}; its \code{nav}, \code{ph} and \code{physics} sources and tests are identical to the v3.7.1 tag (\code{d8ca602b}). The \#851 rows: its branch commit \code{6e7ab557}, cut from \code{master} at \code{cc8800a8}, whose \code{ph} sources and tests are those of its squash commit \code{b8ac9975}. The \#852 rows (and every \code{nav\_dyn\_bike\_test} and \code{physics\_dyn\_bike\_plant\_test} line below): its branch commit \code{1a0acc77}, on \#848's head \code{d1a2a78e}, cut from \code{master} at \code{72e4c607}, whose \code{nav} and \code{physics} sources and tests are those of its squash commit \code{140bc2d0}. The \#850, \#869 and \#873 rows, and \code{PhSe2Train.BothFormsFitTheDynamicBicycle}: \code{master} at \code{6cc8cfdc}, after v3.7.8. The \#982, \#983 and \#987 rows: \code{master} at \code{3d5c15c6}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are those of \#987's squash commit \code{b89992ef}. \\
+libcvc & \code{master} at \code{c1f104c0}; its \code{nav}, \code{ph} and \code{physics} sources and tests are identical to the v3.7.1 tag (\code{d8ca602b}). The \#851 rows: its branch commit \code{6e7ab557}, cut from \code{master} at \code{cc8800a8}, whose \code{ph} sources and tests are those of its squash commit \code{b8ac9975}. The \#852 rows (and every \code{nav\_dyn\_bike\_test} and \code{physics\_dyn\_bike\_plant\_test} line below): its branch commit \code{1a0acc77}, on \#848's head \code{d1a2a78e}, cut from \code{master} at \code{72e4c607}, whose \code{nav} and \code{physics} sources and tests are those of its squash commit \code{140bc2d0}. The \#850, \#869 and \#873 rows, and \code{PhSe2Train.BothFormsFitTheDynamicBicycle}: \code{master} at \code{6cc8cfdc}, after v3.7.8. The \#982, \#983 and \#987 rows: \code{master} at \code{3d5c15c6}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are those of \#987's squash commit \code{b89992ef}. The \#1004 rows: its branch commit \code{a61d981c}, on \code{3d5c15c6}. \\
 GRL-SNAM & \code{main} at \code{0e21085} (\code{3a38ae4} adds only this paper). The \#138 rows: \code{main} at \code{2f76ab0}, \#138's squash commit. The \#146 rows: \code{main} at \code{41ddf84}, whose twins, tests and fixtures are those of \#146's squash commit \code{b6ddb801} \\
 Operating system & Windows 11 Pro 10.0.26100, x86-64 \\
 Compiler & MSVC 19.44 (Visual Studio 2022, toolset 14.44.35207), Release \\
@@ -2438,25 +2491,39 @@ nav_dyn_ph_full_test (8 tests, on master at 3d5c15c6):
 \begin{minipage}{0.98\linewidth}
 \scriptsize
 \begin{verbatim}
-physics_dyn_contact_test (7 tests, on master at 3d5c15c6; the vehicle is the full-size preset):
+physics_dyn_contact_test (9 tests, at #1004's a61d981c; the vehicle is the full-size preset):
   165 poses in the skin: the barrier's wrench within 5.22e-10 of -dPhi/dpose
   168 touching pairs: forces and moments balance; the barrier within 3.33e-10 of -dPhi/dpose
-  wall, head on, substep 0.0100 s: ... dissipated 2.883e+04 J, exchange 0 J; mean |residual| per
-    step 3.227e+00 J, |sum| / flow 4.03e-03   (then 7.040e-01, 1.600e-01 J)
-  wall, 30 degrees, substep 0.0100 s: ... dissipated 2.448e+04 J, exchange 0 J; mean |residual|
-    per step 1.099e+00 J, |sum| / flow 3.04e-03   (then 2.651e-01, 6.413e-02 J)
-  (into a parked vehicle of the same preset: exchange -237, -84.5, -20.3 J; mean |residual|
-   4.051e-03, 8.794e-04, 2.078e-04 J; |sum| / flow 2.49e-05 at 0.01)
+  846 wall and 638 pair poses: the rows' R_c v within 7.93e-16 of -Wd; the solve within 4.94e-10;
+    the pair's forces and moments balance within 1.76e-15
+  wall, head on, substep 0.0100 s: ... dissipated 2.882e+04 J, exchange 0 J; mean |residual| per
+    step 3.446e+00 J, |sum| / flow 3.96e-03   (then 7.267e-01, 1.732e-01 J)
+  wall, 30 degrees, substep 0.0100 s: ... dissipated 2.494e+04 J, exchange 0 J; mean |residual|
+    per step 1.180e+00 J, |sum| / flow 2.80e-03   (then 2.875e-01, 6.655e-02 J)
+  (into a parked vehicle of the same preset: exchange -242, -84.4, -20.3 J; mean |residual|
+   3.775e-03, 8.677e-04, 2.072e-04 J; |sum| / flow 1.71e-05 at 0.01)
+  the navigator from -20 m, at 7.77 m/s: slowest -0.47 m/s (-0.47 at 0.00125 s); contact_dissipated
+    8.155e+04 J (8.191e+04), limiter 0 J, |residual| / flow 1.33e-03 (2.58e-04)
+  the navigator from -30 m, at 7.99 m/s: slowest -0.47 m/s (-0.48 at 0.00125 s); contact_dissipated
+    8.422e+04 J (8.497e+04), limiter 0 J, |residual| / flow 3.85e-03 (1.69e-04)
+  sim_world's wall, head on at 8.45 m/s: rebound 0.050 (0.050 at 0.00125 s), dissipated 9.427e+04 J
+    (9.51e+04), limiter 0 J (0); |residual| / flow 4.14e-03 (1.07e-04)
+  (at 10.36 and 12.13 m/s: rebound 0.040 (0.039) and -0.018 (-0.018), dissipated 1.446e+05 and
+   1.996e+05 J, |residual| / flow 7.94e-04 and 1.74e-03; a wall at 30 degrees at 10.40 m/s:
+   rebound 0.088 (0.090), limiter -1.53e+04 J (-1.83e+04), 3.26e-03; into the parked vehicle at
+   10.38 m/s: rebound -0.443 (-0.444), 1.07e-05)
   impact             plant   v before   v after   rebound    heading  other after
   wall, head on      dyn        4.80      0.89      0.19     -0.0 deg      0.00 m/s
   wall, head on      Jolt       4.56      0.01      0.00     -0.0 deg      0.00 m/s
-  wall, 30 degrees   dyn        4.70      0.91      0.19      0.4 deg      0.00 m/s
-  wall, 30 degrees   dyn .6     4.70      0.68      0.14     -0.1 deg      0.00 m/s
+  wall, 30 degrees   dyn        4.70      0.90      0.19      0.3 deg      0.00 m/s
+  wall, 30 degrees   dyn .6     4.70      0.72      0.15     -0.5 deg      0.00 m/s
   wall, 30 degrees   Jolt       4.46      0.04      0.01     -2.8 deg      0.00 m/s
   (into the parked vehicle: dyn 5.06 -> 1.90, the other 2.88 m/s; Jolt 4.82 -> 2.27, the other 2.28)
   the grid's field against the wall's: worst 9.54e-07
   sim_world's field 5 m from the wall: phi 5.000 m, gradient (-1.000, 0.000)
-  (and the vehicle's front reached x = 24.50 m, the wall at 25 m)
+  (and the vehicle's front reached x = 24.53 m, the wall at 25 m; slowest -0.50 m/s)
+  (on master at 3d5c15c6, before #1004, 7 tests: head on 3.227e+00, 7.040e-01, 1.600e-01 J;
+   30 degrees 1.099e+00, 2.651e-01, 6.413e-02 J; heading 0.4 and -0.1 deg; front at 24.50 m)
 physics_dyn_bike_plant_test (10 tests, on master at 3d5c15c6; the #982 and #987 lines):
   (the full-size preset on mu 0.2 with wheel spin: rear slip ratio up to 7.00, front down to -0.99;
    slip 2.38e+06 J, residual 6.82e-05 of the flow)
@@ -2517,7 +2584,7 @@ The live plant~\eqref{eq:live-books} & \code{cvc::physics::dyn\_bike\_plant}; \c
 The four-wheel form~\eqref{eq:4w}--\eqref{eq:4w-books}, Sec.~\ref{sec:four-wheel} & \code{dyn4\_ph\_hamiltonian}, \code{dyn4\_ph\_J}, \code{dyn4\_ph\_R}, \code{dyn4\_ph\_G}, \code{dyn4\_ph\_lever}, \code{dyn4\_ph\_grade}, \code{dyn4\_ph\_rhs}, \code{dyn4\_ph\_rates\_at}; \code{dyn4\_plant\_books} (\code{nav/detail/dyn\_4w.h}, \#850) & --- (the plant: \code{grl\_snam.dyn4}) \\
 Wheel spin~\eqref{eq:spin-tire}--\eqref{eq:spin-balance}, Sec.~\ref{sec:spin} & \code{dyn\_spin\_plant}, \code{dyn\_spin\_ph\_J}, \code{dyn\_spin\_ph\_R}, \code{dyn\_spin\_ph\_G}, \code{dyn\_spin\_ph\_rates\_at}, \code{dyn\_spin\_plant\_books}; \code{dyn4\_spin\_plant}, \code{dyn4\_spin\_plant\_books} (\#982) & \code{dyn\_bike.dyn\_spin\_plant}, \code{dyn\_spin\_plant\_books}; \code{dyn4.dyn4\_spin\_plant}, \code{dyn4\_spin\_plant\_books} (\#146) \\
 The full form and the side slope~\eqref{eq:plant-ground}, Sec.~\ref{sec:full} & \code{dyn\_ph\_T}, \code{dyn\_ph\_J\_full}, \code{dyn\_ph\_rhs\_full}, \code{dyn\_plant\_ground}, \code{dyn\_plant\_books\_ground}; \code{dyn4\_ph\_J\_full}, \code{dyn4\_ph\_rhs\_full} (\#987) & \code{dyn\_bike.dyn\_ph\_rhs\_full}, \code{dyn\_plant\_ground}, \code{dyn\_plant\_books\_ground} (\#146); four wheels: --- \\
-Compliant contact~\eqref{eq:contact}, Sec.~\ref{sec:contact} & \code{nav/detail/dyn\_contact.h}: \code{dyn\_contact\_field}, \code{dyn\_contact\_pair}; \code{dyn\_bike\_plant::sdf\_field}; \code{cut\_flights(..., keep\_contact)} (\#983) & \code{grl\_snam.dyn\_contact}; \code{dyn\_plant(..., wrench=...)} (\#146) \\
+Compliant contact~\eqref{eq:contact}, Sec.~\ref{sec:contact} & \code{nav/detail/dyn\_contact.h}: \code{dyn\_contact\_field}, \code{dyn\_contact\_pair}; \code{dyn\_bike\_plant::sdf\_field}; \code{cut\_flights(..., keep\_contact)} (\#983); the implicit step \code{dyn\_contact\_implicit} and \code{dyn\_bike\_plant\_options::contact\_step\_depth} (\#1004) & \code{grl\_snam.dyn\_contact}; \code{dyn\_plant(..., wrench=...)} (\#146) \\
 External force through the controller & \code{diff::ext\_in}, \code{bike\_control}; \code{nav/ext\_rollout.h} & \code{grl\_snam.ext\_rollout}, \code{material\_ext} \\
 \bottomrule
 \end{tabularx}
