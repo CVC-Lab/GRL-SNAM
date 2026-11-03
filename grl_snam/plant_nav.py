@@ -61,7 +61,11 @@ class PlantNavigator:
     "pessimistic") and ``ttl_s``, how long a dynamic mark lasts. ``weights`` (a ``.cvcnav``,
     e.g. one trained through Jolt) is the policy the world drives instead of ``model``, which
     then only frames the run (``meta``). ``material`` (a
-    :class:`~grl_snam.material.MaterialGrid`) attaches its forces and witness gate."""
+    :class:`~grl_snam.material.MaterialGrid`) attaches its forces and witness gate.
+    ``risk_governor`` (True, or a dict of ``vmin_mps``, ``onset``, ``lookahead_m`` and ``probes``;
+    default 0 m/s, 0.3, 10 m, 3) switches on libcvc's risk governor: the material's risk slows the
+    vehicle. Its forces alone steer it off risky ground but do not slow a vehicle at its top speed
+    driving square at a hazard."""
 
     def __init__(
         self,
@@ -85,6 +89,7 @@ class PlantNavigator:
         unknown: str = "optimistic",
         ttl_s: float = 4.0,
         material=None,
+        risk_governor=False,
     ):
         if not _native.HAS_SIM_WORLD or not _native.HAS_PLANT:
             raise RuntimeError(
@@ -122,6 +127,7 @@ class PlantNavigator:
         self.unknown = str(unknown)
         self.ttl_s = float(ttl_s)
         self.material = material
+        self.risk_governor = risk_governor
         self.plant = None
         self.world = None
         self._routes = None
@@ -229,6 +235,13 @@ class PlantNavigator:
         self.world.set_plant(self.plant)
         if self.material is not None:
             self.world.set_material_grid(self.material)
+        if self.risk_governor:
+            g = {"vmin_mps": 0.0, "onset": 0.3, "lookahead_m": 10.0, "probes": 3}
+            if isinstance(self.risk_governor, dict):
+                g.update(self.risk_governor)
+            self.world.set_risk_governor(
+                True, g["vmin_mps"] * self.S, g["onset"], g["lookahead_m"] * self.S, g["probes"]
+            )
         if _native.HAS_SIM_WORLD_NAVSTATS:
             # The world's own collector: it counts the plant's building and vehicle contacts.
             self.world.begin_nav_stats(scene_id="capture", contact_r=0.0)

@@ -23,7 +23,13 @@ kernels). The libcvc twin of the swarm story is
 libcvc's sim_world instead, its agents driving that plant with the material's forces and
 witness gate attached (``NativeSimWorld.set_material_grid``). The native world has no route
 spine, so the scenario story's planner surcharge does not apply there: its agent detours on
-the forces and the gate alone, as the swarm's do.
+the forces and the gate alone, as the swarm's do. Those forces steer a vehicle off risky ground
+but slow it only by what they take from its goal pull's surplus over its top speed, which on a
+physics plant is all of it: the dynamic vehicle driving square at the water crosses it at its top
+speed, its run the same to the millimetre as without material. So on a physics plant libcvc's risk
+governor is on as well, where the running pycvc has it (``governor``), and the material's risk
+slows the vehicles there. The kinematic bicycle keeps the forces alone (the Python stories' drive)
+unless ``governor`` is True: it creeps through the water under the governor rather than stopping.
 """
 
 from __future__ import annotations
@@ -101,9 +107,23 @@ def _render(path, title, risk, hard, occ, runs, n=N):
     return path
 
 
-def _plant_run(truth, material, start, goal, plant, ground_mu, max_steps):
+def _governed(governor, plant):
+    """Whether a run on ``plant`` uses libcvc's risk governor: ``governor`` if given, else on a
+    physics plant (dynamic, Jolt) where the running pycvc has it."""
+    from grl_snam import nav_native
+
+    if governor is not None:
+        return bool(governor)
+    return nav_native.HAS_RISK_GOVERNOR and not str(plant).startswith("kinematic")
+
+
+GOVERNOR_LOOKAHEAD_M = 10.0
+
+
+def _plant_run(truth, material, start, goal, plant, ground_mu, max_steps, governor=None):
     """One agent from ``start`` to ``goal`` on ``plant`` (libcvc's sim_world, the map known),
-    with ``material`` attached; returns its positions (N, 2) and whether it arrived."""
+    with ``material`` attached and the risk governor per :func:`_governed`; returns its
+    positions (N, 2) and whether it arrived."""
     import grl_snam.sdf_nav as sdf_nav
     from grl_snam.plant_nav import PlantNavigator
 
@@ -113,17 +133,18 @@ def _plant_run(truth, material, start, goal, plant, ground_mu, max_steps):
     nav = PlantNavigator(
         field, _model(), meta, truth, plant, reach_tol=0.15, ground_mu=ground_mu,
         material=material,
+        risk_governor={"lookahead_m": GOVERNOR_LOOKAHEAD_M} if _governed(governor, plant) else False,
     )  # fmt: skip
     nav.start(start, goal)
     ms, _, _, _ = nav.drive_to_goal(max_steps=max_steps)
     return np.array([[m.x, m.y] for m in ms]), bool(ms[-1].reached)
 
 
-def scenario_story(out_dir, plant=None, ground_mu=0.9):
+def scenario_story(out_dir, plant=None, ground_mu=0.9, governor=None):
     """Fog scenario: mud field + hazard strip with a gap; planner + forces. On ``plant`` one
-    agent on libcvc's sim_world drives it with the forces and the gate."""
-    risk, hard, plain, mat = scenario_runs(plant, ground_mu)
-    on = "" if plant is None else f" on {plant}, mu {ground_mu}"
+    agent on libcvc's sim_world drives it with the forces, the gate and the governor."""
+    risk, hard, plain, mat = scenario_runs(plant, ground_mu, governor)
+    on = "" if plant is None else f" on {plant}, mu {ground_mu}" + _gov_note(governor, plant)
     print("scenario (belief + planner + drive):" if plant is None else f"scenario{on}:")
     print("                       material OFF   material ON")
     print(f"  waypoint reached     {plain[1]:>9}      {mat[1]:>9}")
@@ -145,7 +166,11 @@ def scenario_story(out_dir, plant=None, ground_mu=0.9):
     return mat[3] == 0
 
 
-def scenario_runs(plant=None, ground_mu=0.9):
+def _gov_note(governor, plant):
+    return ", risk governor on" if _governed(governor, plant) else ", forces only"
+
+
+def scenario_runs(plant=None, ground_mu=0.9, governor=None):
     """The scenario story's world and both runs: ``(risk, hard, plain, mat)``, each run
     ``(positions (N, 2), waypoints reached, mud exposure, hazard-cell steps)``. On ``plant``
     the agent is libcvc's sim_world driving that plant (see :func:`_plant_run`)."""
@@ -165,7 +190,7 @@ def scenario_runs(plant=None, ground_mu=0.9):
     def run(material):
         if plant is not None:
             pts, arrived = _plant_run(
-                truth, material, (-75.0, 0.0), (75.0, 0.0), plant, ground_mu, 4000
+                truth, material, (-75.0, 0.0), (75.0, 0.0), plant, ground_mu, 4000, governor
             )
             return pts, int(arrived), *_exposure(pts)
         sc = FogScenario(
@@ -196,13 +221,15 @@ def scenario_runs(plant=None, ground_mu=0.9):
     return risk, hard, plain, mat
 
 
-def swarm_story(out_dir, plant=None, ground_mu=0.9):
+def swarm_story(out_dir, plant=None, ground_mu=0.9, governor=None):
     """Reactive swarm (no planner): forces + gate detour a lane of vehicles. On ``plant`` the
     same swarm runs on libcvc's sim_world and drives that plant's vehicles."""
-    risk, hard, plain, mat = swarm_runs(plant=plant, ground_mu=ground_mu)
+    risk, hard, plain, mat = swarm_runs(plant=plant, ground_mu=ground_mu, governor=governor)
     n = risk.shape[0]
     print(
-        "swarm (reactive, no planner):" if plant is None else f"swarm on {plant}, mu {ground_mu}:"
+        "swarm (reactive, no planner):"
+        if plant is None
+        else f"swarm on {plant}, mu {ground_mu}{_gov_note(governor, plant)}:"
     )
     print("                       material OFF   material ON")
     print(f"  agents reached       {plain[1]:>7}/6      {mat[1]:>7}/6")
@@ -224,7 +251,7 @@ def swarm_story(out_dir, plant=None, ground_mu=0.9):
     return mat[3] == 0
 
 
-def swarm_runs(steps=700, plant=None, ground_mu=0.9):
+def swarm_runs(steps=700, plant=None, ground_mu=0.9, governor=None):
     """The swarm story's world and both runs, as :func:`scenario_runs` gives them (reached is
     the agents that arrived, of 6). On ``plant`` the swarm runs on libcvc's sim_world."""
     import torch
@@ -287,6 +314,8 @@ def swarm_runs(steps=700, plant=None, ground_mu=0.9):
         w = nav_native.sim_world_from_swarm(
             s, path, truth=truth, freeze_sense=True, plant=pl, material=material
         )
+        if _governed(governor, plant):
+            w.set_risk_governor(True, 0.0, 0.3, GOVERNOR_LOOKAHEAD_M * story.scale, 3)
         pts = []
         exposure = 0.0
         hazard_hits = 0
@@ -310,12 +339,12 @@ def swarm_runs(steps=700, plant=None, ground_mu=0.9):
     return risk, hard, plain, mat
 
 
-def main(out_dir: str = "material_demo", plant=None, ground_mu: float = 0.9) -> int:
+def main(out_dir: str = "material_demo", plant=None, ground_mu: float = 0.9, governor=None) -> int:
     import os
 
     os.makedirs(out_dir, exist_ok=True)
-    ok1 = scenario_story(out_dir, plant, ground_mu)
-    ok2 = swarm_story(out_dir, plant, ground_mu)
+    ok1 = scenario_story(out_dir, plant, ground_mu, governor)
+    ok2 = swarm_story(out_dir, plant, ground_mu, governor)
     if plant is None:
         print("done — pure Python (set GRL_SNAM_MATERIAL_BACKEND=native for the C++ kernels).")
     else:

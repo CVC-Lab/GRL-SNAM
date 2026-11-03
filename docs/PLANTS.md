@@ -102,8 +102,10 @@ On a plant:
 - **`<out>.json`** records each leg: how it ended (`reached`, `stalled`, `out of ticks`), ticks,
   closest approach, penetration, minimum clearance, maximum sideslip and tire use, ticks past
   the peak, contacts and the final books, and the sim_world's own episode record (`nav_stats`).
-  Its `building_contacts` counts every contact of the chassis with a static body, the ground
-  box included.
+  Its `building_contacts` counts the contacts the chassis starts with a building or another
+  static body. The ground is not one where the pycvc's `nav_plant` takes `ground_bodies`
+  (libcvc's `nav_plant_options::ground_bodies`); with an older pycvc a chassis scraping the
+  ground counts too.
 
 ## `pipeline`
 
@@ -188,6 +190,18 @@ spine, so the scenario story's planner surcharge, which routes the Python agent 
 gap, does not apply: the agent meets the water strip head on. The demo prints the same table and
 writes the same two PNGs, and exits 1 when material leaves a vehicle in hazard cells, as without
 a plant.
+
+The material's forces steer a vehicle off risky ground, but they slow it only by what they take
+from its goal pull's surplus over its top speed. A physics plant's top speed is under the
+policy's cruise, so the surplus is all of it: the dynamic RoboRacer meets the water at its top
+speed of 10 m/s, and the water's push (half the pull's surplus at most) leaves its command,
+and so its run, exactly as without material. Head on, the push has no sideways part to steer it
+either. What slows a vehicle on risky ground is libcvc's risk governor
+(`sim_world::set_risk_governor`, `NativeSimWorld.set_risk_governor`, `PlantNavigator(...,
+risk_governor=True)`): the risk caps its speed, down to a stop at risk 1, looking 10 m ahead. The
+demo turns it on for the dynamic and Jolt plants where the running pycvc has it
+(`nav_native.HAS_RISK_GOVERNOR`); `--no-governor` shows the forces alone, `--governor` puts it on
+the kinematic bicycle too.
 
 ## The benches
 
@@ -290,13 +304,20 @@ the vehicle inside the truth: a moving vehicle drives onto it for 3 ticks on Jol
 dynamic plant. The physics plants take two to three times the bicycle's ticks (blocker: 357 on
 the bicycle, 826 dynamic, 893 Jolt).
 
-**The material demo** (RoboRacers, `material-demo --plant`):
+**The material demo** (RoboRacers, `material-demo --plant`, material on; without material every
+run crosses the water):
 
-| | swarm, material on | scenario, material on |
+| | swarm | scenario |
 |---|---|---|
-| Jolt | no hazard or mud cells; 2 of 6 arrive (6 of 6 without material, through the water) | no hazard cells, but it never reaches the goal |
-| dynamic | no hazard cells; 4 of 6 arrive | 14 hazard steps, the same run as without material |
+| Jolt, governor | no hazard or mud cells; 3 of 6 arrive | no hazard cells, mud exposure 42.7; never reaches the goal |
+| Jolt, forces only | no hazard or mud cells; 2 of 6 arrive | no hazard cells, mud exposure 119.7; never reaches the goal |
+| dynamic, governor | no hazard cells; 3 of 6 arrive | no hazard cells; never reaches the goal |
+| dynamic, forces only | no hazard cells; 4 of 6 arrive | 14 hazard steps: the run without material, to the millimetre |
+| kinematic, forces only | no hazard cells; 6 of 6 arrive | 8 hazard steps, as without material; arrives |
+| kinematic, governor | no hazard cells; 6 of 6 arrive | 62 hazard steps, creeping through the water; arrives |
 
-Off the goal line the forces and the gate keep both physics plants' vehicles out of the hazards.
-Square across it, without the planner, they do not hold the dynamic plant's vehicle out, and do
-not change its run at all.
+Off the goal line the forces and the gate keep every vehicle out of the hazards. Square across
+it, with no planner to find the dry gap, the forces alone do not keep the dynamic vehicle out;
+the governor stops both physics vehicles short of the water, a dead end the policy cannot leave.
+The kinematic bicycle creeps on through the water under the governor instead, so it stays off
+there by default.
