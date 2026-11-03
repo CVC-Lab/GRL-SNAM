@@ -8,8 +8,8 @@ Vehicles on Austin are Humvees at their real size (4.7 m; the `vehicle-humvee` p
 else a box that size).
 
 ```bash
-python -m grl_snam.ariadne --list
-python -m grl_snam.ariadne <port> --help
+grl-snam ariadne --list               # or: python -m grl_snam.ariadne --list
+grl-snam ariadne <port> --help
 ```
 
 Every port takes `--offscreen` (GL, no window), `--headless` (no GL: the readouts only),
@@ -68,23 +68,27 @@ python -m grl_snam.ariadne squad finale-rendezvous   # finale act one
 python -m grl_snam.ariadne squad finale-pursuit      # finale act two
 python -m grl_snam.ariadne squad convoy
 python -m grl_snam.ariadne squad pursuit
+python -m grl_snam.ariadne squad convoy --plant jolt:humvee   # recorded on a vehicle plant
 ```
 
 Records the run into `traces/<run>` when it is missing (minutes; as `finale_record`,
 `convoy_record`, `pursuit_record` do), then replays the recorded poses in 3-D Austin: a Humvee per
 agent seated at its recorded heading, a pole in its colour, its goal (a pyramid) and its track.
+`--plant` records on libcvc's sim_world and that plant (`kinematic`, `jolt:humvee`,
+`dynamic:humvee`; [docs/PLANTS.md](../../docs/PLANTS.md)) into `traces/<run>-<plant>`.
 The panels are the transport, the captions, a row per agent and the first agent's HUD.
 
 ### `fleet`: a live squad of Humvees on Austin
 
 ```bash
 python -m grl_snam.ariadne fleet                      # GRL-SNAM's torch squad
-python -m grl_snam.ariadne fleet --plant humvee       # libcvc's sim_world, Jolt Humvees
-python -m grl_snam.ariadne fleet --plant kinematic    # libcvc's sim_world, nav's bicycle
+python -m grl_snam.ariadne fleet --plant jolt:humvee     # libcvc's sim_world, Jolt Humvees
+python -m grl_snam.ariadne fleet --plant dynamic:humvee  # the dynamic single-track Humvee
+python -m grl_snam.ariadne fleet --plant kinematic       # libcvc's sim_world, nav's bicycle
 ```
 
 `grl_snam.squad.Squad` run live, each agent starting blind; the Plant combo switches the runtime
-and New goals deals new ones. Measured with 4 agents over 18 s: torch moves all four (~10 m/s),
+(`dynamic` needs a pycvc with `dyn_bike_plant`) and New goals deals new ones. Measured with 4 agents over 18 s: torch moves all four (~10 m/s),
 kinematic all four (14-18 m/s), Jolt Humvees leave two stuck in wall-escape mode (the navigator
 is sized for the story's bodies, not a 4.7 m Humvee), so torch is the default.
 
@@ -113,7 +117,7 @@ draws; each shows a picture (drawn with numpy, no matplotlib) and the off/on num
 | `convoy_record` | traces only | `squad convoy` |
 | `pursuit_record` | traces only | `squad pursuit` |
 | `squad_record` / `squad_capture` | traces, mp4 | `squad` (Austin runs); `fleet` (live) |
-| `Squad(plant=...)` | library, tests | `fleet --plant humvee / kinematic` |
+| `Squad(plant=...)`, `--plant` on the recorders | library, `capture --plant` | `fleet --plant jolt:humvee / dynamic:humvee / kinematic`, `squad --plant` |
 | `grl-snam material-demo` | two PNGs | `material` |
 | `grl-snam capture drive / multigoal` | mp4 | covered by `live austin-freedrive` / `austin-learned` (the same navigator, live) |
 | `grl-snam pipeline`, `build-sdf`, `train` | batch | not ported: no picture of their own |

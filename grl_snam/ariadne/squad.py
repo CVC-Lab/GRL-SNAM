@@ -8,7 +8,9 @@
 
 Each run is recorded once, as ``grl_snam.tools.finale_record`` / ``convoy_record`` /
 ``pursuit_record`` record it, into ``--out`` (default ``traces/<run>``) when it is missing or
-``--record`` asks; that needs the Austin bundle (``scene-austin-south``) and takes minutes. The
+``--record`` asks; that needs the Austin bundle (``scene-austin-south``) and takes minutes.
+``--plant`` records it on libcvc's sim_world and that plant (``kinematic``, ``jolt:humvee``,
+``dynamic:humvee``; docs/PLANTS.md) into ``traces/<run>-<plant>``. The
 replay draws the recorded poses, never re-simulating: Austin's terrain and buildings, a Humvee
 at its real size per agent (seated on the terrain at its recorded heading) with a pole in its
 colour so it can be found from afar, its goal (a pyramid, moving in a chase) and its track.
@@ -43,10 +45,17 @@ def _args(p):
     p.add_argument("--out", default=None, help="the recording's directory (default traces/<run>)")
     p.add_argument("--record", action="store_true", help="record again even if it exists")
     p.add_argument("--bundle", default=None, help="the Austin scene bundle (default: installed)")
+    p.add_argument(
+        "--plant",
+        default=None,
+        help="record on libcvc's sim_world and this plant (kinematic, jolt[:humvee], "
+        "dynamic[:humvee]; docs/PLANTS.md) instead of the Python squad",
+    )
 
 
-def ensure_recording(run, out, bundle, *, record_again=False):
-    """The run's directory, recorded first when it has no squad.json or ``record_again``."""
+def ensure_recording(run, out, bundle, *, record_again=False, plant=None):
+    """The run's directory, recorded first (on ``plant``, if given) when it has no squad.json or
+    ``record_again``."""
     import importlib
 
     out = Path(out)
@@ -57,7 +66,7 @@ def ensure_recording(run, out, bundle, *, record_again=False):
             )
         module, fn, _ = RUNS[run]
         print(f"grl_snam squad: recording {run} into {out} (minutes) ...", flush=True)
-        getattr(importlib.import_module(module), fn)(str(bundle), out)
+        getattr(importlib.import_module(module), fn)(str(bundle), out, plant=plant)
     return out
 
 
@@ -92,8 +101,13 @@ def _pyramid(size):
 def main(argv=None) -> int:
     args = _host.parse(argv, _args)
     bundle = _host.bundle_or_none(args.bundle)
+    tag = args.run if not args.plant else f"{args.run}-{args.plant.replace(':', '-')}"
     out = ensure_recording(
-        args.run, args.out or Path("traces") / args.run, bundle, record_again=args.record
+        args.run,
+        args.out or Path("traces") / tag,
+        bundle,
+        record_again=args.record,
+        plant=args.plant,
     )
     spec, traces = load(out)
     keys = [a["key"] for a in spec["agents"]]

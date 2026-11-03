@@ -3,8 +3,8 @@
 #
 #   python -m grl_snam.ariadne fleet
 #
-# - Fleet: the plant (GRL-SNAM's own torch squad, Jolt Humvees or nav's kinematic bicycle in
-#   libcvc's sim_world), how many agents, ticks per frame, pause, New goals and Restart;
+# - Fleet: the plant (GRL-SNAM's own torch squad; or libcvc's sim_world with Jolt Humvees, the
+#   dynamic single-track Humvee, or nav's kinematic bicycle), how many agents, ticks per frame, pause, New goals and Restart;
 # - Agents: a row per agent (fleet.py writes the `agents` table) and the run's readouts;
 # - the scene: Austin and the Humvees under a soft afternoon light.
 
@@ -39,8 +39,8 @@ windows:
     children:
       - combo: Plant
         bind: fleet.plant
-        options: [Torch (GRL-SNAM), Jolt Humvees, Kinematic (sim_world)]
-        values: [torch, humvee, kinematic]
+        options: [Torch (GRL-SNAM), Jolt Humvees, Dynamic Humvees, Kinematic (sim_world)]
+        values: [torch, "jolt:humvee", "dynamic:humvee", kinematic]
       - slider_int: Agents
         bind: fleet.agents
         lo: 1

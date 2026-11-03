@@ -1,8 +1,9 @@
 """A live squad of Humvees on real Austin, on the plant you pick, in an Ariadne document.
 
     python -m grl_snam.ariadne fleet                       # Jolt Humvees when pycvc has them
+    python -m grl_snam.ariadne fleet --plant jolt:humvee   # Jolt Humvees, in libcvc's sim_world
+    python -m grl_snam.ariadne fleet --plant dynamic:humvee  # libcvc's dynamic single-track Humvee
     python -m grl_snam.ariadne fleet --plant kinematic     # nav's bicycle, in libcvc's sim_world
-    python -m grl_snam.ariadne fleet --plant torch         # GRL-SNAM's own path (the one that trains)
     python -m grl_snam.ariadne fleet --agents 8 --offscreen --frames 300 --png fleet.png
 
 Unlike the recorded players this runs the squad live: ``grl_snam.squad.Squad`` on Austin's
@@ -11,9 +12,13 @@ goal across the city. ``--plant`` (and the document's Plant combo) picks the run
 
 - ``torch`` (the default): GRL-SNAM's Python squad, one FogScenario per agent, the path that
   trains;
-- ``humvee``: libcvc's sim_world with each agent driving a Jolt-simulated Humvee
-  (``Squad(plant="humvee")``: engine, tyres, the buildings as boxes);
+- ``jolt:humvee``: libcvc's sim_world with each agent driving a Jolt-simulated Humvee
+  (``Squad(plant="jolt:humvee")``: engine, tyres, the buildings as boxes);
+- ``dynamic:humvee``: the same sim_world on libcvc's dynamic single-track vehicle (Pacejka tyres,
+  load transfer; ``pycvc.dyn_bike_plant``, when the installed pycvc has it);
 - ``kinematic``: the same sim_world on nav's kinematic bicycle.
+
+docs/PLANTS.md describes the plants.
 
 Measured on Austin with 4 agents over 18 s of sim: torch moves all four at about 10 m/s; the
 kinematic sim_world moves all four but at 14-18 m/s (the story's vmax, 0.9 normalized); on Jolt
@@ -37,7 +42,7 @@ import numpy as np
 
 from grl_snam.ariadne import _host
 
-PLANTS = ("torch", "humvee", "kinematic")
+PLANTS = ("torch", "jolt:humvee", "dynamic:humvee", "kinematic")
 
 
 def _args(p):
@@ -113,7 +118,7 @@ class Fleet:
 
 def main(argv=None) -> int:
     args = _host.parse(argv, _args)
-    from grl_snam.nav_native import HAS_PLANT
+    from grl_snam.nav_native import HAS_DYN_PLANT, HAS_PLANT
     from grl_snam.tools.austin import austin_story, occupancy
 
     bundle = _host.bundle_or_none(args.bundle)
@@ -142,8 +147,10 @@ def main(argv=None) -> int:
     def build():
         n = max(1, host.get_int("fleet.agents", args.agents))
         kind = host.get("fleet.plant", plant)
-        if kind != "torch" and not HAS_PLANT:
-            kind = "torch"
+        if (kind != "torch" and not HAS_PLANT) or (
+            kind.startswith("dynamic") and not HAS_DYN_PLANT
+        ):
+            kind = "torch"  # this pycvc lacks that plant
         st["fleet"] = Fleet(occ, bounds, story, model, n, kind, rng)
         if drawn:
             for name in st["nodes"]:

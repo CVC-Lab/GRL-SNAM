@@ -36,6 +36,15 @@ def test_the_list(capsys):
     assert ports_main(["nope"]) == 2
 
 
+def test_the_cli_command():
+    from click.testing import CliRunner
+
+    from grl_snam.cli import main
+
+    r = CliRunner().invoke(main, ["ariadne", "--list"])
+    assert r.exit_code == 0 and "fleet" in r.output
+
+
 def test_fog_records_then_replays(tmp_path):
     rc = ports_main(
         [
