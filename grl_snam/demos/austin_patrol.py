@@ -11,12 +11,12 @@ import math
 import os
 
 from grl_snam.demos._common import (
-    bundle_bounds,
     bundle_occupancy,
     current_host,
     default_scene_bundle,
     vehicle_box_mesh,
 )
+from grl_snam.tools.sdf import terrain_bounds
 
 _S: dict = {}
 
@@ -37,7 +37,7 @@ def setup() -> None:
     lab = host.make_lab()
     lab.set_axis_visible(False)
     sample = load_geometry_bundle(lab, bundle)
-    bounds = bundle_bounds(bundle)
+    bounds = terrain_bounds(bundle)
     print("grl_snam austin_patrol: building occupancy + A* patrol route...", flush=True)
     occ = bundle_occupancy(bundle, bounds, 512, 512, inflate_m=12.0)
     r = 430.0

@@ -18,7 +18,6 @@ import torch
 import grl_snam.sdf_nav as sdf_nav
 from grl_snam.demos._common import (
     SimPacer,
-    bundle_bounds,
     bundle_occupancy,
     current_host,
     default_nav_weights_pt,
@@ -26,6 +25,7 @@ from grl_snam.demos._common import (
     vehicle_box_mesh,
 )
 from grl_snam.metrics import NavMetrics
+from grl_snam.tools.sdf import terrain_bounds
 
 # Sim playback rate relative to the world clock: 1.0 == real time, matching the
 # native cvc::nav demos. Raise for a faster pace without re-coupling to framerate.
@@ -68,7 +68,7 @@ def setup() -> None:
     lab = host.make_lab()
     lab.set_axis_visible(False)
     sample = load_geometry_bundle(lab, bundle)
-    bounds = bundle_bounds(bundle)
+    bounds = terrain_bounds(bundle)
     mnx, mny, mxx, mxy = bounds
     print("grl_snam austin_learned: occupancy + SDF + route...", flush=True)
     occ_r = bundle_occupancy(bundle, bounds, 512, 512, inflate_m=12.0)

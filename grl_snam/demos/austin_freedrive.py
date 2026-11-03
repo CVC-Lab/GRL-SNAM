@@ -28,7 +28,6 @@ import torch
 import grl_snam.sdf_nav as sdf_nav
 from grl_snam.demos._common import (
     SimPacer,
-    bundle_bounds,
     bundle_occupancy,
     current_host,
     default_nav_weights_pt,
@@ -36,6 +35,7 @@ from grl_snam.demos._common import (
     vehicle_box_mesh,
 )
 from grl_snam.nav import SdfNavigator
+from grl_snam.tools.sdf import terrain_bounds
 
 # Sim playback rate relative to the world clock: 1.0 == real time (the drive takes
 # as many wall seconds as it does sim seconds), matching the native cvc::nav demos.
@@ -71,7 +71,7 @@ def setup() -> None:
     lab = host.make_lab()
     lab.set_axis_visible(False)
     sample = load_geometry_bundle(lab, bundle)
-    bounds = bundle_bounds(bundle)
+    bounds = terrain_bounds(bundle)
     sdf_npz = os.environ.get("GRL_SNAM_SDF", "")
     if sdf_npz and os.path.exists(sdf_npz):
         d = np.load(sdf_npz)

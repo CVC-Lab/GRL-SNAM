@@ -102,19 +102,6 @@ def default_scene_bundle():
     )
 
 
-def bundle_bounds(bundle_dir):
-    """The scene bundle's terrain extent ``(min_x, min_y, max_x, max_y)``, read by libcvc's C++
-    loader (``pycvc.load_city_bundle``). pycvc_gl.scenes.terrain_grid, which parsed terrain.json
-    in Python, is retired in current libcvc; it is the fallback for an older pycvc_gl."""
-    import pycvc
-
-    if hasattr(pycvc, "load_city_bundle"):
-        return tuple(pycvc.load_city_bundle(str(bundle_dir), buildings=False).bounds2d())
-    from pycvc_gl.scenes import terrain_grid  # pragma: no cover - a pycvc_gl before the loader
-
-    return tuple(terrain_grid(os.path.join(str(bundle_dir), "terrain.json"))[1])
-
-
 def bundle_occupancy(bundle_dir, bounds, nx, ny, *, inflate_m=0.0):
     """The bundle's buildings as a boolean (ny, nx) occupancy grid over ``bounds``, row 0 at min
     y: libcvc's nav rasterizer (``pycvc.nav_world_rasterize``, no VTK) when the installed pycvc
