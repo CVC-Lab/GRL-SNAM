@@ -42,9 +42,12 @@ def _open(h=40, w=40, risk=0.0, clear=10.0):
 def test_direction_table_is_exact_and_matches_math():
     assert len(_DIRS_16) == 16
     assert _DIRS_16[0] == (0.0, 1.0)
+    # The table is the bit contract (shared verbatim with the C++ twin, so libm stays out of it):
+    # it holds what one libm's sin/cos gave. Another libm (MSVC's CRT) may round the last place
+    # the other way (sin(pi/4): ...475 vs ...476), so it matches math to within that place.
     for k, (dr, dc) in enumerate(_DIRS_16):
         a = 2.0 * math.pi * k / 16.0
-        assert dr == math.sin(a) and dc == math.cos(a)  # exact, this host
+        assert abs(dr - math.sin(a)) <= math.ulp(1.0) and abs(dc - math.cos(a)) <= math.ulp(1.0)
         assert math.hypot(dr, dc) == pytest.approx(1.0, abs=1e-15)
     assert gate_directions(16) is _DIRS_16
     assert len(gate_directions(8)) == 8
