@@ -1560,8 +1560,8 @@ gives the exact setup):
         did \code{nav\_dyn\_bike\_test}'s and \code{nav\_dyn\_4w\_test}'s 23 each, the defaults'
         goldens among them. Table~\ref{tab:val-live-world}'s rows measure there as they did on
         \code{6cc8cfdc}. The fast impact of Section~\ref{sec:contact} is that commit's plant,
-        driven from Python through a binding of the new options (\code{01d77192}, on
-        \code{3d5c15c6}; Section~\ref{sec:limits}), on \code{make\_sim}'s world in libcvc's
+        driven from Python through libcvc \#1002's binding of the new options (\code{01d77192},
+        on \code{3d5c15c6}; Section~\ref{sec:limits}), on \code{make\_sim}'s world in libcvc's
         \code{test\_pycvc\_physics.py} with a wall across the road. The GRL-SNAM \#146 rows: \code{main} at \code{41ddf84}, where the four
         parity files of \#146 passed all 65 of their tests.
 \end{itemize}
@@ -2135,9 +2135,9 @@ twins (GRL-SNAM \#138 and \#139), and \code{pycvc} reads a running world's tick 
 and in no release yet) puts a navigation world on the live plant, optionally in a rigid-body world
 the caller builds, and reads its books per tick and since attach. GRL-SNAM's \code{capture} shows
 them while it drives (GRL-SNAM \#143). On \code{master} it does not expose the options of
-Section~\ref{sec:ext}, nor the slip and compliant-contact lines of the books. A binding of them,
-with a ground height from a \code{pycvc.height\_field} and a contact field copied from a
-\code{sim\_world}, is written and tested (\code{01d77192}) but not yet merged. \code{pycvc} does not bind
+Section~\ref{sec:ext}, nor the slip and compliant-contact lines of the books. libcvc \#1002, open,
+binds them, with a ground height from a \code{pycvc.height\_field} and a contact field copied from
+a \code{sim\_world}. \code{pycvc} does not bind
 \code{dyn\_4w\_plant} or \code{plant\_host}.
 
 \subsection{Gaps raised in review, and the work on them}
