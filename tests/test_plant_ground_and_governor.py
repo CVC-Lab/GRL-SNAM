@@ -41,11 +41,12 @@ def test_jolt_names_its_ground(monkeypatch):
         return real(world, descs, **kw)
 
     monkeypatch.setattr(nav_native._pycvc, "nav_plant", spy)
-    try:
-        pl = nav_native.JoltPlant("roboracer", bounds=(-20.0, -20.0, 20.0, 20.0))
-    except TypeError:
-        pytest.skip("this pycvc's nav_plant takes no ground_bodies")
-    assert seen[-1] == [pl.ground]
+    pl = nav_native.JoltPlant("roboracer", bounds=(-20.0, -20.0, 20.0, 20.0))
+    assert seen[0] == [pl.ground], "it names its ground"
+    # A pycvc whose nav_plant takes no ground_bodies refuses that call; JoltPlant then makes the
+    # old one.
+    assert seen[1:] in ([], [None])
+    seen.clear()
 
     def old(world, descs, **kw):  # a pycvc before ground_bodies
         if "ground_bodies" in kw:
