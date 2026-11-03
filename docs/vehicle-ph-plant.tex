@@ -154,11 +154,15 @@ contact, and the learned plant is trained on neither (Section~\ref{sec:review}).
         as \code{45dab152} and released in 3.7.2.
   \item Steering as a modulation of the learned plant (Section~\ref{sec:learned-steer}) is \#851,
         merged as \code{b8ac9975} and released in 3.7.3.
+  \item The live plant's ground and rigid-body world (Section~\ref{sec:live}) are \#869, merged as
+        \code{5ca26cf6} and released in 3.7.2, and its driver is \#873, merged as \code{462d8229}
+        and released in 3.7.3. Its \code{pycvc} binding is \#979, merged as \code{781b9a2f}, in no
+        release yet.
 \end{itemize}
 The measurements in Section~\ref{sec:validation} were taken on libcvc \code{master} at
 \code{c1f104c0}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are identical to
-v3.7.1's, except for the rows from \#850, \#851 and \#852. Appendix~\ref{app:repro} gives the
-commit each of those was measured on.
+v3.7.1's, except for the rows from \#850, \#851, \#852, \#869 and \#873.
+Appendix~\ref{app:repro} gives the commit each of those was measured on.
 
 % ===========================================================================
 \section{Preliminaries}
@@ -643,14 +647,37 @@ $\lceil\Delta t/h\rceil$ steps under the held command, with $h=0.01$~s by defaul
 navigator's 0.06~s tick), in SI units. It books every step through \code{dyn\_plant\_books}. The
 books are kept per tick (\code{last\_tick}) and since the agent was attached (\code{books}):
 \begin{equation}
-  K-K_0=\text{drive}-\text{brake}-\text{dissipated}+\text{floor}+\text{grade}+\text{limiter}+\text{residual},
+  K-K_0=\text{drive}-\text{brake}-\text{dissipated}+\text{floor}+\text{grade}+\text{limiter}+\text{contact}+\text{residual},
   \label{eq:live-books}
 \end{equation}
 where drive and brake are the positive and negative parts of each step's supplied term, split step
-by step. The plant is flat (grade zero) and has no world to collide with. It is selected through
-\code{plant\_host} as \code{"dynamic"}, or \code{"dynamic:<presets>"} to cycle vehicles. It is the
-plant that the coefficient trainer's \code{rollout\_kind::dynamic} trains through, so a policy
-trained there is evaluated on its own model.
+by step. It is selected through \code{plant\_host} as \code{"dynamic"}, or
+\code{"dynamic:<presets>"} to cycle vehicles. It is the plant that the coefficient trainer's
+\code{rollout\_kind::dynamic} trains through, so a policy trained there is evaluated on its own
+model.
+
+\paragraph{Ground, world and driver.} When Table~\ref{tab:val-live}'s rows were measured, the plant
+was flat (grade zero) and had no world to collide with, and the contact line was zero. libcvc
+\#869 and \#873 add three things:
+\begin{itemize}
+  \item \emph{Ground.} Given a ground height (\code{plant.ground\_height}), the step takes $\theta$
+        as the sine of the slope along the heading under the centre of gravity, over a wheelbase,
+        and the grade line books it (Section~\ref{sec:grade}).
+  \item \emph{World.} Given a rigid-body world (\code{dyn\_bike\_plant\_options::physics}), each
+        chassis is a box in it, moved every substep as its model moved. A box that touches
+        anything but the ground takes the world's pose and twist back into its model, and the
+        energy that changes is booked as contact. This contact is outside the pH form: it
+        replaces the state rather than entering through $H$, $\R$ or a port
+        (Section~\ref{sec:review}). With Jolt in the build, \code{plant\_host} now builds that
+        world for \code{"dynamic"}, holding the scene's ground and buildings.
+  \item \emph{Driver.} The navigator's acceleration goes through the rigid-body plant's driver,
+        on by default (\code{dyn\_bike\_plant\_options::driver}). It holds the vehicle on its
+        brakes at a standstill and corrects the drive force for the slope and for what the last
+        substep fell short by.
+\end{itemize}
+The four-wheel vehicle is a live plant in the same way, with its grade force on: libcvc \#869's
+\code{dyn\_4w\_plant}, which \code{plant\_host} selects as \code{"dynamic4w"}.
+Table~\ref{tab:val-live-world} gives the tests of these additions.
 
 % ===========================================================================
 \section{The four-wheel vehicle}
@@ -1223,6 +1250,9 @@ gives the exact setup):
         \code{nav\_dyn\_4w\_test}'s 23 tests passed. Its pH form and books are those of \#850's
         squash commit \code{45dab152}; a later change (\#940) adds a drive response to the plant
         that passes the command through by default, and the plant's goldens pass unchanged.
+  \item The rows for \#869 and \#873 (Table~\ref{tab:val-live-world}): libcvc \code{master} at
+        \code{6cc8cfdc}, where \code{physics\_dyn\_bike\_plant\_test}'s 8 tests passed. Its
+        \code{physics} sources and tests are those of \code{master} at \code{09dcfa76}.
 \end{itemize}
 
 \newcommand{\valtable}[3]{%
@@ -1311,6 +1341,33 @@ unchanged.}{tab:val-plant}
 }{The live plant (libcvc's \code{physics\_dyn\_bike\_plant\_test}). Its floor line is
 $5\times10^{-15}$~J over the full-size run since \#852 (1.1~J before); the residuals are
 unchanged.}{tab:val-live}
+
+\valtable{%
+\code{DynBikePlant.ClimbsTheGround} &
+  6~s up a 5\% ramp, without the driver: the speed lost, and the grade line against $mg\,\Delta z$ &
+  3\%; 2\%; identity $10^{-9}$ of the flow &
+  2.864~m/s against $g\sin(\text{slope})\,t=2.938$; $-1.986\times10^{4}$~J against $-1.992\times10^{4}$~J &
+  \code{5ca26cf6} (\#869) \\
+\code{DynBikePlant.TheDriverHoldsAndClimbs} &
+  on a 10\% ramp with nothing asked, the driver holds; asked for 1~m/s$^2$ up it, it delivers &
+  held within 0.05~m; 3\% &
+  held $-0.033$~m (the raw command rolls $-15.3$~m); 5.87~m/s at 6~s against 6.0 (raw 0.051) &
+  \code{462d8229} (\#873) \\
+\code{DynBikePlant.CollidesWithTheWorld} &
+  driven into a wall 30~m on: the nose stops at it, contact takes energy out, the books close &
+  nose within 1~m short to 0.05~m past; contact $<0$; identity $10^{-9}$ of the flow &
+  nose at 30.000~m; 684 colliding substeps; contact $-1.39\times10^{5}$~J against drive $1.51\times10^{5}$~J; 146.0~m without the world &
+  \code{5ca26cf6} (\#869) \\
+\code{DynBikePlant.SlidesAlongAWall} &
+  steered into a wall at 3~m/s for 10~s: the chassis box's friction against it &
+  over 20~m along it at 0.3; under 10~m at 1 &
+  26.7~m at 0.3 (the default); 4.4~m at 1 &
+  \code{462d8229} (\#873) \\
+}{The live plant's ground, world and driver (libcvc's \code{physics\_dyn\_bike\_plant\_test},
+measured on \code{master} at \code{6cc8cfdc}, where its 8 tests pass). There, with the driver on,
+\code{DynBikePlant.TheBooksClose}'s run closes with residuals of $1.68\times10^{-4}$ (full-size)
+and $6.45\times10^{-4}$ (1/10 scale) of the flow, within the same gate as
+Table~\ref{tab:val-live}'s.}{tab:val-live-world}
 
 \valtable{%
 \code{Dyn4PH.TheStructureIsPortHamiltonianAtEverySlip} &
@@ -1564,9 +1621,11 @@ condition fails in general~\cite{ortega2002idapbc}.
 
 \paragraph{Python access.} The plant step's books and the navigator's point-mass books have torch
 twins (GRL-SNAM \#138 and \#139), and \code{pycvc} reads a running world's tick telemetry
-(libcvc \#857). The live plant's books are still C++ only: \code{pycvc} bindings for
-\code{dyn\_bike\_plant}'s books would let GRL-SNAM's evaluations read them from a running world.
-(\code{pycvc} binds neither \code{dyn\_bike\_plant} nor \code{plant\_host} today.)
+(libcvc \#857). \code{pycvc.dyn\_bike\_plant} (libcvc \#979, \code{781b9a2f}, on \code{master}
+and in no release yet) puts a navigation world on the live plant, optionally in a rigid-body world
+the caller builds, and reads its books per tick and since attach. GRL-SNAM's \code{capture} shows
+them while it drives (GRL-SNAM \#143). \code{pycvc} does not bind \code{dyn\_4w\_plant} or
+\code{plant\_host}.
 
 \subsection{Gaps raised in review, and the work under way}
 \label{sec:review}
@@ -1581,7 +1640,9 @@ is a result.
         so a fit can tie energy to where the vehicle drove rather than to how. The work under way
         adds wheel-speed states with a (torque, wheel speed) port, secants for the longitudinal
         slip in $\R$, wheel speeds in the rigid-body simulator's logs, and an option to drop $V$.
-  \item \emph{Collisions.} The dynamic plants have no contact, and \code{cut\_flights} drops every
+  \item \emph{Collisions.} Neither pH form has contact. The live plants collide in a rigid-body
+        world (Section~\ref{sec:live}), but by handing the model the world's state, with the
+        energy that changes booked as contact, outside the form. \code{cut\_flights} drops every
         window with a contact, an impact or a wheel off the ground, so the learned plant never
         sees one. The work under way adds compliant contact, with a barrier energy in $H$ and
         contact damping in $\R$, entering as an external port (Section~\ref{sec:ports}).
@@ -1591,8 +1652,37 @@ is a result.
         semi-implicit the default, with an A/B comparison, and adds an opt-in discrete-gradient
         step for the single-track plant, meant to close its books exactly.
 \end{enumerate}
-Recordings of successful and failed rollouts in the rigid-body simulator are being prepared, to be
-linked from a later revision.
+\paragraph{Recordings.} A reel of GRL-SNAM's navigator on vehicle plants, with three successes and
+five failures, is published as a GRL-SNAM pre-release:
+\url{https://github.com/CVC-Lab/GRL-SNAM/releases/tag/plant-reel-2026-11}. Each clip is one
+\code{grl-snam capture} run of GRL-SNAM's shipped coefficient policy (\code{coef\_sdf.pt}) on a
+city scene whose buildings are OpenStreetMap footprints (\textcopyright{} OpenStreetMap
+contributors, ODbL). Its read-out shows the sideslip, the share of the tire's peak grip in use,
+the lateral acceleration and the energy books. Each clip but the first has a JSON file with its
+measured outcome. The plants are the policy's point-mass surrogate, the navigator's kinematic
+bicycle, the live plant of Section~\ref{sec:live} and the rigid-body simulator's vehicle, both of
+these last two with the full-size preset.
+\begin{itemize}
+  \item \emph{Successes.} The surrogate reaches four goals, retargeted live, each within its
+        trained radius of 240~m. The kinematic bicycle drives 296~m up a street and arrives within
+        15~m in 5.6~s; having no tires, it runs at the trained metric's speeds, up to 115~m/s.
+        The rigid-body vehicle, on grip 0.3, drives 234~m around a block's corner and arrives
+        within 15~m.
+  \item \emph{Failures.} The kinematic bicycle stalls at a dead end 700~m short: the policy's
+        wall-following escape needs the point mass's sideways step. The rigid-body vehicle, on
+        grip 0.9, circles at 7~m/s, because the wall-following target sits inside its turning
+        circle. On grip 0.3 the navigator asks the live plant to corner at 0.5~g when its tires
+        hold 0.3~g; it slides past the tires' peak, to $67^\circ$ of slip, and pins itself against
+        a wall for 530 ticks. The rigid-body vehicle spins out on grip 0.3, up to $90^\circ$ off
+        its path. With the map unknown, on grip 0.2 at up to 25~m/s, it hits a wall it cannot
+        stop for.
+\end{itemize}
+What fails is the policy and the navigator's plan, not the plants. The policy was trained on the
+surrogate, where arrival is within 240~m, and does not transfer to a vehicle that must arrive
+within 15~m; the navigator caps cornering at 0.5~g whatever the grip. Over 24 random routes of
+120--400~m in the same scene, it arrives on 3 with the surrogate, 3 with the kinematic bicycle,
+and none with the live plant or the rigid-body vehicle on grip 0.9 (GRL-SNAM's
+\code{docs/PLANTS.md}). The clips were rendered with GRL-SNAM \#143 and libcvc \#979.
 
 % ===========================================================================
 \appendix
@@ -1606,7 +1696,7 @@ linked from a later revision.
 \toprule
 \textbf{Piece} & \textbf{Version} \\
 \midrule
-libcvc & \code{master} at \code{c1f104c0}; its \code{nav}, \code{ph} and \code{physics} sources and tests are identical to the v3.7.1 tag (\code{d8ca602b}). The \#851 rows: its branch commit \code{6e7ab557}, cut from \code{master} at \code{cc8800a8}, whose \code{ph} sources and tests are those of its squash commit \code{b8ac9975}. The \#852 rows (and every \code{nav\_dyn\_bike\_test} and \code{physics\_dyn\_bike\_plant\_test} line below): its branch commit \code{1a0acc77}, on \#848's head \code{d1a2a78e}, cut from \code{master} at \code{72e4c607}, whose \code{nav} and \code{physics} sources and tests are those of its squash commit \code{140bc2d0}. The \#850 rows, and \code{PhSe2Train.BothFormsFitTheDynamicBicycle}: \code{master} at \code{6cc8cfdc}, after v3.7.8. \\
+libcvc & \code{master} at \code{c1f104c0}; its \code{nav}, \code{ph} and \code{physics} sources and tests are identical to the v3.7.1 tag (\code{d8ca602b}). The \#851 rows: its branch commit \code{6e7ab557}, cut from \code{master} at \code{cc8800a8}, whose \code{ph} sources and tests are those of its squash commit \code{b8ac9975}. The \#852 rows (and every \code{nav\_dyn\_bike\_test} and \code{physics\_dyn\_bike\_plant\_test} line below): its branch commit \code{1a0acc77}, on \#848's head \code{d1a2a78e}, cut from \code{master} at \code{72e4c607}, whose \code{nav} and \code{physics} sources and tests are those of its squash commit \code{140bc2d0}. The \#850, \#869 and \#873 rows, and \code{PhSe2Train.BothFormsFitTheDynamicBicycle}: \code{master} at \code{6cc8cfdc}, after v3.7.8. \\
 GRL-SNAM & \code{main} at \code{0e21085} (\code{3a38ae4} adds only this paper). The \#138 rows: \code{main} at \code{2f76ab0}, \#138's squash commit \\
 Operating system & Windows 11 Pro 10.0.26100, x86-64 \\
 Compiler & MSVC 19.44 (Visual Studio 2022, toolset 14.44.35207), Release \\
@@ -1806,7 +1896,7 @@ $\R$, $\G$, $u$, $f_\varepsilon$, \eqref{eq:R}--\eqref{eq:feps} & \code{dyn\_ph\
 The vector field~\eqref{eq:plant-ph}; the balance~\eqref{eq:balance} & \code{dyn\_ph\_rhs}; \code{dyn\_ph\_rates\_at} (struct \code{dyn\_ph\_rates}) & the balance: \code{dyn\_bike.dyn\_ph\_rates\_at} (\#138) \\
 The tangent~\eqref{eq:tangent}, \eqref{eq:kf} & \code{dyn\_ph\_tangent\_D} & --- \\
 The step's books~\eqref{eq:books} & \code{dyn\_plant\_books} (struct \code{dyn\_ph\_books}); \code{dyn\_step\_free} & \code{dyn\_bike.dyn\_plant\_books}; \code{dyn\_plant(..., with\_free=True)} (\#138) \\
-The live plant~\eqref{eq:live-books} & \code{cvc::physics::dyn\_bike\_plant}; \code{plant\_host} \code{"dynamic"} & plant kind via \code{pycvc} \\
+The live plant~\eqref{eq:live-books} & \code{cvc::physics::dyn\_bike\_plant}; \code{plant\_host} \code{"dynamic"} & \code{pycvc.dyn\_bike\_plant} (libcvc \#979) \\
 The four-wheel form~\eqref{eq:4w}--\eqref{eq:4w-books}, Sec.~\ref{sec:four-wheel} & \code{dyn4\_ph\_hamiltonian}, \code{dyn4\_ph\_J}, \code{dyn4\_ph\_R}, \code{dyn4\_ph\_G}, \code{dyn4\_ph\_lever}, \code{dyn4\_ph\_grade}, \code{dyn4\_ph\_rhs}, \code{dyn4\_ph\_rates\_at}; \code{dyn4\_plant\_books} (\code{nav/detail/dyn\_4w.h}, \#850) & --- (the plant: \code{grl\_snam.dyn4}) \\
 External force through the controller & \code{diff::ext\_in}, \code{bike\_control}; \code{nav/ext\_rollout.h} & \code{grl\_snam.ext\_rollout}, \code{material\_ext} \\
 The learned plant~\eqref{eq:learned} & \code{cvc::ph::se2\_vehicle}, \code{se2\_model}; its golden from the $SE(2)$ package built on \code{CVC-Lab/LieSPHGP} & --- \\
