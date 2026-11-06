@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -172,6 +173,40 @@ def car_mesh(length, width, height):
     return merge([body, cabin])
 
 
+AUSTIN = "cvcpkg://cy-pca/scene-austin-south-small"  # about 10 MB, downloaded once and cached
+
+
+def austin_city(host, bundle=None, timeout=600.0):
+    """Austin, loaded once into the document's data store at ``data.city``: the scene's `city`
+    node draws it (the terrain with its aerial image, and the buildings) and the cars drive on the
+    same objects. From ``bundle``, ``GRL_SNAM_SCENE_BUNDLE`` or an installed scene when there is
+    one, else the scene-austin-south-small package from cvcpkg.org. Returns
+    ``(world_geometry, height_field)``."""
+    import pycvc
+
+    path = f"{host.prefix}.data.city"
+    if pycvc.data_status(host.app, path) != "ready":
+        local = bundle or os.environ.get("GRL_SNAM_SCENE_BUNDLE")
+        if not local:
+            try:
+                from pycvc_gl.scenes import find_scene
+
+                local = find_scene()
+            except Exception:  # noqa: BLE001 - no installed scene
+                local = None
+        if local:
+            pycvc.data_load(host.app, str(local), decoder="city_bundle", name="city",
+                            prefix=host.prefix)  # fmt: skip
+        else:
+            print(f"cars: loading Austin from {AUSTIN} (once; later runs read the cache)")
+            pycvc.data_allow_network(host.app, ["https://cvcpkg.org"])
+            pycvc.data_load(host.app, AUSTIN, path="share/cvc-scenes/austin_south",
+                            decoder="city_bundle", name="city", prefix=host.prefix)  # fmt: skip
+        if not pycvc.data_wait(host.app, path, timeout=timeout):
+            raise RuntimeError(f"Austin did not load: {pycvc.data_status(host.app, path)}")
+    return pycvc.data_world(host.app, path), pycvc.data_height_field(host.app, path)
+
+
 class Scene:
     """What the window draws: the world, a car, a goal pole and a track per car."""
 
@@ -185,16 +220,14 @@ class Scene:
                 host.scene.removeGraphics(name)
         self.names = []
         w = cars.world
+        # Austin is the document's `city` node: the data store's load of the bundle, its terrain
+        # with the aerial image draped and its buildings. It shows only on the Austin world.
+        host.set("view.city", int(w.name == "austin"))
         if self.world != (w.name, w.bounds):
-            for name in ("ground", "buildings", "terrain"):
+            for name in ("ground", "buildings"):
                 if host.scene.hasGraphics(name):
                     host.scene.removeGraphics(name)
-            if w.bundle:
-                from pycvc_gl.scenes import load_geometry_bundle
-
-                load_geometry_bundle(host.lab, w.bundle, terrain_color=(0.42, 0.46, 0.36),
-                                     building_color=(0.80, 0.78, 0.74))  # fmt: skip
-            else:
+            if w.name != "austin":
                 mnx, mny, mxx, mxy = w.bounds
                 host.lab.add_mesh("ground", [mnx, mny, 0, mxx, mny, 0, mxx, mxy, 0, mnx, mxy, 0],
                                   [0, 1, 2, 0, 2, 3], color=(0.45, 0.50, 0.40))  # fmt: skip
@@ -253,8 +286,10 @@ def parse(argv):
     p.add_argument("--plant", default=None,
                    help="kinematic | jolt | dynamic, each with :<presets> (roboracer, humvee, or a "
                         "comma list), or a preset name (default: jolt:roboracer, kinematic without Jolt)")  # fmt: skip
-    p.add_argument("--world", choices=("flat", "blocks", "austin"), default="flat")
-    p.add_argument("--bundle", default=None, help="the Austin scene bundle (--world austin)")
+    p.add_argument("--world", choices=("flat", "blocks", "austin"), default="flat",
+                   help="austin: the installed scene, else scene-austin-south-small "
+                        "downloaded once (about 10 MB)")  # fmt: skip
+    p.add_argument("--bundle", default=None, help="an Austin scene bundle dir (--world austin)")
     p.add_argument("--controller", choices=("yours", "navigator"), default="yours")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--ticks", type=int, default=1, help="ticks per frame (default 1)")
@@ -296,10 +331,11 @@ def main(argv=None) -> int:
     def build(seed=None):
         plant = host.get("run.plant", args.plant or default_plant())
         nav = host.get("run.controller", "yours") == "navigator"
+        world = host.get("run.world", args.world)
         try:
-            cars = Cars(max(1, host.get_int("run.cars", args.cars)), plant,
-                        host.get("run.world", args.world), seed=args.seed if seed is None else seed,
-                        navigator=nav, bundle=args.bundle)  # fmt: skip
+            city = austin_city(host, args.bundle) if world == "austin" else None
+            cars = Cars(max(1, host.get_int("run.cars", args.cars)), plant, world,
+                        seed=args.seed if seed is None else seed, navigator=nav, city=city)  # fmt: skip
             note = ""
         except (RuntimeError, ValueError) as e:  # a plant or world this pycvc cannot run
             note = str(e)

@@ -133,7 +133,7 @@ python -m grl_snam.ariadne cars --copy my_cars           # the template, to edit
 ```
 
 A template rather than a demo: see [Write your own multi-car controller](#write-your-own-multi-car-controller)
-below. It needs no torch and no Austin (Austin is `--world austin`).
+below. It needs no torch and no scene; `--world austin` adds Austin with its aerial image.
 
 ## Write your own multi-car controller
 
@@ -206,7 +206,12 @@ The RoboRacer is the default because it is the lab's own 1/10 Ackermann car: lib
 comes from the lab's configuration (0.324 m wheelbase, 0.425 rad lock, 6 m/s² either way,
 10 m/s), so a controller tuned here starts from the hardware's geometry and limits. Sixteen fit an arena
 and run in real time. The Humvee is a 4.8 m, 2.7 t truck with a slow steering (0.35 rad/s), for
-Austin at its real size. The flat and block worlds scale to the largest car.
+Austin at its real size. The flat and block worlds scale to the largest car. The Austin world is the city at its
+real size, drawn as the `live` port draws it, with its aerial image draped on the terrain.
+`cars.py` loads it once into the document's data store, and the document's `city` node
+draws it, while the cars drive on the same objects. It comes from an installed scene
+(`scene-austin-south` or `scene-austin-south-small`, `GRL_SNAM_SCENE_BUNDLE`, `--bundle`),
+else from cvcpkg.org: `scene-austin-south-small`, about 10 MB, downloaded once and then cached.
 
 ### What each plant means for your controller
 

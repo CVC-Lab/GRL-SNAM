@@ -283,9 +283,15 @@ def blocks_world(unit: float) -> World:
     return World("blocks", occ, bounds, boxes, building_height=8.0 * unit)
 
 
-def austin_world(bundle=None, half=400.0, cell=2.0) -> World:
+def austin_world(bundle=None, half=400.0, cell=2.0, city=None) -> World:
     """The Austin scene bundle (terrain.json + buildings), cropped to ``half`` m around its
-    centre: ``bundle``, else ``GRL_SNAM_SCENE_BUNDLE``, else the installed one."""
+    centre. ``city`` is the bundle as already loaded, ``(world_geometry, height_field)`` (an
+    Ariadne host's data store: ``pycvc.data_world`` / ``data_height_field``), so nothing is read
+    again; otherwise the bundle is read from ``bundle``, else ``GRL_SNAM_SCENE_BUNDLE``, else the
+    installed one."""
+    if city is not None:
+        geometry, field = city
+        return _austin_from(geometry, field, field.bounds2d(), half, cell, None)
     if bundle is None:
         bundle = os.environ.get("GRL_SNAM_SCENE_BUNDLE")
     if bundle is None:
@@ -300,27 +306,32 @@ def austin_world(bundle=None, half=400.0, cell=2.0) -> World:
             "the austin world needs the Austin scene bundle: cvcpkg install scene-austin-south-small "
             "(or scene-austin-south), or --bundle DIR / GRL_SNAM_SCENE_BUNDLE"
         )
-    city = _pycvc.load_city_bundle(str(bundle))
-    mnx, mny, mxx, mxy = city.bounds2d()
+    loaded = _pycvc.load_city_bundle(str(bundle))
+    return _austin_from(
+        loaded.world(), loaded.terrain(), loaded.bounds2d(), half, cell, str(bundle)
+    )
+
+
+def _austin_from(geometry, field, extent, half, cell, bundle) -> World:
+    mnx, mny, mxx, mxy = extent
     half = min(half, 0.5 * (mxx - mnx), 0.5 * (mxy - mny))
     cx, cy = 0.5 * (mnx + mxx), 0.5 * (mny + mxy)
     bounds = (cx - half, cy - half, cx + half, cy + half)
     n = int(round(2 * half / cell)) + 1
     occ = np.ascontiguousarray(
-        _pycvc.nav_world_rasterize(city.world(), n, n, *bounds)["occupancy"], np.uint8
+        _pycvc.nav_world_rasterize(geometry, n, n, *bounds)["occupancy"], np.uint8
     )
     _border(occ)
-    field = city.terrain()
-    return World("austin", occ, bounds, [], field.height, str(bundle), building_height=12.0)
+    return World("austin", occ, bounds, [], field.height, bundle, building_height=12.0)
 
 
-def make_world(name: str, unit: float, bundle=None) -> World:
+def make_world(name: str, unit: float, bundle=None, city=None) -> World:
     if name == "flat":
         return flat_world(unit)
     if name == "blocks":
         return blocks_world(unit)
     if name == "austin":
-        return austin_world(bundle)
+        return austin_world(bundle, city=city)
     raise ValueError(f"world {name!r}: one of {', '.join(WORLDS)}")
 
 
@@ -600,13 +611,14 @@ class Cars:
     :meth:`step` (your ``(steer, accel)``) or, with ``navigator``, :meth:`step_navigator`.
 
     ``seed`` makes the starts and goals repeatable. ``rays`` and ``range_max`` (car lengths) shape
-    the range readings. ``bundle`` is the Austin bundle (``world="austin"``). ``backend`` forces
-    ``"sim"`` (libcvc's sim_world) or ``"direct"`` (numpy bicycle / ``physics_world.drive``);
-    by default it is ``"sim"`` when the pycvc has ``nav_sim_world_override`` (or ``navigator``),
-    else ``"direct"``."""
+    the range readings. ``bundle`` is the Austin bundle, or ``city`` the bundle as already
+    loaded (``world="austin"``; :func:`austin_world`). ``backend`` forces ``"sim"``
+    (libcvc's sim_world) or ``"direct"`` (numpy bicycle / ``physics_world.drive``); by default
+    it is ``"sim"`` when the pycvc has ``nav_sim_world_override`` (or ``navigator``), else
+    ``"direct"``."""
 
     def __init__(self, n=6, plant=None, world="flat", *, seed=0, navigator=False, rays=16,
-                 range_max=12.0, bundle=None, backend=None, headings="goal"):  # fmt: skip
+                 range_max=12.0, bundle=None, city=None, backend=None, headings="goal"):  # fmt: skip
         if not HAS_PYCVC:
             raise RuntimeError(
                 "grl_snam.cars needs pycvc with cvc::nav (cvcpkg install pycvc-gl-cp312)"
@@ -632,7 +644,7 @@ class Cars:
         self.backend_name, self.navigator = backend, bool(navigator)
         self.world_name = world
         self.unit = max(v.length for v in self.vehicles)
-        self.world = make_world(world, self.unit, bundle)
+        self.world = make_world(world, self.unit, bundle, city)
         self.reach = 1.5 * self.unit
         self.rng = np.random.default_rng(seed)
         self.ray_angles = np.linspace(-math.pi, math.pi, int(rays), endpoint=False)

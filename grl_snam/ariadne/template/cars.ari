@@ -184,3 +184,10 @@ scene:
       warmth: 0.5
       environment: 0.5
       ambient: 0.32
+  nodes:
+    # Austin (World: Austin): cars.py loads the scene bundle into the data store at data.city,
+    # and this node draws it, the terrain with its aerial image draped and the buildings. Hidden
+    # on the other worlds, which cars.py draws itself.
+    - node: city
+      source: { data: city }
+      visible: { bind: view.city, default: false }

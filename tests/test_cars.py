@@ -296,3 +296,31 @@ def test_the_port_runs_jolt_headless(ports_main, tmp_path):
     args = ["cars", "--headless", "--frames", "20", "--cars", "3", "--plant", "jolt:roboracer"]
     assert ports_main([*args, "--log", str(log)]) == 0
     assert len(log.read_text().splitlines()) == 1 + 20 * 3
+
+
+def _austin_bundle():
+    import os
+
+    b = os.environ.get("GRL_SNAM_SCENE_BUNDLE")
+    if not b:
+        try:
+            from pycvc_gl.scenes import find_scene
+
+            b = find_scene()
+        except Exception:  # noqa: BLE001
+            b = None
+    return b if b and os.path.isfile(os.path.join(str(b), "terrain.json")) else None
+
+
+def test_the_port_drives_on_austin_from_the_data_store(ports_main, tmp_path):
+    """Austin loads once into the document's data store (what its city node draws, aerial image
+    and all) and the cars drive on the same objects. Needs an installed Austin bundle (no
+    download in tests)."""
+    bundle = _austin_bundle()
+    if bundle is None:
+        pytest.skip("no Austin scene bundle (scene-austin-south or -small)")
+    log = tmp_path / "austin.npz"
+    args = ["cars", "--headless", "--frames", "10", "--cars", "3", "--plant", "kinematic"]
+    assert ports_main([*args, "--world", "austin", "--bundle", str(bundle), "--log", str(log)]) == 0
+    z = np.load(log)
+    assert str(z["meta_world"]) == "austin" and z["x"].shape == (10, 3)
