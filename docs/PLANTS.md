@@ -19,6 +19,9 @@ On a plant the navigator plans with the vehicle's limits, never more than the po
 its `max_accel`, and corners at 0.5 g. The corner cap does not know the ground's grip, which is
 why low grip slides (see [What to expect](#what-to-expect)).
 
+To drive the plants with a controller of your own instead of GRL-SNAM's navigator, start from the
+`cars` template: [Write your own multi-car controller](../grl_snam/ariadne/README.md#write-your-own-multi-car-controller).
+
 Contents:
 - [What you need](#what-you-need)
 - [`capture`: one vehicle, rendered with its read-out](#capture-one-vehicle-rendered-with-its-read-out)

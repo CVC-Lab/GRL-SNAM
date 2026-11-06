@@ -2,7 +2,7 @@
 
 This repository contains the implementation of **GRL-SNAM**, a geometric reinforcement learning framework for simultaneous navigation and mapping in unknown environments using Hamiltonian mechanics and differential policy optimization.
 
-📖 **Documentation:** [Developer Guide](docs/developer-guide.md) · [Native `cvc::nav` acceleration](docs/NATIVE_CVC_NAV.md) · [Running on a vehicle plant (kinematic, dynamic, Jolt)](docs/PLANTS.md) · [Material-aware navigation](docs/MATERIAL_NAV.md) · [Vehicle refinements](docs/VEHICLE_REFINEMENTS.md) · [Navigation stats & scorecard](docs/NAV_STATS.md) · [PyPI Publishing Roadmap](docs/pypi-publishing-roadmap.md) · [Headless server quickstart](docs/headless-quickstart.md) · [The vehicle plant in port-Hamiltonian form (PDF)](docs/vehicle-ph-plant.pdf)
+📖 **Documentation:** [Developer Guide](docs/developer-guide.md) · [Native `cvc::nav` acceleration](docs/NATIVE_CVC_NAV.md) · [Running on a vehicle plant (kinematic, dynamic, Jolt)](docs/PLANTS.md) · [Material-aware navigation](docs/MATERIAL_NAV.md) · [Vehicle refinements](docs/VEHICLE_REFINEMENTS.md) · [Navigation stats & scorecard](docs/NAV_STATS.md) · [PyPI Publishing Roadmap](docs/pypi-publishing-roadmap.md) · [Headless server quickstart](docs/headless-quickstart.md) · [The demos on Ariadne, and a template for your own multi-car controller](grl_snam/ariadne/README.md) · [The vehicle plant in port-Hamiltonian form (PDF)](docs/vehicle-ph-plant.pdf)
 
 ## Overview
 
@@ -81,12 +81,31 @@ grl-snam --help
 | `grl-snam pipeline BUNDLE` | the whole chain: world model → SDF → train → video |
 | `grl-snam demo NAME` | run a demo live inside VolRover3 |
 | `grl-snam lab-demo [PNG]` | standalone lab visualization |
+| `grl-snam ariadne PORT` | a demo as an Ariadne document; `cars` is a template for your own multi-car controller |
 | `grl-snam eval` / `train-coef` | the CoefEnergyNet evaluator / trainer (legacy track) |
 
 A `BUNDLE` is a **world model** — a directory with `terrain.json` (heightfield) +
 `buildings.glb` (city mesh), e.g. an OpenStreetMap + SRTM export. The heavy work lives
 in `grl_snam.tools`; the demos in `grl_snam.demos`; the graphics deps (`pycvc_gl`, VTK,
 `vrhost`) load lazily, so `grl-snam --help` runs anywhere.
+
+### Ariadne: the demos in a document, and a template for your own multi-car controller
+
+`grl-snam ariadne <port>` runs GRL-SNAM's demos as Python hosts of Ariadne (`.ari`) documents:
+the live Austin demos, the fog-of-war stories, the squad recordings, a live fleet on a vehicle
+plant, and the material demo. The `cars` port is a template to copy. It drives N Ackermann cars
+with a controller of your own, on nav's kinematic bicycle or on Jolt vehicles, with panels,
+sliders that feed your parameters, and headless batch runs that log every tick:
+
+```bash
+cvcpkg install grl-snam-cp312 --prefix ./env && . ./env/bin/activate   # pycvc_gl comes along
+grl-snam ariadne --list
+grl-snam ariadne cars --copy my_cars && python my_cars/cars.py
+```
+
+[grl_snam/ariadne/README.md](grl_snam/ariadne/README.md) describes each port, and its
+[Write your own multi-car controller](grl_snam/ariadne/README.md#write-your-own-multi-car-controller)
+section describes the template: the state your controller gets, the plants, and batch runs.
 
 ### The learned-nav pipeline, end to end
 

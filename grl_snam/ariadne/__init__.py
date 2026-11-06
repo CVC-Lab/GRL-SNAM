@@ -29,6 +29,9 @@ PORTS = {
               "Squad(plant=...)"),
     "material": ("grl_snam.ariadne.material", "material-aware navigation, off vs on",
                  "grl-snam material-demo"),
+    "cars": ("grl_snam.ariadne.template.cars",
+             "N Ackermann cars driven by your own controller (--copy DIR to make it yours)",
+             "new: a template for your multi-car controller"),
 }  # fmt: skip
 
 

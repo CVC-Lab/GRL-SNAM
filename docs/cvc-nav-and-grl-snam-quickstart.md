@@ -65,6 +65,30 @@ The registered demos:
 | `austin-planner` | surrogate planner in its native sparse-obstacle regime |
 | `lab` | analytic terrain + an agent walking a draped loop |
 
+### The demos on Ariadne, and your own multi-car controller
+
+The same prefix runs GRL-SNAM's Ariadne ports: each demo inside an Ariadne (`.ari`) document,
+with panels and controls ([grl_snam/ariadne/README.md](../grl_snam/ariadne/README.md)).
+
+```sh
+grl-snam ariadne --list
+grl-snam ariadne fleet                 # a live squad of Humvees on Austin
+grl-snam ariadne cars                  # N Ackermann cars driven by a controller you write
+```
+
+To test a multi-car controller of your own, copy the `cars` template and edit its
+`controller()`. It gets every car's state as numpy arrays each tick and returns a
+(steer, accel) per car. It runs on nav's kinematic bicycle or on Jolt vehicles, and needs no
+torch or scene download:
+
+```sh
+grl-snam ariadne cars --copy my_cars
+python my_cars/cars.py                                   # a window
+python my_cars/cars.py --headless --frames 1200 --log run.npz   # a batch run, no GL
+```
+
+See [Write your own multi-car controller](../grl_snam/ariadne/README.md#write-your-own-multi-car-controller).
+
 ---
 
 ## Where the model and the Austin geometry actually live
