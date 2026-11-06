@@ -20,7 +20,8 @@ its `max_accel`, and corners at 0.5 g. The corner cap does not know the ground's
 why low grip slides (see [What to expect](#what-to-expect)).
 
 To drive the plants with a controller of your own instead of GRL-SNAM's navigator, start from the
-`cars` template: [Write your own multi-car controller](../grl_snam/ariadne/README.md#write-your-own-multi-car-controller).
+`cars` template, libcvc's `pycvc_gl.cars` ([docs/CARS.md](https://github.com/transfix/libcvc/blob/master/docs/CARS.md)):
+`grl-snam ariadne cars --copy my_cars`.
 
 Contents:
 - [What you need](#what-you-need)
