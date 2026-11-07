@@ -34,6 +34,7 @@ class AustinMaterialRouteInputs:
     hard: np.ndarray
     material_id: np.ndarray
     bounds: tuple[float, float, float, float]
+    bundle_files_sha256: dict[str, str] | None = None
 
 
 def load_austin_navmask(bundle: str | Path) -> np.ndarray:
@@ -59,6 +60,7 @@ def load_austin_material_route_inputs(bundle: str | Path) -> AustinMaterialRoute
     belongs to the independent grade channel.
     """
     bundle_path = Path(bundle)
+    bundle_files_sha256 = require_austin_bundle(str(bundle_path), extra_files=("navmask.png",))
     navmask_occupancy = load_austin_navmask(bundle_path)
     material_id, bounds_dict = load_austin_material_raster(str(bundle_path))
     bounds = tuple(bounds_dict[key] for key in ("min_x", "min_y", "max_x", "max_y"))
@@ -82,6 +84,7 @@ def load_austin_material_route_inputs(bundle: str | Path) -> AustinMaterialRoute
         hard=hard,
         material_id=material_id,
         bounds=bounds,
+        bundle_files_sha256=bundle_files_sha256,
     )
 
 
@@ -109,5 +112,6 @@ def generate_austin_material_route_manifest(
             "package": AUSTIN_BUNDLE_PACKAGE,
             "version": AUSTIN_BUNDLE_VERSION,
             "archive_sha256": AUSTIN_BUNDLE_SHA256,
+            "files_sha256": inputs.bundle_files_sha256,
         },
     )

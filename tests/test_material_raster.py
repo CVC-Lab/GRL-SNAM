@@ -169,8 +169,28 @@ def test_austin_bundle_fails_loudly_instead_of_using_lean_fallback(tmp_path):
     assert not (tmp_path / "material.json").exists()
 
 
-def test_austin_bundle_uses_shared_palette_and_authoritative_mask_priority(tmp_path):
+def test_austin_bundle_refuses_files_that_differ_from_the_pinned_bundle(tmp_path):
     import imageio.v3 as iio
+
+    (tmp_path / "terrain.json").write_text(
+        json.dumps(
+            {"rows": 2, "cols": 2, "bounds": {"min_x": 0, "min_y": 0, "max_x": 2, "max_y": 2}}
+        )
+    )
+    iio.imwrite(tmp_path / "foliage_mask.png", np.zeros((2, 2), dtype=np.uint8))
+    for name in ("open_fields.png", "water.png", "roads.png"):
+        iio.imwrite(tmp_path / name, _rgba_mask(2, 2, []))
+
+    with np.testing.assert_raises_regex(
+        ValueError, rf"terrain.json.*pinned Austin bundle.*{re.escape(mr.AUSTIN_BUNDLE_VERSION)}"
+    ):
+        mr.load_austin_material_raster(str(tmp_path))
+
+
+def test_austin_bundle_uses_shared_palette_and_authoritative_mask_priority(tmp_path, monkeypatch):
+    import imageio.v3 as iio
+
+    monkeypatch.setattr(mr, "AUSTIN_BUNDLE_FILE_SHA256", {})  # a synthetic bundle
 
     (tmp_path / "terrain.json").write_text(
         json.dumps(
@@ -197,8 +217,10 @@ def test_austin_bundle_uses_shared_palette_and_authoritative_mask_priority(tmp_p
     assert mp.terrain_risk(mp.MATERIAL_ID["water"]) == 1.0
 
 
-def test_austin_raster_can_be_loaded_without_writing_derived_files(tmp_path):
+def test_austin_raster_can_be_loaded_without_writing_derived_files(tmp_path, monkeypatch):
     import imageio.v3 as iio
+
+    monkeypatch.setattr(mr, "AUSTIN_BUNDLE_FILE_SHA256", {})  # a synthetic bundle
 
     (tmp_path / "terrain.json").write_text(
         json.dumps(
