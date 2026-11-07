@@ -162,16 +162,19 @@ that section and its tables, are without them. The four-wheel plant has no compl
         \code{5ca26cf6} and released in 3.7.2, and its driver is \#873, merged as \code{462d8229}
         and released in 3.7.3. Its \code{pycvc} binding is \#979, merged as \code{781b9a2f}, and
         the binding of the options of Section~\ref{sec:ext} is \#1002, merged as \code{1ded7bed};
-        neither is in a release yet.
+        both were first released in 3.7.9.
   \item Wheel spin (Section~\ref{sec:spin}) is \#982, merged as \code{4b640693}; compliant contact
         (Section~\ref{sec:contact}) is \#983, merged as \code{2728bca8}; the full form and the side
-        slope (Section~\ref{sec:full}) are \#987, merged as \code{b89992ef}. None of the three is in
-        a release yet. CVC-Lab/GRL-SNAM \#146 (\code{b6ddb801}) twins all three. The contact's
-        implicit damper and its substeps are \#1004 (open).
+        slope (Section~\ref{sec:full}) are \#987, merged as \code{b89992ef}. All three were first
+        released in 3.7.9. CVC-Lab/GRL-SNAM \#146 (\code{b6ddb801}) twins them. The contact's
+        implicit damper and its substeps are \#1004, merged as \code{ce9aebaf}, in no release yet.
+  \item The navigator's geometry rollout takes semi-implicit Euler by default since \#981
+        (Section~\ref{sec:nav}), merged as \code{45cb239a}, in no release yet.
 \end{itemize}
 The measurements in Section~\ref{sec:validation} were taken on libcvc \code{master} at
 \code{c1f104c0}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are identical to
-v3.7.1's, except for the rows from \#850, \#851, \#852, \#869, \#873, \#982, \#983 and \#987.
+v3.7.1's, except for the rows from \#850, \#851, \#852, \#869, \#873, \#981, \#982, \#983, \#987
+and \#1004.
 Appendix~\ref{app:repro} gives the commit each of those was measured on.
 
 % ===========================================================================
@@ -1286,12 +1289,41 @@ of order $h^3$ below float round-off on $U$.
         That is second order, the same order as the bound, so explicit Euler passes the bound
         and fails the sharp check.
 \end{itemize}
-The explicit-Euler case matters in practice. GRL-SNAM's guide notes that \code{cvc::nav}'s
-native multi-start rollout runs explicit Euler by default, where the Python reference runs
-semi-implicit. On circular orbits of a goal spring, \code{NavPotential.ExplicitEulerRaisesTheAlarm}
-shows explicit Euler gaining energy at every step, by $\omega^2h^2$, with the sharp check at half
-the bound on every step. The semi-implicit step meets the sharp check to $3.5\times10^{-5}$ of the
-bound.
+The explicit-Euler case mattered in practice. Through libcvc 3.7.11, \code{cvc::nav}'s native
+multi-start rollout ran explicit Euler by default, where its Python namesake runs semi-implicit, as
+GRL-SNAM's guide noted. On circular orbits of a goal spring,
+\code{NavPotential.ExplicitEulerRaisesTheAlarm} shows explicit Euler gaining energy at every step,
+by $\omega^2h^2$, with the sharp check at half the bound on every step. The semi-implicit step
+meets the sharp check to $3.5\times10^{-5}$ of the bound.
+
+\paragraph{The integrator.} libcvc's geometry rollout (\code{integrate\_surrogate\_v2}, which the
+material trainer's multi-start loss uses) now defaults to semi-implicit Euler~\eqref{eq:si-step},
+as every other point-mass rollout already did: the velocity updates first, and the position steps
+with the new velocity (transfix/libcvc \#981). Explicit Euler remains an option, and the sharp
+check still alarms on it. On \code{nav\_geom\_rollout\_grad\_test}'s penetrating batch the
+multi-start penalty is 8\% lower under semi-implicit Euler on the legacy start (2.050 against
+2.230) and 15\% lower on sampled starts (2.453 against 2.898).
+
+\#981 also reports an A/B, a training run outside CI that was not repeated for this paper. It
+trained the coefficient policy on the point mass under each integrator, ten training seeds per arm
+on the city GRL-SNAM trains on. It then drove every policy on the rigid-body simulator's 1/10-scale
+vehicles, over 20 seeds of 48 agents, with paired bootstrap 95\% intervals.
+\begin{itemize}
+  \item Where training moves the policy (learning rates $10^{-4}$ and $2\times10^{-4}$), explicit
+        Euler costs reach: $-7.3$ $[-10.1,-4.7]$ and $-4.7$ $[-8.4,-1.6]$ points.
+  \item At the gate's learning rate, $5\times10^{-5}$, the arms barely differ: explicit Euler gains
+        $+1.0$ $[+0.1,+1.9]$ points of reach, but drives 5\% further and hits buildings 4\% more.
+  \item On the trained policies' point-mass steps, booked outside every barrier, the sharp check
+        never alarms under semi-implicit Euler (its largest ratio is $1.2\times10^{-3}$). Under
+        explicit Euler it alarms on 14--19\% of steps, and 78--94\% of those gained energy.
+\end{itemize}
+The alarm fires on a minority of steps because the trained point mass is heavily damped and near
+its terminal velocity, where $g+\gamma v-F\approx0$ and explicit Euler's excess
+$h^2g\cdot(g+\gamma v-F)/m$ vanishes. A Strang splitting, velocity Verlet with the damping and the
+speed clamp split out, never differed from semi-implicit Euler outside the interval and was not
+kept. GRL-SNAM's native material trainer leaves the integrator to libcvc on its legacy start, so
+with a \code{pycvc} that carries \#981 that start runs semi-implicit, while its torch twin keeps
+explicit Euler as its default.
 
 \subsection{Context work and projection work}
 Across a tick of the deployed drive, $U_{\mathrm{nav}}$ is not fixed. The occupancy map is re-sensed,
@@ -1584,13 +1616,16 @@ gives the exact setup):
         (\code{01d77192}, on \code{3d5c15c6}; Section~\ref{sec:limits}), on \code{make\_sim}'s
         world in libcvc's \code{test\_pycvc\_physics.py} with a wall across the road.
   \item The rows for \#1004 (Tables~\ref{tab:val-contact} and~\ref{tab:val-contact-plant}, and
-        Section~\ref{sec:contact}'s fast
-        impact): its branch commit \code{a61d981c}, on \code{3d5c15c6}, where
-        \code{physics\_dyn\_contact\_test}'s 9 tests passed, and
-        \code{physics\_dyn\_bike\_plant\_test}'s 10, \code{nav\_dyn\_spin\_test}'s 13 and
-        \code{nav\_dyn\_ph\_full\_test}'s 8 still pass. \code{DynContact.Golden} is byte-identical
-        there, so GRL-SNAM's contact fixture stands. The GRL-SNAM \#146 rows: \code{main} at \code{41ddf84}, where the four
-        parity files of \#146 passed all 65 of their tests.
+        Section~\ref{sec:contact}'s fast impact) and for \#981 (Table~\ref{tab:val-nav}'s last
+        three rows, and the penalties of Section~\ref{sec:nav}): libcvc \code{master} at
+        \code{352f1933}, where every file the two PRs touched is as their squash commits
+        (\code{ce9aebaf}, \code{45cb239a}) left it. There \code{physics\_dyn\_contact\_test}'s 9
+        tests passed, \code{physics\_dyn\_bike\_plant\_test}'s 10, \code{nav\_geom\_rollout\_grad\_test}'s
+        16, \code{nav\_coef\_train\_test}'s 30, \code{nav\_material\_train\_test}'s 18 and
+        \code{nav\_potential\_test}'s 17. \code{DynContact.Golden}'s file is byte-identical to
+        GRL-SNAM's fixture, so the contact twin stands.
+  \item The GRL-SNAM \#146 rows: \code{main} at \code{41ddf84}, where the four parity files of
+        \#146 passed all 65 of their tests.
 \end{itemize}
 
 \newcommand{\valtable}[3]{%
@@ -1895,8 +1930,8 @@ sum of the magnitudes of every line of the books.}{tab:val-spin}
   pair balances, and without the barrier the step never raises the kinetic energy; 846 wall and
   638 pair poses at $h=0.01$, 0.1 and 1~s &
   $10^{-12}$; $10^{-9}$; power $\le10^{-9}$ of the scale; $10^{-9}$; $10^{-12}$ of the kinetic energy &
-  $7.9\times10^{-16}$; $4.9\times10^{-10}$; holds; $1.8\times10^{-15}$; holds &
-  \#1004 \\
+  $7.9\times10^{-16}$; $3.4\times10^{-16}$; holds; $1.8\times10^{-15}$; holds &
+  \code{ce9aebaf} (\#1004) \\
 \code{DynContact.Golden} &
   the golden of GRL-SNAM's twin: the footprint, field and pair cases, and a plant step &
   golden values &
@@ -1925,7 +1960,7 @@ damper's.}{tab:val-contact}
   navigator: $8.16\times10^{4}$~J ($8.19\times10^{4}$), slowest $-0.47$~m/s at both,
   $1.3\times10^{-3}$ and $3.9\times10^{-3}$; raw: rebound 0.050, 0.040, $-0.018$, as at
   0.00125~s, residual $4.1\times10^{-3}$, $7.9\times10^{-4}$, $1.7\times10^{-3}$ &
-  \#1004 \\
+  \code{ce9aebaf} (\#1004) \\
 \code{DynContactPlant.ComparesWithJoltOnImpacts} &
   the same impacts in the rigid-body world, coasting: both stop at the wall, the parked vehicle
   moves, and the heading turns little &
@@ -2087,7 +2122,29 @@ $0.056$, 74 of 250 steps, and $7.63\to0.0092$. The potential's form is \#982, me
   site-specific &
   worst $5.7\times10^{-4}$ relative on exact planes &
   \code{7d47b98} (\#747) \\
-}{The navigator's books (libcvc \code{nav\_potential\_test}).}{tab:val-nav}
+\code{NavGeomRolloutGrad.SemiImplicitIsTheDefault} &
+  the geometry rollout and the multi-start loss default to semi-implicit Euler: the default loss
+  is the semi-implicit one bit for bit, not the explicit one &
+  exact &
+  holds; the suite's gradchecks give penalties 2.050 (semi-implicit) and 2.230 (explicit) on the
+  legacy start, 2.453 and 2.898 on sampled starts &
+  \code{45cb239a} (\#981) \\
+\code{NavCoefTrain.ExplicitEulerGradcheckMatchesFiniteDifference},
+\code{NavCoefTrain.PointMassIntegratorsDiffer} &
+  the coefficient trainer's explicit-Euler arm (the A/B's) has its own backward, held to central
+  differences; the two arms are two rollouts, and the default is the semi-implicit one bit for bit &
+  directional error $2\times10^{-2}$; exact &
+  $6.5\times10^{-4}$ over 419 parameters; window loss 1.588633 against 1.591275 &
+  \code{45cb239a} (\#981) \\
+\code{NavMaterialTrain.FullChainGradcheckExplicitMultiStart} &
+  the material trainer's whole loss, with explicit Euler in its multi-start term: the gradient to
+  the weights against finite differences &
+  directional error $2\times10^{-2}$ &
+  $2.2\times10^{-4}$ &
+  \code{45cb239a} (\#981) \\
+}{The navigator's books (libcvc \code{nav\_potential\_test}), and its integrator's default
+(\code{nav\_geom\_rollout\_grad\_test}, \code{nav\_coef\_train\_test},
+\code{nav\_material\_train\_test}; the \#981 rows, measured on \code{master} at \code{352f1933}).}{tab:val-nav}
 
 \valtable{%
 \code{test\_dyn\_bike\_parity.py} &
@@ -2184,11 +2241,11 @@ condition fails in general~\cite{ortega2002idapbc}.
 
 \paragraph{Python access.} The plant step's books and the navigator's point-mass books have torch
 twins (GRL-SNAM \#138 and \#139), and \code{pycvc} reads a running world's tick telemetry
-(libcvc \#857). \code{pycvc.dyn\_bike\_plant} (libcvc \#979, \code{781b9a2f}, on \code{master}
-and in no release yet) puts a navigation world on the live plant, optionally in a rigid-body world
+(libcvc \#857). \code{pycvc.dyn\_bike\_plant} (libcvc \#979, \code{781b9a2f}, released in 3.7.9)
+puts a navigation world on the live plant, optionally in a rigid-body world
 the caller builds, and reads its books per tick and since attach. GRL-SNAM's \code{capture} shows
-them while it drives (GRL-SNAM \#143). libcvc \#1002 (merged as \code{1ded7bed}, in no release
-yet) binds the options of Section~\ref{sec:ext} and the slip and compliant-contact lines of the
+them while it drives (GRL-SNAM \#143). libcvc \#1002 (\code{1ded7bed}, released in 3.7.9) binds
+the options of Section~\ref{sec:ext} and the slip and compliant-contact lines of the
 books, with a ground height from a \code{pycvc.height\_field} and a contact field copied from a
 \code{sim\_world}. It does not bind \code{contact\_step\_depth} (\#1004), whose default applies.
 \code{pycvc} does not bind \code{dyn\_4w\_plant} or \code{plant\_host}.
@@ -2196,8 +2253,9 @@ books, with a ground height from a \code{pycvc.height\_field} and a contact fiel
 \subsection{Gaps raised in review, and the work on them}
 \label{sec:review}
 Review of this paper raised three gaps between the models it describes and the motion they are
-meant to capture. libcvc has since closed two of them with opt-in extensions
-(Section~\ref{sec:ext}). The third is still being worked on, and nothing said here about it is a
+meant to capture. libcvc has since closed the first two with opt-in extensions
+(Section~\ref{sec:ext}), and the navigator's half of the third (Section~\ref{sec:nav}). The plant's
+half, a discrete-gradient step, is still being worked on, and nothing said here about it is a
 result.
 \begin{enumerate}
   \item \emph{Actuation.} Neither analytic plant had wheel spin: the drive and brake forces were
@@ -2216,15 +2274,16 @@ result.
         compliant contact to the single track's form, with a barrier energy in $H$ and the
         contact's damping and friction in $\R$, entering as an external port, against the scene
         and between vehicles (Section~\ref{sec:contact}); and the logs keep the contact windows on
-        request; libcvc \#1004 makes the contact's damper and friction implicit, so fast impacts
+        request. libcvc \#1004 makes the contact's damper and friction implicit, so fast impacts
         close their books at the default substep. The four-wheel plant has no compliant contact,
         a learned plant can fit a contact's mean response but not where it is, and inside a thick
         wall the navigation world's field is flat (Section~\ref{sec:contact}).
-  \item \emph{Integration.} libcvc's native multi-start rollout of the navigator defaults to
-        explicit Euler (\code{geom\_rollout\_params::semi\_implicit} is false), which gains energy
-        at every step on the orbits of Section~\ref{sec:nav}. The work under way makes
-        semi-implicit the default, with an A/B comparison, and adds an opt-in discrete-gradient
-        step for the single-track plant, meant to close its books exactly. Neither is merged.
+  \item \emph{Integration.} libcvc's native multi-start rollout of the navigator defaulted to
+        explicit Euler (\code{geom\_rollout\_params::semi\_implicit} was false), which gains energy
+        at every step on the orbits of Section~\ref{sec:nav}. libcvc \#981 makes semi-implicit
+        Euler the default, with an A/B comparison (Section~\ref{sec:nav}). The work still under
+        way adds an opt-in discrete-gradient step for the single-track plant, meant to close its
+        books exactly. It is not merged.
 \end{enumerate}
 \paragraph{Recordings.} A reel of GRL-SNAM's navigator on vehicle plants, with three successes and
 five failures, is published as a GRL-SNAM pre-release:
@@ -2270,7 +2329,7 @@ and none with the live plant or the rigid-body vehicle on grip 0.9 (GRL-SNAM's
 \toprule
 \textbf{Piece} & \textbf{Version} \\
 \midrule
-libcvc & \code{master} at \code{c1f104c0}; its \code{nav}, \code{ph} and \code{physics} sources and tests are identical to the v3.7.1 tag (\code{d8ca602b}). The \#851 rows: its branch commit \code{6e7ab557}, cut from \code{master} at \code{cc8800a8}, whose \code{ph} sources and tests are those of its squash commit \code{b8ac9975}. The \#852 rows (and every \code{nav\_dyn\_bike\_test} and \code{physics\_dyn\_bike\_plant\_test} line below): its branch commit \code{1a0acc77}, on \#848's head \code{d1a2a78e}, cut from \code{master} at \code{72e4c607}, whose \code{nav} and \code{physics} sources and tests are those of its squash commit \code{140bc2d0}. The \#850, \#869 and \#873 rows, and \code{PhSe2Train.BothFormsFitTheDynamicBicycle}: \code{master} at \code{6cc8cfdc}, after v3.7.8. The \#982, \#983 and \#987 rows: \code{master} at \code{3d5c15c6}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are those of \#987's squash commit \code{b89992ef}. The \#1004 rows: its branch commit \code{a61d981c}, on \code{3d5c15c6}. \\
+libcvc & \code{master} at \code{c1f104c0}; its \code{nav}, \code{ph} and \code{physics} sources and tests are identical to the v3.7.1 tag (\code{d8ca602b}). The \#851 rows: its branch commit \code{6e7ab557}, cut from \code{master} at \code{cc8800a8}, whose \code{ph} sources and tests are those of its squash commit \code{b8ac9975}. The \#852 rows (and every \code{nav\_dyn\_bike\_test} and \code{physics\_dyn\_bike\_plant\_test} line below): its branch commit \code{1a0acc77}, on \#848's head \code{d1a2a78e}, cut from \code{master} at \code{72e4c607}, whose \code{nav} and \code{physics} sources and tests are those of its squash commit \code{140bc2d0}. The \#850, \#869 and \#873 rows, and \code{PhSe2Train.BothFormsFitTheDynamicBicycle}: \code{master} at \code{6cc8cfdc}, after v3.7.8. The \#982, \#983 and \#987 rows: \code{master} at \code{3d5c15c6}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are those of \#987's squash commit \code{b89992ef}. The \#981 and \#1004 rows: \code{master} at \code{352f1933}, after v3.7.11, where every file the two PRs touched is as their squash commits \code{45cb239a} and \code{ce9aebaf} left it. \\
 GRL-SNAM & \code{main} at \code{0e21085} (\code{3a38ae4} adds only this paper). The \#138 rows: \code{main} at \code{2f76ab0}, \#138's squash commit. The \#146 rows: \code{main} at \code{41ddf84}, whose twins, tests and fixtures are those of \#146's squash commit \code{b6ddb801} \\
 Operating system & Windows 11 Pro 10.0.26100, x86-64 \\
 Compiler & MSVC 19.44 (Visual Studio 2022, toolset 14.44.35207), Release \\
@@ -2297,11 +2356,13 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=%CD%\deps
 cmake --build build --target nav_dyn_bike_test nav_dyn_4w_test ^
       physics_dyn_bike_plant_test ph_se2_test ph_se2_train_test ^
       nav_potential_test nav_dyn_spin_test nav_dyn_ph_full_test ^
-      physics_dyn_contact_test
+      physics_dyn_contact_test nav_geom_rollout_grad_test ^
+      nav_coef_train_test nav_material_train_test
 set PATH=%CD%\deps\bin;%CD%\build\bin;%PATH%
 for %t in (nav_dyn_bike_test nav_dyn_4w_test physics_dyn_bike_plant_test
            ph_se2_test ph_se2_train_test nav_potential_test nav_dyn_spin_test
-           nav_dyn_ph_full_test physics_dyn_contact_test) do build\bin\%t.exe
+           nav_dyn_ph_full_test physics_dyn_contact_test nav_geom_rollout_grad_test
+           nav_coef_train_test nav_material_train_test) do build\bin\%t.exe
 \end{verbatim}
 \end{minipage}
 \end{center}
@@ -2322,18 +2383,19 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$PWD/deps
 cmake --build build --target nav_dyn_bike_test nav_dyn_4w_test \
       physics_dyn_bike_plant_test ph_se2_test ph_se2_train_test \
       nav_potential_test nav_dyn_spin_test nav_dyn_ph_full_test \
-      physics_dyn_contact_test
+      physics_dyn_contact_test nav_geom_rollout_grad_test \
+      nav_coef_train_test nav_material_train_test
 for t in nav_dyn_bike_test nav_dyn_4w_test physics_dyn_bike_plant_test \
          ph_se2_test ph_se2_train_test nav_potential_test nav_dyn_spin_test \
-         nav_dyn_ph_full_test physics_dyn_contact_test; do ./build/bin/$t; done
+         nav_dyn_ph_full_test physics_dyn_contact_test nav_geom_rollout_grad_test \
+         nav_coef_train_test nav_material_train_test; do ./build/bin/$t; done
 \end{verbatim}
 \end{minipage}
 \end{center}
 These were not run verbatim for this paper, since no Linux machine was available where it was
 written. libcvc's CI builds every test and runs it under CTest on Linux, macOS and Windows for each
-pull request, \#850, \#851, \#982, \#983 and \#987 included. The tests are registered with CTest
-under their Google Test names, so
-\code{ctest --test-dir build -R 'DynBike|Dyn4|DynSpin|DynPHFull|DynContact|PhSe2|PhRff|PhMat3|PhRng|NavPotential'}
+pull request. The tests are registered with CTest under their Google Test names, so
+\code{ctest --test-dir build -R 'Dyn|Ph|NavPotential|NavGeomRolloutGrad|NavCoefTrain|NavMaterialTrain'}
 runs these suites. That is a superset of the tables' rows.
 
 \subsection{What the libcvc tests print}
@@ -2492,10 +2554,10 @@ nav_dyn_ph_full_test (8 tests, on master at 3d5c15c6):
 \begin{minipage}{0.98\linewidth}
 \scriptsize
 \begin{verbatim}
-physics_dyn_contact_test (9 tests, at #1004's a61d981c; the vehicle is the full-size preset):
+physics_dyn_contact_test (9 tests, on master at 352f1933; the vehicle is the full-size preset):
   165 poses in the skin: the barrier's wrench within 5.22e-10 of -dPhi/dpose
   168 touching pairs: forces and moments balance; the barrier within 3.33e-10 of -dPhi/dpose
-  846 wall and 638 pair poses: the rows' R_c v within 7.93e-16 of -Wd; the solve within 4.94e-10;
+  846 wall and 638 pair poses: the rows' R_c v within 7.93e-16 of -Wd; the solve within 3.42e-16;
     the pair's forces and moments balance within 1.76e-15
   wall, head on, substep 0.0100 s: ... dissipated 2.882e+04 J, exchange 0 J; mean |residual| per
     step 3.446e+00 J, |sum| / flow 3.96e-03   (then 7.267e-01, 1.732e-01 J)
@@ -2536,6 +2598,23 @@ physics_dyn_bike_plant_test (10 tests, on master at 3d5c15c6; the #982 and #987 
 ph_se2_train_test (13 tests, on master at 3d5c15c6; the #982 lines):
   no potential: 68 entries against central differences: worst relative 2.08e-07
   terrain potential: 68 entries against central differences: worst relative 1.16e-04
+\end{verbatim}
+\end{minipage}
+\end{center}
+\begin{center}
+\begin{minipage}{0.98\linewidth}
+\scriptsize
+\begin{verbatim}
+nav_geom_rollout_grad_test (16 tests, on master at 352f1933; the #981 lines):
+  [geom-multistart legacy explicit] L=2.22984 |g|=261.4329 dir_rel=1.648e-04 checked=11 ...
+  [geom-multistart legacy semi] L=2.04984 |g|=276.6617 dir_rel=1.385e-04 checked=11 ...
+  [geom-multistart sampled explicit] L=2.89833 |g|=258.9400 dir_rel=1.323e-04 checked=12 ...
+  [geom-multistart sampled semi] L=2.45327 |g|=280.5916 dir_rel=1.273e-04 checked=12 ...
+nav_coef_train_test (30 tests, on master at 352f1933; the #981 lines):
+  [gradcheck explicit] params=419 |g|=0.0118 dir_rel=6.473e-04 checked=15 worst_rel=1.612e-02
+  window loss: semi-implicit 1.588633, explicit 1.591275
+nav_material_train_test (18 tests, on master at 352f1933; the #981 line):
+  [material-train-e2e legacy explicit] L=42.9632 |g|=241.928 dir_rel=2.170e-04 checked=232 ...
 \end{verbatim}
 \end{minipage}
 \end{center}
@@ -2608,6 +2687,7 @@ Lie-IMEX step~\eqref{eq:imex} & \code{se2\_vehicle::step}, \code{interval\_step}
 Rollout objective~\eqref{eq:objective} & \code{se2\_rollout\_objective}, \code{se2\_optimizer}; \code{cvc ph-train} & --- \\
 $U_{\mathrm{nav}}$, \eqref{eq:unav} & \code{nav/detail/nav\_potential.h}, \code{detail::material\_energy} & \code{grl\_snam.nav\_potential} \\
 Per-step identity~\eqref{eq:rE}; checks & \code{book\_step}, \code{energy\_residual\_bound}; \code{rollout\_energy}'s book fields & \code{nav\_potential.book\_step}, \code{energy\_residual\_bound}; \code{integrate\_surrogate\_material(energy=...)} (\#139) \\
+The geometry rollout's integrator, Sec.~\ref{sec:nav} & \code{geom\_rollout\_params::semi\_implicit}, \code{multi\_start\_params::semi\_implicit} (true since \#981); \code{train\_config::point\_mass}; \code{pycvc} \code{nav\_material\_trainer\_create(..., ms\_semi\_implicit)} & \code{material\_train\_native} (libcvc's default); \code{material\_train\_torch} (explicit by default) \\
 Context and projection work~\eqref{eq:telescope} & \code{drive\_telemetry::potential\_end}, \code{projection\_work}, \code{context\_work} (\code{sim\_world}) & read via \code{pycvc} \code{nav\_sim\_world\_drive\_telemetry} (libcvc \#857) \\
 \bottomrule
 \end{tabularx}
