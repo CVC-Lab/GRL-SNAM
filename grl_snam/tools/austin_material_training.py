@@ -20,15 +20,18 @@ import torch
 
 from .. import planner
 from ..belief import BeliefGrid
-from ..belief_material_controller import BeliefMaterialSensor
+from ..belief_material_controller import (
+    BeliefMaterialContract,
+    BeliefMaterialController,
+    BeliefMaterialSensor,
+)
 from ..belief_material_training import (
     BeliefMaterialTrainingSample,
     build_belief_material_training_batch,
 )
-from ..material import GateParams, MaterialParams
 from ..material_nav import CoefEnergyNetMaterial, load_geometry_weights
 from ..material_routes import validate_material_route_manifest
-from ..material_train_torch import MaterialTrainerTorch, load_cvcnm
+from ..material_train_torch import MaterialTrainerTorch
 from .austin_material_evaluation import (
     AustinMaterialEvaluationScene,
     constant_material_rollout_patch,
@@ -61,6 +64,8 @@ class AustinMaterialTrainingParams:
     patch_extent_m: float = 100.0
     patch_size: int = 25
     feature_scale_m: float = 20.0
+    material_k_sharp: float = 5.0
+    material_d_hat_m: float = 3.0
     fixed_lambda_soft: float = 1.5
     fixed_lambda_hard: float = 1.0
     material_gate_trigger: float = 0.30
@@ -70,6 +75,20 @@ class AustinMaterialTrainingParams:
     batch_size: int = 48
     learning_rate: float = 3e-4
     cvar_alpha: float = 0.95
+    # The shared trainer's lambda regularizer is a log barrier centred on lambda_max / 2, so with
+    # little data signal it alone drags both heads away from their fixed initial values.
+    lambda_regularization: float = 0.0
+
+    @property
+    def contract(self) -> BeliefMaterialContract:
+        """The feature frame and material constants written into the trained ``.cvcnm``."""
+        return BeliefMaterialContract(
+            feature_scale_m=self.feature_scale_m,
+            k_sharp=self.material_k_sharp,
+            d_hat_sdf_m=self.material_d_hat_m,
+            material_gate_trigger=self.material_gate_trigger,
+            geometry_d_hat_m=self.geometry_d_hat_m,
+        )
 
     def __post_init__(self) -> None:
         positive = {
@@ -102,11 +121,9 @@ class AustinMaterialTrainingParams:
             raise ValueError("fixed_lambda_hard must lie strictly inside its learned range")
         if not 0.0 < self.cvar_alpha < 1.0:
             raise ValueError("cvar_alpha must lie strictly between zero and one")
-        if (
-            not math.isfinite(self.material_gate_trigger)
-            or not 0.0 <= self.material_gate_trigger <= 1.0
-        ):
-            raise ValueError("material_gate_trigger must be finite and in [0, 1]")
+        if not math.isfinite(self.lambda_regularization) or self.lambda_regularization < 0.0:
+            raise ValueError("lambda_regularization must be finite and >= 0")
+        self.contract  # validates the frame scale, barrier constants and gate trigger
 
 
 def _world_to_cell(point, bounds, shape) -> tuple[int, int]:
@@ -175,12 +192,9 @@ def build_austin_material_training_samples(
     gate_active = 0
     visible_fractions = []
     obstacle_counts = []
-    material_params = MaterialParams(
+    material_params = params.contract.material_params(
         lam_soft=params.fixed_lambda_soft,
         lam_hard=params.fixed_lambda_hard,
-        k_sharp=5.0,
-        d_hat_sdf_m=params.geometry_d_hat_m,
-        gate=GateParams(material_trigger=params.material_gate_trigger),
     )
 
     for route in manifest["train"]:
@@ -205,13 +219,10 @@ def build_austin_material_training_samples(
             material_params=material_params,
         )
 
+        step_m = params.max_speed_mps * params.dt_s * params.horizon_steps
         for sample_index, distance in enumerate(sample_distances):
             position = _polyline_position(points, cumulative, distance)
-            target = _polyline_position(
-                points,
-                cumulative,
-                distance + params.max_speed_mps * params.dt_s * params.horizon_steps,
-            )
+            target = _polyline_position(points, cumulative, distance + step_m)
             local_goal = _polyline_position(
                 points,
                 cumulative,
@@ -222,9 +233,14 @@ def build_austin_material_training_samples(
             if speed > params.max_speed_mps:
                 target_velocity *= params.max_speed_mps / speed
                 target = position + (params.dt_s * params.horizon_steps * target_velocity)
-            velocity = target_velocity.copy()
+            # The start state is the teacher's velocity on ARRIVAL here, not the velocity that
+            # reaches the target: starting at the target velocity lets a force-free coast hit the
+            # target exactly, so the trajectory loss would penalize every force, material included.
             if sample_index == 0:
-                velocity[:] = 0.0
+                velocity = np.zeros(2, np.float64)
+            else:
+                previous = _polyline_position(points, cumulative, distance - step_m)
+                velocity = (position - previous) / (params.dt_s * params.horizon_steps)
 
             update = sensor.sense(
                 position,
@@ -315,7 +331,6 @@ def _new_model(
         lam_soft_max=params.lambda_soft_max,
         lam_hard_max=params.lambda_hard_max,
     )
-    model.patch_size = params.patch_size
     model.belief_header = BeliefHeader(
         material_range_m=0.0,
         patch_extent_m=params.patch_extent_m,
@@ -347,6 +362,43 @@ def _sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def _lambda_summary(
+    model: CoefEnergyNetMaterial,
+    samples: list[BeliefMaterialTrainingSample],
+    params: AustinMaterialTrainingParams,
+) -> dict:
+    """Spread of the trained heads' lambdas over the training states, next to the fixed values.
+
+    The heads start at exactly the fixed lambdas, so this is what shows how far learning moved.
+    """
+    batch = build_belief_material_training_batch(
+        samples,
+        patch_extent_m=params.patch_extent_m,
+        patch_size=params.patch_size,
+        feature_scale_m=params.feature_scale_m,
+    )
+    with torch.inference_mode():
+        outputs = model(
+            torch.as_tensor(batch["obs_feats"]),
+            torch.as_tensor(batch["obs_mask"]).bool(),
+            torch.as_tensor(batch["goal_feats"]),
+            torch.as_tensor(batch["risk_patch"]),
+        )
+    summary = {}
+    for name, values, fixed in (
+        ("lambda_soft", outputs[3], params.fixed_lambda_soft),
+        ("lambda_hard", outputs[4], params.fixed_lambda_hard),
+    ):
+        array = values.detach().cpu().numpy().reshape(-1)
+        summary[name] = {
+            "fixed": fixed,
+            "mean": float(array.mean()),
+            "minimum": float(array.min()),
+            "maximum": float(array.max()),
+        }
+    return summary
+
+
 def train_austin_material_model(
     scene: AustinMaterialEvaluationScene,
     manifest: dict,
@@ -373,7 +425,7 @@ def train_austin_material_model(
         w_vel=0.5,
         w_fric=0.1,
         w_clear=5e-3,
-        w_lreg=0.01,
+        w_lreg=params.lambda_regularization,
         w_goal=2.0,
         w_len=0.01,
         w_risk=1.0,
@@ -382,8 +434,8 @@ def train_austin_material_model(
         w_multi=0.0,
         lam_soft_max=params.lambda_soft_max,
         lam_hard_max=params.lambda_hard_max,
-        d_hat_sdf=params.geometry_d_hat_m,
-        k_sharp=5.0,
+        d_hat_sdf=params.material_d_hat_m,
+        k_sharp=params.material_k_sharp,
         seed=seed,
     )
     trainable_prefixes = ("risk_enc.", "lam_soft_head.", "lam_hard_head.")
@@ -415,9 +467,15 @@ def train_austin_material_model(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     checkpoint = output / "material.cvcnm"
+    trainer.model.meta = params.contract.to_meta()
     trainer.save(checkpoint)
-    # Read the file back through the shared deployable loader before reporting success.
-    loaded = load_cvcnm(checkpoint, device="cpu")
+    # Read the file back through the deployable loader (which checks the contract) first.
+    loaded = BeliefMaterialController.from_cvcnm(
+        checkpoint,
+        device="cpu",
+        patch_size=params.patch_size,
+        patch_extent_m=params.patch_extent_m,
+    ).model
     report = {
         "schema": "grl-snam-austin-material-training/1",
         "seed": seed,
@@ -432,11 +490,14 @@ def train_austin_material_model(
         "checkpoint": str(checkpoint),
         "checkpoint_sha256": _sha256(checkpoint),
         "geometry_checkpoint_sha256": _sha256(geometry_checkpoint),
+        "bundle_files_sha256": scene.bundle_files_sha256,
         "checkpoint_contract": {
             "risk_channels": loaded.risk_channels,
             "patch_size": loaded.patch_size,
             "belief": asdict(loaded.belief_header),
+            "material": asdict(params.contract),
         },
+        "learned_lambdas": _lambda_summary(loaded, samples, params),
     }
     report_path = output / "training.json"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -456,6 +517,15 @@ def main(argv=None) -> int:
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--cvar-alpha", type=float, default=0.95)
     parser.add_argument("--threads", type=int, default=2)
+    defaults = AustinMaterialTrainingParams()
+    parser.add_argument("--material-k-sharp", type=float, default=defaults.material_k_sharp)
+    parser.add_argument("--material-d-hat-m", type=float, default=defaults.material_d_hat_m)
+    parser.add_argument(
+        "--material-gate-trigger", type=float, default=defaults.material_gate_trigger
+    )
+    parser.add_argument(
+        "--lambda-regularization", type=float, default=defaults.lambda_regularization
+    )
     user = parser.parse_args(argv)
 
     torch.set_num_threads(user.threads)
@@ -467,6 +537,10 @@ def main(argv=None) -> int:
         batch_size=user.batch_size,
         learning_rate=user.lr,
         cvar_alpha=user.cvar_alpha,
+        material_k_sharp=user.material_k_sharp,
+        material_d_hat_m=user.material_d_hat_m,
+        material_gate_trigger=user.material_gate_trigger,
+        lambda_regularization=user.lambda_regularization,
     )
     report = train_austin_material_model(
         scene,

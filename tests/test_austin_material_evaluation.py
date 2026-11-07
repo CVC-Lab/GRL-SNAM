@@ -37,7 +37,10 @@ def _bundle(tmp_path):
     iio.imwrite(tmp_path / "roads.png", _rgba_mask(2, 3, []))
 
 
-def test_evaluation_scene_uses_audited_route_grid(tmp_path):
+def test_evaluation_scene_uses_audited_route_grid(tmp_path, monkeypatch):
+    from grl_snam.tools import material_raster
+
+    monkeypatch.setattr(material_raster, "AUSTIN_BUNDLE_FILE_SHA256", {})  # a synthetic bundle
     _bundle(tmp_path)
 
     scene = load_austin_material_evaluation_scene(tmp_path)
@@ -46,6 +49,14 @@ def test_evaluation_scene_uses_audited_route_grid(tmp_path):
     assert scene.occupancy[1, 0]
     assert scene.risk[1, 0] == 0.30
     assert scene.hard[0, 2]
+    assert set(scene.bundle_files_sha256) == {
+        "terrain.json",
+        "foliage_mask.png",
+        "open_fields.png",
+        "water.png",
+        "roads.png",
+        "navmask.png",
+    }
 
 
 def test_evaluator_selects_on_validation_then_runs_every_test_arm():
@@ -80,6 +91,7 @@ def test_evaluator_selects_on_validation_then_runs_every_test_arm():
             "counts": {"train": 0, "validation": 1, "test": 1},
             "hard_counts": {"train": 0, "validation": 0, "test": 1},
             "minimum_endpoint_separation_m": 0.0,
+            "minimum_split_corridor_separation_m": 0.0,
         },
     }
     calls = []
@@ -118,7 +130,8 @@ def test_evaluator_selects_on_validation_then_runs_every_test_arm():
     )
 
     assert report["selected_waypoint_risk_weight"] == 1.0
-    assert report["params"]["material_gate_trigger"] == 0.30
+    # The gate trigger and barrier constants come from the checkpoint's contract, not the protocol.
+    assert "material_gate_trigger" not in report["params"]
     assert calls[:2] == [("validation", "learned", 0.5), ("validation", "learned", 1.0)]
     assert {call[1] for call in calls[2:]} == {
         "fixed_lambda",

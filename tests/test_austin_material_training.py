@@ -30,6 +30,7 @@ def _manifest():
             "counts": {"train": 1, "validation": 0, "test": 0},
             "hard_counts": {"train": 0, "validation": 0, "test": 0},
             "minimum_endpoint_separation_m": 0.0,
+            "minimum_split_corridor_separation_m": 0.0,
         },
     }
 

@@ -20,7 +20,6 @@ from ..belief_material_controller import (
     BeliefMaterialController,
     BeliefMaterialSensor,
 )
-from ..material import GateParams, MaterialParams
 from ..material_evaluation import (
     MATERIAL_EVALUATION_ARMS,
     MaterialRouteMetrics,
@@ -53,6 +52,7 @@ class AustinMaterialEvaluationScene:
     risk: np.ndarray
     hard: np.ndarray
     bounds: tuple[float, float, float, float]
+    bundle_files_sha256: dict[str, str] | None = None
 
     @property
     def cell_size_m(self) -> float:
@@ -75,8 +75,6 @@ class AustinMaterialEvaluationParams:
     max_speed_mps: float = 3.0
     fixed_lambda_soft: float = 1.5
     fixed_lambda_hard: float = 1.0
-    material_gate_trigger: float = 0.30
-    geometry_d_hat_m: float = 3.0
     patch_extent_m: float = 100.0
     segment_sample_m: float = 1.0
     bootstrap_samples: int = 10_000
@@ -89,7 +87,6 @@ class AustinMaterialEvaluationParams:
             "goal_tolerance_m": self.goal_tolerance_m,
             "dt_s": self.dt_s,
             "max_speed_mps": self.max_speed_mps,
-            "geometry_d_hat_m": self.geometry_d_hat_m,
             "patch_extent_m": self.patch_extent_m,
             "segment_sample_m": self.segment_sample_m,
             "bootstrap_samples": self.bootstrap_samples,
@@ -104,11 +101,6 @@ class AustinMaterialEvaluationParams:
             weight < 0.0 or not math.isfinite(weight) for weight in self.waypoint_risk_candidates
         ):
             raise ValueError("waypoint risk candidates must be finite and non-negative")
-        if (
-            not math.isfinite(self.material_gate_trigger)
-            or not 0.0 <= self.material_gate_trigger <= 1.0
-        ):
-            raise ValueError("material_gate_trigger must be finite and in [0, 1]")
 
 
 def load_austin_material_evaluation_scene(bundle: str | Path) -> AustinMaterialEvaluationScene:
@@ -119,6 +111,7 @@ def load_austin_material_evaluation_scene(bundle: str | Path) -> AustinMaterialE
         risk=route_inputs.risk,
         hard=route_inputs.hard,
         bounds=route_inputs.bounds,
+        bundle_files_sha256=route_inputs.bundle_files_sha256,
     )
 
 
@@ -255,12 +248,10 @@ def run_austin_material_route(
     position = start.copy()
     velocity = np.zeros(2, np.float64)
     belief = BeliefGrid(scene.occupancy.shape, scene.bounds)
-    material_params = MaterialParams(
+    # The barrier and gate constants are the ones the checkpoint was trained under.
+    material_params = controller.contract.material_params(
         lam_soft=params.fixed_lambda_soft,
         lam_hard=params.fixed_lambda_hard,
-        k_sharp=5.0,
-        d_hat_sdf_m=3.0,
-        gate=GateParams(material_trigger=params.material_gate_trigger),
     )
     sensor = BeliefMaterialSensor(
         belief,
@@ -346,7 +337,7 @@ def run_austin_material_route(
             radii,
             constant_material_rollout_patch(sensor.runtime, position, device),
             sensor.runtime,
-            d_hat=params.geometry_d_hat_m,
+            d_hat=controller.contract.geometry_d_hat_m,
             dt=params.dt_s,
             steps=1,
         )
@@ -484,6 +475,8 @@ def main(argv=None) -> int:
     report["provenance"] = {
         "checkpoint_sha256": _sha256(user.checkpoint),
         "routes_sha256": _sha256(user.routes),
+        "material_contract": asdict(controller.contract),
+        "bundle_files_sha256": scene.bundle_files_sha256,
     }
     user.out.parent.mkdir(parents=True, exist_ok=True)
     user.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")

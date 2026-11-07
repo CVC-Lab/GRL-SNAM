@@ -27,6 +27,11 @@ class BeliefMaterialTrainingSample:
     ``[risk, phi, grad_r_x, grad_r_y, grad_phi_x, grad_phi_y]``. One patch-cell offset must mean
     one position-coordinate unit, matching :func:`material_nav.bilinear_sample_patch`; this
     adapter deliberately does not synthesize or rescale that dynamics input.
+
+    ``runtime`` is read when the batch is built, not when the sample is. A live
+    :class:`~grl_snam.belief_material_controller.BeliefMaterialSensor` updates its runtime's gate
+    occupancy in place on later ticks, so a sample taken from one should carry ``gate_active``
+    rather than leave the gate to be evaluated (``None``) against a later tick's occupancy.
     """
 
     position: np.ndarray
