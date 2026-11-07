@@ -16,6 +16,7 @@ from .material_palette import MATERIALS
 __all__ = [
     "MaterialRouteGenerationParams",
     "generate_material_route_manifest",
+    "segment_distance_m",
     "validate_material_route_manifest",
     "write_material_route_manifest",
 ]
@@ -32,16 +33,20 @@ class MaterialRouteGenerationParams:
     max_distance_m: float = 220.0
     endpoint_clearance_m: float = 5.0
     min_endpoint_separation_m: float = 60.0
+    # Routes in different splits keep their whole direct corridors this far apart (the sensor
+    # range), so a test route never revisits ground a training route has already sensed.
+    min_split_corridor_separation_m: float = 60.0
     risk_threshold: float = 0.30
     max_detour_ratio: float = 2.5
     max_attempts_per_route: int = 100_000
-    first_route_id: int = 400
+    first_route_id: int = 500  # 400-422 named grl-snam-dbg#106's routes; avoid reusing them
 
     def __post_init__(self) -> None:
         finite_nonnegative = {
             "min_distance_m": self.min_distance_m,
             "endpoint_clearance_m": self.endpoint_clearance_m,
             "min_endpoint_separation_m": self.min_endpoint_separation_m,
+            "min_split_corridor_separation_m": self.min_split_corridor_separation_m,
         }
         for name, value in finite_nonnegative.items():
             if not math.isfinite(value) or value < 0.0:
@@ -130,14 +135,48 @@ def _challenge_name(
     return MATERIALS[material] if 0 <= material < len(MATERIALS) else kind
 
 
-def _separated(start, goal, selected, minimum_m: float) -> bool:
-    if minimum_m <= 0.0:
-        return True
-    for route in selected:
-        for candidate in (start, goal):
-            for existing in (route["start_xy"], route["goal_xy"]):
-                if math.dist(candidate, existing) < minimum_m:
-                    return False
+def _point_segment_distance(point, a, b) -> float:
+    ax, ay = a
+    dx, dy = b[0] - ax, b[1] - ay
+    length_sq = dx * dx + dy * dy
+    t = 0.0
+    if length_sq > 0.0:
+        t = min(1.0, max(0.0, ((point[0] - ax) * dx + (point[1] - ay) * dy) / length_sq))
+    return math.dist(point, (ax + t * dx, ay + t * dy))
+
+
+def _segments_cross(a, b, c, d) -> bool:
+    def orient(p, q, r) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    return (orient(a, b, c) * orient(a, b, d) < 0.0) and (orient(c, d, a) * orient(c, d, b) < 0.0)
+
+
+def segment_distance_m(a, b, c, d) -> float:
+    """Minimum distance between segments ``ab`` and ``cd`` (zero when they cross)."""
+    if _segments_cross(a, b, c, d):
+        return 0.0
+    return min(
+        _point_segment_distance(a, c, d),
+        _point_segment_distance(b, c, d),
+        _point_segment_distance(c, a, b),
+        _point_segment_distance(d, a, b),
+    )
+
+
+def _separated(start, goal, split, selected, params: MaterialRouteGenerationParams) -> bool:
+    for route, route_split in selected:
+        existing = (route["start_xy"], route["goal_xy"])
+        if params.min_endpoint_separation_m > 0.0:
+            for candidate in (start, goal):
+                for point in existing:
+                    if math.dist(candidate, point) < params.min_endpoint_separation_m:
+                        return False
+        if (
+            route_split != split
+            and segment_distance_m(start, goal, *existing) < params.min_split_corridor_separation_m
+        ):
+            return False
     return True
 
 
@@ -200,7 +239,7 @@ def generate_material_route_manifest(
 
     rng = np.random.default_rng(seed)
     manifest = {split: [] for split in _SPLITS}
-    selected: list[dict] = []
+    selected: list[tuple[dict, str]] = []
     for split in _SPLITS:
         requested = ["hard"] * split_hard[split] + ["soft"] * (
             split_counts[split] - split_hard[split]
@@ -219,7 +258,7 @@ def generate_material_route_manifest(
                 direct_distance = math.dist(start, goal)
                 if not params.min_distance_m <= direct_distance <= params.max_distance_m:
                     continue
-                if not _separated(start, goal, selected, params.min_endpoint_separation_m):
+                if not _separated(start, goal, split, selected, params):
                     continue
 
                 rr, cc = _line_cells(start_cell, goal_cell)
@@ -249,7 +288,7 @@ def generate_material_route_manifest(
                     "split_locked_before_training": True,
                 }
                 manifest[split].append(route)
-                selected.append(route)
+                selected.append((route, split))
                 break
             else:
                 raise RuntimeError(
@@ -274,6 +313,7 @@ def generate_material_route_manifest(
         "maximum_direct_distance_m": params.max_distance_m,
         "endpoint_clearance_m": params.endpoint_clearance_m,
         "minimum_endpoint_separation_m": params.min_endpoint_separation_m,
+        "minimum_split_corridor_separation_m": params.min_split_corridor_separation_m,
         "maximum_hard_safe_detour_ratio": params.max_detour_ratio,
         "source": dict(source or {}),
     }
@@ -293,6 +333,7 @@ def validate_material_route_manifest(manifest: Mapping[str, object]) -> None:
 
     route_ids: set[int] = set()
     endpoints: list[tuple[float, float]] = []
+    corridors: list[tuple[str, tuple[float, float], tuple[float, float]]] = []
     observed_hard = {split: 0 for split in _SPLITS}
     for split in _SPLITS:
         routes = manifest.get(split)
@@ -312,6 +353,7 @@ def validate_material_route_manifest(manifest: Mapping[str, object]) -> None:
                     raise ValueError(f"route {route_id} {field} must contain two finite values")
                 points.append((float(point[0]), float(point[1])))
                 endpoints.append(points[-1])
+            corridors.append((split, points[0], points[1]))
             direct = route.get("direct_distance_m")
             if not isinstance(direct, (int, float)) or not math.isclose(
                 float(direct), math.dist(*points), rel_tol=1e-9, abs_tol=1e-9
@@ -335,6 +377,16 @@ def validate_material_route_manifest(manifest: Mapping[str, object]) -> None:
         for other in endpoints[index + 1 :]:
             if math.dist(endpoint, other) < float(minimum):
                 raise ValueError("route endpoints violate minimum separation")
+
+    corridor = protocol.get("minimum_split_corridor_separation_m")
+    if not isinstance(corridor, (int, float)) or not math.isfinite(corridor) or corridor < 0.0:
+        raise ValueError("minimum_split_corridor_separation_m must be finite and >= 0")
+    for index, (split, a, b) in enumerate(corridors):
+        for other_split, c, d in corridors[index + 1 :]:
+            if other_split != split and segment_distance_m(a, b, c, d) < float(corridor):
+                raise ValueError(
+                    f"{split} and {other_split} route corridors violate minimum separation"
+                )
 
 
 def write_material_route_manifest(path, manifest: Mapping[str, object]) -> None:
