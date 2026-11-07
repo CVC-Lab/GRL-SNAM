@@ -121,8 +121,10 @@ class CoefEnergyNetMaterial(nn.Module):
     ):
         super().__init__()
         self.risk_channels = risk_channels
-        # The .cvcnm header's widths (libcvc's net reads them from the file).
+        # The .cvcnm header's widths (libcvc's net reads them from the file). The adaptive-pool
+        # patch encoder accepts any patch size, so the trained one is recorded here explicitly.
         self.d_tok, self.nhead, self.num_layers, self.d_risk = d_tok, nhead, num_layers, d_risk
+        self.patch_size = patch_size
         self.lam_soft_max = lam_soft_max
         self.lam_hard_max = lam_hard_max
         self.mu_lat_max = mu_lat_max

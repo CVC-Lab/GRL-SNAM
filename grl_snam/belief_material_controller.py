@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import numpy as np
 import torch
@@ -15,11 +16,13 @@ from .belief_material import (
     belief_material_runtime,
     material_patch_belief,
 )
-from .material import GateResult, MaterialParams, MaterialRuntime
+from .material import GateParams, GateResult, MaterialParams, MaterialRuntime
 from .material_nav import CoefEnergyNetMaterial, integrate_surrogate_material
 
 __all__ = [
+    "BELIEF_MATERIAL_META_KEY",
     "BeliefMaterialCoefficients",
+    "BeliefMaterialContract",
     "BeliefMaterialControlCommand",
     "BeliefMaterialController",
     "BeliefMaterialRollout",
@@ -39,6 +42,83 @@ def belief_material_ray_count(fov_rad: float, range_m: float, cell_size_m: float
     if not math.isfinite(cell_size_m) or cell_size_m <= 0.0:
         raise ValueError("cell_size_m must be finite and > 0")
     return max(1, math.ceil(fov_rad * range_m / cell_size_m))
+
+
+BELIEF_MATERIAL_META_KEY = "grl_snam.belief_material"
+"""Key of the belief-material contract in a ``.cvcnm`` file's JSON ``meta`` string."""
+
+ROBOT_RELATIVE_FRAME = "robot_relative"
+
+
+@dataclass(frozen=True)
+class BeliefMaterialContract:
+    """What a belief-material ``.cvcnm`` was trained with, recorded in the file's ``meta``.
+
+    The ``.cvcnm`` header pins the network's shapes and belief semantics, but not the frame of its
+    geometry inputs or the material force constants. This controller feeds obstacle and goal
+    tokens in a **robot-relative** frame divided by ``feature_scale_m``. That differs from
+    ``train_coef_energy.collate_short`` and ``eval_coef_energy.build_local_feats``, which feed
+    absolute centres in metres; the token layout (libcvc's ``coef_energy_net.h``) is the same in
+    both. A checkpoint therefore records which frame it expects, and
+    :meth:`BeliefMaterialController.from_cvcnm` refuses one that does not.
+
+    ``k_sharp`` / ``d_hat_sdf_m`` are the hazard barrier's steepness and reach,
+    ``material_gate_trigger`` is the witness gate's soft-risk trigger, and ``geometry_d_hat_m`` is
+    the obstacle barrier's reach in the training rollouts; inference must use the values the heads
+    were trained under.
+    """
+
+    feature_frame: str = ROBOT_RELATIVE_FRAME
+    feature_scale_m: float = 20.0
+    k_sharp: float = 5.0
+    d_hat_sdf_m: float = 3.0
+    material_gate_trigger: float = 0.30
+    geometry_d_hat_m: float = 3.0
+
+    def __post_init__(self) -> None:
+        if self.feature_frame != ROBOT_RELATIVE_FRAME:
+            raise ValueError(
+                f"feature_frame must be {ROBOT_RELATIVE_FRAME!r}, got {self.feature_frame!r}"
+            )
+        for name in ("feature_scale_m", "k_sharp", "d_hat_sdf_m", "geometry_d_hat_m"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and > 0")
+        trigger = float(self.material_gate_trigger)
+        if not math.isfinite(trigger) or not 0.0 <= trigger <= 1.0:
+            raise ValueError("material_gate_trigger must be finite and in [0, 1]")
+
+    def material_params(self, *, lam_soft: float, lam_hard: float) -> MaterialParams:
+        """``MaterialParams`` carrying this contract's barrier and gate constants."""
+        return MaterialParams(
+            lam_soft=lam_soft,
+            lam_hard=lam_hard,
+            k_sharp=self.k_sharp,
+            d_hat_sdf_m=self.d_hat_sdf_m,
+            gate=GateParams(material_trigger=self.material_gate_trigger),
+        )
+
+    def to_meta(self) -> str:
+        """The ``.cvcnm`` ``meta`` string recording this contract."""
+        return json.dumps({BELIEF_MATERIAL_META_KEY: asdict(self)}, sort_keys=True)
+
+    @classmethod
+    def from_meta(cls, meta: str, *, source="checkpoint") -> BeliefMaterialContract:
+        """Parse a ``.cvcnm`` ``meta`` string; raise if it does not record a contract."""
+        try:
+            record = json.loads(meta) if meta else {}
+        except json.JSONDecodeError:
+            record = {}
+        contract = record.get(BELIEF_MATERIAL_META_KEY) if isinstance(record, dict) else None
+        if not isinstance(contract, dict):
+            raise ValueError(
+                f"{source}: no {BELIEF_MATERIAL_META_KEY!r} record in the .cvcnm meta, so its "
+                "geometry feature frame and material constants are unknown"
+            )
+        unknown = sorted(set(contract) - set(cls.__dataclass_fields__))
+        if unknown:
+            raise ValueError(f"{source}: unknown belief-material contract fields {unknown}")
+        return cls(**contract)
 
 
 @dataclass(frozen=True)
@@ -229,7 +309,7 @@ class BeliefMaterialController:
         *,
         patch_size: int = 25,
         patch_extent_m: float = 100.0,
-        feature_scale_m: float = 20.0,
+        contract: BeliefMaterialContract = BeliefMaterialContract(),
         belief: BeliefMaterialParams = BeliefMaterialParams(),
     ):
         if model.risk_channels != 3:
@@ -243,14 +323,13 @@ class BeliefMaterialController:
             )
         if not math.isfinite(patch_extent_m) or patch_extent_m <= 0.0:
             raise ValueError("patch_extent_m must be finite and > 0")
-        if not math.isfinite(feature_scale_m) or feature_scale_m <= 0.0:
-            raise ValueError("feature_scale_m must be finite and > 0")
         if belief.seen_rule != "raycast":
             raise ValueError("BeliefMaterialController requires belief.seen_rule='raycast'")
         self.model = model
         self.patch_size = int(patch_size)
         self.patch_extent_m = float(patch_extent_m)
-        self.feature_scale_m = float(feature_scale_m)
+        self.contract = contract
+        self.feature_scale_m = float(contract.feature_scale_m)
         self.belief = belief
         self.model.eval()
 
@@ -263,14 +342,14 @@ class BeliefMaterialController:
         dtype: torch.dtype = torch.float32,
         patch_size: int = 25,
         patch_extent_m: float = 100.0,
-        feature_scale_m: float = 20.0,
         belief: BeliefMaterialParams = BeliefMaterialParams(),
     ) -> BeliefMaterialController:
         """Load and validate a belief-material ``.cvcnm`` deployment checkpoint.
 
         Loading goes through GRL-SNAM's shared ``.cvcnm`` reader. The version-2 belief block is
-        then checked against the controller's sensing and unknown-cell semantics before any
-        inference can run.
+        checked against the controller's sensing and unknown-cell semantics, and the file must
+        record a :class:`BeliefMaterialContract` (its feature frame and material constants) in its
+        ``meta``, before any inference can run.
         """
         from .material_train_torch import load_cvcnm
 
@@ -300,14 +379,39 @@ class BeliefMaterialController:
         check("patch_size", int(model.patch_size), int(patch_size))
         if mismatches:
             raise ValueError(f"{path}: incompatible belief checkpoint: {', '.join(mismatches)}")
+        contract = BeliefMaterialContract.from_meta(getattr(model, "meta", ""), source=path)
 
         return cls(
             model,
             patch_size=patch_size,
             patch_extent_m=patch_extent_m,
-            feature_scale_m=feature_scale_m,
+            contract=contract,
             belief=belief,
         )
+
+    def check_runtime(self, runtime: MaterialRuntime) -> None:
+        """Refuse a runtime whose barrier or gate constants differ from this controller's contract.
+
+        Build the sensor with ``material_params=controller.contract.material_params(...)``; a
+        runtime on the ``MaterialParams`` defaults (k 1.25, d_hat 12 m) would otherwise silently
+        run heads trained under other constants.
+        """
+        params = runtime.params
+        gate = params.gate or GateParams()
+        expected = self.contract
+        mismatches = [
+            f"{name}={actual!r} (contract {wanted!r})"
+            for name, actual, wanted in (
+                ("k_sharp", float(params.k_sharp), expected.k_sharp),
+                ("d_hat_sdf_m", float(params.d_hat_sdf_m), expected.d_hat_sdf_m),
+                ("material_trigger", float(gate.material_trigger), expected.material_gate_trigger),
+            )
+            if not math.isclose(actual, float(wanted), rel_tol=0.0, abs_tol=1e-6)
+        ]
+        if mismatches:
+            raise ValueError(
+                f"material runtime does not match the checkpoint contract: {', '.join(mismatches)}"
+            )
 
     def predict(
         self,
@@ -364,6 +468,7 @@ class BeliefMaterialController:
         seen: np.ndarray,
     ) -> BeliefMaterialControlCommand:
         """Predict coefficients with the validated belief config, then gate ``lam_soft``."""
+        self.check_runtime(runtime)
         inputs = build_belief_material_controller_inputs(
             position_world,
             goal_world,
@@ -456,6 +561,7 @@ class BeliefMaterialController:
             raise ValueError("dt must be finite and > 0")
         if steps < 0:
             raise ValueError("steps must be >= 0")
+        self.check_runtime(runtime)
 
         parameter = next(self.model.parameters())
         device, dtype = parameter.device, parameter.dtype
@@ -509,6 +615,7 @@ class BeliefMaterialController:
         material coefficients: per-obstacle ``alphas`` remain the responsibility of the
         base geometry adapter instead of being collapsed into one SDF coefficient here.
         """
+        self.check_runtime(runtime)
         parameter = next(self.model.parameters())
         material = runtime.grid.field(device=str(parameter.device))
         dtype = material.field.dtype
@@ -541,9 +648,11 @@ def build_belief_material_controller_inputs(
     The caller supplies the already range-limited obstacle set and current local goal, all in
     world coordinates. The obstacle layout deliberately matches the existing geometry model:
     ``[cx, cy, radius, weight, goal_x - cx, goal_y - cy]``. The material patch is cropped from
-    the runtime's belief planes, never from truth, and has channels ``[risk, hard, seen]``. As
-    in the established CoefEnergyNet adapters, geometry features use a robot-relative frame and
-    are divided by ``feature_scale_m``; material and rollout coordinates remain in world units.
+    the runtime's belief planes, never from truth, and has channels ``[risk, hard, seen]``.
+    Geometry features use a robot-relative frame divided by ``feature_scale_m`` — unlike
+    ``train_coef_energy``'s absolute-metre features, which is why a belief-material checkpoint
+    records its :class:`BeliefMaterialContract`. Material and rollout coordinates remain in world
+    units.
 
     Returns unbatched ``(obs_feats, obs_mask, goal_feats, risk_patch)`` with shapes ``(N, 6)``,
     ``(N,)``, ``(4,)``, and ``(3, patch_size, patch_size)``. Callers add a leading batch axis

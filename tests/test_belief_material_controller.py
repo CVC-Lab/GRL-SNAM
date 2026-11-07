@@ -1,3 +1,4 @@
+import json
 import math
 from dataclasses import replace
 
@@ -11,7 +12,9 @@ from grl_snam.belief_material import (
     material_patch_belief,
 )
 from grl_snam.belief_material_controller import (
+    BELIEF_MATERIAL_META_KEY,
     BeliefMaterialCoefficients,
+    BeliefMaterialContract,
     BeliefMaterialControlCommand,
     BeliefMaterialController,
     BeliefMaterialRollout,
@@ -24,7 +27,7 @@ from grl_snam.material_nav import CoefEnergyNetMaterial
 from grl_snam.tools.matnet_export import BeliefHeader, write_matnet
 
 
-def _runtime():
+def _runtime(contract=BeliefMaterialContract()):
     risk = np.arange(25, dtype=np.float32).reshape(5, 5) / np.float32(24.0)
     hard = np.zeros((5, 5), dtype=bool)
     hard[3, 2] = True
@@ -39,6 +42,7 @@ def _runtime():
         (2.0, 2.0),
         1.0,
         sigma=0.0,
+        params=contract.material_params(lam_soft=0.5, lam_hard=1.0),
     )
     return runtime, seen
 
@@ -53,7 +57,6 @@ def _model(risk_channels=3, patch_size=25):
         patch_size=patch_size,
         risk_channels=risk_channels,
     )
-    model.patch_size = patch_size
     model.fuser.enable_nested_tensor = False
     model.fuser.use_nested_tensor = False
     return model
@@ -103,7 +106,7 @@ def test_builds_training_compatible_geometry_and_belief_patch():
     assert obs_mask.dtype == bool
 
 
-def test_geometry_features_are_robot_relative_and_scaled_like_coefenergy():
+def test_geometry_features_are_robot_relative_and_divided_by_the_feature_scale():
     runtime, seen = _runtime()
 
     obs_feats, _obs_mask, goal_feats, _risk_patch = build_belief_material_controller_inputs(
@@ -231,7 +234,10 @@ def test_controller_requires_three_channels_and_expected_patch_shape():
 def test_controller_loads_validated_belief_cvcnm_v2(tmp_path):
     checkpoint = tmp_path / "belief.cvcnm"
     header = BeliefHeader(patch_extent_m=100.0)
-    write_matnet(_model(), str(checkpoint), belief=header)
+    contract = BeliefMaterialContract(
+        feature_scale_m=25.0, k_sharp=0.5, d_hat_sdf_m=30.0, material_gate_trigger=0.2
+    )
+    write_matnet(_model(), str(checkpoint), belief=header, meta=contract.to_meta())
 
     controller = BeliefMaterialController.from_cvcnm(checkpoint)
 
@@ -240,7 +246,42 @@ def test_controller_loads_validated_belief_cvcnm_v2(tmp_path):
     assert controller.patch_size == 25
     assert controller.patch_extent_m == 100.0
     assert controller.belief == BeliefMaterialParams()
+    assert controller.contract == contract
+    assert controller.feature_scale_m == 25.0
+    params = controller.contract.material_params(lam_soft=1.5, lam_hard=1.0)
+    assert (params.k_sharp, params.d_hat_sdf_m, params.gate.material_trigger) == (0.5, 30.0, 0.2)
     assert not controller.model.training
+
+
+def test_controller_refuses_cvcnm_without_a_recorded_feature_frame(tmp_path):
+    checkpoint = tmp_path / "no-contract.cvcnm"
+    write_matnet(_model(), str(checkpoint), belief=BeliefHeader(patch_extent_m=100.0))
+
+    with pytest.raises(ValueError, match="feature frame"):
+        BeliefMaterialController.from_cvcnm(checkpoint)
+
+
+def test_contract_refuses_other_feature_frames_and_unknown_fields():
+    with pytest.raises(ValueError, match="feature_frame"):
+        BeliefMaterialContract(feature_frame="absolute")
+    meta = json.dumps({BELIEF_MATERIAL_META_KEY: {"feature_scale_m": 20.0, "extra": 1}})
+    with pytest.raises(ValueError, match="extra"):
+        BeliefMaterialContract.from_meta(meta)
+
+
+def test_contract_survives_a_load_and_save_round_trip(tmp_path):
+    from grl_snam.material_train_torch import load_cvcnm, save_cvcnm
+
+    first, second = tmp_path / "first.cvcnm", tmp_path / "second.cvcnm"
+    contract = BeliefMaterialContract(feature_scale_m=10.0)
+    write_matnet(
+        _model(), str(first), belief=BeliefHeader(patch_extent_m=100.0), meta=contract.to_meta()
+    )
+
+    save_cvcnm(load_cvcnm(first), second)
+
+    assert BeliefMaterialController.from_cvcnm(second).contract == contract
+    assert second.read_bytes() == first.read_bytes()
 
 
 def test_controller_refuses_non_belief_cvcnm_v1(tmp_path):
@@ -397,9 +438,8 @@ def test_rollout_uses_shared_geometry_and_material_dynamics():
 def test_rollout_reads_material_barrier_constants_from_runtime(monkeypatch):
     import grl_snam.belief_material_controller as controller_module
 
-    runtime, _ = _runtime()
-    runtime.params.k_sharp = 2.25
-    runtime.params.d_hat_sdf_m = 4.5
+    contract = BeliefMaterialContract(k_sharp=2.25, d_hat_sdf_m=4.5)
+    runtime, _ = _runtime(contract)
     captured = {}
     original = controller_module.integrate_surrogate_material
 
@@ -409,16 +449,25 @@ def test_rollout_reads_material_barrier_constants_from_runtime(monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(controller_module, "integrate_surrogate_material", record_constants)
-    _rollout(BeliefMaterialController(_model()), runtime, _command())
+    _rollout(BeliefMaterialController(_model(), contract=contract), runtime, _command())
 
     assert captured == {"k_sharp": 2.25, "d_hat_sdf": 4.5}
 
 
-def test_live_material_kwargs_use_effective_coefficients_and_existing_field():
-    runtime, _ = _runtime()
-    runtime.params.k_sharp = 2.25
-    runtime.params.d_hat_sdf_m = 4.5
+def test_controller_refuses_a_runtime_built_with_other_material_constants():
+    runtime, seen = _runtime(BeliefMaterialContract(d_hat_sdf_m=12.0))
     controller = BeliefMaterialController(_model())
+
+    with pytest.raises(ValueError, match="d_hat_sdf_m=12.0"):
+        controller.decide((2.0, 2.0), (3.0, 3.0), [], [], [], runtime, seen)
+    with pytest.raises(ValueError, match="checkpoint contract"):
+        controller.live_material_kwargs(_command(), runtime)
+
+
+def test_live_material_kwargs_use_effective_coefficients_and_existing_field():
+    contract = BeliefMaterialContract(k_sharp=2.25, d_hat_sdf_m=4.5)
+    runtime, _ = _runtime(contract)
+    controller = BeliefMaterialController(_model(), contract=contract)
     predicted = BeliefMaterialCoefficients(
         alphas=np.array([3.0], dtype=np.float32),
         beta=4.0,
