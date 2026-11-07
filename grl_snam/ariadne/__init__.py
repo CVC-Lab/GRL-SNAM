@@ -29,6 +29,9 @@ PORTS = {
               "Squad(plant=...)"),
     "material": ("grl_snam.ariadne.material", "material-aware navigation, off vs on",
                  "grl-snam material-demo"),
+    "cars": ("grl_snam.ariadne.cars",
+             "N Ackermann cars driven by your own controller: libcvc's template (--copy DIR)",
+             "new: libcvc's pycvc_gl.cars, GRL-SNAM's policy as a baseline"),
 }  # fmt: skip
 
 

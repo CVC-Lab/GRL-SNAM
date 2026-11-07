@@ -15,11 +15,14 @@ grl-snam ariadne <port> --help
 Every port takes `--offscreen` (GL, no window), `--headless` (no GL: the readouts only),
 `--frames N` (stop after N frames) and `--png PATH` (save the last frame).
 
+**Testing a multi-car controller of your own?** Start from the `cars` template, libcvc's
+`pycvc_gl.cars`: [Write your own multi-car controller](#write-your-own-multi-car-controller).
+
 ## Requirements
 
 - pycvc_gl with its Python host, `pycvc_gl.ariadne` (libcvc 3.7.9+, transfix/libcvc#985). With an
   older pycvc_gl the ports refuse to start and say so; their tests skip.
-- torch (every port but `live austin-planner`).
+- torch (every port but `live austin-planner` and `cars`).
 - Austin, for `live`, `squad` and `fleet`:
   - `live`'s document names its city itself: the `scene-austin-south-small` package on
     cvcpkg.org, which the host downloads once (libcvc's Ariadne data, transfix/libcvc#998).
@@ -121,6 +124,51 @@ The runs have no time cap, since each story ends on its own step budget. With
 `--headless` or `--offscreen`, a run that does not finish ends the port with exit code 1 and
 the reason.
 
+### `cars`: N Ackermann cars driven by your own controller
+
+```bash
+grl-snam ariadne cars                                       # Austin, 6 Humvees
+grl-snam ariadne cars --vehicle kinematic --world generated --cars 12
+grl-snam ariadne cars --copy my_cars                        # the template, to edit
+grl-snam ariadne cars --controller navigator --grl-policy   # GRL-SNAM's policy as the baseline
+```
+
+A template rather than a demo, and libcvc's, not GRL-SNAM's: `pycvc_gl.cars` (pycvc-gl 3.7.12+),
+so any multi-car experiment can start from it. It needs no torch. See
+[Write your own multi-car controller](#write-your-own-multi-car-controller) below.
+
+## Write your own multi-car controller
+
+`grl-snam ariadne cars --copy my_cars` (or `python -m pycvc_gl.cars --copy my_cars`) writes
+libcvc's template: `cars.py`, with a `controller(s, p)` to edit, and `cars.ari`, its panels.
+- **Each tick** (0.05 s), `controller(s, p)` gets every car's state as numpy arrays (SI units):
+  pose, speed, wheel angle, velocity, goal, range rays, collisions, limits and sizes.
+- **It returns** `(steer, accel)` per car, which each car's plant takes in the navigator's place.
+- **The plant is a state-tree setting**, `nav_plant.vehicle`: `kinematic`, `humvee`,
+  `roboracer`, a comma list, or `dynamic[:presets]`. The document's Vehicle combo, its `init:`,
+  `--vehicle` or `--set` switch it live. Physics is the host's plant, not something in the `.ari`
+  file.
+- **So are the navigator's and the vehicles' settings** (`nav.*`, `nav.vehicle.*`, `nav_plant.*`)
+  and your own parameters (`ctl.*`).
+- **The world:** the document's `data:` block (Austin from cvcpkg.org by default, or another
+  package or local bundle), libcvc's terrain generator (its parameters in a panel, recorded in the
+  log), or a flat square.
+- **Headless:** `--headless --frames N --log run.npz` records every tick's states and commands,
+  the coefficients, the rasters and every setting, and sets the exit code.
+
+libcvc's [docs/CARS.md](https://github.com/transfix/libcvc/blob/master/docs/CARS.md) is the full guide. It covers the state table, the worlds, what
+kinematic vs Jolt vs dynamic means for a controller (the steering rate, the driver model, tire slip,
+measured), every setting with its unit and range, the panels, and batch runs.
+
+What GRL-SNAM adds is `--grl-policy`:
+- **With it,** libcvc's navigator (GRL-SNAM's navigator, in C++) drives with the published policy
+  (`grl-snam-weights`, which needs torch to export it to `.cvcnav`), in the frame it was trained in
+  (1 unit = 300 m: `--nav-scale`).
+- **Without it,** `--controller navigator` uses libcvc's built-in policy.
+
+The published policy was trained on the point surrogate. On vehicles it does worse than a
+controller made for them ([docs/PLANTS.md](../../docs/PLANTS.md#what-to-expect)).
+
 ## Every demo and its port
 
 | GRL-SNAM demo | How it runs today | Ariadne port |
@@ -143,3 +191,4 @@ the reason.
 | `wall_vis` | a post-pass for the finale | not ported |
 | `*_bench` | console timings | not ported |
 | `selftest`, `eval`, `experiments/e*` | console / paper figures | not ported |
+| (new) your own multi-car controller | | `cars` (libcvc's template: `--copy DIR`) |
