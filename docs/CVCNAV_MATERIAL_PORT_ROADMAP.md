@@ -373,7 +373,8 @@ literal torch reading would differ:
   and the reductions run in float64 from the per-agent values.
 - The CVaR quantile is `quantile_linear`, detached; `lreg`'s clamp passes its gradient through,
   as the native seed does.
-- `L_multi` is `geom_rollout.cpp`'s: explicit Euler by default, the trainer's mass, the starts
+- `L_multi` is `geom_rollout.cpp`'s: semi-implicit Euler by default (explicit before libcvc #981;
+  `semi_implicit=False` keeps it), the trainer's mass, the starts
   drawn as `multi_start_fracs` draws them, `seed + k` at step k. The bicycle uses the
   `_bicycle` variant.
 - The optimizer is `material_adam`: global-norm clip, then bias-corrected Adam, in float32

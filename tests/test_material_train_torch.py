@@ -400,15 +400,19 @@ _needs_native = pytest.mark.skipif(
     not mtn.HAS_MATERIAL_TRAINER_LOSS,
     reason="pycvc lacks the nav_material_trainer_* binding (with its forward-only loss)",
 )
+# "default" is semi-implicit (libcvc #981), so a binding needs the multi-start args to run it;
+# "legacy" is the fork's explicit single start, which every trainer binding runs.
 _LIVE = {
-    "legacy": ({}, None),
+    "default": ({}, "multistart"),
+    "legacy": ({"semi_implicit": False}, None),
     "sampled": ({"ms_count": 4, "frac_range": (0.8, 0.98), "seed": 5}, "multistart"),
-    "sampled-semi": (
-        {"ms_count": 4, "frac_range": (0.8, 0.98), "seed": 5, "semi_implicit": True},
+    "sampled-explicit": (
+        {"ms_count": 4, "frac_range": (0.8, 0.98), "seed": 5, "semi_implicit": False},
         "multistart",
     ),
     "bicycle": ({"bicycle": VEHICLE}, "bicycle"),
-    "legacy+ext": ({}, "ext"),
+    "default+ext": ({}, "ext"),
+    "legacy+ext": ({"semi_implicit": False}, "ext"),
     "bicycle+ext": ({"bicycle": VEHICLE}, "bicycle+ext"),
 }
 
@@ -459,8 +463,9 @@ _GRADCHECK = {
     "surrogate+ext": ({}, True, True),
     "bicycle+ext": ({"bicycle": VEHICLE}, True, False),
     "sampled": ({"ms_count": 3, "frac_range": (0.8, 0.98), "seed": 5}, False, False),
-    "sampled-semi": (
-        {"ms_count": 3, "frac_range": (0.8, 0.98), "seed": 5, "semi_implicit": True},
+    # libcvc's FullChainGradcheckExplicitMultiStart: explicit Euler keeps its own backward.
+    "sampled-explicit": (
+        {"ms_count": 3, "frac_range": (0.8, 0.98), "seed": 5, "semi_implicit": False},
         False,
         False,
     ),
@@ -600,9 +605,10 @@ def test_sampled_multi_start_semantics(ckpt):
     def loss(**kw):
         return mtt.MaterialTrainerTorch(ckpt, **kw).loss(batch)
 
-    legacy = loss()
-    assert loss(ms_count=10, frac_range=(0.9, 0.9), seed=123) == legacy  # degenerate: no draw
-    semi = loss(semi_implicit=True)
+    semi = loss()
+    assert loss(semi_implicit=True) == semi, "the default is not semi-implicit"
+    assert loss(ms_count=10, frac_range=(0.9, 0.9), seed=123) == semi  # degenerate: no draw
+    legacy = loss(semi_implicit=False)
     assert semi != legacy, "semi_implicit did not reach the rollout"
     sampled = dict(ms_count=4, frac_range=(0.8, 0.98))
     tr = mtt.MaterialTrainerTorch(ckpt, seed=5, **sampled)
@@ -619,14 +625,15 @@ def test_sampled_multi_start_semantics(ckpt):
 
 
 def test_semi_implicit_multi_is_grl_snams_multi_start_penalty(ckpt):
-    """With semi_implicit, L_multi is surrogate_robust.multi_start_penalty fed the model's
-    coefficients and a manual_seed generator; the explicit default (libcvc's) is not."""
+    """With semi_implicit (the default, as libcvc's since #981), L_multi is
+    surrogate_robust.multi_start_penalty fed the model's coefficients and a manual_seed
+    generator; explicit Euler (semi_implicit=False, the fork's order) is not."""
     from grl_snam.surrogate_robust import multi_start_penalty
 
     batch = _batch(B=16, seed=31)
     ms = dict(ms_count=5, frac_range=(0.7, 0.95))
-    semi = mtt.MaterialTrainerTorch(ckpt, semi_implicit=True, seed=77, **ms)
-    expl = mtt.MaterialTrainerTorch(ckpt, seed=77, **ms)
+    semi = mtt.MaterialTrainerTorch(ckpt, seed=77, **ms)
+    expl = mtt.MaterialTrainerTorch(ckpt, semi_implicit=False, seed=77, **ms)
     b = semi._batch(batch)
     with torch.no_grad(), mtt._math_path():
         alphas, beta, gamma = semi.model(

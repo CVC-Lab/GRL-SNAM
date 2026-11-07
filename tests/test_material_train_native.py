@@ -253,9 +253,9 @@ def test_multistart_probe_agrees_with_the_binding_signature():
 
 @_needs_multistart
 def test_sampled_multi_start_args(tmp_path):
-    """libcvc's test_sampled_multi_start_args, through the wrapper: a degenerate range is the
-    legacy single start, a sampled range and the integrator switch reach the loss, validation
-    draws with the base seed, and step k draws with seed + k."""
+    """libcvc's test_sampled_multi_start_args, through the wrapper: a degenerate range runs one
+    rollout, the default integrator is semi-implicit, a sampled range and the integrator switch
+    reach the loss, validation draws with the base seed, and step k draws with seed + k."""
     ckpt = tmp_path / "init.cvcnm"
     _write_random_cvcnm(ckpt, patch_size=16, seed=5)
     batch = _synthetic_batch(seed=13)
@@ -263,20 +263,21 @@ def test_sampled_multi_start_args(tmp_path):
     def loss(**kw):
         return mtn.MaterialTrainer(ckpt, **kw).loss(batch)
 
-    legacy = loss()
+    semi_one = loss()
+    assert loss(semi_implicit=True) == semi_one, "the default is not semi-implicit"
     # A degenerate range draws nothing and runs one rollout, whatever ms_count and seed are...
-    assert loss(ms_count=10, frac_range=(0.9, 0.9), seed=123) == legacy
-    # ...with either integrator. The wrapper passes semi_implicit=False explicitly: since
-    # libcvc #981 the binding's own default is semi-implicit.
-    semi_one = loss(semi_implicit=True)
-    assert loss(ms_count=7, frac_range=(0.9, 0.9), seed=3, semi_implicit=True) == semi_one
-    assert semi_one != legacy, "semi_implicit did not reach the rollout"
+    assert loss(ms_count=7, frac_range=(0.9, 0.9), seed=3) == semi_one
+    # ...with either integrator. The legacy start (explicit Euler) is semi_implicit=False, which
+    # the wrapper passes on, whatever the binding's own default is (semi-implicit since #981).
+    explicit = loss(semi_implicit=False)
+    assert loss(ms_count=10, frac_range=(0.9, 0.9), seed=123, semi_implicit=False) == explicit
+    assert semi_one != explicit, "semi_implicit did not reach the rollout"
 
     sampled = mtn.MaterialTrainer(ckpt, seed=5, **_SAMPLED)
     base = sampled.loss(batch)
-    assert base != legacy, "sampled starts did not reach the loss"
+    assert base != semi_one, "sampled starts did not reach the loss"
     assert sampled.loss(batch) == base, "validation loss is not deterministic"
-    assert loss(seed=5, semi_implicit=True, **_SAMPLED) != base, "semi_implicit ignored"
+    assert loss(seed=5, semi_implicit=False, **_SAMPLED) != base, "semi_implicit ignored"
     # Only the low 32 bits of the seed count, as with torch.Generator.manual_seed.
     assert loss(seed=5 + 2**32, **_SAMPLED) == base
 
@@ -298,7 +299,7 @@ def test_sampled_multi_start_args(tmp_path):
 @pytest.mark.parametrize("case", [0, 1, 2])
 def test_semi_implicit_l_multi_matches_the_torch_reference(tmp_path, case):
     """Native L_multi with semi_implicit=True is GRL-SNAM's multi_start_penalty, fed the native
-    model's coefficients and a manual_seed generator; the explicit default is not.
+    model's coefficients and a manual_seed generator; explicit Euler (semi_implicit=False) is not.
 
     L_multi is isolated as loss(w_multi=1) - loss(w_multi=0): every other term is the same
     deterministic function of the same weights and batch.
@@ -342,7 +343,7 @@ def test_semi_implicit_l_multi_matches_the_torch_reference(tmp_path, case):
     semi, explicit = native(True), native(False)
     assert ref > 1e-3, "fixture must actually score near-obstacle starts"
     assert abs(semi - ref) <= 1e-5 * ref, f"semi-implicit native {semi!r} vs torch {ref!r}"
-    assert abs(explicit - ref) > 1e-3 * ref, "the explicit default should NOT match"
+    assert abs(explicit - ref) > 1e-3 * ref, "explicit Euler should NOT match"
 
 
 @pytest.mark.skipif(

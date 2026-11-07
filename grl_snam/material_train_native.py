@@ -18,21 +18,22 @@ a guarantee — each op falls back to its host twin when the build has no CUDA, 
 device is present, or the batch exceeds a kernel's limits — so read
 :attr:`MaterialTrainer.cuda_active` for what is actually running.
 
-The multi-start term L_multi defaults to the material fork's legacy single start:
-one rollout from 90% of the clearance toward the nearest obstacle, integrated with
-EXPLICIT Euler (the fork's ``train_material.py`` order). ``ms_count``,
-``frac_range``, ``seed`` and ``semi_implicit`` opt into GRL-SNAM #113's sampled
-starts (libcvc #596). With ``semi_implicit=True`` the rollout is
+The multi-start term L_multi defaults to one rollout from 90% of the clearance
+toward the nearest obstacle, integrated with SEMI-IMPLICIT Euler, as libcvc does
+since #981 (3.7.12). With the default ``semi_implicit=True`` the rollout is
 :func:`grl_snam.surrogate_robust.integrate_surrogate_v2`'s, and L_multi is
 :func:`~grl_snam.surrogate_robust.multi_start_penalty` with
-``generator=torch.Generator().manual_seed(seed)``. Those args need a pycvc that
-takes them (:data:`HAS_MATERIAL_TRAINER_MULTISTART`). Without one, only a
-configuration that equals the legacy start can be built.
+``generator=torch.Generator().manual_seed(seed)``. ``semi_implicit=False`` gives the
+material fork's legacy order, explicit Euler (its ``train_material.py``).
+``ms_count``, ``frac_range`` and ``seed`` opt into GRL-SNAM #113's sampled starts
+(libcvc #596).
 
-A pycvc that takes those args gets all of them, the legacy start included. Since
-libcvc #981 (3.7.12) the binding's own ``ms_semi_implicit`` defaults to semi-implicit.
-So leaving the args out would run semi-implicit Euler when ``semi_implicit=False``
-asks for explicit Euler, and native would stop agreeing with the torch trainer.
+Those args, ``semi_implicit`` among them, need a pycvc that takes them
+(:data:`HAS_MATERIAL_TRAINER_MULTISTART`). Without one, only the legacy single start
+can be built: explicit Euler from the degenerate 0.9 range (``semi_implicit=False``).
+A pycvc that takes the args gets all of them, so the integrator is the one asked for,
+whatever the binding's own default is: explicit before libcvc #981, semi-implicit
+since.
 """
 
 from __future__ import annotations
@@ -194,15 +195,15 @@ class MaterialTrainer:
     obstacle. ``seed`` fixes the draw, and only its low 32 bits count, as with
     ``torch.Generator.manual_seed``. The k-th :meth:`step` draws with ``seed + k``,
     so each step sees fresh starts. :meth:`loss` always draws with ``seed``, so
-    validation is deterministic. ``semi_implicit`` selects GRL-SNAM's integrator for
-    the short rollouts. The default is the fork's explicit Euler. A degenerate range
-    draws nothing and runs one rollout whatever ``ms_count`` is. So the defaults, and
-    any ``ms_count >= 1`` or ``seed`` with ``frac_range=(0.9, 0.9)`` and
-    ``semi_implicit=False``, are the legacy single start. They work on any pycvc
-    with the trainer. Every other configuration needs
-    :data:`HAS_MATERIAL_TRAINER_MULTISTART`. A binding that takes the args always
-    gets them, so ``semi_implicit=False`` is explicit Euler there too. Since libcvc
-    #981 that binding's own default is semi-implicit.
+    validation is deterministic. ``semi_implicit`` selects the integrator for the short
+    rollouts: semi-implicit Euler by default, as libcvc since #981 and GRL-SNAM's
+    :func:`~grl_snam.surrogate_robust.integrate_surrogate_v2`; ``False`` is the fork's
+    explicit Euler. A degenerate range draws nothing and runs one rollout whatever
+    ``ms_count`` is. So any ``ms_count >= 1`` or ``seed`` with ``frac_range=(0.9, 0.9)``
+    and ``semi_implicit=False`` is the legacy single start, which works on any pycvc
+    with the trainer. Every other configuration, the defaults included, needs
+    :data:`HAS_MATERIAL_TRAINER_MULTISTART`. A binding that takes the args always gets
+    them, so the integrator is the one asked for.
     """
 
     def __init__(
@@ -234,7 +235,7 @@ class MaterialTrainer:
         ms_count: int = 1,
         frac_range: tuple[float, float] = (0.9, 0.9),
         seed: int = 0,
-        semi_implicit: bool = False,
+        semi_implicit: bool = True,
         bicycle=None,
     ):
         if not HAS_MATERIAL_TRAINER:
@@ -256,8 +257,8 @@ class MaterialTrainer:
             raise RuntimeError(
                 "ms_count/frac_range/seed/semi_implicit beyond the legacy single start need a "
                 "pycvc whose nav_material_trainer_create takes them (libcvc #596); this one "
-                "does not. Upgrade pycvc, or keep frac_range=(0.9, 0.9), "
-                "semi_implicit=False and ms_count >= 1."
+                "does not, and the default semi_implicit=True is beyond it. Upgrade pycvc, or "
+                "pass semi_implicit=False and keep frac_range=(0.9, 0.9) and ms_count >= 1."
             )
         args = [
             str(cvcnm_path),
@@ -286,8 +287,9 @@ class MaterialTrainer:
         ]
         if HAS_MATERIAL_TRAINER_MULTISTART:
             # Whenever the binding takes the args, pass them, so the integrator is the one asked
-            # for. Since libcvc #981 the binding defaults ms_semi_implicit to 1. An older binding
-            # gets the legacy start through the old signature, which every trainer binding takes.
+            # for: the binding's own ms_semi_implicit default was 0 before libcvc #981 and is 1
+            # since. An older binding gets the legacy start through the old signature, which
+            # every trainer binding takes.
             args += [
                 int(ms_count),
                 frac_lo,
