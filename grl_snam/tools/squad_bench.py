@@ -4,6 +4,7 @@
     python -m grl_snam.tools.squad_bench                 # compare python vs native
     python -m grl_snam.tools.squad_bench --n 32          # more agents
     GRL_SNAM_NAV_BACKEND=native python -m grl_snam.tools.squad_bench --once
+    python -m grl_snam.tools.squad_bench --plant jolt    # the squad on a physics plant
 
 Just having a ``cvc::nav``-capable ``pycvc`` on the path flips the per-tick kernels
 (A*, EDT, ``build_sdf``, ``sense_batch``, inflate, neighbours) to threaded C++,
@@ -22,7 +23,7 @@ import sys
 import time
 
 
-def _run_once(grid: int, n: int, ticks: int, seed: int, route_clearance=None):
+def _run_once(grid: int, n: int, ticks: int, seed: int, route_clearance=None, plant=None):
     import numpy as np
     import torch
 
@@ -44,12 +45,15 @@ def _run_once(grid: int, n: int, ticks: int, seed: int, route_clearance=None):
 
     rng = np.random.default_rng(seed)
     s, g = rng.integers(0, len(rows), n), rng.integers(0, len(rows), n)
+    if plant is not None:
+        # Physics bodies cannot share a start: draw the starts without repeats.
+        s = rng.choice(len(rows), n, replace=False)
     agents = [
         AgentSpec(f"a{i}", w(rows[s[i]], cols[s[i]]), w(rows[g[i]], cols[g[i]])) for i in range(n)
     ]
     torch.manual_seed(0)
     model = sdf_nav.CoefMLP().eval()
-    squad = Squad(story, agents, model, truth_occ=truth, prior_occ=truth)
+    squad = Squad(story, agents, model, truth_occ=truth, prior_occ=truth, plant=plant)
     # OFF by default, and deliberately so: a per-cell route surcharge turns off
     # A* batching (each agent's search becomes cost-specific), which is part of
     # what this benchmark measures. Enabling it silently would make the native
@@ -85,9 +89,19 @@ def main(argv=None) -> None:
         help="time WITH clearance-weighted routing (default off: it disables A* "
         "batching, which this benchmark measures)",
     )
+    ap.add_argument(
+        "--plant",
+        default=None,
+        help="time the squad on libcvc's sim_world and this plant instead (kinematic, "
+        "dynamic[:preset], jolt[:preset]); runs once, in this process",
+    )
     args = ap.parse_args(argv)
 
     rc = tuple(float(v) for v in args.route_clearance.split(",")) if args.route_clearance else None
+    if args.plant:
+        dt, _ = _run_once(args.grid, args.n, args.ticks, args.seed, rc, plant=args.plant)
+        print(f"[{args.plant}] grid={args.grid} n={args.n}: {dt*1000:8.1f} ms/tick  {1/dt:6.2f} Hz")
+        return
     if args.once:
         dt, enabled = _run_once(args.grid, args.n, args.ticks, args.seed, rc)
         be = "native" if enabled else "python"

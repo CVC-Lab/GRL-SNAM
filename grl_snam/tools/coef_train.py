@@ -484,19 +484,35 @@ def eval_risk_exposure(model, *, grid=64, lam_soft=0.4, seed=999, n=256, horizon
     return risk_sum / horizon, reach
 
 
-def train_native(out, *, grid=96, steps=400, rollout="surrogate", use_cuda=False, lr=None, seed=0):
+def train_native(
+    out,
+    *,
+    grid=96,
+    steps=400,
+    rollout="surrogate",
+    use_cuda=False,
+    lr=None,
+    seed=0,
+    vehicle="roboracer",
+    w_coll=None,
+    w_energy=0.0,
+):
     """Train via the pure-C++ ``cvc::nav`` trainer (NO torch) on the SAME city scene
     the torch path uses, writing the ``.cvcnav`` to ``out``. This is what
     ``GRL_SNAM_TRAIN_BACKEND=native`` (or ``--backend native``) dispatches to; the
-    torch :func:`train` stays canonical. ``rollout`` is ``"surrogate"`` (default) or
-    ``"bicycle"`` (the deployment integrator; auto-uses a lower lr). Needs a pycvc
-    built with ``cvc::nav::coef_train``."""
+    torch :func:`train` stays canonical. ``rollout`` is ``"surrogate"`` (default),
+    ``"bicycle"`` (the deployment integrator; auto-uses a lower lr) or ``"jolt"`` (Jolt
+    drives ``vehicle`` and the gradient is the four-wheel model's along Jolt's states;
+    ``w_energy`` prices what Jolt's source draws; CPU only). Needs a pycvc built with
+    ``cvc::nav::coef_train`` (and, for ``"jolt"``, its Jolt rollout)."""
     from grl_snam import nav_native
 
-    if not nav_native.HAS_TRAIN:
+    jolt = str(rollout).lower() == "jolt"
+    if not (nav_native.HAS_TRAIN_JOLT if jolt else nav_native.HAS_TRAIN):
         raise SystemExit(
-            "native trainer needs a pycvc built with cvc::nav::coef_train; "
-            "use --backend torch or install a newer pycvc"
+            "native trainer needs a pycvc built with cvc::nav::coef_train"
+            + (" and its Jolt rollout (nav_train_coef_mlp_jolt)" if jolt else "")
+            + "; use --backend torch or install a newer pycvc"
         )
     story = shrunk(STORIES["city"], n=grid, max_steps=100)
     meta = story.meta()
@@ -506,6 +522,30 @@ def train_native(out, *, grid=96, steps=400, rollout="surrogate", use_cuda=False
         # and DEGRADE the policy (city seed-0 trained reach 71%->26%); retuned to 5e-5
         # (1e-4..1e-5 all recover; 5e-5 sits mid-band). The bicycle keeps its own 1e-5.
         lr = 1e-5 if str(rollout).lower() == "bicycle" else 5e-5
+    if jolt:
+        if use_cuda:
+            raise SystemExit("--rollout jolt trains on the CPU only (drop --cuda)")
+        cal = nav_native.train_coef_mlp_jolt(
+            story.truth_grid().astype(np.uint8),
+            out,
+            bounds=story.bounds,
+            scale=meta["scale"],
+            rr=meta["rr"],
+            d_hat=meta["d_hat"],
+            dt=meta["dt"],
+            vmax=meta["vmax"],
+            steps=steps,
+            lr=lr,
+            seed=seed,
+            vehicle=vehicle,
+            w_coll=3.0 if w_coll is None else w_coll,
+            w_energy=w_energy,
+        )
+        print(
+            "calibrated to Jolt: "
+            + ", ".join(f"{k} {v:.4g}" for k, v in cal.items() if isinstance(v, int | float))
+        )
+        return out
     return nav_native.train_coef_mlp(
         story.truth_grid().astype(np.uint8),
         out,
@@ -544,10 +584,24 @@ def main(argv=None):
     )
     ap.add_argument(
         "--rollout",
-        choices=["surrogate", "bicycle"],
+        choices=["surrogate", "bicycle", "jolt"],
         default="surrogate",
         help="surrogate: the holonomic point. bicycle: integrate the vehicle, which is "
-        "the only path where grip and the footprint can reach the loss.",
+        "the only path where grip and the footprint can reach the loss. jolt (--backend "
+        "native, CPU): Jolt drives --vehicle and the gradient is the four-wheel model's "
+        "along Jolt's states.",
+    )
+    ap.add_argument(
+        "--vehicle",
+        choices=["roboracer", "humvee"],
+        default="roboracer",
+        help="--rollout jolt: the vehicle Jolt drives",
+    )
+    ap.add_argument(
+        "--w-energy",
+        type=float,
+        default=0.0,
+        help="--rollout jolt: price on the energy Jolt's source draws (0 = off)",
     )
     ap.add_argument(
         "--w-coll",
@@ -635,11 +689,15 @@ def main(argv=None):
         print(f"training natively ({args.rollout}, {args.steps} steps, cuda={args.cuda})...")
         train_native(
             args.out,
+            grid=args.grid,
             steps=args.steps,
             rollout=args.rollout,
             use_cuda=args.cuda,
             lr=lr,
             seed=args.seed,
+            vehicle=args.vehicle,
+            w_coll=args.w_coll if args.rollout == "jolt" else None,
+            w_energy=args.w_energy,
         )
         print(f"wrote {args.out} (native cvc::nav)")
         if args.score:
@@ -650,6 +708,10 @@ def main(argv=None):
             )
         return
 
+    if args.rollout == "jolt":
+        raise SystemExit(
+            "--rollout jolt trains through libcvc's Jolt rollout: add --backend native"
+        )
     print(f"training ({args.rollout}, {args.steps} steps)...")
     if args.rollout == "bicycle":
         # Grip and the footprint have no way into the loss through the holonomic

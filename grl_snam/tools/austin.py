@@ -35,12 +35,12 @@ DEFAULT_N = 384
 
 
 def occupancy(bundle_dir: str | Path, *, half_m: float = DEFAULT_HALF_M, n: int = DEFAULT_N):
-    """Rasterize the bundle's buildings into a boolean occupancy grid."""
-    from pycvc_gl.scenes import building_occupancy
+    """Rasterize the bundle's buildings into a boolean occupancy grid (libcvc's C++ rasterizer
+    when the installed pycvc has it, else a VTK render: ``demos._common.bundle_occupancy``)."""
+    from grl_snam.demos._common import bundle_occupancy
 
-    glb = str(Path(bundle_dir) / "buildings.glb")
     bounds = (-half_m, -half_m, half_m, half_m)
-    return building_occupancy(glb, bounds, n, n, inflate_m=0.0).astype(bool), bounds
+    return bundle_occupancy(bundle_dir, bounds, n, n, inflate_m=0.0), bounds
 
 
 def austin_story(

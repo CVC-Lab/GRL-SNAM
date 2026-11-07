@@ -22,6 +22,15 @@ holds these functions to.
 - :func:`sdf_barrier_potential`: the softplus hazard barrier (``sdf_barrier_grad``'s ``b``).
 - :func:`material_potential`, :func:`surrogate_potential`, :func:`drive_potential`: U at a pose
   for the material rollouts, the coef trainer's surrogate and bicycle, and the deployed drive.
+
+The per-step energy books (libcvc ``book_step``, the white paper's Eq. 38) close one step of a
+point mass with its damping, port and clamp work; ``tests/test_nav_energy_books_parity.py`` holds
+them to libcvc's ``src/cvc/tests/data/nav_energy_books_golden.json``.
+
+- :func:`book_step`: the books of one step from its states and forces, with the cheap bound
+  (:func:`energy_residual_bound`) and, given ``vHv``, the sharp check.
+- :func:`material_energy`: U and the conservative force of the material rollouts in any dtype;
+  ``integrate_surrogate_material``'s books evaluate it in float64.
 """
 
 from __future__ import annotations
@@ -238,3 +247,151 @@ def drive_potential(
             phi_m, terrain_k_sharp, terrain_d_hat_m
         )
     return PotentialTerms(goal=goal_t, barrier=barrier, soft=soft, hard=hard, terrain=ter)
+
+
+# ── the per-step energy books (the white paper's Eq. 38) ─────────────────────────────
+
+
+@dataclass
+class StepBooks:
+    """One step's books (libcvc ``step_books``), each ``[...]``: the end state's kinetic energy,
+    dH, the damping work, the port work, the clamp loss and cross term, the residual r_E, the
+    sharp check r_hat_E (None without ``vHv``) and the cheap bound on |r_E|."""
+
+    kinetic: torch.Tensor
+    delta_H: torch.Tensor
+    w_damp: torch.Tensor
+    w_port: torch.Tensor
+    w_clamp: torch.Tensor
+    w_cross: torch.Tensor
+    residual: torch.Tensor
+    residual_sharp: torch.Tensor | None
+    bound: torch.Tensor
+
+
+def energy_residual_bound(dt, g, gamma, v, F, L_hat, vt, mass=1.0, kappa_H=2.0):
+    """The cheap bound on |r_E|, from norms: ``kappa_H dt^2/2 [|g| (|g| + gamma |v| + |F|) / m +
+    L_hat |vt|^2]``. A tolerance model, not a theorem: ``L_hat`` estimates the curvature, it does
+    not bound it; ``kappa_H = 2`` is the companion's safety factor. libcvc
+    ``energy_residual_bound``."""
+    return kappa_H * 0.5 * dt * dt * (g * (g + gamma * v + F) / mass + L_hat * vt * vt)
+
+
+def _dot(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+    return p[..., 0] * q[..., 0] + p[..., 1] * q[..., 1]
+
+
+def book_step(
+    dt, v, vp, vt, dx, g, g1, F, U0, U1, *, mass=1.0, gamma=0.0, vHv=None, kappa_H=2.0
+) -> StepBooks:
+    """The books of one semi-implicit step of a point mass m in a potential U fixed over the step,
+    with damping gamma, a port force F and a speed clamp (libcvc ``book_step``)::
+
+        v' = v + dt/m (-g - gamma v + F),  vt = clamp_vmax(v'),  x' = x + dt vt,  g = grad U(x)
+        W_gamma = dt/2 gamma v.(v + v'),       W_port  = dt/2 F.(v + v'),
+        W_clamp = m/2 (|v'|^2 - |vt|^2) >= 0,   W_cross = dt g.(vt - v'),
+        r_E = dH + W_gamma + W_clamp - W_port - W_cross
+            = dt^2/2 [vt' Hbar vt - g.(g + gamma v - F)/m]   exactly,
+
+    with H = m/2 |v|^2 + U and Hbar the Hessian of U averaged along the step. The cheap bound
+    (:func:`energy_residual_bound`) uses the secant Lipschitz estimate ``|g1 - g| / |dx|``; the
+    sharp check is ``r_hat_E = dt^2/2 [vHv - g.(g + gamma v - F)/m]``, ``vHv = vt' grad^2 U(x) vt``,
+    and ``r_E - r_hat_E = O(dt^3)``. The bound catches work of order dt left out of the books (an
+    unlogged force, a stale field, an unbooked clamp); the sharp check catches anything beyond
+    third order, such as explicit Euler's systematic gain.
+
+    Vectors (``v, vp, vt, dx, g, g1, F``) are ``[..., 2]``; the rest are scalars or ``[...]``.
+    Evaluate in float64: r_E - r_hat_E is below float32 round-off on U."""
+    gamma = torch.as_tensor(gamma, dtype=v.dtype, device=v.device)
+    m = torch.as_tensor(mass, dtype=v.dtype, device=v.device)
+    vs = v + vp
+    cut = vt - vp
+    gr = g + gamma.unsqueeze(-1) * v - F if gamma.ndim else g + gamma * v - F
+    kinetic = 0.5 * m * _dot(vt, vt)
+    delta_H = kinetic - 0.5 * m * _dot(v, v) + (U1 - U0)
+    w_damp = 0.5 * dt * gamma * _dot(v, vs)
+    w_port = 0.5 * dt * _dot(F, vs)
+    w_clamp = 0.5 * m * (_dot(vp, vp) - _dot(vt, vt))
+    w_cross = dt * _dot(g, cut)
+    residual = delta_H + w_damp + w_clamp - w_port - w_cross
+    sharp = None if vHv is None else 0.5 * dt * dt * (vHv - _dot(g, gr) / m)
+    step = torch.sqrt(_dot(dx, dx))
+    dg = g1 - g
+    L_hat = torch.where(step > 0, torch.sqrt(_dot(dg, dg)) / step, torch.zeros_like(step))
+    bound = energy_residual_bound(
+        dt,
+        torch.sqrt(_dot(g, g)),
+        gamma,
+        torch.sqrt(_dot(v, v)),
+        torch.sqrt(_dot(F, F)),
+        L_hat,
+        torch.sqrt(_dot(vt, vt)),
+        m,
+        kappa_H,
+    )
+    return StepBooks(kinetic, delta_H, w_damp, w_port, w_clamp, w_cross, residual, sharp, bound)
+
+
+def _softplus(x: torch.Tensor) -> torch.Tensor:
+    """softplus without torch's linear cut-off past 20, as libcvc's ``sdf_barrier_b_t``."""
+    return x.clamp_min(0.0) + torch.log1p(torch.exp(-x.abs()))
+
+
+def material_energy(
+    o: torch.Tensor,
+    goal: torch.Tensor,
+    C: torch.Tensor,
+    R: torch.Tensor,
+    mask: torch.Tensor,
+    alphas: torch.Tensor,
+    beta: torch.Tensor,
+    lam_soft: torch.Tensor,
+    lam_hard: torch.Tensor,
+    rollout_patch: torch.Tensor,
+    o0: torch.Tensor,
+    d_hat: torch.Tensor,
+    robot_radius: float | torch.Tensor = 0.0,
+    margin_factor: float = 0.5,
+    d_hat_sdf: float = 3.0,
+    k_sharp: float = 5.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """U_nav (``[B]``) and the conservative force (``[B, 2]``) of
+    :func:`grl_snam.material_nav.integrate_surrogate_material` at ``o``, in ``o``'s dtype; the
+    parameters (shapes as there) keep theirs until they meet ``o``, as libcvc's
+    ``detail::material_energy<double>`` takes its floats. U is :func:`material_potential`'s
+    total; the force is the rollout's, from the patch's gradient channels, so the two are
+    ``F = -grad U`` only when those channels are the values' gradients. The books evaluate this
+    in float64."""
+    from grl_snam.material_nav import bilinear_sample_patch
+    from grl_snam.train_coef_energy import ipc_piecewise
+
+    T = o.dtype
+    if not torch.is_tensor(robot_radius):
+        rr = R.new_tensor(float(robot_radius))
+    else:
+        rr = robot_radius.to(R)
+    R_eff = (R + margin_factor * rr[:, None] if rr.ndim >= 1 else R + margin_factor * rr).to(T)
+    be = beta.to(T)
+    dg = o - goal.to(T)
+    U = 0.5 * be * _dot(dg, dg)
+    force = -be.unsqueeze(-1) * dg
+    if C.shape[1]:
+        c = o.unsqueeze(1) - C.to(T)
+        r = torch.sqrt(_dot(c, c)).clamp_min(1e-9)
+        d = r - R_eff
+        dh = d_hat.to(T).view(-1, 1).expand_as(d)
+        a = alphas.to(T)
+        _, dbdd = ipc_piecewise(d, dh)
+        b = ipc_potential_pw(d, dh)
+        U = U + torch.where(mask, a * b, torch.zeros_like(b)).sum(-1)
+        f = (-(a * dbdd)).unsqueeze(-1) * (c / r.unsqueeze(-1))
+        force = force + torch.where(mask.unsqueeze(-1), f, torch.zeros_like(f)).sum(1)
+    sem = bilinear_sample_patch(rollout_patch.to(T), o, o0.to(T))
+    risk = sem[:, 0].clamp(0.0, 1.0)
+    sdf = sem[:, 1].clamp(0.0, 50.0)
+    ls, lh = lam_soft.to(T), lam_hard.to(T)
+    x = k_sharp * (d_hat_sdf - sdf)
+    db = -torch.sigmoid(x)
+    U = U + ls * risk + lh * (_softplus(x) / k_sharp)
+    force = force - ls.unsqueeze(-1) * sem[:, 2:4] - (lh * db).unsqueeze(-1) * sem[:, 4:6]
+    return U, force

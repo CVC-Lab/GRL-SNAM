@@ -2,7 +2,7 @@
 
 This repository contains the implementation of **GRL-SNAM**, a geometric reinforcement learning framework for simultaneous navigation and mapping in unknown environments using Hamiltonian mechanics and differential policy optimization.
 
-📖 **Documentation:** [Developer Guide](docs/developer-guide.md) · [Native `cvc::nav` acceleration](docs/NATIVE_CVC_NAV.md) · [Material-aware navigation](docs/MATERIAL_NAV.md) · [Vehicle refinements](docs/VEHICLE_REFINEMENTS.md) · [Navigation stats & scorecard](docs/NAV_STATS.md) · [PyPI Publishing Roadmap](docs/pypi-publishing-roadmap.md) · [Headless server quickstart](docs/headless-quickstart.md)
+📖 **Documentation:** [Developer Guide](docs/developer-guide.md) · [Native `cvc::nav` acceleration](docs/NATIVE_CVC_NAV.md) · [Running on a vehicle plant (kinematic, dynamic, Jolt)](docs/PLANTS.md) · [Material-aware navigation](docs/MATERIAL_NAV.md) · [Vehicle refinements](docs/VEHICLE_REFINEMENTS.md) · [Navigation stats & scorecard](docs/NAV_STATS.md) · [PyPI Publishing Roadmap](docs/pypi-publishing-roadmap.md) · [Headless server quickstart](docs/headless-quickstart.md) · [The demos on Ariadne, and a template for your own multi-car controller](grl_snam/ariadne/README.md) · [The vehicle plant in port-Hamiltonian form (PDF)](docs/vehicle-ph-plant.pdf)
 
 ## Overview
 
@@ -81,12 +81,40 @@ grl-snam --help
 | `grl-snam pipeline BUNDLE` | the whole chain: world model → SDF → train → video |
 | `grl-snam demo NAME` | run a demo live inside VolRover3 |
 | `grl-snam lab-demo [PNG]` | standalone lab visualization |
+| `grl-snam ariadne PORT` | a demo as an Ariadne document; `cars` is libcvc's template for your own multi-car controller |
 | `grl-snam eval` / `train-coef` | the CoefEnergyNet evaluator / trainer (legacy track) |
 
 A `BUNDLE` is a **world model** — a directory with `terrain.json` (heightfield) +
 `buildings.glb` (city mesh), e.g. an OpenStreetMap + SRTM export. The heavy work lives
 in `grl_snam.tools`; the demos in `grl_snam.demos`; the graphics deps (`pycvc_gl`, VTK,
 `vrhost`) load lazily, so `grl-snam --help` runs anywhere.
+
+### Ariadne: the demos in a document, and a template for your own multi-car controller
+
+`grl-snam ariadne <port>` runs GRL-SNAM's demos as Python hosts of Ariadne (`.ari`) documents:
+the live Austin demos, the fog-of-war stories, the squad recordings, a live fleet on a vehicle
+plant, and the material demo. `live` and `fleet` take the `cars` template's settings (libcvc's
+`nav.*`, `nav.vehicle.*` and `nav_plant.*` keys, mapped onto GRL-SNAM's torch navigator where
+they mean the same thing), its worlds (Austin, another city, a generated world, a flat square),
+its plants, its panels and its headless log.
+
+`grl-snam ariadne cars` runs libcvc's multi-car template (`pycvc_gl.cars`, pycvc-gl 3.7.12+). A
+controller of your own drives N Ackermann cars:
+- on nav's kinematic bicycle, Jolt vehicles or the dynamic single track;
+- in Austin (the default, from cvcpkg.org), a generated world or a flat square;
+- with panels, rasters, sliders bound to the navigator's settings, and headless batch runs.
+
+`--grl-policy` runs GRL-SNAM's published policy as the navigator baseline.
+
+```bash
+cvcpkg install grl-snam-cp312 --prefix ./env && . ./env/bin/activate   # pycvc_gl comes along
+grl-snam ariadne --list
+grl-snam ariadne cars --copy my_cars && python my_cars/cars.py
+```
+
+[grl_snam/ariadne/README.md](grl_snam/ariadne/README.md) describes each port. libcvc's
+[docs/CARS.md](https://github.com/transfix/libcvc/blob/master/docs/CARS.md) is the template's guide: the state your controller gets, the worlds, the
+plants and what each means for a controller, every setting with its unit and range, and batch runs.
 
 ### The learned-nav pipeline, end to end
 
@@ -110,6 +138,20 @@ not a screen grab) and draws a **live metrics HUD** on every frame: the network'
 predicted coefficients (α, β, γ), wall clearance, speed, escape mode, and building
 penetration. `--source cvc` on `build-sdf` uses CVC's mesh-exact 3-D SDF instead of the
 footprint EDT. See [docs/training-navigation-on-geometry.md](docs/training-navigation-on-geometry.md).
+
+`--plant kinematic|dynamic|jolt` drives the same policy on a vehicle instead of the point
+surrogate: nav's kinematic bicycle, libcvc's dynamic single-track vehicle, or a Jolt vehicle
+(`--vehicle humvee`, `--mu` the ground's grip). The HUD then adds the vehicle's sideslip, tire
+use and energy books. [docs/PLANTS.md](docs/PLANTS.md) covers every demo and bench on a plant,
+and training through Jolt.
+
+**On video:** the [plant reel](https://github.com/CVC-Lab/GRL-SNAM/releases/tag/plant-reel-2026-11)
+has eight clips of the shipped checkpoint on Austin, each with its measured outcome and the command
+that made it:
+- **three successes:** the surrogate's multi-goal drive, and the kinematic bicycle and a Jolt Humvee
+  on grip 0.3 arriving;
+- **five failures:** a dead end, an orbit, sliding past the tire's peak, a spin-out on low grip, and
+  a collision with the map unknown.
 
 ### Live inside VolRover3
 

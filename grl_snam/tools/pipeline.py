@@ -21,17 +21,25 @@ def run(
     fps: int = 15,
     hud: bool = True,
     drive: str = "multigoal",
+    plant: str = "point",
+    vehicle: str = "humvee",
+    ground_mu: float = 0.9,
 ) -> dict:
     """world model -> SDF -> trained policy -> demo video. Returns the artifact paths.
 
     ``drive`` selects the demo video: ``multigoal`` (dynamic re-targeting) or
-    ``single`` (a fixed A->B). Reuses an existing ``nav_sdf.npz`` / checkpoint if
-    present in ``out_dir`` unless absent."""
+    ``single`` (a fixed A->B). ``plant``, ``vehicle`` and ``ground_mu`` pick what drives in
+    it (:mod:`grl_snam.tools.capture`: the point-mass surrogate, or the policy on libcvc's
+    kinematic bicycle, dynamic single track or Jolt). Reuses an existing ``nav_sdf.npz`` /
+    checkpoint if present in ``out_dir`` unless absent."""
     out_dir = out_dir or bundle
     os.makedirs(out_dir, exist_ok=True)
     sdf_npz = os.path.join(out_dir, "nav_sdf.npz")
     ckpt = os.path.join(out_dir, "coef_sdf.pt")
-    video = os.path.join(out_dir, "grl_snam_%s.mp4" % drive)
+    video = os.path.join(
+        out_dir, "grl_snam_%s.mp4" % (drive if plant == "point" else f"{drive}_{plant}")
+    )
+    on = dict(plant=plant, vehicle=vehicle, ground_mu=ground_mu)
 
     print("== [1/3] build SDF from the world model ==")
     sdf.build(bundle, source=source, region=region, out=sdf_npz)
@@ -54,10 +62,11 @@ def run(
             minutes=minutes,
             fps=fps,
             hud=hud,
+            **on,
         )
     else:
         capture.capture_multigoal(
-            bundle, ckpt, video, sdf_npz=sdf_npz, minutes=minutes, fps=fps, hud=hud
+            bundle, ckpt, video, sdf_npz=sdf_npz, minutes=minutes, fps=fps, hud=hud, **on
         )
     print("== pipeline done ==")
     return {"sdf": sdf_npz, "checkpoint": ckpt, "video": video}

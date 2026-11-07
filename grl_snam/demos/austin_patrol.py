@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import os
 
-from grl_snam.demos._common import current_host, default_scene_bundle, vehicle_box_mesh
+from grl_snam.demos._common import current_host, open_city, vehicle_box_mesh
 
 _S: dict = {}
 
@@ -18,26 +18,17 @@ _S: dict = {}
 def setup() -> None:
     host = current_host()
     from pycvc_gl.camera import NativeChaseCamera as ChaseCamera
-    from pycvc_gl.scenes import (
-        building_occupancy,
-        load_geometry_bundle,
-        plan_ground_route,
-        resample_polyline,
-        terrain_grid,
-    )
+    from pycvc_gl.scenes import plan_ground_route, resample_polyline
     from pycvc_gl.vehicle import VehiclePose
 
     from grl_snam.route import cells_for_metres, plan_clearance_route
 
-    bundle = default_scene_bundle()
     lab = host.make_lab()
     lab.set_axis_visible(False)
-    sample = load_geometry_bundle(lab, bundle)
-    bounds = terrain_grid(os.path.join(bundle, "terrain.json"))[1]
+    city = open_city(host, lab)  # the host's (already drawn), else the installed bundle
+    sample, bounds = city.sample, city.bounds
     print("grl_snam austin_patrol: building occupancy + A* patrol route...", flush=True)
-    occ = building_occupancy(
-        os.path.join(bundle, "buildings.glb"), bounds, 512, 512, inflate_m=12.0
-    )
+    occ = city.occupancy(bounds, 512, 512, inflate_m=12.0)
     r = 430.0
     waypts = [
         (r * math.cos(a), r * math.sin(a))
@@ -81,6 +72,7 @@ def setup() -> None:
         vpose=vpose,
         chase=chase,
         cam=host.camera(),
+        metrics=host.metrics() if hasattr(host, "metrics") else None,
         t=0.0,
         pps=3.0,
     )
@@ -96,6 +88,15 @@ def _pose(t):
     return route[i][0] * (1 - a) + route[j][0] * a, route[i][1] * (1 - a) + route[j][1] * a
 
 
+def predicted_path(steps: int = 40) -> list:
+    """The patrol loop ahead of the vehicle (world (x, y) points; [] before setup)."""
+    if not _S:
+        return []
+    route = _S["route"]
+    i = int((_S["t"] * _S["pps"]) % len(route))
+    return [route[(i + k) % len(route)] for k in range(0, 4 * int(steps), 2)]
+
+
 def step(dt: float) -> None:
     if not _S:
         setup()
@@ -104,4 +105,16 @@ def step(dt: float) -> None:
     _S["lab"].node("agent0").setTransform(_S["vpose"].update(x, y, dt))
     eye, tgt, up = _S["chase"].update((x, y, _S["sample"](x, y)), dt)
     _S["cam"].look(eye, tgt, up)
+    if _S["metrics"] is not None:  # the readouts a host shows: where it is on the loop
+        from grl_snam.metrics import NavMetrics
+
+        n = len(_S["route"])
+        lap = (_S["t"] * _S["pps"]) / n
+        gx, gy = _S["route"][int((_S["t"] * _S["pps"] + 40) % n)]
+        _S["metrics"].publish(
+            NavMetrics(step=int(_S["t"] * _S["pps"]), x=x, y=y, goal_x=gx, goal_y=gy,
+                       goal_dist_m=math.hypot(gx - x, gy - y), mode="patrol",
+                       progress=lap - math.floor(lap)),
+            dt,
+        )  # fmt: skip
     _S["lab"].pump()

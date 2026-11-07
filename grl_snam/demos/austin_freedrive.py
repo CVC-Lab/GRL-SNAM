@@ -20,6 +20,7 @@ GRL_SNAM_GOAL ("x,y"; defaults are a navigable pair on austin_south).
 
 from __future__ import annotations
 
+import copy
 import os
 
 import numpy as np
@@ -30,7 +31,7 @@ from grl_snam.demos._common import (
     SimPacer,
     current_host,
     default_nav_weights_pt,
-    default_scene_bundle,
+    open_city,
     vehicle_box_mesh,
 )
 from grl_snam.nav import SdfNavigator
@@ -54,10 +55,8 @@ def _xy(env, default):
 def setup() -> None:
     host = current_host()
     from pycvc_gl.camera import NativeChaseCamera as ChaseCamera
-    from pycvc_gl.scenes import building_occupancy, load_geometry_bundle, terrain_grid
     from pycvc_gl.vehicle import VehiclePose
 
-    bundle = default_scene_bundle()
     ckpt = default_nav_weights_pt()
     torch.set_num_threads(2)
     ck = torch.load(ckpt, map_location="cpu")
@@ -68,17 +67,15 @@ def setup() -> None:
 
     lab = host.make_lab()
     lab.set_axis_visible(False)
-    sample = load_geometry_bundle(lab, bundle)
-    bounds = terrain_grid(os.path.join(bundle, "terrain.json"))[1]
+    city = open_city(host, lab)  # the host's (already drawn), else the installed bundle
+    sample, bounds = city.sample, city.bounds
     sdf_npz = os.environ.get("GRL_SNAM_SDF", "")
     if sdf_npz and os.path.exists(sdf_npz):
         d = np.load(sdf_npz)
         phi, nxg, nyg = d["phi"], d["normal_x"], d["normal_y"]
     else:
         print("grl_snam austin_freedrive: rasterizing occupancy + building SDF...", flush=True)
-        occ = building_occupancy(
-            os.path.join(bundle, "buildings.glb"), bounds, 512, 512, inflate_m=0.0
-        )
+        occ = city.occupancy(bounds, 512, 512, inflate_m=0.0)
         phi, nxg, nyg = sdf_nav.build_sdf(occ, bounds, float(meta["scale"]))
     field = sdf_nav.SDFField(
         phi, nxg, nyg, bounds, meta["center"], float(meta["scale"]), device="cpu"
@@ -121,6 +118,32 @@ def setup() -> None:
         speed=SIM_SPEED,
         last_m=None,
     )
+
+
+#: What a copy of the navigator shares with it rather than copies (large, or read-only).
+_SHARED = ("field", "model", "meta", "material", "friction", "material_ids", "carrot_bias_fn",
+           "ext_force_fn")  # fmt: skip
+
+
+def navigator():
+    """The demo's :class:`~grl_snam.nav.SdfNavigator` (None before :func:`setup`): a host maps
+    its settings onto it (``grl_snam.ariadne._cars.TorchSettings``)."""
+    return _S.get("nav")
+
+
+def predicted_path(steps: int = 40) -> list:
+    """Where the navigator will drive: a copy of it stepped ``steps`` ticks ahead from now, as
+    world (x, y) points ([] before :func:`setup`). The demo's own navigator is untouched."""
+    nav = _S.get("nav")
+    if nav is None:
+        return []
+    q = copy.copy(nav)
+    q.__dict__ = {k: v if k in _SHARED else copy.deepcopy(v) for k, v in nav.__dict__.items()}
+    pts = []
+    for _ in range(int(steps)):
+        m = q.step()
+        pts.append((m.x, m.y))
+    return pts
 
 
 def step(dt: float) -> None:

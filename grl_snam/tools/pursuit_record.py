@@ -90,14 +90,24 @@ def build_pursuit(occ, bounds, *, runner_vmax=None):
 
 def record_pursuit_v2(
     bundle_dir: str, out_dir, *, max_steps: int = 3000, runner_vmax_scale: float = 1.25,
-    use_planner: bool = True, progress=None,
+    use_planner: bool = True, progress=None, plant=None,
 ):  # fmt: skip
     """Record the chase.
 
     ``runner_vmax_scale`` is why this is not simply a convoy: the quarry is
     quicker than its hunters, so the pack closes by cutting corners through the
     city rather than by out-running it in a straight line.
+
+    ``plant`` runs the chase on libcvc's sim_world and that plant
+    (:func:`~grl_snam.tools.squad_record.record_squad`). The native world takes one top
+    speed for every agent, so it needs ``runner_vmax_scale=1.0``: on a plant every vehicle
+    is as quick as its own limits.
     """
+    if plant is not None and plant != "python" and runner_vmax_scale != 1.0:
+        raise ValueError(
+            "record_pursuit_v2(plant=...): the native world has one top speed for the squad; "
+            "pass runner_vmax_scale=1.0"
+        )
     occ, bounds = occupancy(bundle_dir)
     story0, _s, _g = austin_story(occ, bounds, key="pursuit2", fog=True)
     agents = build_pursuit(occ, bounds, runner_vmax=story0.vmax * runner_vmax_scale)
@@ -125,5 +135,5 @@ def record_pursuit_v2(
     )
     return record_squad(
         story, agents, out_dir, max_steps=max_steps, truth_occ=occ, prior_occ=None,
-        progress=progress,
+        progress=progress, plant=plant,
     )  # fmt: skip

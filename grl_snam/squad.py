@@ -21,7 +21,9 @@ exactly the format the renderer already reads.
 ``Squad(..., plant=...)`` is the other runtime: the squad runs in libcvc's pure-C++
 ``cvc::nav::sim_world``, one private belief plane per agent, and its agents drive a
 physics plant's vehicles (``plant="jolt"``, a vehicle preset name, or a
-:class:`~grl_snam.nav_native.JoltPlant`) or nav's C++ bicycle (``"kinematic"``).
+:class:`~grl_snam.nav_native.JoltPlant`), the dynamic single-track vehicle (``"dynamic"``,
+``"dynamic:humvee"`` or a :class:`~grl_snam.nav_native.DynamicPlant`) or nav's C++ bicycle
+(``"kinematic"``).
 It keeps the squad's interface — ``step``, ``run``, ``done``, the per-agent records
 and :class:`SquadResult` — but not the Python path's planner: the C++ world drives
 its own carrot toward each goal, and peers meet as bodies in the physics world
@@ -234,8 +236,6 @@ class Squad:
                 "Squad(plant=...) needs a pycvc with libcvc's P6 bindings (nav_sim_world_create "
                 "with map_id, nav_sim_world_set_plant)"
             )
-        if material is not None:
-            raise NotImplementedError("Squad(plant=...) with a material grid is a follow-up")
         scs = list(self.scenarios.values())
         sc0 = scs[0]
         nav0 = sc0.nav
@@ -327,6 +327,10 @@ class Squad:
                         "physics vehicle cannot be added there"
                     )
         self.native.set_plant(self.plant)
+        if material is not None:
+            # One shared surface: the material forces and the witness gate, as on the Python path
+            # (the native world has no route spine for the risk surcharge to bias).
+            self.native.set_material_grid(material)
         self._native_dt = float(nav0.dt)
         self._native_reached = np.zeros(n, bool)
         self._native_tick = 0
@@ -345,6 +349,57 @@ class Squad:
                 self._routes = _native.VehicleRoutes(self.native, sc0.bounds, fixed)
                 pos, head = self.native.snapshot()[:2]
                 self._routes.start(pos, head, {i: tuple(scs[i].waypoints[0]) for i in fixed})
+
+    def use_vehicle_routes(self, on: bool = True) -> bool:
+        """On the native runtime, drive the agents with a fixed goal on vehicle routes (``on``) or
+        on nav's carrot, for the plant the world drives now. That includes a plant attached from
+        outside the squad (libcvc's ``plant_host``, which the Ariadne fleet uses). Routes need a
+        physics plant and pycvc's route bindings; without them the carrot drives. Returns whether
+        routes drive now. Each route is planned from the agent's pose at this tick."""
+        if self.native is None:
+            raise ValueError("vehicle routes are the native runtime's: Squad(plant=...)")
+        self._routes = None
+        if not on or not _native.HAS_VEHICLE_ROUTES or self.native.plant_kind == "kinematic":
+            return False
+        fixed = [
+            i
+            for i, a in enumerate(self.agents)
+            if (a.moving_goal if a.moving_goal is not None else self.story.moving_goal) is None
+            and not self._native_reached[i]
+        ]
+        if not fixed:
+            return False
+        scs = list(self.scenarios.values())
+        self._routes = _native.VehicleRoutes(self.native, scs[0].bounds, fixed)
+        pos, head = self.native.snapshot()[:2]
+        self._routes.start(
+            pos,
+            head,
+            {i: tuple(scs[i].waypoints[0]) for i in fixed},
+            t=self._native_tick * self._native_dt,
+        )
+        return True
+
+    def goal_of(self, key: str) -> tuple[float, float]:
+        """Agent ``key``'s target now (world metres): on the native runtime a moving goal
+        where it is at this tick, else the scenario's active waypoint."""
+        sc = self.scenarios[key]
+        if self.native is not None:
+            a = self.agents[list(self.scenarios).index(key)]
+            mg = a.moving_goal if a.moving_goal is not None else self.story.moving_goal
+            if mg is not None:
+                gx, gy = mg.position_at(self._native_tick * self._native_dt)
+                return float(gx), float(gy)
+            gx, gy = sc.waypoints[0]
+        else:
+            gx, gy = sc.waypoints[sc.wp_i]
+        return float(gx), float(gy)
+
+    def reached_of(self, key: str) -> bool:
+        """Whether agent ``key`` has arrived, from whichever runtime steps it."""
+        if self.native is not None:
+            return bool(self._native_reached[list(self.scenarios).index(key)])
+        return bool(self.scenarios[key].done)
 
     def position_of(self, key: str) -> tuple[float, float]:
         """Agent ``key``'s position (world metres), from whichever runtime steps it."""
@@ -387,7 +442,7 @@ class Squad:
             x, y = float(pos[i, 0]), float(pos[i, 1])
             hit = sc._truth_hit((x, y))
             newly = bool(reached[i]) and not self._native_reached[i]
-            gx, gy = sc.waypoints[0]
+            gx, gy = self.goal_of(k)
             out[k] = StepRecord(
                 step=self._native_tick,
                 x=x,

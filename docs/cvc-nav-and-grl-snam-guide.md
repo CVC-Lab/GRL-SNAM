@@ -145,15 +145,24 @@ Two concrete consequences worth carrying, not just vocabulary:
   That's fixed and republished now, but it's the load-bearing example of why "not actually Hamiltonian"
   matters operationally and not just semantically: a force field that isn't conservative can't be
   reasoned about the way the vocabulary suggests.
-- **A second, smaller divergence, opt-in to close:** `cvc::nav`'s `integrate_surrogate_v2`
-  (`geom_rollout.cpp`) runs **explicit** Euler by default, where its Python namesake runs
-  **semi-implicit**. The default follows the material fork's `train_material.py`, the native
-  trainer's normative source. Its blast radius is narrow: it isn't exported through `pycvc_nav.i`,
-  and its only callers are internal to `geom_rollout.cpp`'s multi-start training loss (L_multi).
-  libcvc #596 adds a `semi_implicit` switch, reached from Python as
-  `MaterialTrainer(semi_implicit=True)` in `grl_snam/material_train_native.py`. With it, native
-  L_multi matches `grl_snam.surrogate_robust.multi_start_penalty`. Without it, the two agree on the
-  start but not the rollout.
+- **A second, smaller divergence, now closed in libcvc:** through libcvc 3.7.8, `cvc::nav`'s
+  `integrate_surrogate_v2` (`geom_rollout.cpp`) ran **explicit** Euler by default, where its Python
+  namesake runs **semi-implicit**; the default followed the material fork's `train_material.py`.
+  - transfix/libcvc#981 makes semi-implicit Euler the default in three places:
+    `geom_rollout_params`, `multi_start_params`, and pycvc's `nav_material_trainer_create`
+    (`ms_semi_implicit=1`). Explicit Euler stays an option: `semi_implicit = false`,
+    `ms_semi_implicit=0`.
+  - Every other point-mass rollout was already semi-implicit: `sdf_rollout`, which trained the
+    shipped weights, `integrate_surrogate_material`, and the native coefficient trainer.
+  - Explicit Euler gains energy at every step of a conservative orbit. libcvc's energy books catch
+    it with their sharp check (`NavPotential.ExplicitEulerRaisesTheAlarm`).
+  - The blast radius was narrow: the only callers are the material trainer's multi-start loss
+    (L_multi).
+  - **One thing changes here with a pycvc that has it.** `MaterialTrainer` leaves the integrator
+    argument out on its legacy start (`semi_implicit=False` with the default `frac_range`). So that
+    start now runs semi-implicit natively, while the torch twin (`material_train_torch.py`) keeps
+    its explicit default. To compare the two, pass `semi_implicit=True` to both, or use a sampled
+    `frac_range`, which passes the flag.
 
 None of this changes how you should use `cvc::nav` day to day — the fidelity contract above is what
 governs comparing outputs, and it holds regardless of what you call the underlying physics.
@@ -809,6 +818,10 @@ device path is `CVC_ENABLE_CUDA`-gated and auto-skips without a device.
 - `GRL-SNAM/docs/CVCNAV_CPP_PORT_ROADMAP.md` — the C++ port design record (phases
   P0–P8, the fidelity boundary, `.cvcnav` format, `sim_world`/`sim_thread`).
 - `GRL-SNAM/docs/PERFORMANCE.md` — measured kernel speedups and the scaling wall.
+- [`GRL-SNAM/docs/vehicle-ph-plant.pdf`](vehicle-ph-plant.pdf) — the vehicle under the navigator,
+  written as a port-Hamiltonian system: the dynamic single-track plant's exact pH form, its
+  per-step energy books, the learned plant `cvc::ph`, the navigator's energy identity, and how to
+  reproduce every measured value (LaTeX source beside it).
 - `libcvc/docs/NAV_TRAINING.md` — the torch-free trainer's API.
 - `libcvc/docs/NAV_MATERIAL.md` — material-aware navigation.
 - Headers: `libcvc/inc/cvc/nav/` · Demos: `libcvc/examples/nav_*_demo.cpp`

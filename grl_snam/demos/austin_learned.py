@@ -20,7 +20,7 @@ from grl_snam.demos._common import (
     SimPacer,
     current_host,
     default_nav_weights_pt,
-    default_scene_bundle,
+    open_city,
     vehicle_box_mesh,
 )
 from grl_snam.metrics import NavMetrics
@@ -35,18 +35,11 @@ _S: dict = {}
 def setup() -> None:
     host = current_host()
     from pycvc_gl.camera import NativeChaseCamera as ChaseCamera
-    from pycvc_gl.scenes import (
-        building_occupancy,
-        load_geometry_bundle,
-        plan_ground_route,
-        resample_polyline,
-        terrain_grid,
-    )
+    from pycvc_gl.scenes import plan_ground_route, resample_polyline
     from pycvc_gl.vehicle import VehiclePose
 
     from grl_snam.route import cells_for_metres, plan_clearance_route
 
-    bundle = default_scene_bundle()
     ckpt = default_nav_weights_pt()
     torch.set_num_threads(2)
     ck = torch.load(ckpt, map_location="cpu")
@@ -67,16 +60,12 @@ def setup() -> None:
 
     lab = host.make_lab()
     lab.set_axis_visible(False)
-    sample = load_geometry_bundle(lab, bundle)
-    bounds = terrain_grid(os.path.join(bundle, "terrain.json"))[1]
+    city = open_city(host, lab)  # the host's (already drawn), else the installed bundle
+    sample, bounds = city.sample, city.bounds
     mnx, mny, mxx, mxy = bounds
     print("grl_snam austin_learned: occupancy + SDF + route...", flush=True)
-    occ_r = building_occupancy(
-        os.path.join(bundle, "buildings.glb"), bounds, 512, 512, inflate_m=12.0
-    )
-    occ0 = building_occupancy(
-        os.path.join(bundle, "buildings.glb"), bounds, 512, 512, inflate_m=0.0
-    )
+    occ_r = city.occupancy(bounds, 512, 512, inflate_m=12.0)
+    occ0 = city.occupancy(bounds, 512, 512, inflate_m=0.0)
     ny, nx = occ0.shape
     sdf_npz = os.environ.get("GRL_SNAM_SDF", "")
     if sdf_npz and os.path.exists(sdf_npz):
@@ -111,7 +100,9 @@ def setup() -> None:
     lab.add_markers("start", [(start[0], start[1], sample(*start) + 1.0)], color=(0.15, 0.85, 0.25))
     lab.add_markers("goal", [(goal[0], goal[1], sample(*goal) + 1.0)], color=(0.95, 0.80, 0.10))
     lab.add_path(
-        "spine", [(w[0], w[1], sample(w[0], w[1]) + 0.5) for w in route], color=(0.30, 0.55, 0.95)
+        "spine",
+        [(float(w[0]), float(w[1]), sample(float(w[0]), float(w[1])) + 0.5) for w in route],
+        color=(0.30, 0.55, 0.95),
     )
     vv, vt = vehicle_box_mesh()
     lab.add_mesh("agent0", vv, vt, color=(0.90, 0.12, 0.12))
@@ -160,6 +151,30 @@ def setup() -> None:
     lab.node("agent0").setTransform(vpose.update(start[0], start[1], 1.0 / 30.0))
     lab.pump()
     print("grl_snam austin_learned: learned SDF policy driving the A* street corridor.", flush=True)
+
+
+def navigator():
+    """A view of the demo's rollout parameters a host maps settings onto
+    (``grl_snam.ariadne._cars.TorchSettings``, with :data:`SETTINGS`): its ``kw`` (rr, d_hat,
+    vmax in the policy's normalized units) and ``S`` (its scale). None before :func:`setup`."""
+    if not _S:
+        return None
+    from types import SimpleNamespace
+
+    return SimpleNamespace(kw=_S["kw"], S=_S["scale"], rr=_S["kw"]["rr"], _dyn="point")
+
+
+#: The libcvc keys the corridor follower takes: its top speed, footprint and barrier.
+SETTINGS = ("nav.vehicle.vmax", "nav.vehicle.rr", "nav.vehicle.d_hat")
+
+
+def predicted_path(steps: int = 40) -> list:
+    """The route spine ahead of the vehicle, as world (x, y) points ([] before setup)."""
+    if not _S:
+        return []
+    route, ri = _S["route"], _S["ri"]
+    ahead = route[ri : ri + int(steps)]
+    return [(float(p[0]), float(p[1])) for p in ahead]
 
 
 def _n2w(on, center, scale):

@@ -102,6 +102,98 @@ def default_scene_bundle():
     )
 
 
+def world_occupancy(world, bounds, nx, ny, *, inflate_m=0.0):
+    """A loaded world's (``pycvc.world_geometry``) buildings as a boolean (ny, nx) occupancy grid
+    over ``bounds``, row 0 at min y, dilated by ``inflate_m`` metres: libcvc's nav rasterizer
+    (``pycvc.nav_world_rasterize``), no VTK."""
+    import pycvc
+
+    cell = (bounds[2] - bounds[0]) / max(nx - 1, 1)
+    planes = pycvc.nav_world_rasterize(
+        world, int(ny), int(nx), *bounds, int(round(float(inflate_m) / cell))
+    )
+    return planes["occupancy"].astype(bool)
+
+
+def bundle_occupancy(bundle_dir, bounds, nx, ny, *, inflate_m=0.0):
+    """The bundle's buildings as a boolean (ny, nx) occupancy grid over ``bounds``, row 0 at min
+    y: libcvc's nav rasterizer (:func:`world_occupancy`) when the installed pycvc has it, else
+    ``pycvc_gl.scenes.building_occupancy`` (a VTK render). ``inflate_m`` dilates the buildings by
+    that many metres."""
+    import numpy as np
+    import pycvc
+
+    if hasattr(pycvc, "nav_world_rasterize") and hasattr(pycvc, "load_city_bundle"):
+        world = pycvc.load_city_bundle(str(bundle_dir)).world()
+        return world_occupancy(world, bounds, nx, ny, inflate_m=inflate_m)
+    from pycvc_gl.scenes import building_occupancy
+
+    glb = os.path.join(str(bundle_dir), "buildings.glb")
+    return np.asarray(building_occupancy(glb, bounds, nx, ny, inflate_m=inflate_m), bool)
+
+
+class City:
+    """The city a demo drives in: ``sample(x, y)`` (the terrain's height), ``bounds`` (min_x,
+    min_y, max_x, max_y) and :meth:`occupancy`.
+
+    A host that has already loaded and drawn the city hands it over with ``host.city()``. The
+    Ariadne live port is one such host: its document names the city in its ``data:`` block, and
+    the scene draws what loaded. Otherwise :func:`open_city` loads the installed bundle into the
+    demo's lab, as the demos always have."""
+
+    def __init__(self, sample, bounds, occupancy):
+        self.sample = sample
+        self.bounds = tuple(float(b) for b in bounds)
+        self._occupancy = occupancy
+
+    def occupancy(self, bounds, nx, ny, *, inflate_m=0.0):
+        """The buildings as a boolean (ny, nx) grid over ``bounds``, dilated by ``inflate_m``."""
+        return self._occupancy(bounds, nx, ny, inflate_m=inflate_m)
+
+    @classmethod
+    def of_world(cls, world, terrain):
+        """A city from a loaded ``pycvc.world_geometry`` and its terrain ``pycvc.height_field``
+        (``pycvc.data_world`` / ``data_height_field``): no file is read."""
+        from pycvc_gl.scenes import terrain_sampler
+
+        return cls(
+            terrain_sampler(field=terrain),
+            terrain.bounds2d(),
+            lambda bounds, nx, ny, inflate_m=0.0: world_occupancy(
+                world, bounds, nx, ny, inflate_m=inflate_m
+            ),
+        )
+
+
+def open_city(host, lab):
+    """The demo's :class:`City`: the host's (``host.city()``, already drawn), else the installed
+    bundle (:func:`default_scene_bundle`), drawn into ``lab``."""
+    import pycvc
+    from pycvc_gl.scenes import load_geometry_bundle
+
+    from grl_snam.tools.sdf import terrain_bounds
+
+    given = getattr(host, "city", None)
+    city = given() if callable(given) else None
+    if city is not None:
+        return city
+    bundle = default_scene_bundle()
+    sample = load_geometry_bundle(lab, bundle)
+    bounds = terrain_bounds(bundle)
+    if hasattr(pycvc, "nav_world_rasterize") and hasattr(pycvc, "load_city_bundle"):
+        world = pycvc.load_city_bundle(str(bundle)).world()  # once, for every grid the demo asks
+        return City(
+            sample,
+            bounds,
+            lambda b, nx, ny, inflate_m=0.0: world_occupancy(world, b, nx, ny, inflate_m=inflate_m),
+        )
+    return City(
+        sample,
+        bounds,
+        lambda b, nx, ny, inflate_m=0.0: bundle_occupancy(bundle, b, nx, ny, inflate_m=inflate_m),
+    )
+
+
 def require_host():
     """Return ``(pycvc, vrhost)`` or raise a clear error outside VolRover3."""
     try:

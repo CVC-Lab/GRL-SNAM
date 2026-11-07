@@ -59,15 +59,27 @@ def record(
     progress=None,
     truth_occ=None,
     prior_occ=None,
+    plant=None,
+    ground_mu: float = 0.9,
 ) -> Path:
     """Run ``story_key`` once and write ``trace.npz`` + ``trace.json``.
 
     ``truth_occ``/``prior_occ`` let a caller supply a rasterized world (a real
-    city) in place of the story's declarative rectangles.
+    city) in place of the story's declarative rectangles. ``plant`` (``"kinematic"``,
+    ``"dynamic[:preset]"``, ``"jolt[:preset]"``) drives the story on libcvc's sim_world and
+    that plant instead (:func:`grl_snam.tools.fog_plant.record_on_plant`), on ground of grip
+    ``ground_mu``.
     """
     story = story or STORIES[story_key]
     out = Path(out_dir) if out_dir else Path("traces") / story.key
     out.mkdir(parents=True, exist_ok=True)
+    if plant is not None:
+        from grl_snam.tools.fog_plant import record_on_plant
+
+        return record_on_plant(
+            story, out, plant, model=model, seed=seed, max_steps=max_steps, progress=progress,
+            truth_occ=truth_occ, prior_occ=prior_occ, ground_mu=ground_mu,
+        )  # fmt: skip
 
     sc = build_scenario(story, model, seed=seed, truth_occ=truth_occ, prior_occ=prior_occ)
     # replay mode: the recorder owns the tick, wall time is irrelevant here.
@@ -155,6 +167,19 @@ def record(
         if sc.done:
             break
 
+    return _write_trace(
+        out, story, seed, rows, snap_ticks, snap_occ, snap_dyn, routes, truth_ticks, truth_snaps,
+        fov_ticks, fov_vis, fov_seen, waypoints_reached=int(sc.wp_i + (1 if sc.done else 0)),
+        reached=bool(sc.done),
+    )  # fmt: skip
+
+
+def _write_trace(
+    out, story, seed, rows, snap_ticks, snap_occ, snap_dyn, routes, truth_ticks, truth_snaps,
+    fov_ticks, fov_vis, fov_seen, *, waypoints_reached, reached, extra=None,
+) -> Path:  # fmt: skip
+    """Write ``trace.npz`` + ``trace.json`` from what a run recorded; ``extra`` joins the
+    manifest."""
     n = len(rows["tick"])
     xs = np.asarray(rows["x"])
     ys = np.asarray(rows["y"])
@@ -174,8 +199,8 @@ def record(
         "world_seconds": round(n * story.dt, 3),
         "map_updates": len(snap_ticks) - 1,
         "penetration_steps": int(np.sum(rows["truth_penetration"])),
-        "waypoints_reached": int(sc.wp_i + (1 if sc.done else 0)),
-        "reached_goal": bool(sc.done),
+        "waypoints_reached": int(waypoints_reached),
+        "reached_goal": bool(reached),
         "detour_peak_m": round(float(detour.max()), 1),
         "path_length_m": round(float(np.hypot(np.diff(xs), np.diff(ys)).sum()), 1),
         "straight_line_m": round(float(seg), 1),
@@ -237,6 +262,7 @@ def record(
         "torch": torch_version,
         "summary": summary,
     }
+    manifest.update(extra or {})
     (out / "trace.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return out
 

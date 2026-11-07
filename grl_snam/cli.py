@@ -54,13 +54,27 @@ def selftest() -> None:
 
 @main.command("material-demo")
 @click.option("--out-dir", default="material_demo", show_default=True, help="Output directory.")
-def material_demo(out_dir: str) -> None:
+@click.option(
+    "--plant",
+    default=None,
+    help="run both stories on libcvc's sim_world and this plant: kinematic, dynamic[:preset] "
+    "or jolt[:preset] (RoboRacers by default)",
+)
+@click.option("--mu", "ground_mu", default=0.9, show_default=True, help="--plant: the grip")
+@click.option(
+    "--governor/--no-governor",
+    default=None,
+    help="--plant: libcvc's risk governor, so the material's risk slows the vehicles (default: on "
+    "for the dynamic and Jolt plants where the running pycvc has it); --no-governor shows the "
+    "forces alone",
+)
+def material_demo(out_dir: str, plant, ground_mu, governor) -> None:
     """Material-aware navigation demo (pure Python): two stories run with and
     without a MaterialGrid, rendered as top-down trajectory PNGs + stats.
     Set GRL_SNAM_MATERIAL_BACKEND=native to run through the C++ kernels."""
     from grl_snam.tools.material_demo import main as run
 
-    raise SystemExit(run(out_dir))
+    raise SystemExit(run(out_dir, plant=plant, ground_mu=ground_mu, governor=governor))
 
 
 @main.command("lab-demo")
@@ -281,10 +295,105 @@ def coef_train_cmd(args) -> None:
     raise SystemExit(_run(list(args)))
 
 
+@main.command(
+    "ariadne",
+    # Every arg passes straight through to grl_snam.ariadne's own parsers, as coef-train does, so
+    # `grl-snam ariadne --list` and `grl-snam ariadne <port> --help` reach them.
+    context_settings=dict(ignore_unknown_options=True, help_option_names=[]),
+    add_help_option=False,
+    short_help="Run a demo as a Python host of an Ariadne document (live/fog/squad/fleet/...).",
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def ariadne_cmd(args) -> None:
+    """Run one of GRL-SNAM's demos as a Python host of an Ariadne (.ari) document: `grl-snam
+    ariadne --list` names the ports (live, fog, squad, fleet, material), `grl-snam ariadne <port>
+    --help` explains one. The same as `python -m grl_snam.ariadne`; needs pycvc_gl's Python host
+    (pycvc_gl.ariadne). See grl_snam/ariadne/README.md.
+    """
+    from .ariadne.__main__ import main as _run
+
+    raise SystemExit(_run(list(args)))
+
+
 # ── drive + render ───────────────────────────────────────────────────────────
 @main.group()
 def capture() -> None:
     """Drive the learned policy and render an mp4 OFFSCREEN (no window), with a live HUD."""
+
+
+def _plant_options(max_steps: int):
+    """The plant options `capture drive` and `capture multigoal` share."""
+
+    def deco(f):
+        for opt in reversed(
+            [
+                click.option(
+                    "--plant",
+                    type=click.Choice(["point", "kinematic", "dynamic", "jolt"]),
+                    default="point",
+                    show_default=True,
+                    help="what drives: the Python point-mass surrogate, or the policy on "
+                    "libcvc's sim_world driving nav's kinematic bicycle, the dynamic "
+                    "single-track vehicle or a Jolt vehicle (needs a pycvc with the plants)",
+                ),
+                click.option(
+                    "--vehicle",
+                    type=click.Choice(["humvee", "roboracer"]),
+                    default="humvee",
+                    show_default=True,
+                    help="dynamic / jolt: the vehicle",
+                ),
+                click.option(
+                    "--mu",
+                    "ground_mu",
+                    default=0.9,
+                    show_default=True,
+                    help="dynamic / jolt: the ground's grip (0.3 is wet ice-ish)",
+                ),
+                click.option(
+                    "--routes",
+                    is_flag=True,
+                    help="dynamic / jolt: follow libcvc's vehicle routes instead of the "
+                    "navigator's carrot",
+                ),
+                click.option(
+                    "--fog",
+                    is_flag=True,
+                    help="plants: the map starts unknown; the vehicle maps the buildings "
+                    "with its sensor as it drives (they are in the physics from the start)",
+                ),
+                click.option(
+                    "--weights",
+                    default=None,
+                    type=click.Path(exists=True, dir_okay=False),
+                    help="plants: drive this .cvcnav (e.g. trained through Jolt) instead of "
+                    "CHECKPOINT's policy; CHECKPOINT still frames the run",
+                ),
+                click.option(
+                    "--reach-m",
+                    default=15.0,
+                    show_default=True,
+                    help="plants: arrival radius in metres",
+                ),
+                click.option(
+                    "--max-steps",
+                    default=max_steps,
+                    show_default=True,
+                    help="ticks per leg before giving up",
+                ),
+                click.option(
+                    "--speed",
+                    default=1.0,
+                    show_default=True,
+                    help="plants: world seconds per played second (raised to fit --minutes)",
+                ),
+                click.option("--caption", default=None, help="a line drawn along the bottom"),
+            ]
+        ):
+            f = opt(f)
+        return f
+
+    return deco
 
 
 @capture.command("drive")
@@ -298,12 +407,25 @@ def capture() -> None:
 @click.option("-o", "--out", default="drive.mp4", show_default=True)
 @click.option("--minutes", default=1.0, show_default=True)
 @click.option("--no-hud", is_flag=True, help="disable the metrics HUD overlay")
-def capture_drive_cmd(bundle, checkpoint, start, goal, sdf_npz, out, minutes, no_hud) -> None:
-    """A single fixed A->B run."""
+@click.option("--cam", type=click.Choice(["chase", "drone"]), default="chase", show_default=True)
+@_plant_options(max_steps=3000)
+def capture_drive_cmd(bundle, checkpoint, start, goal, sdf_npz, out, minutes, no_hud, cam, **plant):
+    """A single fixed A->B run. On a plant (--plant kinematic|dynamic|jolt) the whole run is
+    kept and played by the clock, the HUD adds the vehicle's slip, tire use, lateral g and
+    energy books, and OUT's .json records how it ended."""
     from .tools import capture as _cap
 
     _cap.capture_drive(
-        bundle, checkpoint, start, goal, out, sdf_npz=sdf_npz, minutes=minutes, hud=not no_hud
+        bundle,
+        checkpoint,
+        start,
+        goal,
+        out,
+        sdf_npz=sdf_npz,
+        minutes=minutes,
+        hud=not no_hud,
+        cam=cam,
+        **plant,
     )
 
 
@@ -314,12 +436,22 @@ def capture_drive_cmd(bundle, checkpoint, start, goal, sdf_npz, out, minutes, no
 @click.option("-o", "--out", default="multigoal.mp4", show_default=True)
 @click.option("--minutes", default=3.0, show_default=True)
 @click.option("--no-hud", is_flag=True, help="disable the metrics HUD overlay")
-def capture_multigoal_cmd(bundle, checkpoint, sdf_npz, out, minutes, no_hud) -> None:
-    """The dynamic multi-goal free-drive (goals re-targeted live, drone chase cam)."""
+@click.option("--goals", "n_goals", default=4, show_default=True, help="how many goals (1-4)")
+@_plant_options(max_steps=1300)
+def capture_multigoal_cmd(bundle, checkpoint, sdf_npz, out, minutes, no_hud, n_goals, **plant):
+    """The dynamic multi-goal free-drive (goals re-targeted live, drone chase cam), on
+    --plant (see `capture drive`)."""
     from .tools import capture as _cap
 
     _cap.capture_multigoal(
-        bundle, checkpoint, out, sdf_npz=sdf_npz, minutes=minutes, hud=not no_hud
+        bundle,
+        checkpoint,
+        out,
+        sdf_npz=sdf_npz,
+        minutes=minutes,
+        hud=not no_hud,
+        n_goals=n_goals,
+        **plant,
     )
 
 
@@ -356,20 +488,33 @@ def fog_list_cmd() -> None:
 
 
 @fog.command("record")
-@click.argument("story", type=click.Choice(["ghost", "blocker", "unit"]))
+@click.argument(
+    "story", type=click.Choice(["ghost", "blocker", "unit", "city", "traffic", "pursuit"])
+)
 @click.option("-o", "--out", "out_dir", default=None, help="trace dir (default traces/<story>)")
 @click.option("--seed", default=0, show_default=True)
 @click.option("--max-steps", default=None, type=int)
-def fog_record_cmd(story, out_dir, seed, max_steps) -> None:
+@click.option(
+    "--plant",
+    default=None,
+    help="drive the story on libcvc's sim_world and this plant: kinematic, dynamic[:preset] "
+    "or jolt[:preset] (RoboRacers by default). Default: the Python scenario",
+)
+@click.option("--mu", "ground_mu", default=0.9, show_default=True, help="--plant: the grip")
+def fog_record_cmd(story, out_dir, seed, max_steps, plant, ground_mu) -> None:
     """Run the scenario once and write the measured trace bundle."""
     from .tools import fog_record
 
-    out = fog_record.record(story, out_dir, seed=seed, max_steps=max_steps)
+    out = fog_record.record(
+        story, out_dir, seed=seed, max_steps=max_steps, plant=plant, ground_mu=ground_mu
+    )
     click.echo(f"trace={out}")
 
 
 @fog.command("capture")
-@click.argument("story", type=click.Choice(["ghost", "blocker", "unit"]))
+@click.argument(
+    "story", type=click.Choice(["ghost", "blocker", "unit", "city", "traffic", "pursuit"])
+)
 @click.option("--trace", "trace_dir", default=None, help="trace dir (default traces/<story>)")
 @click.option("-o", "--out", default=None, help="mp4 (default fog_<story>.mp4)")
 @click.option("--fps", default=20, show_default=True)
@@ -393,7 +538,9 @@ def fog_capture_cmd(story, trace_dir, out, fps, speed, no_captions, keep_frames)
 
 
 @fog.command("play")
-@click.argument("story", type=click.Choice(["ghost", "blocker", "unit"]))
+@click.argument(
+    "story", type=click.Choice(["ghost", "blocker", "unit", "city", "traffic", "pursuit"])
+)
 @click.option("--trace", "trace_dir", default=None)
 @click.option("--speed", default=0.5, show_default=True)
 @click.option("--loop", is_flag=True)
@@ -409,8 +556,10 @@ def fog_play_cmd(story, trace_dir, speed, loop) -> None:
 @click.option("-o", "--out-dir", default="fog", show_default=True)
 @click.option("--fps", default=20, show_default=True)
 @click.option("--speed", default=0.5, show_default=True)
-def fog_all_cmd(out_dir, fps, speed) -> None:
-    """Record and capture all three stories, then concatenate the reel."""
+@click.option("--plant", default=None, help="record every story on this plant (see fog record)")
+@click.option("--mu", "ground_mu", default=0.9, show_default=True, help="--plant: the grip")
+def fog_all_cmd(out_dir, fps, speed, plant, ground_mu) -> None:
+    """Record and capture every story, then concatenate the reel."""
     from .fog_stories import STORIES
     from .tools import fog_capture, fog_record
 
@@ -418,7 +567,7 @@ def fog_all_cmd(out_dir, fps, speed) -> None:
     out.mkdir(parents=True, exist_ok=True)
     mp4s = []
     for key in STORIES:
-        trace = fog_record.record(key, out / "traces" / key)
+        trace = fog_record.record(key, out / "traces" / key, plant=plant, ground_mu=ground_mu)
         mp4s.append(fog_capture.capture(key, trace, out / f"fog_{key}.mp4", fps=fps, speed=speed))
         click.echo(f"  {key} -> {mp4s[-1]}")
     reel = fog_capture.concat(mp4s, out / "fog_demo.mp4")
@@ -433,11 +582,19 @@ def fog_all_cmd(out_dir, fps, speed) -> None:
 @click.option("--speed", default=6.0, show_default=True, help="world seconds per clip second")
 @click.option("--width", default=1600, show_default=True)
 @click.option("--record/--no-record", default=True, help="re-record the traces first")
-def finale(bundle, out_dir, fps, speed, width, record) -> None:
+@click.option(
+    "--plant",
+    default=None,
+    help="record on libcvc's sim_world and this plant: kinematic, dynamic[:preset], "
+    "jolt[:preset] or a preset (humvee, roboracer). Default: the Python squad",
+)
+@click.option("--max-steps", default=None, type=int, help="cap each act's ticks (a short run)")
+def finale(bundle, out_dir, fps, speed, width, record, plant, max_steps) -> None:
     """Eight vehicles across real city geometry: rendezvous, then pursuit.
 
     BUNDLE is a scene bundle directory (terrain + buildings). There is no
-    default: the geometry lives outside this repository.
+    default: the geometry lives outside this repository. With --plant the squads
+    run natively, so the traces carry no map updates or route spines to draw.
     """
     from .tools import finale_capture, finale_record
     from .tools.austin import occupancy
@@ -450,6 +607,8 @@ def finale(bundle, out_dir, fps, speed, width, record) -> None:
             bundle,
             out / "traces",
             progress=lambda k, n: click.echo(f"  tick {k}") if k % 400 == 0 else None,
+            plant=plant,
+            max_steps=max_steps,
         )
     occ, bounds = occupancy(bundle)
     size = (int(width) // 2 * 2, int(width * 9 / 16) // 2 * 2)
@@ -491,12 +650,31 @@ def finale(bundle, out_dir, fps, speed, width, record) -> None:
     "--drive", type=click.Choice(["multigoal", "single"]), default="multigoal", show_default=True
 )
 @click.option("--out-dir", default=None, help="where to write nav_sdf.npz / checkpoint / video")
-def pipeline(bundle, source, steps, minutes, drive, out_dir) -> None:
+@click.option(
+    "--plant",
+    type=click.Choice(["point", "kinematic", "dynamic", "jolt"]),
+    default="point",
+    show_default=True,
+    help="what drives in the video (see `grl-snam capture drive --help`)",
+)
+@click.option(
+    "--vehicle", type=click.Choice(["humvee", "roboracer"]), default="humvee", show_default=True
+)
+@click.option("--mu", "ground_mu", default=0.9, show_default=True, help="dynamic / jolt: grip")
+def pipeline(bundle, source, steps, minutes, drive, out_dir, plant, vehicle, ground_mu) -> None:
     """Run the WHOLE pipeline: world model -> SDF -> train -> demo video."""
     from .tools import pipeline as _pipe
 
     res = _pipe.run(
-        bundle, source=source, steps=steps, minutes=minutes, drive=drive, out_dir=out_dir
+        bundle,
+        source=source,
+        steps=steps,
+        minutes=minutes,
+        drive=drive,
+        out_dir=out_dir,
+        plant=plant,
+        vehicle=vehicle,
+        ground_mu=ground_mu,
     )
     click.echo("artifacts: " + ", ".join(f"{k}={v}" for k, v in res.items()))
 
