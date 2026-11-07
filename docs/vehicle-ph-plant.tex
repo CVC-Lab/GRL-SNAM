@@ -75,7 +75,7 @@ the pair of axle forces, with the wheels' ground speeds as its conjugate output.
 port: it only turns the directions along which the tires push, so it does no work. Each tire's
 slip is measured in its wheel's frame, so the secant form leaves no remainder, and gravity on a
 grade is booked as a power line of its own. The integrator's step keeps per-step energy books whose residual is second order in the
-step. libcvc's four-wheel vehicle with suspension has the same form, with one term the single
+step, and an opt-in discrete-gradient step closes them exactly. libcvc's four-wheel vehicle with suspension has the same form, with one term the single
 track lacks: the moments of the tires' lateral forces on roll and pitch, a one-way coupling that is
 booked on its own line. Opt-in extensions put wheel spin, with a (wheel torque, wheel speed) port,
 compliant contact, with a barrier energy in $H$, and the slope across the heading, with gravity in
@@ -121,7 +121,8 @@ surrogate. Across the navigator's ticks those books include the potential's chan
         (Section~\ref{sec:four-wheel}). Opt-in wheel spin, compliant contact and the slope across
         the heading, in the same form and with their books (Section~\ref{sec:ext}).
   \item The discrete step's energy books, with a residual that is second order per step
-        (Section~\ref{sec:books}), and a live plant that keeps them for every vehicle in a
+        (Section~\ref{sec:books}), an opt-in discrete-gradient step whose books close exactly
+        (Section~\ref{sec:dg}), and a live plant that keeps them for every vehicle in a
         navigation world.
   \item The learned plant \code{cvc::ph}: its structure, its energy balance including the noise
         power, its integrator and its training objective (Section~\ref{sec:learned}). It also has an
@@ -137,8 +138,9 @@ surrogate. Across the navigator's ticks those books include the potential's chan
 
 \paragraph{What is not claimed.} The closed loop of navigator, controller and plant is not
 port-Hamiltonian. The controller is a path follower, not an energy-shaping controller
-(Section~\ref{sec:limits}). Neither the analytic plant's integrator nor the learned plant's is
-structure-preserving. Both keep books with a residual instead. The learned plant's filter-based
+(Section~\ref{sec:limits}). Neither the analytic plant's default integrator nor the learned
+plant's is structure-preserving. Both keep books with a residual instead; an opt-in step closes the
+analytic plant's exactly (Section~\ref{sec:dg}). The learned plant's filter-based
 evidence bound is not yet implemented. The four-wheel vehicle's pH form
 (Section~\ref{sec:four-wheel}) is passive with respect to its wheels' forces except for a one-way
 lever term, and only its wheel-spin form has a GRL-SNAM twin. Wheel spin, compliant contact and
@@ -170,11 +172,13 @@ that section and its tables, are without them. The four-wheel plant has no compl
         implicit damper and its substeps are \#1004, merged as \code{ce9aebaf}, in no release yet.
   \item The navigator's geometry rollout takes semi-implicit Euler by default since \#981
         (Section~\ref{sec:nav}), merged as \code{45cb239a}, in no release yet.
+  \item The opt-in discrete-gradient step (Section~\ref{sec:dg}) is \#978, merged as
+        \code{789d2f6e}, in no release yet.
 \end{itemize}
 The measurements in Section~\ref{sec:validation} were taken on libcvc \code{master} at
 \code{c1f104c0}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are identical to
-v3.7.1's, except for the rows from \#850, \#851, \#852, \#869, \#873, \#981, \#982, \#983, \#987
-and \#1004.
+v3.7.1's, except for the rows from \#850, \#851, \#852, \#869, \#873, \#978, \#981, \#982, \#983,
+\#987 and \#1004.
 Appendix~\ref{app:repro} gives the commit each of those was measured on.
 
 % ===========================================================================
@@ -656,6 +660,41 @@ the mean per-step $\lvert r_h\rvert$ falls by 3.83, 3.92 and 3.95. Over 6~s at $
 summed residual is $1.2\times10^{-3}$ of the energy that moved (the flow: the sum of the magnitudes
 of every line). Braking hard to a stop in a turn makes the clamp and the blend act. The books charge
 them (for example $-358$~J at $h=0.01$~s), and the rest closes to $4\times10^{-6}$ of the flow.
+
+\subsection{Closing the books exactly}
+\label{sec:dg}
+\code{diff::dyn\_plant\_dg} (\code{inc/cvc/nav/detail/dyn\_bike\_dg.h}, libcvc \#978) is an opt-in
+step whose books close exactly: the discrete gradient of~\eqref{eq:plant-ph}. $H=\tfrac12v\T Mv$
+is quadratic in the twist, so its discrete gradient is the midpoint twist, and the step is the
+implicit midpoint rule
+\begin{equation}
+  M\,\frac{v_1-v}{h}=\J(M\bar v)\,\bar v+Q(\bar v),\qquad \bar v=\tfrac12(v+v_1),
+  \label{eq:dg}
+\end{equation}
+with $Q$ the tires, the axle forces, drag, rolling resistance and grade, taken at the midpoint
+state with the actuators' outputs at the step's midpoint. Since $\J$ is skew,
+$\Delta H=h\,\bar v\T Q(\bar v)$ holds line for line, and \code{dyn\_plant\_dg\_books} closes to
+the tolerance of the Newton solve. The actuators, the speed clamp and the low-speed blend are
+\code{dyn\_plant}'s, and the books charge the limiters as~\eqref{eq:books} does. \code{dyn\_plant}
+and its callers are untouched, so the default is unchanged.
+\begin{itemize}
+  \item On the swerve of Proposition~\ref{prop:books}'s test, from $h=0.06$ to 0.0025~s, the
+        residual is at most $1.7\times10^{-10}$~J a step, at most $1.3\times10^{-12}$ of the
+        step's flow, where \code{dyn\_plant} leaves 25~J to 0.056~J a step.
+  \item It is second order: its error at 2~s falls 3.92 to 4.03 times per halving of $h$, where
+        \code{dyn\_plant}'s falls 1.98 to 2.13 times.
+  \item No coasting step gains energy, at the navigator's 0.06~s step or at the live plant's six
+        0.01~s substeps, with tires up to sixteen times stiffer than the vehicle's.
+  \item It is A-stable but not L-stable. A tire much stiffer than the step can resolve swings its
+        slip past zero and back, decaying, where \code{dyn\_plant}'s implicit Euler lands on the
+        root in one step. At the live plant's substeps with the vehicle's own tires it swings no
+        more than \code{dyn\_plant} does.
+  \item A step costs 2.8 to 3.1~$\mu$s in double, about ten times \code{dyn\_plant}'s 0.30~$\mu$s.
+\end{itemize}
+It covers the twist without wheel spin, and it is C++ only: \code{pycvc} does not bind it, and
+GRL-SNAM has no twin of it. A wheel-spin version would meet the wheels' stiff longitudinal slip,
+whose rate times the navigator's step is 60 to 600, so it would likely need the live plant's
+substeps. Table~\ref{tab:val-dg} gives the gates.
 
 \subsection{The live plant}
 \label{sec:live}
@@ -1624,6 +1663,10 @@ gives the exact setup):
         16, \code{nav\_coef\_train\_test}'s 30, \code{nav\_material\_train\_test}'s 18 and
         \code{nav\_potential\_test}'s 17. \code{DynContact.Golden}'s file is byte-identical to
         GRL-SNAM's fixture, so the contact twin stands.
+  \item The rows for \#978 (Table~\ref{tab:val-dg} and Section~\ref{sec:dg}): libcvc
+        \code{master} at \code{f94a9b27}, where \#978's files are as its squash commit
+        \code{789d2f6e} left them, \code{nav\_dyn\_bike\_dg\_test}'s 7 tests passed, and
+        \code{nav\_dyn\_bike\_test}'s 23 still pass.
   \item The GRL-SNAM \#146 rows: \code{main} at \code{41ddf84}, where the four parity files of
         \#146 passed all 65 of their tests.
 \end{itemize}
@@ -1694,6 +1737,47 @@ pH work. Before \#852 (on \code{c1f104c0}) braking measured $-354$~J and $7\time
 floor test, then \code{TheFloorTermVanishesWithTheFloor}, measured
 $5.4\times10^{-4}\to5.4\times10^{-6}\to5.4\times10^{-8}$; the other rows' values are
 unchanged.}{tab:val-plant}
+
+\valtable{%
+\code{DynBikeDG.TheRateIsThePortHamiltonianField} &
+  the step's momenta's rate is~\eqref{eq:plant-ph}'s field (\code{dyn\_ph\_rhs}) at every slip,
+  $\mu=0.9$ and 0.6 &
+  $10^{-12}$ of $mg$ &
+  $6.7\times10^{-16}$, $1.1\times10^{-15}$ &
+  \code{789d2f6e} (\#978) \\
+\code{DynBikeDG.TheActuatorsAreDynPlants} &
+  the actuators' outputs are \code{dyn\_plant}'s, in double and in float &
+  bit for bit &
+  bit for bit &
+  \code{789d2f6e} (\#978) \\
+\code{DynBikeDG.StepBooksCloseExactly} &
+  the books~\eqref{eq:books} close to the solve's tolerance on Proposition~\ref{prop:books}'s
+  swerve, $h=0.06$ to 0.0025~s, and braking to a stop through the clamp and the blend; every
+  Newton solve converges &
+  $10^{-10}$ of the step's flow; mean below $10^{-6}$ of \code{dyn\_plant}'s; limiters charged &
+  at most $1.7\times10^{-10}$~J a step ($3.5\times10^{-14}$ to $1.3\times10^{-12}$ of the flow),
+  against 25 to 0.056~J; braking at most $5.9\times10^{-11}$~J; 3 to 4 Newton steps &
+  \code{789d2f6e} (\#978) \\
+\code{DynBikeDG.SecondOrderWhereDynPlantIsFirst} &
+  the error at 2~s of a turn-in past the peak, per halving of $h$ from 0.04~s &
+  ratio in $(3.4,4.6)$; \code{dyn\_plant}'s below 2.6 &
+  3.92, 3.97, 4.03 ($5.3\times10^{-3}$ at 0.04~s); \code{dyn\_plant} 1.98, 2.04, 2.13 (0.45) &
+  \code{789d2f6e} (\#978) \\
+\code{DynBikeDG.StiffTires} &
+  coasting at full lock from 0.5, 3 and 12~m/s, tires $1\times$, $4\times$ and $16\times$, one
+  0.06~s step or six 0.01~s, with and without the low-speed blend: no step gains energy &
+  gain below $10^{-12}$ of $H$; $H$ never rises &
+  every step's gain exactly 0; at six 0.01~s substeps with the vehicle's tires, slip swings 0, 1
+  and 1, as \code{dyn\_plant}'s &
+  \code{789d2f6e} (\#978) \\
+\code{DynBikeDG.StiffTiresReachTheKinematicBicycle} &
+  a steady 5~m/s turn with $16\times$ tires reaches the kinematic bicycle's yaw rate &
+  2\% &
+  $-0.02\%$ (\code{dyn\_plant} $-0.03\%$ at 0.06~s) &
+  \code{789d2f6e} (\#978) \\
+}{The opt-in discrete-gradient step (Section~\ref{sec:dg}; libcvc's \code{nav\_dyn\_bike\_dg\_test}),
+measured on \code{master} at \code{f94a9b27}. Its \code{CostPerStep} has no gate; there a step took
+2.8 to 3.1~$\mu$s against \code{dyn\_plant}'s 0.30~$\mu$s.}{tab:val-dg}
 
 \valtable{%
 \code{DynBikePlant.StepsAsTheDynamicPlantDoes} &
@@ -2218,11 +2302,11 @@ as the plant makes them, since changing any of them changes the plant, its golde
 Without wheel spin, the four-wheel form and its books have no torch twin yet, and the twin does not
 have the grade force. The four-wheel plant has no compliant contact.
 
-\paragraph{Structure-preserving integrators.} Neither plant's integrator keeps a discrete energy
-identity. Both are first order (analytic) or second order (learned) with a booked residual. A
-discrete-gradient or implicit-midpoint step would close the books exactly. It would cost a
-nonlinear solve per step, and the analytic plant's stiff-tire stability at the navigator's tick
-would have to be re-established. Section~\ref{sec:review} describes work under way on such a step.
+\paragraph{Structure-preserving integrators.} Neither plant's default integrator keeps a discrete
+energy identity. Both are first order (analytic) or second order (learned) with a booked residual.
+The analytic plant's opt-in discrete-gradient step (Section~\ref{sec:dg}) closes its books
+exactly, at about ten times the cost, but it is not L-stable, it has no wheel spin, \code{pycvc}
+does not bind it, and GRL-SNAM has no twin of it. The four-wheel and learned plants have none.
 
 \paragraph{The learned plant's evidence bound.} The rollout objective does not fit the diffusion or
 an observation model. LieSPHGP's EKF-based ELBO is the next stage for \code{cvc::ph}. Beyond the
@@ -2253,10 +2337,9 @@ books, with a ground height from a \code{pycvc.height\_field} and a contact fiel
 \subsection{Gaps raised in review, and the work on them}
 \label{sec:review}
 Review of this paper raised three gaps between the models it describes and the motion they are
-meant to capture. libcvc has since closed the first two with opt-in extensions
-(Section~\ref{sec:ext}), and the navigator's half of the third (Section~\ref{sec:nav}). The plant's
-half, a discrete-gradient step, is still being worked on, and nothing said here about it is a
-result.
+meant to capture. libcvc has since closed all three: the first two with opt-in extensions
+(Section~\ref{sec:ext}), and the third with a semi-implicit default for the navigator
+(Section~\ref{sec:nav}) and an opt-in discrete-gradient step for the plant (Section~\ref{sec:dg}).
 \begin{enumerate}
   \item \emph{Actuation.} Neither analytic plant had wheel spin: the drive and brake forces were
         set within the tires' grip, with no wheel speed or longitudinal slip in the state. The
@@ -2281,9 +2364,10 @@ result.
   \item \emph{Integration.} libcvc's native multi-start rollout of the navigator defaulted to
         explicit Euler (\code{geom\_rollout\_params::semi\_implicit} was false), which gains energy
         at every step on the orbits of Section~\ref{sec:nav}. libcvc \#981 makes semi-implicit
-        Euler the default, with an A/B comparison (Section~\ref{sec:nav}). The work still under
-        way adds an opt-in discrete-gradient step for the single-track plant, meant to close its
-        books exactly. It is not merged.
+        Euler the default, with an A/B comparison (Section~\ref{sec:nav}). libcvc \#978 adds an
+        opt-in discrete-gradient step for the single-track plant, whose books close to the solve's
+        tolerance (Section~\ref{sec:dg}). The defaults' books still keep a residual, and the
+        discrete-gradient step has no wheel spin or Python access.
 \end{enumerate}
 \paragraph{Recordings.} A reel of GRL-SNAM's navigator on vehicle plants, with three successes and
 five failures, is published as a GRL-SNAM pre-release:
@@ -2329,7 +2413,7 @@ and none with the live plant or the rigid-body vehicle on grip 0.9 (GRL-SNAM's
 \toprule
 \textbf{Piece} & \textbf{Version} \\
 \midrule
-libcvc & \code{master} at \code{c1f104c0}; its \code{nav}, \code{ph} and \code{physics} sources and tests are identical to the v3.7.1 tag (\code{d8ca602b}). The \#851 rows: its branch commit \code{6e7ab557}, cut from \code{master} at \code{cc8800a8}, whose \code{ph} sources and tests are those of its squash commit \code{b8ac9975}. The \#852 rows (and every \code{nav\_dyn\_bike\_test} and \code{physics\_dyn\_bike\_plant\_test} line below): its branch commit \code{1a0acc77}, on \#848's head \code{d1a2a78e}, cut from \code{master} at \code{72e4c607}, whose \code{nav} and \code{physics} sources and tests are those of its squash commit \code{140bc2d0}. The \#850, \#869 and \#873 rows, and \code{PhSe2Train.BothFormsFitTheDynamicBicycle}: \code{master} at \code{6cc8cfdc}, after v3.7.8. The \#982, \#983 and \#987 rows: \code{master} at \code{3d5c15c6}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are those of \#987's squash commit \code{b89992ef}. The \#981 and \#1004 rows: \code{master} at \code{352f1933}, after v3.7.11, where every file the two PRs touched is as their squash commits \code{45cb239a} and \code{ce9aebaf} left it. \\
+libcvc & \code{master} at \code{c1f104c0}; its \code{nav}, \code{ph} and \code{physics} sources and tests are identical to the v3.7.1 tag (\code{d8ca602b}). The \#851 rows: its branch commit \code{6e7ab557}, cut from \code{master} at \code{cc8800a8}, whose \code{ph} sources and tests are those of its squash commit \code{b8ac9975}. The \#852 rows (and every \code{nav\_dyn\_bike\_test} and \code{physics\_dyn\_bike\_plant\_test} line below): its branch commit \code{1a0acc77}, on \#848's head \code{d1a2a78e}, cut from \code{master} at \code{72e4c607}, whose \code{nav} and \code{physics} sources and tests are those of its squash commit \code{140bc2d0}. The \#850, \#869 and \#873 rows, and \code{PhSe2Train.BothFormsFitTheDynamicBicycle}: \code{master} at \code{6cc8cfdc}, after v3.7.8. The \#982, \#983 and \#987 rows: \code{master} at \code{3d5c15c6}, whose \code{nav}, \code{ph} and \code{physics} sources and tests are those of \#987's squash commit \code{b89992ef}. The \#981 and \#1004 rows: \code{master} at \code{352f1933}, after v3.7.11, where every file the two PRs touched is as their squash commits \code{45cb239a} and \code{ce9aebaf} left it. The \#978 rows: \code{master} at \code{f94a9b27}, where its files are as its squash commit \code{789d2f6e} left them. \\
 GRL-SNAM & \code{main} at \code{0e21085} (\code{3a38ae4} adds only this paper). The \#138 rows: \code{main} at \code{2f76ab0}, \#138's squash commit. The \#146 rows: \code{main} at \code{41ddf84}, whose twins, tests and fixtures are those of \#146's squash commit \code{b6ddb801} \\
 Operating system & Windows 11 Pro 10.0.26100, x86-64 \\
 Compiler & MSVC 19.44 (Visual Studio 2022, toolset 14.44.35207), Release \\
@@ -2357,12 +2441,13 @@ cmake --build build --target nav_dyn_bike_test nav_dyn_4w_test ^
       physics_dyn_bike_plant_test ph_se2_test ph_se2_train_test ^
       nav_potential_test nav_dyn_spin_test nav_dyn_ph_full_test ^
       physics_dyn_contact_test nav_geom_rollout_grad_test ^
-      nav_coef_train_test nav_material_train_test
+      nav_coef_train_test nav_material_train_test nav_dyn_bike_dg_test
 set PATH=%CD%\deps\bin;%CD%\build\bin;%PATH%
 for %t in (nav_dyn_bike_test nav_dyn_4w_test physics_dyn_bike_plant_test
            ph_se2_test ph_se2_train_test nav_potential_test nav_dyn_spin_test
            nav_dyn_ph_full_test physics_dyn_contact_test nav_geom_rollout_grad_test
-           nav_coef_train_test nav_material_train_test) do build\bin\%t.exe
+           nav_coef_train_test nav_material_train_test
+           nav_dyn_bike_dg_test) do build\bin\%t.exe
 \end{verbatim}
 \end{minipage}
 \end{center}
@@ -2384,11 +2469,12 @@ cmake --build build --target nav_dyn_bike_test nav_dyn_4w_test \
       physics_dyn_bike_plant_test ph_se2_test ph_se2_train_test \
       nav_potential_test nav_dyn_spin_test nav_dyn_ph_full_test \
       physics_dyn_contact_test nav_geom_rollout_grad_test \
-      nav_coef_train_test nav_material_train_test
+      nav_coef_train_test nav_material_train_test nav_dyn_bike_dg_test
 for t in nav_dyn_bike_test nav_dyn_4w_test physics_dyn_bike_plant_test \
          ph_se2_test ph_se2_train_test nav_potential_test nav_dyn_spin_test \
          nav_dyn_ph_full_test physics_dyn_contact_test nav_geom_rollout_grad_test \
-         nav_coef_train_test nav_material_train_test; do ./build/bin/$t; done
+         nav_coef_train_test nav_material_train_test nav_dyn_bike_dg_test; do
+  ./build/bin/$t; done
 \end{verbatim}
 \end{minipage}
 \end{center}
@@ -2615,6 +2701,20 @@ nav_coef_train_test (30 tests, on master at 352f1933; the #981 lines):
   window loss: semi-implicit 1.588633, explicit 1.591275
 nav_material_train_test (18 tests, on master at 352f1933; the #981 line):
   [material-train-e2e legacy explicit] L=42.9632 |g|=241.928 dir_rel=2.170e-04 checked=232 ...
+nav_dyn_bike_dg_test (7 tests, on master at f94a9b27):
+  mu 0.9: worst |rate - dyn_ph_rhs| = 6.72e-16 of m g        (mu 0.6: 1.11e-15)
+  swerve past the peak, hdt 0.0600 s: discrete gradient worst |residual| 1.08e-10 J (3.5e-14 of
+    the step's flow), Newton 3.99 steps (max 4); dyn_plant mean |residual| 2.513e+01 J
+  (hdt 0.02 to 0.0025 s: 1.34e-10, 1.54e-10, 1.32e-10, 1.69e-10 J (1.3e-12 of the flow);
+   dyn_plant 3.320e+00, 8.664e-01, 2.209e-01, 5.593e-02 J)
+  braking to a stop, hdt 0.0600 s: dH -1.084e+05 J, limiters -3146 J, worst |residual| 2.46e-11 J
+    (and 4.84e-11, 5.91e-11 J at 0.01, 0.005 s)
+  discrete gradient, hdt 0.040 s: error at 2 s 5.318e-03   (then 3.92x, 3.97x, 4.03x smaller)
+  dyn_plant, hdt 0.040 s: error at 2 s 4.544e-01   (then 1.98x, 2.04x, 2.13x smaller)
+  (coasting, 36 cases of tires, step and blend: worst step gain +0.0e+00 of H in every one)
+  discrete gradient, 1 x 0.06 s: after 12 s r 0.30709 rad/s against the kinematic 0.30717 (-0.02%)
+  hdt 0.06 s, per step: dyn_plant 300 ns, discrete gradient 3125 ns (10.4x)
+  hdt 0.01 s, per step: dyn_plant 296 ns, discrete gradient 2823 ns (9.5x)
 \end{verbatim}
 \end{minipage}
 \end{center}
@@ -2660,6 +2760,7 @@ $\R$, $\G$, $u$, $f_\varepsilon$, \eqref{eq:R}--\eqref{eq:feps} & \code{dyn\_ph\
 The vector field~\eqref{eq:plant-ph}; the balance~\eqref{eq:balance} & \code{dyn\_ph\_rhs}; \code{dyn\_ph\_rates\_at} (struct \code{dyn\_ph\_rates}) & the balance: \code{dyn\_bike.dyn\_ph\_rates\_at} (\#138) \\
 The tangent~\eqref{eq:tangent}, \eqref{eq:kf} & \code{dyn\_ph\_tangent\_D} & --- \\
 The step's books~\eqref{eq:books} & \code{dyn\_plant\_books} (struct \code{dyn\_ph\_books}); \code{dyn\_step\_free} & \code{dyn\_bike.dyn\_plant\_books}; \code{dyn\_plant(..., with\_free=True)} (\#138) \\
+The discrete-gradient step~\eqref{eq:dg}, Sec.~\ref{sec:dg} & \code{dyn\_plant\_dg}, \code{dyn\_plant\_dg\_books} (\code{nav/detail/dyn\_bike\_dg.h}, \#978) & --- \\
 The live plant~\eqref{eq:live-books} & \code{cvc::physics::dyn\_bike\_plant}; \code{plant\_host} \code{"dynamic"}; the options \code{wheel\_spin}, \code{side\_slope}, \code{contact} & \code{pycvc.dyn\_bike\_plant} (libcvc \#979; the options \#1002) \\
 The four-wheel form~\eqref{eq:4w}--\eqref{eq:4w-books}, Sec.~\ref{sec:four-wheel} & \code{dyn4\_ph\_hamiltonian}, \code{dyn4\_ph\_J}, \code{dyn4\_ph\_R}, \code{dyn4\_ph\_G}, \code{dyn4\_ph\_lever}, \code{dyn4\_ph\_grade}, \code{dyn4\_ph\_rhs}, \code{dyn4\_ph\_rates\_at}; \code{dyn4\_plant\_books} (\code{nav/detail/dyn\_4w.h}, \#850) & --- (the plant: \code{grl\_snam.dyn4}) \\
 Wheel spin~\eqref{eq:spin-tire}--\eqref{eq:spin-balance}, Sec.~\ref{sec:spin} & \code{dyn\_spin\_plant}, \code{dyn\_spin\_ph\_J}, \code{dyn\_spin\_ph\_R}, \code{dyn\_spin\_ph\_G}, \code{dyn\_spin\_ph\_rates\_at}, \code{dyn\_spin\_plant\_books}; \code{dyn4\_spin\_plant}, \code{dyn4\_spin\_plant\_books} (\#982) & \code{dyn\_bike.dyn\_spin\_plant}, \code{dyn\_spin\_plant\_books}; \code{dyn4.dyn4\_spin\_plant}, \code{dyn4\_spin\_plant\_books} (\#146) \\
