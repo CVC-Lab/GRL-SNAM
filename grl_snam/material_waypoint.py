@@ -87,10 +87,12 @@ def choose_material_local_waypoint(
 
     goal_delta = goal - pos
     goal_distance = float(np.linalg.norm(goal_delta))
-    if goal_distance < 1e-9:
+    if goal_distance <= params.min_usable_m:
+        # Closer than any usable ray: every candidate would be skipped, and stepping
+        # min_usable_m toward the goal would overshoot it.
         return tuple(float(v) for v in goal), {
             "mean_risk": 0.0,
-            "usable_m": 0.0,
+            "usable_m": goal_distance,
             "material_limited": False,
         }
 
@@ -104,6 +106,7 @@ def choose_material_local_waypoint(
     )
 
     candidates: list[tuple[float, float, float, float, float, bool]] = []
+    any_material_rejected = False
     for ray_index, wall_distance in enumerate(hit_distances):
         angle = 2.0 * math.pi * ray_index / len(hit_distances)
         ux, uy = math.cos(angle), math.sin(angle)
@@ -126,6 +129,7 @@ def choose_material_local_waypoint(
                 raise ValueError("material_profile stop distance must be finite and >= 0")
             usable = min(usable, max(0.0, material_stop - params.wall_margin_m))
         if usable < params.min_usable_m:
+            any_material_rejected = any_material_rejected or material_limited
             continue
 
         progress = ux * goal_u[0] + uy * goal_u[1]
@@ -139,11 +143,13 @@ def choose_material_local_waypoint(
         candidates.append((score, usable, ux, uy, mean_risk, material_limited))
 
     if not candidates:
+        # No usable ray: creep min_usable_m toward the goal (never past it), and say whether
+        # observed material, not only geometry, closed the rays off.
         waypoint = pos + params.min_usable_m * goal_u
         return tuple(float(v) for v in waypoint), {
             "mean_risk": 0.0,
             "usable_m": params.min_usable_m,
-            "material_limited": False,
+            "material_limited": any_material_rejected,
         }
 
     _score, usable, ux, uy, mean_risk, material_limited = max(candidates, key=lambda row: row[0])

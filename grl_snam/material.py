@@ -547,11 +547,21 @@ def _ray_risk(risk, gate_hard, clear_m, pr, pc, dr, dc, horizon_cells, hard_marg
     """Sequential f64 walk of one ray.  Order pinned to the source: the float
     point is bounds-checked BEFORE rounding; risk is accumulated BEFORE the
     hard/clearance break.  Cells: round-half-even then clip."""
+    mean, feasible, min_clear, _steps = _ray_walk(
+        risk, gate_hard, clear_m, pr, pc, dr, dc, horizon_cells, hard_margin_m
+    )
+    return mean, feasible, min_clear
+
+
+def _ray_walk(risk, gate_hard, clear_m, pr, pc, dr, dc, horizon_cells, hard_margin_m):
+    """:func:`_ray_risk`'s walk, also returning the step ``t`` it stopped at (the
+    blocked or out-of-bounds step; ``horizon_cells`` when the ray stays feasible)."""
     rows, cols = risk.shape
     acc = 0.0
     count = 0
     min_clear = math.inf
     feasible = True
+    t = 0
     for t in range(1, horizon_cells + 1):
         qr = pr + t * dr
         qc = pc + t * dc
@@ -569,7 +579,7 @@ def _ray_risk(risk, gate_hard, clear_m, pr, pc, dr, dc, horizon_cells, hard_marg
             feasible = False
             break
     mean = acc / count if count else math.inf
-    return mean, feasible, min_clear
+    return mean, feasible, min_clear, t
 
 
 def witness_gate(
@@ -803,13 +813,20 @@ class MaterialRuntime:
         ux: float,
         uy: float,
         max_distance_m: float,
+        *,
+        clearance_m: float = 0.0,
     ) -> tuple[float, float | None]:
-        """Return mean risk and the first hard/occupied ray distance.
+        """Return a ray's mean risk and where it stops being feasible (``None`` if it never does).
 
-        The profile is evaluated on this runtime's material and gate surfaces.
-        Consequently, a belief-material runtime reads only belief risk and
-        treats unseen cells as blocked when ``unknown_gate_hard`` is enabled.
-        ``(ux, uy)`` must be a unit direction in world coordinates.
+        The ray is walked by the witness gate's own walk (:func:`_ray_walk`, one cell per step,
+        the same rounding and bounds rule): it stops at a hard or occupied cell, at a cell closer
+        than ``clearance_m`` to one, or at the raster edge, and the mean includes the stopping
+        cell's risk. ``clearance_m`` defaults to 0, not the gate's hard margin: the gate's
+        two-cell margin is 30 m on a 15 m city raster, where it would block nearly every ray, and
+        a local-waypoint caller keeps its own wall margin. The surfaces are this runtime's: a
+        belief-material runtime reads only belief risk and treats unseen cells as blocked when
+        ``unknown_gate_hard`` is enabled. ``(ux, uy)`` must be a unit direction in world
+        coordinates; the stop distance is in metres along it.
         """
         pos = np.asarray(pos_world, dtype=np.float64)
         if pos.shape != (2,) or not np.isfinite(pos).all():
@@ -821,39 +838,36 @@ class MaterialRuntime:
             raise ValueError("ray direction must be unit length")
         if not math.isfinite(max_distance_m) or max_distance_m < 0.0:
             raise ValueError("max_distance_m must be finite and >= 0")
+        if not math.isfinite(clearance_m) or clearance_m < 0.0:
+            raise ValueError("clearance_m must be finite and >= 0")
         if max_distance_m == 0.0:
             return 0.0, None
 
-        grid = self.grid
-        step = grid.cell_w
-        distances = np.arange(
-            step,
-            max_distance_m + step * 0.5,
-            step,
-            dtype=np.float64,
+        mnx, mny, mxx, mxy = self.grid.bounds
+        rows, cols = self.grid.risk.shape
+        # One step = one cell along the ray, in cell units on a possibly anisotropic raster.
+        dc = float(ux) * (cols - 1) / (mxx - mnx)
+        dr = float(uy) * (rows - 1) / (mxy - mny)
+        cells_per_m = math.sqrt(dr * dr + dc * dc)
+        dr, dc = dr / cells_per_m, dc / cells_per_m
+        step_m = 1.0 / cells_per_m
+        steps = max(1, math.ceil(max_distance_m / step_m - 1e-9))
+        pr, pc = self._world_to_cell_f(pos[0], pos[1])
+        mean, feasible, _clear, stopped = _ray_walk(
+            self.grid.risk,
+            self._gate_hard,
+            self._gate_clear_m,
+            pr,
+            pc,
+            dr,
+            dc,
+            steps,
+            float(clearance_m),
         )
-        if len(distances) == 0 or distances[-1] < max_distance_m - step * 0.25:
-            distances = np.append(distances, max_distance_m)
-
-        xx = pos[0] + distances * float(ux)
-        yy = pos[1] + distances * float(uy)
-        mnx, mny, mxx, mxy = grid.bounds
-        rows, cols = grid.risk.shape
-        rr = np.rint((yy - mny) / (mxy - mny) * (rows - 1)).astype(np.int64)
-        cc = np.rint((xx - mnx) / (mxx - mnx) * (cols - 1)).astype(np.int64)
-        inside = (rr >= 0) & (rr < rows) & (cc >= 0) & (cc < cols)
-        rr_clamped = np.clip(rr, 0, rows - 1)
-        cc_clamped = np.clip(cc, 0, cols - 1)
-        blocked = (~inside) | self._gate_hard[rr_clamped, cc_clamped]
-        first = np.flatnonzero(blocked)
-        stop_index = int(first[0]) if len(first) else len(distances)
-        stop = float(distances[stop_index]) if len(first) else None
-        mean_risk = (
-            float(grid.risk[rr_clamped[:stop_index], cc_clamped[:stop_index]].mean())
-            if stop_index
-            else 0.0
-        )
-        return mean_risk, stop
+        mean_risk = 0.0 if not math.isfinite(mean) else float(mean)
+        if feasible:
+            return mean_risk, None
+        return mean_risk, min(stopped * step_m, float(max_distance_m))
 
     # -- world -> continuous cell coords (f64, unrounded) -------------------
     def _world_to_cell_f(self, x: float, y: float):
