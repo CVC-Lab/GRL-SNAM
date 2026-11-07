@@ -28,6 +28,11 @@ starts (libcvc #596). With ``semi_implicit=True`` the rollout is
 ``generator=torch.Generator().manual_seed(seed)``. Those args need a pycvc that
 takes them (:data:`HAS_MATERIAL_TRAINER_MULTISTART`). Without one, only a
 configuration that equals the legacy start can be built.
+
+A pycvc that takes those args gets all of them, the legacy start included. Since
+libcvc #981 (3.7.12) the binding's own ``ms_semi_implicit`` defaults to semi-implicit.
+So leaving the args out would run semi-implicit Euler when ``semi_implicit=False``
+asks for explicit Euler, and native would stop agreeing with the torch trainer.
 """
 
 from __future__ import annotations
@@ -195,7 +200,9 @@ class MaterialTrainer:
     any ``ms_count >= 1`` or ``seed`` with ``frac_range=(0.9, 0.9)`` and
     ``semi_implicit=False``, are the legacy single start. They work on any pycvc
     with the trainer. Every other configuration needs
-    :data:`HAS_MATERIAL_TRAINER_MULTISTART`.
+    :data:`HAS_MATERIAL_TRAINER_MULTISTART`. A binding that takes the args always
+    gets them, so ``semi_implicit=False`` is explicit Euler there too. Since libcvc
+    #981 that binding's own default is semi-implicit.
     """
 
     def __init__(
@@ -277,8 +284,10 @@ class MaterialTrainer:
             float(ms_dt_mult),
             int(bool(use_cuda)),
         ]
-        if not legacy_multi:
-            # The legacy start keeps the old signature, which every trainer binding takes.
+        if HAS_MATERIAL_TRAINER_MULTISTART:
+            # Whenever the binding takes the args, pass them, so the integrator is the one asked
+            # for. Since libcvc #981 the binding defaults ms_semi_implicit to 1. An older binding
+            # gets the legacy start through the old signature, which every trainer binding takes.
             args += [
                 int(ms_count),
                 frac_lo,

@@ -2,9 +2,12 @@
 
 The L_multi sampling args (``ms_count``, ``frac_range``, ``seed``, ``semi_implicit``) are new
 trailing positionals on ``nav_material_trainer_create`` (libcvc #596), and an older binding rejects
-the extra arguments with TypeError. So the wrapper must keep calling the old signature for the
-legacy single start. It may refuse, with a clear error, only a configuration that needs the new
-args. tests/test_material_train_native.py checks the same args against a real pycvc.
+the extra arguments with TypeError. So on an older binding the wrapper must keep calling the old
+signature for the legacy single start. It may refuse, with a clear error, only a configuration that
+needs the new args. A binding that takes them always gets them, the legacy start included: since
+libcvc #981 its own ``ms_semi_implicit`` defaults to 1, so leaving them out would turn
+``semi_implicit=False`` into semi-implicit Euler. tests/test_material_train_native.py checks the
+same args against a real pycvc.
 """
 
 from __future__ import annotations
@@ -58,20 +61,39 @@ def test_probe_reads_the_binding_without_building_a_trainer(binding, takes):
     assert fake.calls == []
 
 
-@pytest.mark.parametrize("takes", [False, True])
-@pytest.mark.parametrize(
-    "kw",
-    [{}, dict(ms_count=10), dict(ms_count=10, frac_range=(0.9, 0.9), seed=123)],
+_LEGACY_STARTS = pytest.mark.parametrize(
+    ("kw", "tail"),
+    [
+        ({}, (1, 0.9, 0.9, 0, 0)),
+        (dict(ms_count=10), (10, 0.9, 0.9, 0, 0)),
+        (dict(ms_count=10, frac_range=(0.9, 0.9), seed=123), (10, 0.9, 0.9, 123, 0)),
+    ],
     ids=["defaults", "ms_count", "degenerate-seeded"],
 )
-def test_the_legacy_start_keeps_the_old_signature(binding, takes, kw):
+
+
+@_LEGACY_STARTS
+def test_the_legacy_start_keeps_the_old_signature_on_an_old_binding(binding, kw, tail):
     """A degenerate 0.9 range with explicit Euler draws nothing and runs one rollout, whatever
     ms_count (>= 1) and seed are: it is the legacy start, so it must not need the new binding."""
-    fake = binding(takes)
+    fake = binding(False)
     mtn.MaterialTrainer("m.cvcnm", **kw)
     (args,) = fake.calls
     assert len(args) == _LEGACY_ARITY
     assert args[-1] == 0  # use_cuda
+
+
+@_LEGACY_STARTS
+def test_the_legacy_start_says_explicit_euler_to_a_new_binding(binding, kw, tail):
+    """libcvc #981 made the binding's ms_semi_implicit default 1. The legacy start is explicit
+    Euler, so a binding that takes the args gets them all, with ms_semi_implicit 0."""
+    fake = binding(True)
+    mtn.MaterialTrainer("m.cvcnm", **kw)
+    (args,) = fake.calls
+    assert len(args) == _NEW_ARITY
+    assert args[_LEGACY_ARITY - 1] == 0  # use_cuda
+    assert args[_LEGACY_ARITY:] == tail
+    assert [type(a) for a in args[_LEGACY_ARITY:]] == [int, float, float, int, int]
 
 
 def test_sampled_args_are_appended_after_the_legacy_ones(binding):
@@ -79,7 +101,7 @@ def test_sampled_args_are_appended_after_the_legacy_ones(binding):
     mtn.MaterialTrainer("m.cvcnm")
     mtn.MaterialTrainer("m.cvcnm", **_SAMPLED)
     legacy, sampled = fake.calls
-    assert sampled[:_LEGACY_ARITY] == legacy
+    assert sampled[:_LEGACY_ARITY] == legacy[:_LEGACY_ARITY]
     tail = sampled[_LEGACY_ARITY:]
     assert tail == (4, 0.8, 0.98, 5, 1)
     assert [type(a) for a in tail] == [int, float, float, int, int]

@@ -264,9 +264,10 @@ def test_sampled_multi_start_args(tmp_path):
         return mtn.MaterialTrainer(ckpt, **kw).loss(batch)
 
     legacy = loss()
-    # The wrapper routes this through the legacy signature (no draw, one rollout)...
+    # A degenerate range draws nothing and runs one rollout, whatever ms_count and seed are...
     assert loss(ms_count=10, frac_range=(0.9, 0.9), seed=123) == legacy
-    # ...so check native's own degenerate handling on a configuration that needs the new args.
+    # ...with either integrator. The wrapper passes semi_implicit=False explicitly: since
+    # libcvc #981 the binding's own default is semi-implicit.
     semi_one = loss(semi_implicit=True)
     assert loss(ms_count=7, frac_range=(0.9, 0.9), seed=3, semi_implicit=True) == semi_one
     assert semi_one != legacy, "semi_implicit did not reach the rollout"
