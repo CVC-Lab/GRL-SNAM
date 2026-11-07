@@ -20,6 +20,7 @@ GRL_SNAM_GOAL ("x,y"; defaults are a navigable pair on austin_south).
 
 from __future__ import annotations
 
+import copy
 import os
 
 import numpy as np
@@ -117,6 +118,32 @@ def setup() -> None:
         speed=SIM_SPEED,
         last_m=None,
     )
+
+
+#: What a copy of the navigator shares with it rather than copies (large, or read-only).
+_SHARED = ("field", "model", "meta", "material", "friction", "material_ids", "carrot_bias_fn",
+           "ext_force_fn")  # fmt: skip
+
+
+def navigator():
+    """The demo's :class:`~grl_snam.nav.SdfNavigator` (None before :func:`setup`): a host maps
+    its settings onto it (``grl_snam.ariadne._cars.TorchSettings``)."""
+    return _S.get("nav")
+
+
+def predicted_path(steps: int = 40) -> list:
+    """Where the navigator will drive: a copy of it stepped ``steps`` ticks ahead from now, as
+    world (x, y) points ([] before :func:`setup`). The demo's own navigator is untouched."""
+    nav = _S.get("nav")
+    if nav is None:
+        return []
+    q = copy.copy(nav)
+    q.__dict__ = {k: v if k in _SHARED else copy.deepcopy(v) for k, v in nav.__dict__.items()}
+    pts = []
+    for _ in range(int(steps)):
+        m = q.step()
+        pts.append((m.x, m.y))
+    return pts
 
 
 def step(dt: float) -> None:

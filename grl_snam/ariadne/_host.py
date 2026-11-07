@@ -55,8 +55,13 @@ def parse(argv, add_args=None, *, frames=0):
 def open_host(doc, name, args, *, load=True, **kw):
     """A Host in ``args.mode`` with the port's document ``doc`` (a file name in ``docs/``)
     loaded; with ``load=False``, loaded later by ``host.load(str(DOCS / doc))``, once the
-    functions its ``requires:`` names are registered."""
+    functions its ``requires:`` names are registered. The host's component paths include
+    pycvc_gl.cars's (when it has them), so a document imports cvc://cars_panels.ari."""
+    from grl_snam.ariadne import _cars
+
     Host_, _ = require_host()
+    if _cars.component_paths():
+        kw.setdefault("component_paths", _cars.component_paths())
     host = Host_(mode=args.mode, name=name, width=args.width, height=args.height, **kw)
     if load:
         host.load(str(DOCS / doc))
@@ -151,15 +156,23 @@ def registry_origin():
     return f"{parts.scheme}://{parts.netloc}"
 
 
-def load_document(host, doc, *, bundle=None, city=True):
+def load_document(host, doc, *, bundle=None, city=True, worlds=False):
     """Load ``doc`` (a file in ``docs/``), whose data: block names the city.
 
     With a local ``bundle`` (a directory, or ``GRL_SNAM_SCENE_BUNDLE``), ``data.city`` points
     there instead and nothing is downloaded. Otherwise the data store may reach the registry for
     the package. With ``city`` False, neither happens: the document's city never loads, and its
-    node stays empty (a demo with a world of its own)."""
+    node stays empty (a demo with a world of its own). With ``worlds`` (a port that builds its
+    world with pycvc_gl.cars's make_world, which points ``data.city`` at ``run.uri`` when the
+    city is the world) the city is left to load then, and the registry may be reached (for the
+    Austin package, and the Humvee's model in it)."""
     import pycvc
 
+    if worlds:
+        if hasattr(pycvc, "data_allow_network"):
+            pycvc.data_allow_network(host.app, [registry_origin()])
+        host.load(str(DOCS / doc))
+        return
     local = (bundle or os.environ.get("GRL_SNAM_SCENE_BUNDLE")) if city else None
     if city and not local and hasattr(pycvc, "data_allow_network"):
         pycvc.data_allow_network(host.app, [registry_origin()])
@@ -266,14 +279,42 @@ class _TrackCamera:
 
 
 class _Metrics:
-    def __init__(self, host):
-        self.host, self._prev = host, None
+    def __init__(self, host, sink=None, prefix="nav"):
+        self.host, self._prev, self.sink, self.prefix = host, None, sink, prefix
+        self._since, self._speed = 0.0, 0.0
 
     def publish(self, m, dt=None):
-        if dt and dt > 0 and self._prev is not None:  # on-screen ground speed, as the demos do
-            m.speed_mps = ((m.x - self._prev[0]) ** 2 + (m.y - self._prev[1]) ** 2) ** 0.5 / dt
-        self._prev = (m.x, m.y)
-        publish_metrics(self.host, m)
+        # The on-screen ground speed, as the demos have it: the distance since the pose last
+        # changed over the time since then (a navigator ticks every few frames, not every one).
+        if dt and dt > 0 and self._prev is not None:
+            self._since += dt
+            d = ((m.x - self._prev[0]) ** 2 + (m.y - self._prev[1]) ** 2) ** 0.5
+            if d > 0.0 or self._since > 0.5:
+                self._speed, self._since = d / self._since, 0.0
+            m.speed_mps = self._speed
+        if self._since == 0.0:
+            self._prev = (m.x, m.y)
+        publish_metrics(self.host, m, prefix=self.prefix)
+        if self.sink is not None:
+            self.sink(m)
+
+
+class _NullNode:
+    def setTransform(self, *_a, **_k):  # noqa: N802 - the scene node's name
+        pass
+
+
+class NullLab:
+    """A lab that draws nothing, for a demo run headless (no scene): its calls do nothing, so the
+    demo's own stepping, metrics and log run as they do in a window."""
+
+    _scene = None
+
+    def node(self, _name):
+        return _NullNode()
+
+    def __getattr__(self, _name):
+        return lambda *_a, **_k: None
 
 
 class DemoHost:
@@ -283,22 +324,28 @@ class DemoHost:
     ``step(dt)`` runs every frame (scaled by the document's ``view.speed``, skipped while
     ``view.paused``)."""
 
-    def __init__(self, host):
+    def __init__(self, host, city=None, metrics_prefix="nav"):
         self.host = host
+        self._city = city
+        self.metrics_prefix = metrics_prefix
+        #: The demo's last published :class:`~grl_snam.metrics.NavMetrics` (None before one).
+        self.last_metrics = None
 
     def make_lab(self):
-        return self.host.lab
+        return NullLab() if self.host.mode == "headless" else self.host.lab
 
     def city(self):
-        """The document's city (:func:`document_city`), which the scene already draws, or None:
-        the demo then loads the bundle itself (``grl_snam.demos._common.open_city``)."""
-        return document_city(self.host)
+        """The city given to this host (another world: ``grl_snam.ariadne._cars.city_of``), else
+        the document's (:func:`document_city`), which the scene already draws, or None: the demo
+        then loads the bundle itself (``grl_snam.demos._common.open_city``)."""
+        return self._city if self._city is not None else document_city(self.host)
 
     def camera(self, fov=60.0):
         return _TrackCamera(self.host)
 
     def metrics(self):
-        return _Metrics(self.host)
+        return _Metrics(self.host, sink=lambda m: setattr(self, "last_metrics", m),
+                        prefix=self.metrics_prefix)  # fmt: skip
 
     def view(self):
         return self.host.view

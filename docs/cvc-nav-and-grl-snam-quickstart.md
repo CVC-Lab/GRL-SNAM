@@ -73,6 +73,7 @@ with panels and controls ([grl_snam/ariadne/README.md](../grl_snam/ariadne/READM
 ```sh
 grl-snam ariadne --list
 grl-snam ariadne fleet                 # a live squad of Humvees on Austin
+grl-snam ariadne fleet --plant humvee --world generated   # on Jolt Humvees, in a generated world
 grl-snam ariadne cars                  # N Ackermann cars driven by a controller you write
 ```
 

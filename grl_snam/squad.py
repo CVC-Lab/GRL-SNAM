@@ -350,6 +350,36 @@ class Squad:
                 pos, head = self.native.snapshot()[:2]
                 self._routes.start(pos, head, {i: tuple(scs[i].waypoints[0]) for i in fixed})
 
+    def use_vehicle_routes(self, on: bool = True) -> bool:
+        """On the native runtime, drive the agents with a fixed goal on vehicle routes (``on``) or
+        on nav's carrot, for the plant the world drives now. That includes a plant attached from
+        outside the squad (libcvc's ``plant_host``, which the Ariadne fleet uses). Routes need a
+        physics plant and pycvc's route bindings; without them the carrot drives. Returns whether
+        routes drive now. Each route is planned from the agent's pose at this tick."""
+        if self.native is None:
+            raise ValueError("vehicle routes are the native runtime's: Squad(plant=...)")
+        self._routes = None
+        if not on or not _native.HAS_VEHICLE_ROUTES or self.native.plant_kind == "kinematic":
+            return False
+        fixed = [
+            i
+            for i, a in enumerate(self.agents)
+            if (a.moving_goal if a.moving_goal is not None else self.story.moving_goal) is None
+            and not self._native_reached[i]
+        ]
+        if not fixed:
+            return False
+        scs = list(self.scenarios.values())
+        self._routes = _native.VehicleRoutes(self.native, scs[0].bounds, fixed)
+        pos, head = self.native.snapshot()[:2]
+        self._routes.start(
+            pos,
+            head,
+            {i: tuple(scs[i].waypoints[0]) for i in fixed},
+            t=self._native_tick * self._native_dt,
+        )
+        return True
+
     def goal_of(self, key: str) -> tuple[float, float]:
         """Agent ``key``'s target now (world metres): on the native runtime a moving goal
         where it is at this tick, else the scenario's active waypoint."""
