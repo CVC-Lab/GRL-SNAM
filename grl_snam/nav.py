@@ -111,6 +111,9 @@ class SdfNavigator:
         # drives over for _metrics.material_id; it never touches the rollout, so setting
         # it leaves every trajectory bit-for-bit. Unset (default) => material_id == -1.
         self.material_ids = None
+        #: The last step's :class:`NavMetrics` (None before the first step): what a host reads
+        #: for the coefficients and clearance of a navigator a squad or scenario steps.
+        self.last_metrics = None
         self.step_i = 0
         self.goal_index = 0
         self._parked = False
@@ -364,7 +367,7 @@ class SdfNavigator:
         gwn = gwd / (np.linalg.norm(gwd) + 1e-6)
         align = float(np.dot(gwn, nrm[0].numpy()))
         self.reached = dg_new < self.reach_tol
-        return NavMetrics(
+        self.last_metrics = NavMetrics(
             step=self.step_i,
             x=float(world[0]),
             y=float(world[1]),
@@ -404,6 +407,7 @@ class SdfNavigator:
                 else -1
             ),
         )
+        return self.last_metrics
 
     def _material_kw(self) -> dict:
         """Per-step material rollout kwargs: evaluate the witness gate against

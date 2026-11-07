@@ -93,7 +93,10 @@ in `grl_snam.tools`; the demos in `grl_snam.demos`; the graphics deps (`pycvc_gl
 
 `grl-snam ariadne <port>` runs GRL-SNAM's demos as Python hosts of Ariadne (`.ari`) documents:
 the live Austin demos, the fog-of-war stories, the squad recordings, a live fleet on a vehicle
-plant, and the material demo.
+plant, and the material demo. `live` and `fleet` take the `cars` template's settings (libcvc's
+`nav.*`, `nav.vehicle.*` and `nav_plant.*` keys, mapped onto GRL-SNAM's torch navigator where
+they mean the same thing), its worlds (Austin, another city, a generated world, a flat square),
+its plants, its panels and its headless log.
 
 `grl-snam ariadne cars` runs libcvc's multi-car template (`pycvc_gl.cars`, pycvc-gl 3.7.12+). A
 controller of your own drives N Ackermann cars:

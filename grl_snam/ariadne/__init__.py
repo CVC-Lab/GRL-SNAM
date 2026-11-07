@@ -25,7 +25,7 @@ PORTS = {
               "a squad recording on Austin (finale acts, convoy, pursuit) with Humvees",
               "finale, convoy_record, pursuit_record, squad_capture"),
     "fleet": ("grl_snam.ariadne.fleet",
-              "a live squad of Humvees on Austin, on a plant you pick",
+              "a live squad of Humvees, on the plant and in the world you pick",
               "Squad(plant=...)"),
     "material": ("grl_snam.ariadne.material", "material-aware navigation, off vs on",
                  "grl-snam material-demo"),

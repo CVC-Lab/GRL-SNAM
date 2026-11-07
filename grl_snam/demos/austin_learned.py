@@ -100,7 +100,9 @@ def setup() -> None:
     lab.add_markers("start", [(start[0], start[1], sample(*start) + 1.0)], color=(0.15, 0.85, 0.25))
     lab.add_markers("goal", [(goal[0], goal[1], sample(*goal) + 1.0)], color=(0.95, 0.80, 0.10))
     lab.add_path(
-        "spine", [(w[0], w[1], sample(w[0], w[1]) + 0.5) for w in route], color=(0.30, 0.55, 0.95)
+        "spine",
+        [(float(w[0]), float(w[1]), sample(float(w[0]), float(w[1])) + 0.5) for w in route],
+        color=(0.30, 0.55, 0.95),
     )
     vv, vt = vehicle_box_mesh()
     lab.add_mesh("agent0", vv, vt, color=(0.90, 0.12, 0.12))
@@ -149,6 +151,30 @@ def setup() -> None:
     lab.node("agent0").setTransform(vpose.update(start[0], start[1], 1.0 / 30.0))
     lab.pump()
     print("grl_snam austin_learned: learned SDF policy driving the A* street corridor.", flush=True)
+
+
+def navigator():
+    """A view of the demo's rollout parameters a host maps settings onto
+    (``grl_snam.ariadne._cars.TorchSettings``, with :data:`SETTINGS`): its ``kw`` (rr, d_hat,
+    vmax in the policy's normalized units) and ``S`` (its scale). None before :func:`setup`."""
+    if not _S:
+        return None
+    from types import SimpleNamespace
+
+    return SimpleNamespace(kw=_S["kw"], S=_S["scale"], rr=_S["kw"]["rr"], _dyn="point")
+
+
+#: The libcvc keys the corridor follower takes: its top speed, footprint and barrier.
+SETTINGS = ("nav.vehicle.vmax", "nav.vehicle.rr", "nav.vehicle.d_hat")
+
+
+def predicted_path(steps: int = 40) -> list:
+    """The route spine ahead of the vehicle, as world (x, y) points ([] before setup)."""
+    if not _S:
+        return []
+    route, ri = _S["route"], _S["ri"]
+    ahead = route[ri : ri + int(steps)]
+    return [(float(p[0]), float(p[1])) for p in ahead]
 
 
 def _n2w(on, center, scale):

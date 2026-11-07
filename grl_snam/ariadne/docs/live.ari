@@ -3,33 +3,59 @@
 #
 #   python -m grl_snam.ariadne live austin-freedrive
 #
-# - HUD: the navigator's live NavMetrics (the network's alpha / beta / gamma, clearance, mode,
-#   speed, progress), as nav.*, and the HUD's lines at nav.hud;
-# - View: pause, the sim speed, and the camera (follow the vehicle, or orbit freely);
-# - the scene: the city this document names (data: below), the demo's vehicle, under a soft
-#   afternoon light (pale sky, low warm sun, cool fill, soft-edged shadows that follow the camera).
+# - Navigator: the navigator's live NavMetrics (the network's alpha / beta / gamma, clearance, mode,
+#   speed, progress), as hud.* (apart from libcvc's nav.* settings), the HUD's lines at hud.hud,
+#   and the coefficients as plots;
+# - View: the plant and the world (austin-freedrive takes any), pause, the sim speed, the camera;
+# - Settings, World and Rasters: libcvc's multi-car template's panels (pycvc_gl.cars's
+#   cars_panels.ari, by cvc:// on the host's component path), bound to libcvc's own keys:
+#   nav.*, nav.vehicle.* (on GRL-SNAM's torch navigator, the keys that mean the same thing there:
+#   grl_snam/ariadne/README.md), nav_plant.* (the plant: nav_plant.vehicle), run.* (the world),
+#   world.* (the terrain generator);
+# - the scene: the city this document names (data: below), or a generated world, and the demo's
+#   vehicle, under a soft afternoon light.
 #
 # The city is the Austin scene package on cvcpkg.org. The host downloads it once (later runs read
 # its cache), unpacks it into the state tree and decodes it: the terrain with its aerial image, and
 # the buildings. The city node draws that, and the demo reads the same objects for its terrain,
 # occupancy and SDF (grl_snam.ariadne._host.document_city), so the bundle is never read twice.
-# live.py's --bundle (or GRL_SNAM_SCENE_BUNDLE) points data.city at a local bundle instead.
+# live.py's --uri / --bundle (or GRL_SNAM_SCENE_BUNDLE) points data.city at another city instead.
 
 meta:
   name: GRL-SNAM live demo
-  min_libcvc: 3.4.0
+  min_libcvc: 3.7.11
+
+import: cvc://cars_panels.ari
 
 data:
   city:
     uri: cvcpkg://cy-pca/scene-austin-south-small
     path: share/cvc-scenes/austin_south
     as: city_bundle
+    load: lazy
 
 init: |
   (begin
     (state-set "view.paused" "0")
     (state-set "view.speed" "1.0")
-    (state-set "view.camera" "follow"))
+    (state-set "view.camera" "follow")
+    (state-set "view.car" "0")
+    (state-set "view.raster_m" "80")
+    (state-set "show.plans" "1")
+    (state-set "nav_plant.vehicle" "torch")
+    (state-set "run.world" "data")
+    (state-set "run.uri" "cvcpkg://cy-pca/scene-austin-south-small")
+    (state-set "run.data_path" "share/cvc-scenes/austin_south")
+    (state-set "run.crop" "600")
+    (state-set "world.seed" "7")
+    (state-set "world.half" "500")
+    (state-set "world.amp" "25")
+    (state-set "world.water_level" "-4")
+    (state-set "world.buildings" "160")
+    (state-set "world.trees" "200")
+    (state-set "world.rocks" "40")
+    (state-set "world.terrain" "fbm")
+    (state-set "world.city" "districts"))
 
 menubar:
   - menu: Demo
@@ -44,33 +70,42 @@ windows:
   - window: Navigator
     id: hud
     pos: [16, 30]
-    size: [330, 300]
+    size: [340, 560]
     children:
       - text: ""
         bind: demo.title
       - separator
       - type: group
-        repeat: (state-get "nav.hud")
+        repeat: (state-get "hud.hud")
         children:
           - text: ""
-            bind: nav.hud.{i}
+            bind: hud.hud.{i}
       - separator
       - progress: Progress
-        bind: nav.progress
+        bind: hud.progress
         lo: 0
         hi: 1
       - plot: Clearance (m)
         bind: series.clearance
-        height: 50
+        height: 44
       - plot: Speed (m/s)
         bind: series.speed
-        height: 50
+        height: 44
+      - include: cars_coefficients
 
   - window: View
     id: view
-    pos: [16, 342]
-    size: [330, 130]
+    pos: [16, 602]
+    size: [340, 290]
     children:
+      - text: "the plant and the world: austin-freedrive takes any (restart to change them)"
+      - combo: Plant
+        bind: nav_plant.vehicle
+        options: [The demo's own (torch), Kinematic bicycle, Humvee (Jolt), RoboRacer (Jolt), Dynamic Humvee]
+        values: [torch, kinematic, humvee, roboracer, "dynamic:humvee"]
+        tooltip: "on a plant, libcvc's navigator drives with GRL-SNAM's policy; between plants it switches at once"
+      - text: "world"
+        bind: run.world
       - checkbox: Paused
         bind: view.paused
       - slider_float: Sim speed
@@ -82,6 +117,21 @@ windows:
         bind: view.camera
         options: [Follow the vehicle, Orbit]
         values: [follow, orbit]
+      - checkbox: Predicted path
+        bind: show.plans
+
+  - include: cars_settings
+    pos: [368, 30]
+    size: [360, 330]
+
+  - include: cars_world
+    pos: [368, 372]
+    size: [340, 330]
+
+  - include: cars_rasters
+    args: { cost: "the wall barrier's reach (on a plant: the belief)" }
+    pos: [740, 30]
+    size: [420, 300]
 
 scene:
   chrome: false
@@ -107,3 +157,8 @@ scene:
   nodes:
     - node: city
       source: { data: city }     # the terrain (aerial image draped) and the buildings, when loaded
+      visible: { bind: view.city, default: true }
+    - node: gen                  # World: Generated (austin-freedrive): libcvc's generator
+      type: generated_world
+      look: soft
+      visible: { bind: view.generated, default: false }

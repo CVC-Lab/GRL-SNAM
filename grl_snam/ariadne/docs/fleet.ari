@@ -1,22 +1,54 @@
-# fleet.ari — a live squad of Humvees on real Austin. grl_snam/ariadne/fleet.py runs the squad
-# (grl_snam.squad.Squad) and draws it; this document is the controls and readouts around it:
+# fleet.ari — a live squad of Humvees, on the plant and in the world you pick. grl_snam/ariadne/fleet.py
+# runs the squad (grl_snam.squad.Squad) and draws it; this document is the controls and readouts:
 #
 #   python -m grl_snam.ariadne fleet
 #
-# - Fleet: the plant (GRL-SNAM's own torch squad; or libcvc's sim_world with Jolt Humvees, the
-#   dynamic single-track Humvee, or nav's kinematic bicycle), how many agents, ticks per frame, pause, New goals and Restart;
-# - Agents: a row per agent (fleet.py writes the `agents` table) and the run's readouts;
-# - the scene: Austin and the Humvees under a soft afternoon light.
+# The settings are the ones libcvc's multi-car template uses (pycvc_gl.cars, libcvc's docs/CARS.md),
+# set here in init:, on the sliders, with --set / --params, or from Python:
+#   nav_plant.vehicle  the plant: torch (GRL-SNAM's squad) or one libcvc's plant_host names
+#   nav.*, nav.vehicle.*, nav_plant.*   the navigator and the plant (on the torch squad, the keys
+#                      that mean the same thing there: grl_snam/ariadne/README.md)
+#   run.*              the world: data (the data: block's city) | generated | flat; its URI
+#   world.*            libcvc's terrain generator (World: generated)
+#   fleet.*            agents, ticks per frame;  view.*  pause, camera, the chosen agent
+# Settings, World, Rasters, the coefficient plots and the world choice come from pycvc_gl.cars's
+# cars_panels.ari (cvc://, on the host's component path).
 
 meta:
   name: GRL-SNAM fleet
-  min_libcvc: 3.4.0
+  min_libcvc: 3.7.11
+
+import: cvc://cars_panels.ari
+
+data:
+  city:
+    uri: cvcpkg://cy-pca/scene-austin-south-small
+    path: share/cvc-scenes/austin_south
+    as: city_bundle
+    load: lazy
 
 init: |
   (begin
+    (state-set "fleet.agents" "6")
     (state-set "fleet.ticks" "2")
+    (state-set "nav_plant.vehicle" "torch")
+    (state-set "run.world" "data")
+    (state-set "run.uri" "cvcpkg://cy-pca/scene-austin-south-small")
+    (state-set "run.data_path" "share/cvc-scenes/austin_south")
+    (state-set "run.crop" "600")
     (state-set "view.paused" "0")
-    (state-set "view.camera" "follow"))
+    (state-set "view.camera" "follow")
+    (state-set "view.car" "0")
+    (state-set "view.raster_m" "120")
+    (state-set "world.seed" "7")
+    (state-set "world.half" "500")
+    (state-set "world.amp" "25")
+    (state-set "world.water_level" "-4")
+    (state-set "world.buildings" "160")
+    (state-set "world.trees" "200")
+    (state-set "world.rocks" "40")
+    (state-set "world.terrain" "fbm")
+    (state-set "world.city" "districts"))
 
 menubar:
   - menu: Fleet
@@ -35,14 +67,17 @@ windows:
   - window: Fleet
     id: fleet
     pos: [16, 30]
-    size: [330, 230]
+    size: [340, 380]
     children:
       - combo: Plant
-        bind: fleet.plant
-        options: [Torch (GRL-SNAM), Jolt Humvees, Dynamic Humvees, Kinematic (sim_world)]
-        values: [torch, "jolt:humvee", "dynamic:humvee", kinematic]
+        bind: nav_plant.vehicle
+        options: [Torch squad (GRL-SNAM), Kinematic bicycle, Humvees (Jolt), RoboRacers (Jolt), Dynamic Humvees, Dynamic 4-wheel Humvees]
+        values: [torch, kinematic, humvee, roboracer, "dynamic:humvee", "dynamic4w:humvee"]
+        tooltip: "between libcvc's plants it switches at once (the agents keep their poses); to or from the torch squad it rebuilds"
+      - include: cars_world_choice
       - slider_int: Agents
         bind: fleet.agents
+        commit: release
         lo: 1
         hi: 16
       - slider_int: Ticks per frame
@@ -53,22 +88,34 @@ windows:
         bind: view.paused
       - combo: Camera
         bind: view.camera
-        options: [Follow the first agent, Overview]
+        options: [Follow the chosen agent, Overview]
         values: [follow, overview]
+      - slider_int: Chosen agent
+        bind: view.car
+        lo: 0
+        hi: 15
       - button: New goals
         on: shuffle
 
   - window: Agents
     id: agents
-    pos: [16, 272]
-    size: [330, 330]
+    pos: [16, 422]
+    size: [340, 470]
     children:
       - text: "plant"
         bind: stats.plant
+      - text: "world"
+        bind: stats.world
       - text: "sim time (s)"
         bind: stats.time
       - text: "arrived"
         bind: stats.arrived
+      - text: ""
+        bind: stats.note
+      - plot: Chosen agent's speed (m/s)
+        bind: plot.speed
+        height: 40
+      - include: cars_coefficients
       - separator
       - type: group
         layout: { kind: grid, col_widths: [50, 80, 100, 80] }
@@ -89,6 +136,19 @@ windows:
             bind: agents.{i}.goal
           - text: ""
             bind: agents.{i}.mode
+
+  - include: cars_settings
+    pos: [368, 30]
+    size: [360, 330]
+
+  - include: cars_world
+    pos: [368, 372]
+    size: [340, 330]
+
+  - include: cars_rasters
+    args: { cost: "its belief (grey: not seen yet)" }
+    pos: [740, 30]
+    size: [420, 300]
 
 scene:
   chrome: false
@@ -111,3 +171,15 @@ scene:
       warmth: 0.5
       environment: 0.5
       ambient: 0.32
+  nodes:
+    # World: City. The data: block's city (or what the URI field's Load points data.city at): its
+    # terrain with the aerial image draped, and its buildings.
+    - node: city
+      source: { data: city }
+      visible: { bind: view.city, default: false }
+    # World: Generated. libcvc's generator, from the world.* keys (Python makes the same world for
+    # the squad and the physics).
+    - node: gen
+      type: generated_world
+      look: soft
+      visible: { bind: view.generated, default: false }

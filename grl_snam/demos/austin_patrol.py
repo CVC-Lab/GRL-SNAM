@@ -72,6 +72,7 @@ def setup() -> None:
         vpose=vpose,
         chase=chase,
         cam=host.camera(),
+        metrics=host.metrics() if hasattr(host, "metrics") else None,
         t=0.0,
         pps=3.0,
     )
@@ -87,6 +88,15 @@ def _pose(t):
     return route[i][0] * (1 - a) + route[j][0] * a, route[i][1] * (1 - a) + route[j][1] * a
 
 
+def predicted_path(steps: int = 40) -> list:
+    """The patrol loop ahead of the vehicle (world (x, y) points; [] before setup)."""
+    if not _S:
+        return []
+    route = _S["route"]
+    i = int((_S["t"] * _S["pps"]) % len(route))
+    return [route[(i + k) % len(route)] for k in range(0, 4 * int(steps), 2)]
+
+
 def step(dt: float) -> None:
     if not _S:
         setup()
@@ -95,4 +105,16 @@ def step(dt: float) -> None:
     _S["lab"].node("agent0").setTransform(_S["vpose"].update(x, y, dt))
     eye, tgt, up = _S["chase"].update((x, y, _S["sample"](x, y)), dt)
     _S["cam"].look(eye, tgt, up)
+    if _S["metrics"] is not None:  # the readouts a host shows: where it is on the loop
+        from grl_snam.metrics import NavMetrics
+
+        n = len(_S["route"])
+        lap = (_S["t"] * _S["pps"]) / n
+        gx, gy = _S["route"][int((_S["t"] * _S["pps"] + 40) % n)]
+        _S["metrics"].publish(
+            NavMetrics(step=int(_S["t"] * _S["pps"]), x=x, y=y, goal_x=gx, goal_y=gy,
+                       goal_dist_m=math.hypot(gx - x, gy - y), mode="patrol",
+                       progress=lap - math.floor(lap)),
+            dt,
+        )  # fmt: skip
     _S["lab"].pump()
