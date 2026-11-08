@@ -358,6 +358,7 @@ after soak.
 | witness gate, serial + batch | BIT (every field; batch == serial bytes; thread-count stable) | `test_material_gate_sim.py`, `test_material_parity.py`, `NavMaterialGate.*` |
 | belief material: the seen mask, `belief_material_inputs`, the gate surface, `seen_disc` | BIT (SHA-256 of every raster + the gate outputs) | `test_belief_material_parity.py` vs libcvc's golden |
 | belief training: `material_patch_belief`; the 3-channel net with `gate_active` | BIT (the crop); FLOAT (the trainer, the small golden's tolerances) | `test_belief_material_parity.py`, `test_material_train_torch.py` vs libcvc's belief golden |
+| belief-material controller: the contract parse and `to_meta`, the header and runtime checks, `scan_visible_geometry`, the controller's tokens and crop | BIT (`dist` in the goal token 1 ulp); the refusals by field. This side is the reference: libcvc reproduces it | `test_belief_material_controller_golden.py` regenerates `grl_snam.tools.belief_material_controller_golden`'s files byte for byte; libcvc's `nav_belief_material_controller_test` reads the same files |
 | `material_sample` | FLOAT (rtol 1e-5) + non-contractual bit tripwire | `test_material_parity.py` |
 | rollout with material vs torch | FLOAT (rtol 1e-4 / atol 1e-5, fixed lambda columns) | `test_material_parity.py` |
 | no-material invariance | BIT | null-material delegation byte-identity (gtest), zero-grid value-identity, full suite green |
