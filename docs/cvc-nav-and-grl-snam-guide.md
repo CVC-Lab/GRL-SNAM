@@ -158,11 +158,12 @@ Two concrete consequences worth carrying, not just vocabulary:
     it with their sharp check (`NavPotential.ExplicitEulerRaisesTheAlarm`).
   - The blast radius was narrow: the only callers are the material trainer's multi-start loss
     (L_multi).
-  - **One thing changes here with a pycvc that has it.** `MaterialTrainer` leaves the integrator
-    argument out on its legacy start (`semi_implicit=False` with the default `frac_range`). So that
-    start now runs semi-implicit natively, while the torch twin (`material_train_torch.py`) keeps
-    its explicit default. To compare the two, pass `semi_implicit=True` to both, or use a sampled
-    `frac_range`, which passes the flag.
+  - **GRL-SNAM follows it.** `MaterialTrainer` (`material_train_native.py`) and its torch twin
+    (`material_train_torch.py`) default to `semi_implicit=True` too, so L_multi is
+    `surrogate_robust.multi_start_penalty` by default. `semi_implicit=False` keeps the fork's
+    explicit Euler on both. `MaterialTrainer` passes the flag to any pycvc that takes it, so the
+    integrator is the one asked for whatever the binding's own default is. A pycvc older than
+    libcvc #596 cannot run the default, and says to pass `semi_implicit=False`.
 
 None of this changes how you should use `cvc::nav` day to day — the fidelity contract above is what
 governs comparing outputs, and it holds regardless of what you call the underlying physics.

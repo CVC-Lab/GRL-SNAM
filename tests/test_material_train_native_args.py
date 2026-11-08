@@ -3,11 +3,12 @@
 The L_multi sampling args (``ms_count``, ``frac_range``, ``seed``, ``semi_implicit``) are new
 trailing positionals on ``nav_material_trainer_create`` (libcvc #596), and an older binding rejects
 the extra arguments with TypeError. So on an older binding the wrapper must keep calling the old
-signature for the legacy single start. It may refuse, with a clear error, only a configuration that
-needs the new args. A binding that takes them always gets them, the legacy start included: since
-libcvc #981 its own ``ms_semi_implicit`` defaults to 1, so leaving them out would turn
-``semi_implicit=False`` into semi-implicit Euler. tests/test_material_train_native.py checks the
-same args against a real pycvc.
+signature for the legacy single start (explicit Euler, ``semi_implicit=False``). It may refuse,
+with a clear error, only a configuration that needs the new args, and the default
+``semi_implicit=True`` is one. A binding that takes them always gets them, the legacy start
+included: the binding's own ``ms_semi_implicit`` default changed with libcvc #981 (0, then 1), so
+leaving them out would leave the integrator to the binding's version.
+tests/test_material_train_native.py checks the same args against a real pycvc.
 """
 
 from __future__ import annotations
@@ -61,14 +62,15 @@ def test_probe_reads_the_binding_without_building_a_trainer(binding, takes):
     assert fake.calls == []
 
 
+_EXPLICIT = dict(semi_implicit=False)
 _LEGACY_STARTS = pytest.mark.parametrize(
     ("kw", "tail"),
     [
-        ({}, (1, 0.9, 0.9, 0, 0)),
-        (dict(ms_count=10), (10, 0.9, 0.9, 0, 0)),
-        (dict(ms_count=10, frac_range=(0.9, 0.9), seed=123), (10, 0.9, 0.9, 123, 0)),
+        (dict(_EXPLICIT), (1, 0.9, 0.9, 0, 0)),
+        (dict(_EXPLICIT, ms_count=10), (10, 0.9, 0.9, 0, 0)),
+        (dict(_EXPLICIT, ms_count=10, frac_range=(0.9, 0.9), seed=123), (10, 0.9, 0.9, 123, 0)),
     ],
-    ids=["defaults", "ms_count", "degenerate-seeded"],
+    ids=["explicit", "ms_count", "degenerate-seeded"],
 )
 
 
@@ -96,9 +98,24 @@ def test_the_legacy_start_says_explicit_euler_to_a_new_binding(binding, kw, tail
     assert [type(a) for a in args[_LEGACY_ARITY:]] == [int, float, float, int, int]
 
 
-def test_sampled_args_are_appended_after_the_legacy_ones(binding):
+def test_the_default_is_semi_implicit(binding):
+    """As libcvc's own default since #981: one start from the 0.9 range, ms_semi_implicit 1. An
+    older binding cannot run it, and says what to pass instead."""
     fake = binding(True)
     mtn.MaterialTrainer("m.cvcnm")
+    (args,) = fake.calls
+    assert len(args) == _NEW_ARITY
+    assert args[_LEGACY_ARITY:] == (1, 0.9, 0.9, 0, 1)
+
+    fake = binding(False)
+    with pytest.raises(RuntimeError, match="semi_implicit=False"):
+        mtn.MaterialTrainer("m.cvcnm")
+    assert fake.calls == []
+
+
+def test_sampled_args_are_appended_after_the_legacy_ones(binding):
+    fake = binding(True)
+    mtn.MaterialTrainer("m.cvcnm", **_EXPLICIT)
     mtn.MaterialTrainer("m.cvcnm", **_SAMPLED)
     legacy, sampled = fake.calls
     assert sampled[:_LEGACY_ARITY] == legacy[:_LEGACY_ARITY]
@@ -121,11 +138,12 @@ def test_only_the_seeds_low_32_bits_are_passed(binding, seed, want):
     "kw",
     [
         dict(_SAMPLED),
+        {},
         dict(semi_implicit=True),
-        dict(frac_range=(0.8, 0.8)),
-        dict(ms_count=0),
+        dict(_EXPLICIT, frac_range=(0.8, 0.8)),
+        dict(_EXPLICIT, ms_count=0),
     ],
-    ids=["sampled", "semi-implicit", "other-degenerate-frac", "ms_count=0"],
+    ids=["sampled", "defaults", "semi-implicit", "other-degenerate-frac", "ms_count=0"],
 )
 def test_configs_beyond_the_legacy_start_need_the_new_binding(binding, kw):
     fake = binding(False)

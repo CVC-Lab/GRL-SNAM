@@ -37,9 +37,10 @@ Where it follows the native rather than a literal torch reading (each is how lib
   them, and the reductions run in float64 from the per-agent values, as ``compute_loss`` does.
 - ``lreg``'s clamp passes its gradient through: the native's seed is
   ``(1/ls - 1/(1-ls)) / lam_soft_max`` at the clamped value, with no zero on the clamp.
-- ``multi`` is libcvc's ``multi_start_penalty`` (``geom_rollout.cpp``): explicit Euler by default
-  (``semi_implicit=True`` gives GRL-SNAM's :func:`~grl_snam.surrogate_robust.multi_start_penalty`),
-  the trainer's ``mass``, and the starts drawn exactly as ``multi_start_fracs`` draws them (the
+- ``multi`` is libcvc's ``multi_start_penalty`` (``geom_rollout.cpp``): semi-implicit Euler by
+  default, as libcvc since #981, which is GRL-SNAM's
+  :func:`~grl_snam.surrogate_robust.multi_start_penalty` (``semi_implicit=False`` gives the
+  material fork's explicit Euler), the trainer's ``mass``, and the starts drawn exactly as ``multi_start_fracs`` draws them (the
   stream of ``torch.rand`` on a CPU generator seeded with ``seed``). The ``k``-th :meth:`step`
   draws with ``seed + k``; :meth:`loss` draws with ``seed``.
 - ``loss(frozen_eta=...)`` rounds the quantile to float32, as ``nav_material_trainer_loss`` does.
@@ -287,13 +288,14 @@ def geom_rollout_min_clear(
     dt: torch.Tensor,
     steps: int,
     mass: float = 1.0,
-    semi_implicit: bool = False,
+    semi_implicit: bool = True,
 ) -> torch.Tensor:
     """libcvc's ``integrate_surrogate_v2`` (``geom_rollout.cpp``): the minimum clearance.
 
     The geometry-only rollout L_multi scores: the per-obstacle IPC barriers, the goal spring and
-    damping, ``a = F / mass``; explicit Euler (the position steps with the OLD velocity) or, with
-    ``semi_implicit``, GRL-SNAM's order. ``min_clear`` is taken before each step, ungated.
+    damping, ``a = F / mass``; semi-implicit Euler (GRL-SNAM's order and, since libcvc #981, the
+    native default) or, with ``semi_implicit=False``, explicit Euler (the position steps with the
+    OLD velocity). ``min_clear`` is taken before each step, ungated.
     """
     B = o.shape[0]
     min_clear = torch.full((B,), float("inf"), dtype=o.dtype, device=o.device)
@@ -397,7 +399,7 @@ class MaterialTrainerTorch:
         ms_count: int = 1,
         frac_range: tuple[float, float] = (0.9, 0.9),
         seed: int = 0,
-        semi_implicit: bool = False,
+        semi_implicit: bool = True,
         bicycle=None,
         integrator: str | None = None,
         device=None,
