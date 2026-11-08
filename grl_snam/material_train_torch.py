@@ -134,6 +134,7 @@ def load_cvcnm(path, *, device=None, dtype: torch.dtype = torch.float32) -> Coef
             mod.eps = float(mn.eps)
     m.patch_size = int(mn.patch_size)
     m.belief_header = mn.belief  # a version-2 file's belief block, written back by save_cvcnm
+    m.meta = mn.meta  # the file's free-form meta string, also written back by save_cvcnm
     _no_nested(m)
     m.eval()
     return m.to(device=device, dtype=dtype)
@@ -147,8 +148,11 @@ def _no_nested(model: nn.Module) -> None:
 
 
 def save_cvcnm(model: nn.Module, path) -> str:
-    """Write ``model``'s weights to ``path`` as a ``.cvcnm`` (float32, the native's format)."""
-    return write_matnet(model, str(path))
+    """Write ``model``'s weights to ``path`` as a ``.cvcnm`` (float32, the native's format).
+
+    ``model.meta``, when set (as :func:`load_cvcnm` does), is written as the file's meta string.
+    """
+    return write_matnet(model, str(path), meta=getattr(model, "meta", "") or "")
 
 
 @contextlib.contextmanager

@@ -154,6 +154,13 @@ directory with only `terrain.json`, `buildings.glb`, `satellite.png` and
 `Humvee.glb`, and **no masks**, so a script that needs them must check for the
 files and fail loudly rather than fall back.
 
+`material_raster.require_austin_bundle` does both checks for the material
+experiments below: a missing mask raises `FileNotFoundError`, and a file whose
+sha256 differs from the pinned bundle's (`AUSTIN_BUNDLE_FILE_SHA256`) raises
+`ValueError`. The archive hash can't be checked after installation, so each file
+read is checked instead, and the per-file hashes go into every route manifest,
+training report and evaluation report.
+
 ### Tuning
 
 ```python
@@ -234,6 +241,79 @@ and a batch's `gate_active` gates each agent's `lam_soft` in the training rollou
 `MaterialTrainerTorch` and the native `MaterialTrainer` (`HAS_MATERIAL_TRAINER_GATE`). libcvc's
 `TorchTrainerGoldenBelief` (`tests/fixtures/material_train_golden_belief/`) pins both trainers
 and the crop.
+
+### A range-limited belief-material controller
+
+`grl_snam/belief_material_controller.py` puts the pieces above together for one agent:
+
+* `BeliefMaterialSensor` ray-casts truth occupancy into a `BeliefGrid` with material tracking
+  on (one ray per far-edge cell, `belief_material_ray_count`) and keeps a belief
+  `MaterialRuntime` current: it rebuilds the planes only when the seen mask grows, and otherwise
+  just refreshes the gate's occupancy.
+* `BeliefMaterialController` builds the net's inputs from that state (the obstacle and goal
+  tokens, plus the `material_patch_belief` crop), runs `CoefEnergyNetMaterial(risk_channels=3)`,
+  and gates `lam_soft` with the runtime's witness gate. `rollout` executes a decision with
+  `integrate_surrogate_material`; `live_material_kwargs` hands the field and lambdas to
+  `sdf_rollout` / `bicycle_rollout`.
+
+**The feature frame is recorded in the checkpoint.** The controller feeds obstacle and goal
+tokens **robot-relative, divided by `feature_scale_m`** (20 m). `train_coef_energy` and
+`eval_coef_energy` feed absolute centres in metres instead. The token layout is the same
+(libcvc's `coef_energy_net.h`), but the frame is not. So a belief-material `.cvcnm` records a
+`BeliefMaterialContract` as JSON in its `meta` string, under `grl_snam.belief_material`: the
+frame, its scale, the hazard barrier's `k_sharp` / `d_hat_sdf_m`, the gate's
+`material_trigger`, and the obstacle barrier's `geometry_d_hat_m`.
+`BeliefMaterialController.from_cvcnm` refuses a file without one. Inference takes those
+constants from the contract, not from code defaults. `decide`, `rollout` and
+`live_material_kwargs` refuse a runtime built with other constants; build the sensor with
+`material_params=controller.contract.material_params(...)`.
+`load_cvcnm` / `save_cvcnm` carry `meta` through a round trip. No libcvc change is needed:
+libcvc's net reads the layout but builds no features of its own, and its reader keeps `meta`
+as an opaque string.
+
+### Austin material routes, training and evaluation
+
+Three commands (the logic lives in `grl_snam/tools/austin_material_*.py`), all on the pinned
+full bundle above:
+
+```
+grl-snam austin-material-routes  "$AUSTIN" -o routes.json         # seed 20261015 by default
+grl-snam austin-material-train    "$AUSTIN" --geometry-checkpoint geom.pt \
+    --routes routes.json --out runs/1 --seed 1
+grl-snam austin-material-evaluate "$AUSTIN" --checkpoint runs/1/material.cvcnm \
+    --routes routes.json --out eval/1.json --seed 1
+```
+
+* **Routes** (`grl_snam/material_routes.py`): each direct segment crosses material but no
+  occupancy, and a hard-safe A* detour exists. Endpoints sit at least 60 m apart. Routes in
+  different splits keep their whole corridors at least 60 m apart (the sensor range), so a
+  test route never crosses ground a training route has sensed. The validator enforces both
+  rules. `experiments/austin_material/routes.json` is the committed corpus: 12 train,
+  6 validation and 30 test routes, 2 / 2 / 6 of them water, ids from 500. The command above
+  regenerates it byte for byte.
+* **Training** sees only `manifest["train"]`. The geometry backbone is warm-started from a
+  Stage-1 `CoefEnergyNet` checkpoint (`material_nav.load_geometry_weights`) and frozen. The
+  patch encoder and the two lambda heads train through `MaterialTrainerTorch`, starting at
+  the fixed lambdas (1.5 / 1.0). Supervision comes from a risk-weighted, hard-safe A*
+  teacher. Each sample starts at the teacher's arrival velocity, so coasting does not hit the
+  target and the material force is not penalised for acting. The shared trainer's lambda
+  regulariser is off by default (`lambda_regularization`), because it pulls both heads toward
+  `lambda_max / 2`. `training.json` records the dataset, the contract, the hashes and
+  `learned_lambdas`, the spread of the trained heads next to the fixed values.
+* **Evaluation** picks the material-aware waypoint weight on validation only, with the learned
+  arm. It then runs four arms on the test split: `fixed_lambda`, `force_only`, `waypoint` and
+  `learned`. It reports per-route paired statistics with route-cluster bootstrap CIs, which
+  are conditional on the training seed.
+
+**Status: no Austin result is claimed yet.** A reproducible run needs a published Stage-1
+geometry checkpoint, which does not exist yet. Two more things need checking on the 15 m
+Austin grid:
+
+* The default barrier reach (`d_hat_sdf_m` 3 m) is a fifth of a cell.
+* The gate trigger (0.30) equals foliage risk exactly.
+
+Tune both on validation before reporting numbers. The training stage runs only on the torch
+path for now. The native `MaterialTrainer` has no way to freeze the geometry backbone.
 
 ### Reading it back
 

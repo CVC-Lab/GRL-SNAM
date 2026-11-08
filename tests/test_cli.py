@@ -18,6 +18,9 @@ def test_cli_registers_core_commands():
         "selftest",
         "obstacles",
         "build-sdf",
+        "austin-material-routes",
+        "austin-material-train",
+        "austin-material-evaluate",
         "train",
         "capture",
         "pipeline",
@@ -27,6 +30,24 @@ def test_cli_registers_core_commands():
         "train-coef",
     ):
         assert cmd in names, f"missing command: {cmd}"
+
+
+def test_austin_material_routes_help_is_available_without_scene_dependencies():
+    result = CliRunner().invoke(main, ["austin-material-routes", "--help"])
+    assert result.exit_code == 0
+    assert "--hard-test" in result.output
+
+
+def test_austin_material_evaluate_help_is_available_without_scene_dependencies():
+    result = CliRunner().invoke(main, ["austin-material-evaluate", "--help"])
+    assert result.exit_code == 0
+    assert "--checkpoint" in result.output
+
+
+def test_austin_material_train_help_is_available_without_scene_dependencies():
+    result = CliRunner().invoke(main, ["austin-material-train", "--help"])
+    assert result.exit_code == 0
+    assert "--geometry-checkpoint" in result.output
 
 
 def test_capture_subcommands():

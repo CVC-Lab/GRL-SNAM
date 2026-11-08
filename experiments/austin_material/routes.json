@@ -1,0 +1,765 @@
+{
+  "train": [
+    {
+      "id": 500,
+      "start_xy": [
+        806.5326633165828,
+        -535.1758793969849
+      ],
+      "goal_xy": [
+        942.211055276382,
+        -520.1005025125627
+      ],
+      "direct_distance_m": 136.51334379101658,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 501,
+      "start_xy": [
+        -474.8743718592966,
+        -1288.9447236180904
+      ],
+      "goal_xy": [
+        -595.4773869346734,
+        -1228.643216080402
+      ],
+      "direct_distance_m": 134.8382699999872,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 502,
+      "start_xy": [
+        520.1005025125628,
+        -113.0653266331658
+      ],
+      "goal_xy": [
+        550.2512562814068,
+        -324.1206030150754
+      ],
+      "direct_distance_m": 213.19802447835607,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 503,
+      "start_xy": [
+        731.1557788944724,
+        -52.7638190954774
+      ],
+      "goal_xy": [
+        942.211055276382,
+        7.537688442210992
+      ],
+      "direct_distance_m": 219.50080068182473,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 504,
+      "start_xy": [
+        7.537688442210992,
+        -580.4020100502513
+      ],
+      "goal_xy": [
+        -143.21608040201,
+        -565.3266331658291
+      ],
+      "direct_distance_m": 151.50566262996307,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 505,
+      "start_xy": [
+        520.1005025125628,
+        -550.2512562814071
+      ],
+      "goal_xy": [
+        429.6482412060302,
+        -746.2311557788945
+      ],
+      "direct_distance_m": 215.84654869260828,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 506,
+      "start_xy": [
+        293.9698492462312,
+        -1168.3417085427136
+      ],
+      "goal_xy": [
+        173.3668341708542,
+        -987.4371859296483
+      ],
+      "direct_distance_m": 217.42017741491398,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 507,
+      "start_xy": [
+        1017.5879396984924,
+        188.4422110552764
+      ],
+      "goal_xy": [
+        806.5326633165828,
+        233.66834170854258
+      ],
+      "direct_distance_m": 215.84654869260837,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 508,
+      "start_xy": [
+        685.929648241206,
+        -489.9497487437186
+      ],
+      "goal_xy": [
+        655.778894472362,
+        -595.4773869346734
+      ],
+      "direct_distance_m": 109.7504003409123,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 509,
+      "start_xy": [
+        -113.0653266331658,
+        505.0251256281408
+      ],
+      "goal_xy": [
+        52.7638190954774,
+        459.79899497487463
+      ],
+      "direct_distance_m": 171.8857424772569,
+      "challenge_kind": "hard",
+      "material_challenge": "water",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 510,
+      "start_xy": [
+        -655.7788944723618,
+        685.929648241206
+      ],
+      "goal_xy": [
+        -580.4020100502513,
+        610.5527638190956
+      ],
+      "direct_distance_m": 106.59901223917785,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 511,
+      "start_xy": [
+        -505.0251256281407,
+        1062.8140703517588
+      ],
+      "goal_xy": [
+        -610.5527638190955,
+        1228.643216080402
+      ],
+      "direct_distance_m": 196.55886648852209,
+      "challenge_kind": "hard",
+      "material_challenge": "water",
+      "split_locked_before_training": true
+    }
+  ],
+  "validation": [
+    {
+      "id": 512,
+      "start_xy": [
+        625.6281407035176,
+        293.9698492462312
+      ],
+      "goal_xy": [
+        505.0251256281408,
+        293.9698492462312
+      ],
+      "direct_distance_m": 120.60301507537679,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 513,
+      "start_xy": [
+        -203.51758793969861,
+        -1379.3969849246232
+      ],
+      "goal_xy": [
+        -113.0653266331658,
+        -1439.6984924623116
+      ],
+      "direct_distance_m": 108.71008870745706,
+      "challenge_kind": "hard",
+      "material_challenge": "water",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 514,
+      "start_xy": [
+        520.1005025125628,
+        -957.286432160804
+      ],
+      "goal_xy": [
+        369.3467336683418,
+        -821.608040201005
+      ],
+      "direct_distance_m": 202.81845297096038,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 515,
+      "start_xy": [
+        444.7236180904524,
+        -459.7989949748744
+      ],
+      "goal_xy": [
+        610.5527638190956,
+        -459.7989949748744
+      ],
+      "direct_distance_m": 165.8291457286432,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 516,
+      "start_xy": [
+        -158.2914572864322,
+        -1198.4924623115578
+      ],
+      "goal_xy": [
+        -82.9145728643216,
+        -1273.8693467336684
+      ],
+      "direct_distance_m": 106.5990122391781,
+      "challenge_kind": "hard",
+      "material_challenge": "water",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 517,
+      "start_xy": [
+        1198.492462311558,
+        731.1557788944724
+      ],
+      "goal_xy": [
+        1138.1909547738696,
+        550.2512562814068
+      ],
+      "direct_distance_m": 190.69011016090758,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    }
+  ],
+  "test": [
+    {
+      "id": 518,
+      "start_xy": [
+        158.29145728643198,
+        489.9497487437186
+      ],
+      "goal_xy": [
+        -37.68844221105519,
+        565.3266331658292
+      ],
+      "direct_distance_m": 209.97570267111715,
+      "challenge_kind": "hard",
+      "material_challenge": "water",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 519,
+      "start_xy": [
+        -293.9698492462312,
+        113.0653266331658
+      ],
+      "goal_xy": [
+        -324.1206030150754,
+        -97.98994974874358
+      ],
+      "direct_distance_m": 213.19802447835588,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 520,
+      "start_xy": [
+        -7.537688442210992,
+        369.3467336683418
+      ],
+      "goal_xy": [
+        -7.537688442210992,
+        248.7437185929648
+      ],
+      "direct_distance_m": 120.60301507537702,
+      "challenge_kind": "hard",
+      "material_challenge": "water",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 521,
+      "start_xy": [
+        354.2713567839196,
+        -912.0603015075377
+      ],
+      "goal_xy": [
+        369.3467336683418,
+        -1092.964824120603
+      ],
+      "direct_distance_m": 181.53157656470796,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 522,
+      "start_xy": [
+        444.7236180904524,
+        -384.4221105527638
+      ],
+      "goal_xy": [
+        610.5527638190956,
+        -384.4221105527638
+      ],
+      "direct_distance_m": 165.8291457286432,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 523,
+      "start_xy": [
+        -444.7236180904522,
+        881.9095477386936
+      ],
+      "goal_xy": [
+        -580.4020100502513,
+        1017.5879396984924
+      ],
+      "direct_distance_m": 191.87822203052036,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 524,
+      "start_xy": [
+        912.0603015075376,
+        -836.6834170854271
+      ],
+      "goal_xy": [
+        836.6834170854272,
+        -912.0603015075377
+      ],
+      "direct_distance_m": 106.59901223917794,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 525,
+      "start_xy": [
+        -731.1557788944724,
+        -1062.8140703517588
+      ],
+      "goal_xy": [
+        -550.2512562814071,
+        -1062.8140703517588
+      ],
+      "direct_distance_m": 180.9045226130653,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 526,
+      "start_xy": [
+        263.819095477387,
+        37.68844221105519
+      ],
+      "goal_xy": [
+        354.2713567839196,
+        128.140703517588
+      ],
+      "direct_distance_m": 127.91881468701368,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 527,
+      "start_xy": [
+        203.51758793969861,
+        -610.5527638190955
+      ],
+      "goal_xy": [
+        339.1959798994974,
+        -716.0804020100502
+      ],
+      "direct_distance_m": 171.88574247725674,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 528,
+      "start_xy": [
+        -22.613065326633205,
+        -1228.643216080402
+      ],
+      "goal_xy": [
+        82.91457286432137,
+        -1228.643216080402
+      ],
+      "direct_distance_m": 105.52763819095458,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 529,
+      "start_xy": [
+        -1243.7185929648242,
+        927.1356783919596
+      ],
+      "goal_xy": [
+        -1319.0954773869346,
+        806.5326633165828
+      ],
+      "direct_distance_m": 142.2208210862803,
+      "challenge_kind": "hard",
+      "material_challenge": "water",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 530,
+      "start_xy": [
+        474.8743718592964,
+        444.7236180904524
+      ],
+      "goal_xy": [
+        429.6482412060302,
+        339.1959798994974
+      ],
+      "direct_distance_m": 114.81064983714452,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 531,
+      "start_xy": [
+        791.4572864321608,
+        -278.894472361809
+      ],
+      "goal_xy": [
+        640.7035175879396,
+        -218.5929648241206
+      ],
+      "direct_distance_m": 162.366778104558,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 532,
+      "start_xy": [
+        7.537688442210992,
+        -489.9497487437186
+      ],
+      "goal_xy": [
+        67.83919597989961,
+        -339.1959798994974
+      ],
+      "direct_distance_m": 162.36677810455808,
+      "challenge_kind": "hard",
+      "material_challenge": "water",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 533,
+      "start_xy": [
+        -1047.7386934673368,
+        -1364.321608040201
+      ],
+      "goal_xy": [
+        -1183.4170854271356,
+        -1409.5477386934674
+      ],
+      "direct_distance_m": 143.0175826206803,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 534,
+      "start_xy": [
+        670.854271356784,
+        188.4422110552764
+      ],
+      "goal_xy": [
+        595.4773869346736,
+        82.91457286432137
+      ],
+      "direct_distance_m": 129.6832954830548,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 535,
+      "start_xy": [
+        -1273.8693467336684,
+        1198.492462311558
+      ],
+      "goal_xy": [
+        -1394.4723618090452,
+        1198.492462311558
+      ],
+      "direct_distance_m": 120.60301507537679,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 536,
+      "start_xy": [
+        -22.613065326633205,
+        746.2311557788944
+      ],
+      "goal_xy": [
+        -97.98994974874358,
+        610.5527638190956
+      ],
+      "direct_distance_m": 155.2105046379947,
+      "challenge_kind": "hard",
+      "material_challenge": "water",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 537,
+      "start_xy": [
+        82.91457286432137,
+        -912.0603015075377
+      ],
+      "goal_xy": [
+        173.3668341708542,
+        -731.1557788944724
+      ],
+      "direct_distance_m": 202.25740499998102,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 538,
+      "start_xy": [
+        -203.51758793969861,
+        -987.4371859296483
+      ],
+      "goal_xy": [
+        -143.21608040201,
+        -1138.1909547738694
+      ],
+      "direct_distance_m": 162.36677810455797,
+      "challenge_kind": "hard",
+      "material_challenge": "water",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 539,
+      "start_xy": [
+        942.211055276382,
+        -685.929648241206
+      ],
+      "goal_xy": [
+        1062.8140703517588,
+        -670.854271356784
+      ],
+      "direct_distance_m": 121.54157409495289,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 540,
+      "start_xy": [
+        896.9849246231156,
+        -595.4773869346734
+      ],
+      "goal_xy": [
+        881.9095477386936,
+        -746.2311557788945
+      ],
+      "direct_distance_m": 151.50566262996315,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 541,
+      "start_xy": [
+        173.3668341708542,
+        -459.7989949748744
+      ],
+      "goal_xy": [
+        67.83919597989961,
+        -489.9497487437186
+      ],
+      "direct_distance_m": 109.75040034091214,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 542,
+      "start_xy": [
+        -1168.3417085427136,
+        1092.9648241206028
+      ],
+      "goal_xy": [
+        -1304.0201005025126,
+        1047.7386934673368
+      ],
+      "direct_distance_m": 143.01758262068037,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 543,
+      "start_xy": [
+        -836.6834170854271,
+        -1273.8693467336684
+      ],
+      "goal_xy": [
+        -655.7788944723618,
+        -1198.4924623115578
+      ],
+      "direct_distance_m": 195.97989949748742,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 544,
+      "start_xy": [
+        -324.1206030150754,
+        -22.613065326633205
+      ],
+      "goal_xy": [
+        -324.1206030150754,
+        -173.3668341708542
+      ],
+      "direct_distance_m": 150.75376884422099,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 545,
+      "start_xy": [
+        -716.0804020100502,
+        -1304.0201005025126
+      ],
+      "goal_xy": [
+        -746.2311557788945,
+        -1183.4170854271356
+      ],
+      "direct_distance_m": 124.31474248093464,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 546,
+      "start_xy": [
+        -550.2512562814071,
+        -595.4773869346734
+      ],
+      "goal_xy": [
+        -565.3266331658291,
+        -399.497487437186
+      ],
+      "direct_distance_m": 196.55886648852203,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    },
+    {
+      "id": 547,
+      "start_xy": [
+        731.1557788944724,
+        -143.21608040201
+      ],
+      "goal_xy": [
+        625.6281407035176,
+        -52.7638190954774
+      ],
+      "direct_distance_m": 138.98810739637517,
+      "challenge_kind": "soft",
+      "material_challenge": "foliage",
+      "split_locked_before_training": true
+    }
+  ],
+  "schema": "grl-snam-material-routes/1",
+  "protocol": {
+    "name": "material_challenge_routes_v1",
+    "seed": 20261015,
+    "test_locked_before_training": true,
+    "counts": {
+      "train": 12,
+      "validation": 6,
+      "test": 30
+    },
+    "hard_counts": {
+      "train": 2,
+      "validation": 2,
+      "test": 6
+    },
+    "selection": "low-risk endpoints in the largest hard-safe free component; direct segment crosses material but no physical occupancy; hard-safe A* detour exists",
+    "soft_risk_threshold": 0.3,
+    "minimum_direct_distance_m": 100.0,
+    "maximum_direct_distance_m": 220.0,
+    "endpoint_clearance_m": 5.0,
+    "minimum_endpoint_separation_m": 60.0,
+    "minimum_split_corridor_separation_m": 60.0,
+    "maximum_hard_safe_detour_ratio": 2.5,
+    "source": {
+      "package": "cy-pca/scene-austin-south",
+      "version": "1.0.0+cvc.3",
+      "archive_sha256": "7c598bc1bd74ef9da22de34289e8dca8586fb2108e40a081437c9def7ceb6397",
+      "files_sha256": {
+        "terrain.json": "bc553d20f573ee49ea289c27bd731e72c3b26a6a9cb2d6e79d9b8757da7c5cfa",
+        "foliage_mask.png": "46df50e3233da803302045d8cb4f796b7b2dca6538c79d3caf5a656f82000cf3",
+        "open_fields.png": "ee64f2354fb0f8971fc98978b8bf2d27f801a7f41a95bc6adf1ec75652f6ceea",
+        "water.png": "a889097b9d4e0907ccd133f031c9cb1b3522f4f4b05e34be057e97532335b980",
+        "roads.png": "5a1c47552452d3c7018e1330e7be17b5a1f0fa845de93b272ef439b0dcecb2ec",
+        "navmask.png": "abb46b8c9745fbdc0de7f39cfe8d46d63cef3e24f55b92bf35ae7e47840afe4b"
+      }
+    }
+  }
+}

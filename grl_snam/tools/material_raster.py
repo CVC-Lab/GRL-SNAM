@@ -24,6 +24,7 @@ classes ``open_air`` / ``foliage`` / ``soil`` / ``water`` / ``rock``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
@@ -41,6 +42,30 @@ FOLIAGE = MATERIAL_ID["foliage"]
 SOIL = MATERIAL_ID["soil"]
 WATER = MATERIAL_ID["water"]
 ROCK = MATERIAL_ID["rock"]
+
+# The authoritative Austin source requested by the material-controller evaluation. Keep these
+# values beside the strict loader so a missing-mask error is itself a reproducible install recipe.
+AUSTIN_BUNDLE_PACKAGE = "cy-pca/scene-austin-south"
+AUSTIN_BUNDLE_VERSION = "1.0.0+cvc.3"
+AUSTIN_BUNDLE_SHA256 = "7c598bc1bd74ef9da22de34289e8dca8586fb2108e40a081437c9def7ceb6397"
+AUSTIN_MATERIAL_FILES = (
+    "terrain.json",
+    "foliage_mask.png",
+    "open_fields.png",
+    "water.png",
+    "roads.png",
+)
+# sha256 of each file the material experiments read, as installed from the pinned archive above.
+# The archive hash cannot be checked after installation; these can, so a bundle at another version
+# (or a locally edited mask) is refused instead of silently changing the material map.
+AUSTIN_BUNDLE_FILE_SHA256 = {
+    "terrain.json": "bc553d20f573ee49ea289c27bd731e72c3b26a6a9cb2d6e79d9b8757da7c5cfa",
+    "foliage_mask.png": "46df50e3233da803302045d8cb4f796b7b2dca6538c79d3caf5a656f82000cf3",
+    "open_fields.png": "ee64f2354fb0f8971fc98978b8bf2d27f801a7f41a95bc6adf1ec75652f6ceea",
+    "water.png": "a889097b9d4e0907ccd133f031c9cb1b3522f4f4b05e34be057e97532335b980",
+    "roads.png": "5a1c47552452d3c7018e1330e7be17b5a1f0fa845de93b272ef439b0dcecb2ec",
+    "navmask.png": "abb46b8c9745fbdc0de7f39cfe8d46d63cef3e24f55b92bf35ae7e47840afe4b",
+}
 
 # color-coded display colors for the review preview (id -> RGB)
 _PREVIEW_COL = {
@@ -240,4 +265,67 @@ def from_bundle(
     material_id = segment_from_masks(bundle, rows, cols)
     if material_id is None:
         material_id = classify(iio.imread(os.path.join(bundle, "satellite.png")), rows, cols)
+    return out, _write(material_id, bounds, out, preview)
+
+
+def _file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def require_austin_bundle(bundle: str, *, extra_files=()) -> dict[str, str]:
+    """Require the pinned full Austin bundle, plus optional consumer files.
+
+    Every required file must exist, and every one with a pinned hash must match it. Returns the
+    sha256 of each required file, for provenance records.
+    """
+    package = f"{AUSTIN_BUNDLE_PACKAGE}=={AUSTIN_BUNDLE_VERSION}"
+    install = f"Install {package} (archive sha256 {AUSTIN_BUNDLE_SHA256})"
+    required = (*AUSTIN_MATERIAL_FILES, *tuple(extra_files))
+    missing = [name for name in required if not os.path.isfile(os.path.join(bundle, name))]
+    if missing:
+        raise FileNotFoundError(
+            f"{bundle}: full Austin material bundle required; missing {', '.join(missing)}. "
+            f"{install}; do not use the scene-austin-south-small lean bundle for material "
+            "experiments."
+        )
+    hashes = {name: _file_sha256(os.path.join(bundle, name)) for name in required}
+    changed = [
+        name
+        for name, digest in hashes.items()
+        if name in AUSTIN_BUNDLE_FILE_SHA256 and digest != AUSTIN_BUNDLE_FILE_SHA256[name]
+    ]
+    if changed:
+        raise ValueError(
+            f"{bundle}: {', '.join(changed)} do not match the pinned Austin bundle. {install}."
+        )
+    return hashes
+
+
+def load_austin_material_raster(bundle: str) -> tuple[np.ndarray, dict]:
+    """Read the pinned bundle's authoritative masks without writing derived files."""
+    require_austin_bundle(bundle)
+    with open(os.path.join(bundle, "terrain.json"), encoding="utf-8") as stream:
+        terrain = json.load(stream)
+    rows, cols = int(terrain["rows"]), int(terrain["cols"])
+    material_id = segment_from_masks(bundle, rows, cols)
+    if material_id is None:  # require_austin_bundle makes this unreachable
+        raise RuntimeError("Austin foliage mask disappeared while loading the bundle")
+    return material_id, _bounds_dict(terrain["bounds"])
+
+
+def from_austin_bundle(
+    bundle: str, out: str | None = None, preview: str | None = None
+) -> tuple[str, dict]:
+    """Build Austin material data only from the pinned full bundle's authoritative masks.
+
+    Unlike :func:`from_bundle`, this entry point never falls back to satellite classification.
+    The lean Austin package installs at the same path but lacks the masks; accepting it would
+    silently change an experiment's material map.
+    """
+    material_id, bounds = load_austin_material_raster(bundle)
+    out = out or os.path.join(bundle, "material.json")
     return out, _write(material_id, bounds, out, preview)

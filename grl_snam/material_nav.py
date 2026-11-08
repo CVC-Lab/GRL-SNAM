@@ -121,8 +121,10 @@ class CoefEnergyNetMaterial(nn.Module):
     ):
         super().__init__()
         self.risk_channels = risk_channels
-        # The .cvcnm header's widths (libcvc's net reads them from the file).
+        # The .cvcnm header's widths (libcvc's net reads them from the file). The adaptive-pool
+        # patch encoder accepts any patch size, so the trained one is recorded here explicitly.
         self.d_tok, self.nhead, self.num_layers, self.d_risk = d_tok, nhead, num_layers, d_risk
+        self.patch_size = patch_size
         self.lam_soft_max = lam_soft_max
         self.lam_hard_max = lam_hard_max
         self.mu_lat_max = mu_lat_max
@@ -206,7 +208,21 @@ def load_geometry_weights(
     else:
         sd = ck
     own_sd = material_model.state_dict()
-    matched = {k: v for k, v in sd.items() if k in own_sd and own_sd[k].shape == v.shape}
+    # ``CoefEnergyNet`` historically wrapped its two-layer obstacle encoder in
+    # ``ObstacleEncoder.mlp``.  ``CoefEnergyNetMaterial`` keeps the identical
+    # layers directly in a Sequential, so translate that one legacy prefix
+    # instead of silently leaving the obstacle encoder random.
+    normalized = {}
+    for key, value in sd.items():
+        target = key
+        if key.startswith("obs_enc.mlp."):
+            target = "obs_enc." + key.removeprefix("obs_enc.mlp.")
+        normalized[target] = value
+    matched = {
+        key: value
+        for key, value in normalized.items()
+        if key in own_sd and own_sd[key].shape == value.shape
+    }
     own_sd.update(matched)
     material_model.load_state_dict(own_sd)
     if not matched:
