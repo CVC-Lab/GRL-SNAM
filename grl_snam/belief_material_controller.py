@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import numbers
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -49,6 +50,14 @@ BELIEF_MATERIAL_META_KEY = "grl_snam.belief_material"
 
 ROBOT_RELATIVE_FRAME = "robot_relative"
 
+_CONTRACT_NUMBERS = (
+    "feature_scale_m",
+    "k_sharp",
+    "d_hat_sdf_m",
+    "material_gate_trigger",
+    "geometry_d_hat_m",
+)
+
 
 @dataclass(frozen=True)
 class BeliefMaterialContract:
@@ -76,15 +85,23 @@ class BeliefMaterialContract:
     geometry_d_hat_m: float = 3.0
 
     def __post_init__(self) -> None:
-        if self.feature_frame != ROBOT_RELATIVE_FRAME:
+        # Only a string frame and real numbers are accepted, as libcvc's parser accepts only JSON
+        # strings and numbers (spec decision E6): "5", True and None are refused, not coerced.
+        # Numbers are stored as floats, so to_meta writes 20.0 for a file that said 20.
+        if not isinstance(self.feature_frame, str) or self.feature_frame != ROBOT_RELATIVE_FRAME:
             raise ValueError(
                 f"feature_frame must be {ROBOT_RELATIVE_FRAME!r}, got {self.feature_frame!r}"
             )
+        for name in _CONTRACT_NUMBERS:
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, numbers.Real):
+                raise ValueError(f"{name} must be a number, got {value!r}")
+            object.__setattr__(self, name, float(value))
         for name in ("feature_scale_m", "k_sharp", "d_hat_sdf_m", "geometry_d_hat_m"):
-            value = float(getattr(self, name))
+            value = getattr(self, name)
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be finite and > 0")
-        trigger = float(self.material_gate_trigger)
+        trigger = self.material_gate_trigger
         if not math.isfinite(trigger) or not 0.0 <= trigger <= 1.0:
             raise ValueError("material_gate_trigger must be finite and in [0, 1]")
 

@@ -139,3 +139,20 @@ def test_evaluator_selects_on_validation_then_runs_every_test_arm():
         "waypoint",
         "learned",
     }
+
+
+def test_visible_geometry_breaks_distance_ties_in_row_major_order():
+    from grl_snam.belief import BeliefGrid
+    from grl_snam.tools.austin_material_evaluation import scan_visible_geometry
+
+    # Every cell of a 9 x 9 unit grid is visible and occupied, and the agent stands on a cell
+    # centre, so each ring of cells sits at one distance. A stable sort keeps argwhere's row-major
+    # order inside a ring, and the cutoff cuts a ring the same way every time (decision E5).
+    belief = BeliefGrid((9, 9), (0.0, 0.0, 8.0, 8.0))
+    belief.last_visible[:] = True
+    truth = np.ones((9, 9), bool)
+    position = np.array([4.0, 4.0])
+    centers, radii, weights, _ = scan_visible_geometry(belief, truth, position, 8, 10.0, 7)
+    want = [(4, 4), (3, 4), (4, 3), (4, 5), (5, 4), (3, 3), (3, 5)]
+    assert [(int(y), int(x)) for x, y in centers] == want
+    assert np.all(radii == np.float32(0.5)) and np.all(weights == 1.0)

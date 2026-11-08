@@ -267,9 +267,16 @@ frame, its scale, the hazard barrier's `k_sharp` / `d_hat_sdf_m`, the gate's
 constants from the contract, not from code defaults. `decide`, `rollout` and
 `live_material_kwargs` refuse a runtime built with other constants; build the sensor with
 `material_params=controller.contract.material_params(...)`.
-`load_cvcnm` / `save_cvcnm` carry `meta` through a round trip. No libcvc change is needed:
-libcvc's net reads the layout but builds no features of its own, and its reader keeps `meta`
-as an opaque string.
+`load_cvcnm` / `save_cvcnm` carry `meta` through a round trip. The contract's numbers must be
+JSON numbers and its frame a JSON string: `"5"`, `true` and `null` are refused, not coerced,
+and an integer is stored as a float, so `to_meta` writes `20.0`. libcvc's twin of the
+controller (its `NAV-BELIEF-MATERIAL-CONTROLLER-ROADMAP.md`, decision E6) parses the record the
+same way.
+
+`scan_visible_geometry`, the obstacle source both Austin tools use, keeps the nearest
+`max_obstacles` occupied cells this tick's rays touched. It sorts them stably, so cells at equal
+distances (common on a grid) keep their row-major order, and the cutoff always picks the same
+set. libcvc's `visible_obstacles` uses the same order (decision E5).
 
 ### Austin material routes, training and evaluation
 
