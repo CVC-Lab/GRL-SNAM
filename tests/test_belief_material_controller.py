@@ -269,6 +269,32 @@ def test_contract_refuses_other_feature_frames_and_unknown_fields():
         BeliefMaterialContract.from_meta(meta)
 
 
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("k_sharp", "5"),
+        ("k_sharp", True),
+        ("d_hat_sdf_m", None),
+        ("material_gate_trigger", [0.3]),
+        ("feature_frame", 0),
+    ],
+)
+def test_contract_takes_only_json_numbers_and_a_string_frame(field, value):
+    # libcvc's parser accepts only JSON numbers and a string frame (decision E6), so Python
+    # refuses what float() would have coerced.
+    meta = json.dumps({BELIEF_MATERIAL_META_KEY: {field: value}})
+    with pytest.raises(ValueError, match=field):
+        BeliefMaterialContract.from_meta(meta)
+
+
+def test_contract_stores_integers_as_floats():
+    meta = json.dumps({BELIEF_MATERIAL_META_KEY: {"feature_scale_m": 20, "k_sharp": 5}})
+    contract = BeliefMaterialContract.from_meta(meta)
+    assert type(contract.feature_scale_m) is float and type(contract.k_sharp) is float
+    assert contract.to_meta() == BeliefMaterialContract().to_meta()
+    assert '"feature_scale_m": 20.0' in contract.to_meta()
+
+
 def test_contract_survives_a_load_and_save_round_trip(tmp_path):
     from grl_snam.material_train_torch import load_cvcnm, save_cvcnm
 

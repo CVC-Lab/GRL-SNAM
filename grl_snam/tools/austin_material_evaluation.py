@@ -153,7 +153,10 @@ def scan_visible_geometry(
             dtype=np.float32,
         )
         distances = np.linalg.norm(centers - position[None, :], axis=1)
-        order = np.argsort(distances)[:max_obstacles]
+        # Stable, so equal distances keep argwhere's row-major order: the tie order libcvc's
+        # visible_obstacles twin uses (spec decision E5). A grid has many equal distances, and an
+        # unstable sort could pick a different set at the max_obstacles cutoff.
+        order = np.argsort(distances, kind="stable")[:max_obstacles]
         centers = centers[order]
         distances = distances[order]
     else:
