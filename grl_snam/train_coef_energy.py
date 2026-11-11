@@ -55,6 +55,7 @@ import builtins
 import json
 import os
 import random
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -158,16 +159,29 @@ class ShortRollouts(Dataset):
       - o_tgt, v_tgt: target state after K steps of base integrator
     """
 
-    def __init__(self, root: str, cfg: ShortRolloutCfg | None = None):
+    def __init__(
+        self,
+        root: str,
+        cfg: ShortRolloutCfg | None = None,
+        episodes: Iterable[int] | None = None,
+        rng: random.Random | None = None,
+    ):
+        """``episodes``: the manifest records (by index) to draw from; ``None``: all of them.
+        ``rng``: the draws' generator; ``None``: the global ``random`` (the default, as always)."""
         super().__init__()
         self.root = root
         self.cfg = cfg or ShortRolloutCfg()
+        self.rng = rng
         man = os.path.join(root, "manifest.json")
         with open(man) as f:
             self.records = json.load(f)
+        keep = None if episodes is None else set(episodes)
         # Preload checkpoint paths and run header (for base dt & gamma_o)
         self.items: list[dict[str, Any]] = []
-        for rec in self.records:
+        self.item_episode: list[int] = []  # each item's manifest record
+        for i_rec, rec in enumerate(self.records):
+            if keep is not None and i_rec not in keep:
+                continue
             ep = safe_torch_load(rec["path"], map_location="cpu")
             logs = ep["logs"]
             ck_path = logs["checkpoints_jsonl"]
@@ -187,6 +201,7 @@ class ShortRollouts(Dataset):
                 "cks": cks,
             }
             self.items.append(epi)
+            self.item_episode.append(i_rec)
 
     def __len__(self) -> int:
         return max(1, sum(len(epi["cks"]) for epi in self.items) // 6)
@@ -198,16 +213,22 @@ class ShortRollouts(Dataset):
         return (c1t - c0t) / float(dt)
 
     def __getitem__(self, _idx: int) -> dict[str, Any]:
+        return self.draw(self.rng if self.rng is not None else random)[0]
+
+    def draw(self, r) -> tuple[dict[str, Any], int]:
+        """One sample from ``r`` (a ``random.Random`` or the ``random`` module), and the manifest
+        record (the episode) it came from."""
         # pick a random episode, then a valid t0
-        epi = random.choice(self.items)
+        i_epi = r.randrange(len(self.items))
+        epi = self.items[i_epi]
         cks = epi["cks"]
         dt = epi["dt"]
         T = len(cks)
         # random horizon and enlarged step
-        H = random.randint(self.cfg.min_h, self.cfg.max_h)
-        dt_mult = random.uniform(*self.cfg.dt_mult_range)
+        H = r.randint(self.cfg.min_h, self.cfg.max_h)
+        dt_mult = r.uniform(*self.cfg.dt_mult_range)
         K = max(1, int(round(H * dt_mult)))
-        t0 = random.randint(0, max(1, T - K - 2))
+        t0 = r.randint(0, max(1, T - K - 2))
         t1 = min(T - 2, t0 + K)
 
         c0 = cks[t0]
@@ -232,7 +253,7 @@ class ShortRollouts(Dataset):
             C = C.reshape(0, 2)
         d_hat = float(c0["barrier"]["barrier_d_hat"]) if "barrier" in c0 else 1.0
 
-        return {
+        item = {
             "o0": o0,
             "v0": v0,
             "goal": goal,
@@ -247,6 +268,29 @@ class ShortRollouts(Dataset):
             "v_tgt": v_tgt,
             "gamma_o": torch.tensor(epi["gamma_o"], dtype=torch.float32),
         }
+        return item, self.item_episode[i_epi]
+
+
+def split_episodes(n_records: int, frac: float, seed: int) -> tuple[list[int], list[int]]:
+    """``(train, held_out)`` manifest record indices: ``frac`` of the episodes held out (at least
+    one, and at least one left to train on), drawn with ``seed``. Held out by episode, so no
+    held-out sample shares an episode with training."""
+    if not 0.0 < frac < 1.0 or n_records < 2:
+        raise ValueError("a held-out split needs 0 < frac < 1 and at least two episodes")
+    k = min(n_records - 1, max(1, round(frac * n_records)))
+    held = sorted(random.Random(seed).sample(range(n_records), k))
+    return [i for i in range(n_records) if i not in set(held)], held
+
+
+def heldout_samples(
+    root: str, episodes: Iterable[int], n: int, seed: int, cfg: ShortRolloutCfg | None = None
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """A FIXED held-out set: ``n`` samples drawn once with ``seed`` from ``episodes``, and the
+    episode of each (for the heads' spread across scenes). Scored every epoch as it is."""
+    ds = ShortRollouts(root, cfg, episodes=episodes)
+    r = random.Random(seed)
+    draws = [ds.draw(r) for _ in range(n)]
+    return [d[0] for d in draws], [d[1] for d in draws]
 
 
 # -------- collate: pad variable-N obstacles safely (N may be 0) --------
@@ -477,6 +521,23 @@ class Trainer:
         self.version = 2
 
     def step_batch(self, batch: dict[str, torch.Tensor]) -> dict[str, float]:
+        """One optimizer step on ``batch``; its loss terms. ``last_grad_norm`` holds the gradient
+        norm ``clip_grad_norm_`` returned for it (before the clip)."""
+        L, logs, _ = self._losses(batch, train=True)
+        self.opt.zero_grad()
+        L.backward()
+        self.last_grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+        self.opt.step()
+        return {k: float(v.item()) for k, v in logs.items()}
+
+    @torch.no_grad()
+    def eval_batch(self, batch: dict[str, torch.Tensor]):
+        """The loss terms on ``batch`` without a step (eval mode: no dropout), and the predicted
+        ``(alphas, beta, gamma, obs_mask)``."""
+        _, logs, coeffs = self._losses(batch, train=False)
+        return {k: float(v.item()) for k, v in logs.items()}, coeffs
+
+    def _losses(self, batch: dict[str, torch.Tensor], *, train: bool):
         dev = self.cfg.device
         o0 = batch["o0"].to(dev)
         v0 = batch["v0"].to(dev)
@@ -493,8 +554,9 @@ class Trainer:
         v_tgt = batch["v_tgt"].to(dev)
         gamma_o = batch["gamma_o"].to(dev)
 
-        self.model.train()
+        self.model.train(train)
         alphas, beta, gamma = self.model(obs_feats, mask, goal_feats)
+        raw = (alphas, beta, gamma, mask)
         if self.cfg.gamma_rel:
             gamma = gamma * gamma_o  # interpret as multiplier on ep gamma_o
 
@@ -574,20 +636,16 @@ class Trainer:
             pen = F.relu(-clr).mean()
             L = self.cfg.w_traj * L_traj + self.cfg.w_vel * L_vel + self.cfg.w_clear * pen
 
-        self.opt.zero_grad()
-        L.backward()
-        nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
-        self.opt.step()
-
-        return {
-            "loss": float(L.item()),
-            "traj": float(L_traj.item()),
-            "vel": float(L_vel.item()),
-            "friction": float(L_friction.item()),
-            "alpha": float(L_alpha.item() if alphas.numel() else 0.0),
-            "multi_val": float(L_multi.item()),
-            "pen": float(pen.item()),
+        logs = {
+            "loss": L,
+            "traj": L_traj,
+            "vel": L_vel,
+            "friction": L_friction,
+            "alpha": L_alpha if alphas.numel() else torch.zeros(()),
+            "multi_val": L_multi,
+            "pen": pen,
         }
+        return L, logs, raw
 
 
 # -----------------------------
@@ -595,7 +653,7 @@ class Trainer:
 # -----------------------------
 
 
-def main():
+def main(argv=None):
     # python -m train_coef_energy --root ./nav_stagewise_hyperring --epochs 50 --bs 128 --lr 1e-4 --workers 4 --outdir checkpoints/coef_energy_radius --save-every 10
     # default 0.1 friction + 0.5 multi-check (for alpha)
     import argparse
@@ -614,11 +672,38 @@ def main():
     ap.add_argument("--w_friction", type=float, default=0.1)
     ap.add_argument("--w_multi", type=float, default=0.5)
     ap.add_argument("--w_prox", type=float, default=0.1)
+    # Learning instruments (grl_snam.learning_history), all off by default.
+    ap.add_argument(
+        "--val-frac",
+        type=float,
+        default=0.0,
+        help="hold out this fraction of the episodes (by episode, so no held-out sample shares "
+        "one with training); score them every epoch and keep best_heldout.pt on the held-out "
+        "traj loss. best.pt stays the training-loss pick. 0 = off",
+    )
+    ap.add_argument("--val-seed", type=int, default=0, help="--val-frac: the split's seed")
+    ap.add_argument("--val-samples", type=int, default=256, help="--val-frac: held-out samples")
+    ap.add_argument(
+        "--history",
+        type=str,
+        default="",
+        help="write a JSON-lines record per epoch: the train (and held-out) loss terms, the grad "
+        "norm before the clip, and per head (alpha, beta, gamma) its held-out mean and spread "
+        "across episodes and its ||dtheta||/||theta||",
+    )
 
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     # data
-    ds = ShortRollouts(args.root)
+    held = None
+    if args.val_frac > 0.0:
+        with open(os.path.join(args.root, "manifest.json")) as f:
+            n_records = len(json.load(f))
+        train_eps, held_eps = split_episodes(n_records, args.val_frac, args.val_seed)
+        ds = ShortRollouts(args.root, episodes=train_eps)
+        held = heldout_samples(args.root, held_eps, args.val_samples, args.val_seed)
+    else:
+        ds = ShortRollouts(args.root)
     dl = DataLoader(
         ds,
         batch_size=args.bs,
@@ -644,6 +729,7 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
     best = float("inf")
+    monitor = _EpochMonitor(model, args, held) if (args.history or held is not None) else None
 
     for ep in range(tcfg.epochs):
         logs_acc = {
@@ -661,6 +747,8 @@ def main():
             for k, v in logs.items():
                 logs_acc[k] += v
             n += 1
+            if monitor is not None:
+                monitor.batch(trainer.last_grad_norm)
         for k in logs_acc:
             logs_acc[k] /= max(1, n)
         print({f"ep{ep}/{k}": round(v, 6) for k, v in logs_acc.items()})
@@ -679,6 +767,107 @@ def main():
         if logs_acc.get("traj", 1e9) < best:
             best = logs_acc["traj"]
             torch.save(ckpt, os.path.join(args.outdir, "best.pt"))
+        if monitor is not None:
+            monitor.epoch(ep, trainer, logs_acc, ckpt)
+    if monitor is not None:
+        monitor.close()
+
+
+class _EpochMonitor:
+    """``main``'s opt-in instruments: the per-epoch history and, with a held-out set, the scoring
+    of it and ``best_heldout.pt`` (lowest held-out traj loss)."""
+
+    def __init__(self, model, args, held):
+        from .learning_history import module_param_groups, snapshot
+
+        self.args, self.held = args, held
+        self.groups = module_param_groups(
+            model,
+            {"alpha": model.alpha_head, "beta": model.beta_head, "gamma": model.gamma_head},
+        )
+        self._snapshot = snapshot
+        self.init = snapshot(self.groups)
+        self.prev = dict(self.init)
+        self.best = float("inf")
+        self.fh = (
+            open(args.history, "w", encoding="utf-8") if args.history else None
+        )
+        self.gn: list[float] = []
+        self._write(
+            {
+                "kind": "header",
+                "schema": "grl_snam.coef_energy_history/v1",
+                "epochs": args.epochs,
+                "lr": args.lr,
+                "val_frac": args.val_frac,
+                "val_seed": args.val_seed,
+                "heldout_samples": 0 if held is None else len(held[0]),
+                "heldout_episodes": None if held is None else sorted(set(held[1])),
+                "heads": list(self.groups),
+            }
+        )
+
+    def batch(self, grad_norm):
+        self.gn.append(float(grad_norm))
+
+    def epoch(self, ep, trainer, train_logs, ckpt):
+        from .learning_history import relative_change, scene_summary
+
+        rec = {"kind": "epoch", "epoch": ep, "train": dict(train_logs)}
+        n = max(len(self.gn), 1)
+        rec["grad_norm"] = {
+            "mean": sum(self.gn) / n,
+            "max": max(self.gn, default=0.0),
+            "clipped_frac": sum(g > 5.0 for g in self.gn) / n,
+        }
+        self.gn = []
+        heads: dict[str, dict] = {}
+        if self.held is not None:
+            items, eps = self.held
+            # The same held-out draws every epoch (common random numbers for multi_start), and the
+            # training RNG left as it was.
+            acc: dict[str, float] = {}
+            vals: dict[str, list[torch.Tensor]] = {"alpha": [], "beta": [], "gamma": []}
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(self.args.val_seed)
+                bs = self.args.bs
+                for i in range(0, len(items), bs):
+                    logs, (alphas, beta, gamma, mask) = trainer.eval_batch(
+                        collate_short(items[i : i + bs])
+                    )
+                    for k, v in logs.items():
+                        acc[k] = acc.get(k, 0.0) + v * len(items[i : i + bs])
+                    m = mask.float()
+                    a = (alphas * m).sum(1) / m.sum(1).clamp_min(1.0)
+                    for k, v in (("alpha", a), ("beta", beta), ("gamma", gamma)):
+                        vals[k].append(v.detach().cpu())
+            heldout = {k: v / len(items) for k, v in acc.items()}
+            rec["heldout"] = heldout
+            for k, v in vals.items():
+                heads[k] = scene_summary(torch.cat(vals[k]), eps)
+            rec["best_heldout"] = heldout["traj"] < self.best
+            if rec["best_heldout"]:
+                self.best = heldout["traj"]
+                torch.save(
+                    dict(ckpt, heldout_logs=heldout, heldout_episodes=sorted(set(eps))),
+                    os.path.join(self.args.outdir, "best_heldout.pt"),
+                )
+        now = self._snapshot(self.groups)
+        for g in self.groups:
+            r = heads.setdefault(g, {})
+            r["dtheta_rel"] = relative_change(now[g], self.prev[g])
+            r["dtheta_rel_init"] = relative_change(now[g], self.init[g])
+        self.prev = now
+        rec["heads"] = heads
+        self._write(rec)
+
+    def close(self):
+        if self.fh is not None:
+            self.fh.close()
+
+    def _write(self, rec):
+        if self.fh is not None:
+            self.fh.write(json.dumps(rec) + "\n")
 
 
 if __name__ == "__main__":

@@ -224,6 +224,21 @@ GRL-SNAM/
 5. **Multi-start penalty**: `multi_start_penalty` samples 20 perturbed starts near the nearest obstacle (each a random fraction `U(0.8, 0.98)` of the clearance toward it), runs short rollouts, penalizes any penetrations
 6. **Loss**: weighted sum of position MSE, velocity MSE, friction matching, multi-start penalty, and the main rollout's penetration penalty (`w_prox`)
 7. **Backprop**: gradient through the differentiable integrator, clip at 5.0, Adam update
+8. **Checkpoints**: `best.pt` is the epoch with the lowest TRAINING `traj` loss. Two opt-in
+   instruments test whether training learns rather than fits its own samples:
+   - `--val-frac F` holds out that fraction of the episodes, by episode, with `--val-seed`. It
+     scores a fixed held-out set (`--val-samples`) every epoch and keeps `best_heldout.pt`, the
+     epoch with the lowest held-out `traj` loss.
+   - `--history PATH` writes one JSON-lines record per epoch: the train and held-out loss terms,
+     the gradient norm before the clip, and per head (`alpha`, `beta`, `gamma`) its held-out mean,
+     its spread across episodes, and its `||dtheta||/||theta||`.
+
+   With neither, training is unchanged.
+
+   `grl-snam coef-train` (`grl_snam/tools/coef_train.py`, the self-supervised CoefMLP) has the
+   same idea: `--history`, `--checkpoint-every N` (writes `<out>.stepNNNNNN.cvcnav`) and
+   `--keep-best` (writes `<out>.best.cvcnav`, the highest reach on held-out starts,
+   `--heldout-seed`, the untrained policy included). See `grl_snam/learning_history.py`.
 
 ### 5.3 Evaluation (`eval_coef_energy.py`)
 
