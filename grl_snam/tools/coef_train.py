@@ -32,6 +32,7 @@ import grl_snam.sdf_nav as sdf_nav
 
 from .. import planner
 from ..fog_stories import STORIES, shrunk
+from ..learning_history import CoefTrainMonitor, CoefTrainMonitorCfg, coef_heads
 from .coef_export import write_coef_mlp
 
 
@@ -77,9 +78,13 @@ def train(
     window=7,
     model=None,
     friction=None,
+    monitor=None,
 ):
     """Truncated BPTT: the rollout is `horizon` steps but the autograd graph is
     detached every `window` steps (bounded memory; a long full-BPTT graph OOMs).
+
+    ``monitor``: an optional :class:`grl_snam.learning_history.CoefTrainMonitor` (the history,
+    checkpoints and held-out pick). ``None`` (the default) trains exactly as without it.
 
     ``model`` fine-tunes an existing net instead of a fresh init -- the seam a
     grip-widened net needs, since training this policy from scratch is known to
@@ -106,6 +111,11 @@ def train(
     model.train()
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     rng = np.random.default_rng(seed)
+    if monitor is not None:
+        po, pg = _probe_batch(rand_on, monitor.cfg)
+        monitor.begin(
+            model, lambda m: coef_heads(m, sdf_nav.coef_feats(field, po, pg, friction=friction))
+        )
     for step in range(steps):
         o = torch.from_numpy(rand_on(n, rng))
         goal = torch.from_numpy(rand_on(n, rng))
@@ -125,14 +135,69 @@ def train(
                 loss = goal_loss + w_coll * coll / window
                 opt.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 opt.step()
                 last_goal, last_coll = goal_loss.item(), float(coll.detach())
+                if monitor is not None:
+                    terms = {"loss": loss.item(), "goal": last_goal}
+                    terms["coll"] = float(w_coll * coll.detach() / window)
+                    monitor.window(terms, grad_norm, opt.param_groups[0]["lr"], 5.0)
                 o, v, coll = o.detach(), v.detach(), torch.zeros(())
         if step % 50 == 0 or step == steps - 1:
             print(f"  step {step:4d}: goal_dist {last_goal:6.3f}  coll {last_coll:6.3f}")
+        if monitor is not None:
+            monitor.end_step(step, model)
+    if monitor is not None:
+        monitor.finish(steps, model)
     model.eval()
     return model
+
+
+def _monitor(args, *, risk: bool) -> CoefTrainMonitor:
+    """The CLI's learning instruments: the history, checkpoints and held-out pick, scored on
+    held-out starts (--heldout-seed): reach on the bicycle drive (reach_rate), or for a risk net
+    the reach of eval_risk_exposure's rollout on the material grid."""
+    stem = args.out[: -len(".cvcnav")] if args.out.endswith(".cvcnav") else args.out
+    if risk:
+
+        def fitness(model):
+            return eval_risk_exposure(
+                model,
+                grid=args.grid,
+                lam_soft=args.lam_soft,
+                seed=args.heldout_seed,
+                n=args.heldout_agents,
+            )[1]
+
+    else:
+
+        def fitness(model):
+            return reach_rate(
+                model,
+                grid=args.grid,
+                n=args.heldout_agents,
+                ticks=args.heldout_ticks,
+                seed=args.heldout_seed,
+            )
+
+    cfg = CoefTrainMonitorCfg(
+        history=args.history or None,
+        checkpoint_every=args.checkpoint_every,
+        checkpoint_prefix=stem if args.checkpoint_every > 0 else None,
+        best_path=f"{stem}.best.cvcnav" if args.keep_best else None,
+    )
+    meta = {"rollout": args.rollout, "steps": args.steps, "lr": args.lr, "seed": args.seed}
+    meta["heldout_seed"] = args.heldout_seed
+    return CoefTrainMonitor(cfg, save=write_coef_mlp, fitness=fitness, meta=meta)
+
+
+def _probe_batch(rand_on, cfg):
+    """The monitor's fixed probe batch (starts, goals), from its own seed: training's draws are
+    untouched."""
+    prng = np.random.default_rng(cfg.probe_seed)
+    po = torch.from_numpy(rand_on(cfg.probe_agents, prng))
+    pg = torch.from_numpy(rand_on(cfg.probe_agents, prng))
+    return po, pg
 
 
 def train_bicycle(
@@ -155,6 +220,7 @@ def train_bicycle(
     lam_hard=0.0,
     risk_lookahead=0.3,
     curriculum=None,
+    monitor=None,
 ):
     """Fine-tune the coefficients through the VEHICLE, with grip in the dynamics.
 
@@ -296,6 +362,14 @@ def train_bicycle(
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     rng = np.random.default_rng(seed)
     last = (0.0, 0.0, 0.0)
+    if monitor is not None:
+        po, pg = _probe_batch(rand_on, monitor.cfg)
+        pfeat = dict(
+            friction=friction if wants_mu else None,
+            material=mfield if wants_risk else None,
+            risk_lookahead=risk_lookahead,
+        )
+        monitor.begin(model, lambda m: coef_heads(m, sdf_nav.coef_feats(field, po, pg, **pfeat)))
     for step in range(steps):
         # Curriculum (opt-in): draw STARTS from the hard/risky-region sampler instead of
         # uniform; goals stay uniform. start_bins lets us attribute this batch's difficulty
@@ -367,7 +441,7 @@ def train_bicycle(
                 loss = goal_loss + w_coll * coll / window + w_risk * risk / window
                 opt.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 opt.step()
                 # The three summands AS APPLIED, so a caller can check the objective is
                 # balanced (risk is 0.0 when w_risk==0 or no material) without scraping stdout.
@@ -376,6 +450,10 @@ def train_bicycle(
                     float(w_coll * coll.detach() / window),
                     float(w_risk * risk.detach() / window),
                 )
+                if monitor is not None:
+                    terms = {"loss": loss.item(), "goal": last[0], "coll": last[1]}
+                    terms["risk"] = last[2]
+                    monitor.window(terms, grad_norm, opt.param_groups[0]["lr"], 5.0)
                 o, th, sp = o.detach(), th.detach(), sp.detach()
                 coll, risk = torch.zeros(()), torch.zeros(())
         if curriculum is not None:
@@ -389,6 +467,10 @@ def train_bicycle(
             print(
                 f"  step {step:4d}: goal_dist {last[0]:6.3f}  coll {last[1]:6.3f}  risk {last[2]:6.3f}"
             )
+        if monitor is not None:
+            monitor.end_step(step, model)
+    if monitor is not None:
+        monitor.finish(steps, model)
     model.eval()
     model.last_loss_terms = last
     return model
@@ -682,9 +764,44 @@ def main(argv=None):
     ap.add_argument(
         "--score-json", type=str, default="", help="--score: also write the scorecard JSON here"
     )
+    # The learning instruments (grl_snam.learning_history), all off by default.
+    ap.add_argument(
+        "--history",
+        type=str,
+        default="",
+        help="write a JSON-lines learning history: per step the loss terms and the pre-clip grad "
+        "norm; per checkpoint each head's mean and spread over a probe batch, its "
+        "||dtheta||/||theta||, and the held-out reach",
+    )
+    ap.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=0,
+        help="every N steps: a checkpoint (scored on held-out starts) saved as "
+        "<out>.stepNNNNNN.cvcnav; 0 = none",
+    )
+    ap.add_argument(
+        "--keep-best",
+        action="store_true",
+        help="also save the checkpoint with the highest held-out reach as <out>.best.cvcnav (the "
+        "untrained policy included); --out stays the final net. Needs --checkpoint-every",
+    )
+    ap.add_argument("--heldout-seed", type=int, default=123, help="held-out starts' seed")
+    ap.add_argument("--heldout-agents", type=int, default=200, help="held-out starts per score")
+    ap.add_argument("--heldout-ticks", type=int, default=200, help="drive ticks per held-out score")
     args = ap.parse_args(argv)
+    instruments = bool(args.history) or args.checkpoint_every > 0 or args.keep_best
+    if args.keep_best and args.checkpoint_every <= 0:
+        ap.error("--keep-best picks among checkpoints: add --checkpoint-every N")
+    if args.checkpoint_every < 0:
+        ap.error("--checkpoint-every must be >= 0")
 
     if args.backend == "native":
+        if instruments:
+            ap.error(
+                "--history / --checkpoint-every / --keep-best are the torch backend's; the native "
+                "trainer's are libcvc's train_config::history_path and checkpoint_prefix"
+            )
         lr = args.lr if args.lr != 1e-3 else None  # 1e-3 is the torch default; let native pick
         print(f"training natively ({args.rollout}, {args.steps} steps, cuda={args.cuda})...")
         train_native(
@@ -762,6 +879,7 @@ def main(argv=None):
             curriculum = build_city_curriculum(
                 args.grid, bins=args.curriculum_bins, eps=args.curriculum_eps
             )
+        monitor = _monitor(args, risk=risk_model is not None) if instruments else None
         model = train_bicycle(
             args.steps,
             args.horizon,
@@ -777,10 +895,23 @@ def main(argv=None):
             lam_hard=args.lam_hard,
             risk_lookahead=args.risk_lookahead,
             curriculum=curriculum,
+            monitor=monitor,
         )
     else:
-        model = train(args.steps, args.horizon, args.n, args.lr, args.seed)
+        monitor = _monitor(args, risk=False) if instruments else None
+        model = train(args.steps, args.horizon, args.n, args.lr, args.seed, monitor=monitor)
     write_coef_mlp(model, args.out)
+    if monitor is not None:
+        ck = monitor.checkpoints
+        print(
+            f"held-out reach (seed {args.heldout_seed}): {ck[0]['fitness']:.3f} at step 0 -> "
+            f"{ck[-1]['fitness']:.3f} at step {ck[-1]['step']}; best {monitor.best:.3f} at step "
+            f"{monitor.best_step}" + (" (the untrained policy)" if monitor.best_step == 0 else "")
+        )
+        if monitor.cfg.best_path:
+            print(f"wrote {monitor.cfg.best_path} (best held-out checkpoint)")
+        if args.history:
+            print(f"wrote {args.history} (learning history)")
     if getattr(model, "use_risk", False) or getattr(model, "use_lam", False):
         if getattr(model, "use_lam_hard", False):
             extra = (
