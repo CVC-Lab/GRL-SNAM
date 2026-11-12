@@ -174,6 +174,17 @@ grl-snam coph hazard --out gate/hazard --workers 12
 
 The box was also running other builds, so the times are not benchmarks.
 
+**Packet byte counts depend on the platform.** A packet's size is its compact JSON (decision
+D9). The first export bootstraps from a single time block, so its 8 ensemble members are
+identical and its covariance is pure round-off. Whether `np.cov` returns exact zeros (`0.0`, 3
+characters) or ~1e-35 residues (about 22 characters) depends on numpy's summation order. On this
+box the same 8 rows give 112 or 132 exact zeros, 380 bytes apart, depending only on that order.
+
+Linux CI (cp311–cp313) measured the 50-step crossing smoke's `one_way_01` at 80,817–80,834
+bytes, against 79,488 here, with the paths equal to 1e-6. So `tests/test_coph.py` pins the
+packets' structure, not their bytes. For the goldens (roadmap G9, where `bytes()` is BIT), either
+inject the covariance or avoid single-block exports.
+
 ## Re-syncing
 
 1. Check out CoPH-Sense at the new commit. Diff the verbatim modules against it and copy them.

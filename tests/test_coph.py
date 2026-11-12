@@ -18,14 +18,38 @@ import pytest
 from click.testing import CliRunner
 
 from grl_snam.cli import main
+from grl_snam.coph.evaluation import load
 
-# Upstream crossing_demo, seed 76000, --steps 50: per arm, the two agents' path lengths (m) and
-# the team's payload + status + ack bytes. Run on Windows, torch 2.8.0 CPU.
+# Upstream crossing_demo, seed 76000, --steps 50 (Windows, torch 2.8.0 CPU), per arm:
+# - the two agents' path lengths (m);
+# - every packet in send order as (sender, support points), each with 4 anchors and one source
+#   per support point;
+# - each agent's geometry events.
+#
+# Byte counts are not pinned. A packet's size is its compact JSON, and the first export
+# bootstraps from a single time block, so its 8 ensemble members are identical and its
+# covariance is round-off. Whether np.cov returns exact zeros ("0.0") or ~1e-35 residues
+# (22 characters each) depends on numpy's summation order. The same 8 rows give 112 or 132 exact
+# zeros, 380 bytes apart, and Linux CI measured one_way_01 at 80817-80834 bytes against Windows'
+# 79488, with the paths equal to 1e-6.
 CROSSING_50 = {
-    "disabled": ([1.859716928807241, 1.6610842771994443], 0),
-    "one_way_01": ([1.859716928807241, 1.6474403222232064], 79488),
-    "one_way_10": ([1.6794203471596572, 1.6610842771994443], 80999),
-    "reciprocal_fixed": ([1.6794203471439542, 1.6474403222232064], 159977),
+    "disabled": ([1.859716928807241, 1.6610842771994443], [], ([], ["locally_sensed"])),
+    "one_way_01": (
+        [1.859716928807241, 1.6474403222232064],
+        [(0, 10), (0, 90), (0, 163), (0, 181), (0, 96), (0, 170), (0, 196)],
+        ([], ["locally_sensed"]),
+    ),
+    "one_way_10": (
+        [1.6794203471596572, 1.6610842771994443],
+        [(1, 10), (1, 90), (1, 170), (1, 196), (1, 110), (1, 166), (1, 194)],
+        (["received_geometry"], ["locally_sensed"]),
+    ),
+    "reciprocal_fixed": (
+        [1.6794203471439542, 1.6474403222232064],
+        [(0, 10), (1, 10), (0, 90), (1, 90), (0, 163), (1, 170), (0, 181)]
+        + [(1, 196), (0, 91), (1, 110), (0, 165), (1, 166), (0, 196), (1, 194)],
+        (["received_geometry"], ["locally_sensed"]),
+    ),
 }
 
 
@@ -50,12 +74,19 @@ def test_crossing_smoke_matches_upstream(tmp_path):
     assert r["upstream"]["commit"].startswith("c1f1ff3")
     rows = {row["arm"]: row for row in r["rows"]}
     assert set(rows) == set(CROSSING_50)
-    for arm, (paths, team_bytes) in CROSSING_50.items():
+    for arm, (paths, packets, geometry) in CROSSING_50.items():
         np.testing.assert_allclose([a["path"] for a in rows[arm]["agents"]], paths, rtol=1e-6)
         assert [a["finish_time"] for a in rows[arm]["agents"]] == pytest.approx([6.0, 6.0])
-        # Packet sizes are compact JSON, so last-bit float differences across platforms can move
-        # a few bytes; a lost or extra packet moves several percent.
-        assert rows[arm]["bytes"] == pytest.approx(team_bytes, rel=0.01)
+        e = load(out / "episodes" / f"76000_{arm}.json.gz")
+        sent = [(int(p["sender"]), len(p["support_points"])) for p in e["packets"]]
+        assert sent == packets
+        assert all(len(p["anchors"]) == 4 for p in e["packets"])
+        assert all(len(p["sources"]) == len(p["support_points"]) for p in e["packets"])
+        delivered = [x for x in e["events"] if x["kind"] == "delivered"]
+        assert len(delivered) == len(packets)
+        assert all(x["reason"] == "eligible" and x["accepted"] for x in delivered)
+        assert tuple([g["kind"] for g in es] for es in e["geometry_events"]) == geometry
+        assert (rows[arm]["bytes"] > 0) == bool(packets)
     seed = r["per_seed"]["76000"]
     assert seed["savings"]["one_way_01"] == pytest.approx(0.0136440, abs=1e-5)
     assert seed["savings"]["one_way_10"] == pytest.approx(0.1802966, abs=1e-5)
