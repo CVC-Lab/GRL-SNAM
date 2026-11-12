@@ -13,8 +13,8 @@ graded hazards. The copy is kept in sync with upstream by re-vendoring and by th
 | Dependencies | torch, numpy and matplotlib. Upstream's scipy and Pillow are used only by modules that stay out. |
 
 The copied files keep upstream's formatting and names, so that re-syncing is a mechanical diff.
-black and ruff skip them (`pyproject.toml` lists them). `__init__.py` and `results.py` are
-GRL-SNAM's own code and are linted.
+black and ruff skip them (`pyproject.toml` lists them). `__init__.py`, `results.py`, `feed.py`
+and `timeline.py` are GRL-SNAM's own code and are linted.
 
 ## What was copied
 
@@ -42,6 +42,14 @@ definitions need):
 `results.json`, `rows.json` and `REPORT.md` from a run's episodes. Its `doors_of`, `door_name`,
 `path_length`, `door_events` and `metrics` are copied from upstream's `crossing_visuals.py`, so the
 path, detour and saving arithmetic is upstream's.
+
+**New for `grl-snam ariadne coph`** (GRL-SNAM code, roadmap §3.2, T3): `feed.py` runs an arm as
+the demos' own `run` does, adding only the runner's read-only `boundary_callback` and
+`delivery_callback`, or reads a run's episode file. Either way it turns the episode into plain
+messages. `timeline.py` turns those messages into what the viewer draws: each agent's state at a
+time, the floor image and the `.npz` log. Neither changes a vendored module.
+`tests/test_coph_feed.py` checks that a live run's episode equals `crossing_demo.run`'s (apart
+from wall-clock fields) and that its messages equal its replay's.
 
 This is 25 of upstream's 120 modules. It is more than the roadmap's estimate of about 15 because
 the demos call into `staggered_demo`, `cooperative_evaluation`, `maze_family`, `terrain_warning`,
