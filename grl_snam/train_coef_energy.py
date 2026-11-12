@@ -789,9 +789,7 @@ class _EpochMonitor:
         self.init = snapshot(self.groups)
         self.prev = dict(self.init)
         self.best = float("inf")
-        self.fh = (
-            open(args.history, "w", encoding="utf-8") if args.history else None
-        )
+        self.fh = open(args.history, "w", encoding="utf-8") if args.history else None
         self.gn: list[float] = []
         self._write(
             {
