@@ -212,6 +212,55 @@ The runs have no time cap, since each story ends on its own step budget. With
 `--headless` or `--offscreen`, a run that does not finish ends the port with exit code 1 and
 the reason.
 
+### `coph`: CoPH-Stagewise's worlds in 3-D (demo 2a)
+
+```bash
+python -m grl_snam.ariadne coph crossing                       # live, seed 76000
+python -m grl_snam.ariadne coph hazard --scene severe          # live, seed 79000
+grl-snam coph crossing --out runs/crossing                     # every arm, headless (T1)
+python -m grl_snam.ariadne coph crossing --from runs/crossing  # replay two of them
+python -m grl_snam.ariadne coph crossing --headless --log run.npz --min-goals 4
+```
+
+The vendored crossing and hazard demos (`grl_snam.coph`, `grl-snam coph`), with communication off
+on the left and CoPH on the right, on the same seed. Crossing shows `disabled` beside
+`reciprocal_fixed`; hazard shows `none` beside `field` (`--arms A,B` picks others). The headline
+gives the reference's established result with its seed counts, this run's own number once both
+arms finish, and what the reference has not established. Replay, receiver field fitting and
+adaptive-rate sharing run all the same.
+- **Live, or a replay.**
+  - Live, each arm runs in a worker process. The runner is called exactly as `grl-snam coph`
+    calls it, so the outcomes are the same (`tests/test_coph_feed.py`). The play head follows the
+    run while Live is on.
+  - A full crossing arm takes about 20 minutes of computing for about 130 s of episode, and a
+    hazard arm about 6 minutes. A live run therefore plays slower than real time.
+  - `--out DIR` keeps the episodes in `grl-snam coph`'s layout, and `--from DIR` replays them.
+- **The floor:**
+  - the surveyed corridors;
+  - the risk field as a heat map: the truth, or one agent's own `r` over its kept stages (the
+    Heat map combo, `--heat`);
+  - each agent's three stages, the newest brightest;
+  - its sensor disc.
+- **The rest of the scene:**
+  - Crossing's doors are full-width slabs, drawn once an agent of that arm has sensed or been
+    told about them.
+  - The agents are RoboRacer-sized (0.58 m), heading along their velocity. pycvc_gl packages no
+    RoboRacer model, so they are the Humvee model scaled down when it is installed, else boxes.
+  - Each packet is an arc from sender to receiver at delivery: green when the receiver's gate
+    accepted the update that took it in, red when not, and as wide as its bytes.
+- **The panels:** one row per agent per arm:
+  - status, version, `pi` (risk, barrier), damping;
+  - accepts and rejects, with the last update's reason;
+  - packet payload bytes sent and received;
+  - the energy ledger: work, heat, kinetic change, shaping jumps and the balance residual.
+- **Headless:** the run goes to its end. `--log run.npz` writes the `cars` template's log shape,
+  with one column per agent per arm. CoPH drives a point, so `steer` and the commands are NaN, and
+  the force is `coef_ux` and `coef_uy`. The ledger and the learner are `coef_*` columns too.
+  - The exit code is 0, 1 when a run failed, 2 for bad arguments, and 3 below `--min-goals`.
+  - `--at SECONDS` starts the play head mid-run, for a screenshot (`--offscreen --png`).
+
+It needs torch, as `grl-snam coph` does, and no city.
+
 ### `cars`: N Ackermann cars driven by your own controller
 
 ```bash
@@ -274,6 +323,7 @@ controller made for them ([docs/PLANTS.md](../../docs/PLANTS.md#what-to-expect))
 | `squad_record` / `squad_capture` | traces, mp4 | `squad` (Austin runs); `fleet` (live) |
 | `Squad(plant=...)`, `--plant` on the recorders | library, `capture --plant` | `fleet --plant humvee / dynamic:humvee / kinematic` (any plant libcvc's `plant_host` names), `squad --plant` |
 | `grl-snam material-demo` | two PNGs | `material` |
+| `grl-snam coph crossing / hazard` | episodes, `results.json`, `REPORT.md` | `coph crossing` / `coph hazard` (live, or `--from` a run) |
 | `grl-snam capture drive / multigoal` | mp4 | covered by `live austin-freedrive` / `austin-learned` (the same navigator, live) |
 | `grl-snam pipeline`, `build-sdf`, `train` | batch | not ported: no picture of their own |
 | `wall_vis` | a post-pass for the finale | not ported |

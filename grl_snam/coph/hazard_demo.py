@@ -10,6 +10,7 @@ import argparse,functools,json
 from dataclasses import asdict
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor,as_completed
+from multiprocessing import get_context  # grl_snam.coph: spawned workers, see main()
 import numpy as np
 import torch
 from .crossing_demo import NODES,EDGES,configuration
@@ -101,7 +102,10 @@ def main(argv=None):
             communication={arm:asdict(communication(arm)) for arm in ARMS},source_hashes=source_hashes(),animation_seed=spec['seed']))
         archive_sources(root);jobs+=[(s,arm,str(root)) for s in specs for arm in ARMS]
     done=[]
-    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+    # grl_snam.coph: the workers are spawned on every OS, as on Windows, where the numbers gate
+    # ran. Forking a process that already runs threads (torch, a viewer, pytest) can deadlock or
+    # crash the children.
+    with ProcessPoolExecutor(max_workers=args.workers,mp_context=get_context('spawn')) as pool:
         for f in as_completed([pool.submit(run,j) for j in jobs]):done.append(f.result());dump(args.out/'completion.json',done);print(done[-1],flush=True)
     return hazard(args.out)
 

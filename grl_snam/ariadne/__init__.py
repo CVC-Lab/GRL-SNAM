@@ -32,6 +32,9 @@ PORTS = {
     "cars": ("grl_snam.ariadne.cars",
              "N Ackermann cars driven by your own controller: libcvc's template (--copy DIR)",
              "new: libcvc's pycvc_gl.cars, GRL-SNAM's policy as a baseline"),
+    "coph": ("grl_snam.ariadne.coph",
+             "CoPH-Stagewise's crossing and hazard episodes, communication off beside CoPH",
+             "grl-snam coph crossing|hazard (live, or --from a run)"),
 }  # fmt: skip
 
 

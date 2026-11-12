@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -54,8 +55,14 @@ CROSSING_50 = {
 
 
 def _run(args):
-    result = CliRunner().invoke(main, args, catch_exceptions=False)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = CliRunner().invoke(main, args, catch_exceptions=False)
     assert result.exit_code == 0, result.output
+    # The demos spawn their workers (VENDORED.md, local change 9). Forking this threaded pytest
+    # process crashed or hung them on Linux CI, and Python warns when it forks one.
+    forks = [str(w.message) for w in caught if "use of fork()" in str(w.message)]
+    assert not forks, forks
     return result.output
 
 

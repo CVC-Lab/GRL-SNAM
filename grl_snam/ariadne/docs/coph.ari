@@ -1,0 +1,178 @@
+# coph.ari — CoPH-Stagewise's crossing and hazard episodes in 3-D (demo 2a). grl_snam/ariadne/coph.py
+# runs them live (the vendored runner, as `grl-snam coph` does) or replays a `grl-snam coph` run,
+# draws both arms side by side into this document's scene, and writes the readouts.
+#
+#   python -m grl_snam.ariadne coph crossing
+#   python -m grl_snam.ariadne coph hazard --scene severe
+#   python -m grl_snam.ariadne coph crossing --from runs/crossing
+#
+# - Transport: play / pause, speed, loop, a position slider (play.pos, 0..1) and, while a live run
+#   is still going, Live (play.live), which keeps the play head on the newest boundary.
+# - Headline: the reference's established result with its seed counts, this run's own number once
+#   both arms finish, and what the panels show that the reference has not established.
+# - Agents: one row per agent per arm: its learner, its packet bytes and its energy ledger.
+# - View: the floor's heat map (the true risk field, or an agent's own r) and the camera.
+
+meta:
+  name: GRL-SNAM CoPH
+  min_libcvc: 3.4.0
+
+init: |
+  (begin
+    (state-set "play.playing" "1")
+    (state-set "play.speed" "1.0")
+    (state-set "play.loop" "0")
+    (state-set "play.live" "1")
+    (state-set "play.pos" "0")
+    (state-set "view.heat" "truth")
+    (state-set "view.camera" "overview"))
+
+menubar:
+  - menu: CoPH
+    items:
+      - menu_item: Playing
+        bind: play.playing
+      - menu_item: Live
+        bind: play.live
+      - menu_item: Loop
+        bind: play.loop
+      - menu_item: Restart
+        on: restart
+      - separator
+      - menu_item: Quit
+        on: quit
+
+windows:
+  - window: CoPH
+    id: transport
+    pos: [8, 28]
+    size: [300, 250]
+    children:
+      - text: ""
+        bind: play.title
+      - slider_float: Position
+        bind: play.pos
+        lo: 0
+        hi: 1
+        fmt: "%.3f"
+      - text: "time"
+        bind: play.time
+      - checkbox: Playing
+        bind: play.playing
+      - checkbox: Live (follow the run)
+        bind: play.live
+      - slider_float: Speed
+        bind: play.speed
+        lo: 0.1
+        hi: 8.0
+        fmt: "%.1fx"
+      - checkbox: Loop
+        bind: play.loop
+      - combo: Heat map
+        bind: view.heat
+        options: [True risk field, Agent 0's own r, Agent 1's own r]
+        values: [truth, agent0, agent1]
+      - combo: Camera
+        bind: view.camera
+        options: [Overview, Follow agent 0 (right)]
+        values: [overview, follow]
+
+  - window: Headline
+    id: headline
+    pos: [316, 28]
+    size: [700, 132]
+    children:
+      - text: ""
+        bind: coph.headline
+      - text: ""
+        bind: coph.reference
+      - text: ""
+        bind: coph.result
+      - text: ""
+        bind: coph.status
+      - text: ""
+        bind: coph.unestablished
+
+  - window: Agents
+    id: agents
+    pos: [8, 556]
+    size: [1008, 190]
+    children:
+      - text: "learner: version, pi (risk, barrier), damping, accepts / rejects, the last update's reason; packet payload bytes; energy ledger (J, unit mass): work in, heat out, kinetic change, shaping jumps, balance residual"
+      - type: group
+        layout: { kind: grid, col_widths: [104, 68, 62, 34, 48, 48, 46, 58, 82, 58, 58, 52, 52, 46, 56, 72] }
+        children:
+          - text: "arm"
+          - text: "agent"
+          - text: "status"
+          - text: "ver"
+          - text: "pi r"
+          - text: "pi b"
+          - text: "d"
+          - text: "acc/rej"
+          - text: "last"
+          - text: "sent B"
+          - text: "recv B"
+          - text: "work"
+          - text: "heat"
+          - text: "dKE"
+          - text: "shaping"
+          - text: "residual"
+      - type: group
+        repeat: (state-get "agents")
+        layout: { kind: grid, col_widths: [104, 68, 62, 34, 48, 48, 46, 58, 82, 58, 58, 52, 52, 46, 56, 72] }
+        children:
+          - text: ""
+            bind: agents.{i}.arm
+          - text: ""
+            bind: agents.{i}.agent
+          - text: ""
+            bind: agents.{i}.status
+          - text: ""
+            bind: agents.{i}.version
+          - text: ""
+            bind: agents.{i}.pi_risk
+          - text: ""
+            bind: agents.{i}.pi_barrier
+          - text: ""
+            bind: agents.{i}.damping
+          - text: ""
+            bind: agents.{i}.decisions
+          - text: ""
+            bind: agents.{i}.reason
+          - text: ""
+            bind: agents.{i}.sent
+          - text: ""
+            bind: agents.{i}.received
+          - text: ""
+            bind: agents.{i}.work
+          - text: ""
+            bind: agents.{i}.heat
+          - text: ""
+            bind: agents.{i}.dke
+          - text: ""
+            bind: agents.{i}.shaping
+          - text: ""
+            bind: agents.{i}.residual
+
+scene:
+  chrome: false
+  background: { top: [0.38, 0.54, 0.78], bottom: [0.78, 0.83, 0.88] }
+  shadows:
+    enabled: true
+    resolution: 4096
+    update_interval: 2
+    softness: 3
+    focus: { follow: camera, min_radius: 12, max_radius: 60, per_distance: 3, lead: 0.5,
+             lift: 4, ground: world }
+  lights:
+    - light: sun
+      rig: three_point
+      stage: { center: [15, 4, 1], radius: 30 }
+      key: { intensity: 1.3, azimuth: -60, elevation: 38, cone: 62 }
+      fill: 0.3
+      back: 0
+      wash: 0
+      warmth: 0.5
+      environment: 0.5
+      ambient: 0.32
