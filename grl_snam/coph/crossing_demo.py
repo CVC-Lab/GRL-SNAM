@@ -8,6 +8,7 @@ import argparse,copy
 from dataclasses import asdict
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor,as_completed
+from multiprocessing import get_context  # grl_snam.coph: spawned workers, see main()
 import numpy as np
 import torch
 from .cooperative_evaluation import CooperativeWorld
@@ -101,7 +102,10 @@ def main(argv=None):
             predictions={arm:predicted(arm) for arm in ARMS},config=asdict(configuration(args.steps)),communication=asdict(CommunicationConfig(byte_budget=4000000,ttl=300.)),
             source_hashes=source_hashes()))
         archive_sources(args.out);rows=[]
-        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        # grl_snam.coph: the workers are spawned on every OS, as on Windows, where the numbers gate
+        # ran. Forking a process that already runs threads (torch, a viewer, pytest) can deadlock or
+        # crash the children.
+        with ProcessPoolExecutor(max_workers=args.workers,mp_context=get_context('spawn')) as pool:
             jobs=[pool.submit(run,(s,a,str(args.out),args.steps)) for s in args.seeds for a in ARMS]
             for job in as_completed(jobs):rows.append(job.result());dump(args.out/'completion.json',rows);print(rows[-1],flush=True)
     # grl_snam.coph: results.json and REPORT.md from grl_snam.coph.results, in place of

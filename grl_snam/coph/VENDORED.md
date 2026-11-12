@@ -118,6 +118,16 @@ Every change carries a `grl_snam.coph:` comment in the code.
 8. **`cli`: `source_hashes` and `archive_sources` cover this package.** They hash and archive
    `grl_snam/coph/*.py`. Upstream covers the whole CoPH-Stagewise tree. Manifest
    `source_hashes` keys are therefore bare file names.
+9. **`crossing_demo` and `hazard_demo`: the worker pools are spawned.** `main()` passes
+   `mp_context=get_context('spawn')` to `ProcessPoolExecutor`. Upstream uses the platform default,
+   which is fork on Linux before Python 3.14. Forking a process that already runs threads can
+   deadlock or crash the children. `tests/test_coph.py` runs the CLI in the pytest process, after
+   torch and the Ariadne tests have started threads. On Linux CI the forked workers segfaulted in
+   garbage collection (CVC-Lab/GRL-SNAM#167, cp312) or hung (main at 34d1f282, cp312).
+   - Spawn is Windows' default, so the numbers gate below already ran with it.
+   - The smoke pins hold under both start methods.
+   - Spawned workers import numpy and torch after the CLI sets the thread variables, as
+     upstream's recipe intends. Forked workers inherited the parent's torch instead.
 
 The entry point is `grl-snam coph crossing|hazard --out DIR [--seeds N] [--steps N] [--workers N]
 [--summary-only]` in `grl_snam/cli.py`. `--seeds N` runs the first N seeds counted from the
