@@ -28,7 +28,7 @@ def test_every_port_is_registered_with_its_document():
 
     for name, (module, _what, _original) in PORTS.items():
         assert hasattr(importlib.import_module(module), "main"), name
-    for doc in ("live.ari", "player.ari", "fleet.ari", "material.ari"):
+    for doc in ("live.ari", "player.ari", "fleet.ari", "material.ari", "coph.ari"):
         assert (_host.DOCS / doc).is_file(), doc
 
 
