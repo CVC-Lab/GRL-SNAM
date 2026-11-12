@@ -160,6 +160,32 @@ The other 31 upstream test files test modules that are not vendored. That includ
 demos pinned to numbers that upstream's code produces at the same horizon, and the two
 untanglings.
 
+## The goldens
+
+`grl_snam.tools.coph_golden` writes `coph_golden.json`, the golden for libcvc's C++ twin
+(`NAV-COPH-ROADMAP.md` §3.4, §5). libcvc commits it in `src/cvc/tests/data`, and GRL-SNAM keeps
+a copy in `tests/fixtures/coph_golden`. Every double is its raw bits, 16 hex digits.
+`tests/test_coph_golden.py` regenerates the file and compares bytes, so a change to the records,
+the configuration or the stage ledger fails there until the golden is regenerated with
+`python -m grl_snam.tools.coph_golden --out tests/fixtures/coph_golden` and re-committed in
+libcvc.
+
+It holds the C1 cases:
+- **G1, the configuration.** 74 `Config` and 5 `CommunicationConfig` cases: the profile, partial
+  overrides, every refusal in `__post_init__` (the test checks the set against the source),
+  cases where more than one check fails, and modes outside the demos' profile.
+- **G4, the stage ledger.** The demos' own learner (`CrossingLearner`) along a scripted path of
+  360 ticks, under three configurations. The file states the rules (`stage_rules`), and the test
+  rebuilds every tick from them in plain Python.
+
+The demos' learner is a `MazeLearner`, and its stage rule is not `Learner.advance`'s. It moves
+along whichever axis left the inner box, by `size * (1 - overlap)`. It pools the readings of
+every kept stage and never sets `Stage.anchors`, so `_field_fit`'s overlap continuity rows are
+always empty in the demos. G4 pins that rule. The roadmap's C1 text describes `Learner.advance`.
+
+Later C steps add their cases (G2, G3 and G11 with C2, and so on), as the belief-material
+controller's golden grew.
+
 ## The numbers gate
 
 At this commit the vendored demos must reproduce upstream's per-arm results: exactly on the same
@@ -211,3 +237,4 @@ inject the covariance or avoid single-block exports.
    `__init__.py`.
 4. Re-port any changed tests. Run `pytest tests/coph tests/test_coph.py` and the full gate, and
    compare the gate with upstream's own run of both demos at the new commit.
+5. Regenerate the golden. If its bytes changed, commit it in libcvc too.
