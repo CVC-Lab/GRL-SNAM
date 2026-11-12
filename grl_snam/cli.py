@@ -14,6 +14,7 @@ One entry point for every workflow, from the world model to a running demo:
   grl-snam capture drive|multigoal ...   drive the policy -> mp4 (offscreen, HUD)
   grl-snam pipeline    BUNDLE            world model -> SDF -> train -> video (all)
   grl-snam fog list|record|capture|play|all   fog-of-war demo: record -> replay
+  grl-snam coph crossing|hazard --out DIR   CoPH-Stagewise cooperative demos -> results.json
   grl-snam finale     BUNDLE            8 vehicles on real city geometry, in 3-D
   grl-snam demo        NAME              run a demo live (standalone window; --volrover3 to embed)
   grl-snam lab-demo    [PNG]             standalone lab visualization
@@ -572,6 +573,99 @@ def fog_all_cmd(out_dir, fps, speed, plant, ground_mu) -> None:
         click.echo(f"  {key} -> {mp4s[-1]}")
     reel = fog_capture.concat(mp4s, out / "fog_demo.mp4")
     click.echo(f"reel={reel}")
+
+
+# ── CoPH-Stagewise (vendored in grl_snam.coph) ───────────────────────────────
+@main.group()
+def coph() -> None:
+    """CoPH-Stagewise's cooperative demos, vendored from CoPH-Sense (grl_snam/coph/VENDORED.md).
+
+    A run writes its episodes, a manifest with the oracle predictions frozen before
+    any episode ran, results.json and REPORT.md into --out, which must not exist yet.
+    The full demos take 20-30 min on a many-core box; --seeds 1 --steps 120 is a smoke.
+    """
+
+
+def _coph_options(default_seeds: int, default_steps: int, default_workers: int):
+    def deco(f):
+        for opt in reversed(
+            [
+                click.option("--out", required=True, type=click.Path(file_okay=False)),
+                click.option(
+                    "--seeds",
+                    default=default_seeds,
+                    show_default=True,
+                    type=click.IntRange(min=1),
+                    help="number of noise seeds, counted from the demo's first seed",
+                ),
+                click.option(
+                    "--steps",
+                    default=default_steps,
+                    show_default=True,
+                    type=click.IntRange(min=1),
+                    help="horizon in 0.12 s control steps",
+                ),
+                click.option("--workers", default=default_workers, show_default=True),
+                click.option(
+                    "--summary-only",
+                    is_flag=True,
+                    help="only rewrite results.json and REPORT.md from an existing --out",
+                ),
+            ]
+        ):
+            f = opt(f)
+        return f
+
+    return deco
+
+
+def _coph_threads() -> None:
+    # Upstream's reproduction recipe: one BLAS/OpenMP thread per worker process (each worker
+    # also calls torch.set_num_threads(1)). Set before the workers import numpy and torch.
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ.setdefault(name, "1")
+
+
+@coph.command("crossing")
+@_coph_options(default_seeds=2, default_steps=2500, default_workers=8)
+def coph_crossing(out, seeds, steps, workers, summary_only) -> None:
+    """Crossing traverses: opposite starts, swapped goals, two hidden doors; 4 arms per seed."""
+    _coph_threads()
+    from .coph import crossing_demo
+
+    first = crossing_demo.SEEDS[0]
+    argv = ["--out", out, "--steps", str(steps), "--workers", str(workers)]
+    argv += ["--seeds", *(str(first + k) for k in range(seeds))]
+    r = crossing_demo.main(argv + (["--render-only"] if summary_only else []))
+    click.echo(f"goals {r['goals']}/{r['missions']}, collisions {r['collisions']}")
+    for seed, e in r["per_seed"].items():
+        click.echo(
+            f"  seed {seed}: one-way saving {e.get('one_way_saving', float('nan')):.1f} m, "
+            f"reciprocal saving {e.get('reciprocal_saving', float('nan')):.1f} m"
+        )
+    click.echo(f"results={Path(out) / 'results.json'}")
+
+
+@coph.command("hazard")
+@_coph_options(default_seeds=1, default_steps=1800, default_workers=12)
+def coph_hazard(out, seeds, steps, workers, summary_only) -> None:
+    """Graded hazards: a risk-tolerant scout and a risk-averse carrier; 4 scenes x 8 arms."""
+    _coph_threads()
+    from .coph import hazard_demo
+
+    argv = ["--out", out]
+    if summary_only:
+        r = hazard_demo.main(argv + ["--render"])
+    else:
+        argv += ["--steps", str(steps), "--workers", str(workers)]
+        # 79000 is upstream's hazard seed (hazard_demo.specification's default).
+        r = hazard_demo.main(argv + ["--seeds", *(str(79000 + k) for k in range(seeds))])
+    click.echo(f"goals {r['goals']}/{r['missions']}, collisions {r['collisions']}")
+    click.echo(
+        "carrier worst-case excess cost: "
+        + ", ".join(f"{a} {v:.1f}" for a, v in r["worst_case_excess"].items())
+    )
+    click.echo(f"results={Path(out) / 'results.json'}")
 
 
 # ── the finale ───────────────────────────────────────────────────────────────
