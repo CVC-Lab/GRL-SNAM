@@ -9,7 +9,7 @@ import json
 import time
 import numpy as np
 import torch
-from .diagnostics import InstrumentedLearner
+from .learner import Learner
 from .model import tensor, features, risk, potential
 
 CONVENTION='unit_mass; H=kinetic+navigation_shaping; physical_H=kinetic; SI; world_xy'
@@ -91,7 +91,7 @@ def bootstrap_field(stage,cfg,comm,now,seed,dynamic=False):
     return mean,ensemble,readings
 
 
-class CooperativeLearner(InstrumentedLearner):
+class CooperativeLearner(Learner):
     def __init__(self,*args,agent_id,communication=None,dynamic=False,receiver_fit_mode="legacy",receiver_validation_mode="legacy",receiver_solver_mode="projected",receiver_search_mode="legacy",receiver_localization_mode="global",**kwargs):
         super().__init__(*args,**kwargs)
         if receiver_fit_mode not in ('legacy','precision_bounded'):raise ValueError('receiver_fit_mode')
@@ -101,6 +101,8 @@ class CooperativeLearner(InstrumentedLearner):
         if (receiver_solver_mode,receiver_search_mode)!=('projected','legacy') and receiver_fit_mode!='precision_bounded':raise ValueError('nondefault receiver solver requires precision_bounded fitting')
         if receiver_localization_mode not in ('global','compact'):raise ValueError('receiver_localization_mode')
         if receiver_localization_mode=='compact' and receiver_fit_mode!='precision_bounded':raise ValueError('compact receiver requires precision_bounded fitting')
+        # grl_snam.coph: receiver_fitting and localized_receiver are not vendored (VENDORED.md).
+        if (receiver_fit_mode,receiver_validation_mode)!=('legacy','legacy'):raise NotImplementedError('receiver modes other than legacy are not vendored in grl_snam.coph')
         self.receiver_localization_mode=receiver_localization_mode
         self.receiver_solver_mode=receiver_solver_mode;self.receiver_search_mode=receiver_search_mode
         self.receiver_fit_mode=receiver_fit_mode;self.receiver_validation_mode=receiver_validation_mode
@@ -118,10 +120,6 @@ class CooperativeLearner(InstrumentedLearner):
             for s in self.stages:
                 s.readings=[r for r in s.readings if self.now-r.time<=self.communication.temporal_window]
         self._expire()
-
-    def evaluate_packet(self,packet,seed=None):
-        from .packet_feedback import evaluate_receiver
-        return evaluate_receiver(self,packet,seed=seed)
 
     def _expire(self):
         for key,m in list(self.received.items()):
@@ -235,6 +233,9 @@ class CooperativeLearner(InstrumentedLearner):
         return adjusted,cov
 
     def _receiver_acceptance(self,weights):
+        # grl_snam.coph: receiver_fitting.acceptance returns (True,None,None) when there is no
+        # receiver fit diagnostic, which is always the case for the legacy receiver.
+        if getattr(self,'receiver_fit_diagnostic',None) is None:return True,None,None
         from .receiver_fitting import acceptance
         return acceptance(self,weights)
 

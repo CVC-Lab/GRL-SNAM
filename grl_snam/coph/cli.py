@@ -1,12 +1,13 @@
-import argparse
-from dataclasses import asdict, replace
+# grl_snam.coph: trimmed to rollout (the single-agent reference loop) and to source_hashes and
+# archive_sources, which the demos use for provenance. Both of those cover this package's own
+# sources (upstream: the whole CoPH-Stagewise tree). The upstream command-line entry point is
+# replaced by `grl-snam coph` (VENDORED.md).
+from dataclasses import asdict
 import hashlib
-import json
 from pathlib import Path
 import time
 import numpy as np
-import torch
-from .records import Config, Transition
+from .records import Transition
 from .learner import Learner
 from .world import World
 from .model import tensor, risk, potential
@@ -71,109 +72,13 @@ def rollout(cfg, seed=0, scene='risk', mode='full', reconcile=True):
 
 
 def source_hashes():
-    root=Path(__file__).resolve().parents[1]
+    root=Path(__file__).resolve().parent
     return {str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(root.rglob('*.py')) if '__pycache__' not in str(p)}
 
 
 def archive_sources(destination):
     import zipfile
-    root=Path(__file__).resolve().parents[1]
+    root=Path(__file__).resolve().parent
     with zipfile.ZipFile(Path(destination)/'sources.zip','w',zipfile.ZIP_DEFLATED) as archive:
         for relative in source_hashes():archive.write(root/relative,relative)
-
-
-def main():
-    import sys
-    if len(sys.argv)>1 and sys.argv[1]=='campaign':
-        from .campaign import main as campaign_main
-        return campaign_main(sys.argv[2:])
-    if len(sys.argv)>1 and sys.argv[1]=='field-route-suite':
-        from .field_route_suite import main as field_main
-        return field_main(sys.argv[2:])
-    if len(sys.argv)>1 and sys.argv[1]=='decision-diagnostics':
-        from .decision_suite import main as decision_main
-        return decision_main(sys.argv[2:])
-    if len(sys.argv)>1 and sys.argv[1]=='attribution-suite':
-        from .attribution_suite import main as attribution_main
-        return attribution_main(sys.argv[2:])
-    if len(sys.argv)>1 and sys.argv[1]=="receiver-feedback-suite":
-        from .receiver_feedback_evaluation import main as feedback_main
-        torch.set_num_threads(1)
-        return feedback_main(sys.argv[2:])
-    import sys
-    if len(sys.argv)>1 and sys.argv[1]=='stagewise-diagnostics':
-        from .stagewise_diagnostics import main
-        torch.set_num_threads(1)
-        return main(sys.argv[2:])
-    if len(sys.argv)>1 and sys.argv[1]=='receiver-corrections':
-        from .receiver_corrections import main as corrections_main
-        return corrections_main(sys.argv[2:])
-    if len(sys.argv)>1 and sys.argv[1]=='receiver-reconstruction':
-        from .receiver_reconstruction import main
-        return main(sys.argv[2:])
-    if len(sys.argv)>1 and sys.argv[1]=='recipient-diagnostics':
-        from .recipient_diagnostics import main
-        torch.set_num_threads(1)
-        return main(sys.argv[2:])
-    if len(sys.argv)>1 and sys.argv[1]=='replay-gate':
-        from .replay_gate import main
-        return main(sys.argv[2:])
-    if len(sys.argv)>1 and sys.argv[1]=='cooperative-suite':
-        from .cooperative_evaluation import suite_main
-        torch.set_num_threads(1)
-        return suite_main(sys.argv[2:])
-    if len(sys.argv)>1 and sys.argv[1] in ('cooperative-render','cooperative-report'):
-        from .cooperative_reporting import main
-        return main(sys.argv[2:],render_only=sys.argv[1]=='cooperative-render')
-    if len(sys.argv)>1 and sys.argv[1] in ('suite','render','report'):
-        if sys.argv[1]=='suite':
-            from .evaluation import suite_main
-            return suite_main(sys.argv[2:])
-        from .visualize import render_main,report_main
-        return (render_main if sys.argv[1]=='render' else report_main)(sys.argv[2:])
-    ap=argparse.ArgumentParser(description='Single-agent controlled development study; not confirmatory evaluation.')
-    ap.add_argument('command',choices=['check','rollout','compare'])
-    ap.add_argument('--out',type=Path)
-    ap.add_argument('--seed',type=int,default=0)
-    ap.add_argument('--seeds',type=int,default=3)
-    ap.add_argument('--steps',type=int,default=180)
-    ap.add_argument('--previous',type=int,choices=[0,2,3],default=2)
-    ap.add_argument('--navigation-target',choices=['mission','stage'],default='mission')
-    ap.add_argument('--mode',choices=['frozen','evidence','full'],default='full')
-    ap.add_argument('--scene',choices=['risk','obstacle'],default='risk')
-    args=ap.parse_args();torch.set_num_threads(1)
-    if args.command=='check':
-        import unittest
-        suite=unittest.defaultTestLoader.discover(str(Path(__file__).resolve().parents[1]/'tests'))
-        result=unittest.TextTestRunner(verbosity=2).run(suite)
-        raise SystemExit(0 if result.wasSuccessful() else 1)
-    if args.out is None:ap.error('--out is required')
-    if args.seeds<1:ap.error('--seeds must be positive')
-    if args.out.exists():ap.error('output exists; use a fresh directory')
-    cfg=Config(steps=args.steps,previous=args.previous,navigation_target=args.navigation_target)
-    args.out.mkdir(parents=True)
-    manifest=dict(config=asdict(cfg),source_hashes=source_hashes(),torch=torch.__version__,
-                  numpy=np.__version__,command=args.command,seed=args.seed,seeds=args.seeds,
-                  status='development only',numerical_precision='float64')
-    (args.out/'manifest.json').write_text(json.dumps(manifest,indent=2))
-    summaries=[]
-    arms=[(args.mode,cfg,True)] if args.command=='rollout' else [
-        ('frozen',cfg,True),('evidence',cfg,True),('full',cfg,True),
-        ('full',replace(cfg,previous=0),True),('full',replace(cfg,previous=3),True),('full',cfg,False)]
-    seeds=range(args.seed,args.seed+(args.seeds if args.command=='compare' else 1))
-    for seed in seeds:
-        for mode,settings,reconcile in arms:
-            name=f'{mode}_memory{settings.previous}_reconcile{int(reconcile)}'
-            result=rollout(settings,seed,args.scene,mode,reconcile)
-            result['summary']['arm']=name
-            summaries.append(result['summary'])
-            (args.out/f'{name}_seed{seed}.json').write_text(json.dumps(result,indent=2,allow_nan=False))
-            print(json.dumps(result['summary']),flush=True)
-    (args.out/'summary.json').write_text(json.dumps(summaries,indent=2))
-    if args.command=='compare':
-        base={s['seed']:s for s in summaries if s['mode']=='frozen'}
-        paired=[dict(seed=s['seed'],arm=s['arm'],cost_difference_vs_frozen=s['mission_cost']-base[s['seed']]['mission_cost']) for s in summaries]
-        (args.out/'paired.json').write_text(json.dumps(paired,indent=2))
-
-if __name__=='__main__':main()

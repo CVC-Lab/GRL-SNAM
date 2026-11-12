@@ -104,7 +104,9 @@ def main(argv=None):
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
             jobs=[pool.submit(run,(s,a,str(args.out),args.steps)) for s in args.seeds for a in ARMS]
             for job in as_completed(jobs):rows.append(job.result());dump(args.out/'completion.json',rows);print(rows[-1],flush=True)
-    from .crossing_visuals import report
-    report(args.out)
+    # grl_snam.coph: results.json and REPORT.md from grl_snam.coph.results, in place of
+    # crossing_visuals.report (figures and GIF), which is not vendored.
+    from .results import crossing
+    return crossing(args.out)
 
 if __name__=='__main__':main()

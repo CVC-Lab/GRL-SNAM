@@ -1,33 +1,16 @@
 """Shared-origin, exactly staggered starts with an explicit asynchronous message timeline.
 Existing controller/learner implementations and prior evaluation runners are unchanged.
 """
-import argparse,copy,hashlib,heapq,json,pickle,time,traceback
-from concurrent.futures import ProcessPoolExecutor,as_completed
+# grl_snam.coph: trimmed to the runner (sense, packet_effect, execute). specification, job, frame,
+# report and main build the staggered demo's own scenes and figures and are not vendored (VENDORED.md).
+import copy,heapq,json,pickle,time
 from dataclasses import asdict,replace
-from pathlib import Path
 import numpy as np
-import torch
 from .records import Config,Transition
 from .cooperative import CooperativeLearner,CommunicationConfig,advertise
 from .cooperative_evaluation import CooperativeWorld
-from .complex_environments import scene,world_axes,COLORS
 from .diagnostics import snapshot
 from .model import tensor,potential
-from .evaluation import dump,load
-from .cli import source_hashes,archive_sources
-
-
-def specification(name,seed):
-    s=scene('long_obstacle_corridor',seed)
-    if name=='slalom_passage':
-        s.update(steps=420,bounds=[-1.5,13.5,-3.,3.],obstacles=[[2.7,-.65,.5],[5.,-1.1,.6],[5.,1.1,.6],[7.6,0.,.6],[10.,.8,.5]],
-            patches=[[2.5,.8,.8,.55,1.4],[5.,0.,.7,.65,1.8],[8.,-1.2,.8,.55,1.5],[10.5,-.7,.7,.6,1.3]])
-        goal=[12.,0.]
-    elif name=='long_corridor':goal=[20.,0.]
-    else:raise ValueError(name)
-    s.update(name='staggered_'+name,initials=[[0.,0.,0.,0.]]*2,goals=[goal,goal],initial=[0.,0.,0.,0.],goal=goal,start_seconds=[0.,5.],
-        experiment='development demonstration; not held-out validation',interaction='independent agents; no inter-agent collision dynamics',waiting='inactive: no sensing, learning or communication before activation')
-    return s
 
 
 def sense(world,x,tick,now):
@@ -160,120 +143,3 @@ def execute(spec,arm,comm=None,audit=True,learner_factory=CooperativeLearner,wor
         spec=spec,config=asdict(cfg),communication=asdict(comm),arm=arm,agents=outcomes,trajectories=records,samples=samples,observations=observations,updates=updates,packets=packets,events=events,audits=audits,
         geometry_events=[getattr(a,"geometry_events",[]) for a in agents],learner_events=[getattr(a,"terrain_events",[]) for a in agents],receive_update_slots=[sorted(s) for s in receive_slots],pending_packets=sum(map(len,queues)),wall_seconds=time.perf_counter()-began,audit_seconds=sum(a['seconds'] for a in audits),audit_replay_work=sum(b['replay_work'] for a in audits for b in a['branches'].values()),
         semantics='inactive before exact start; each agent has full local horizon; exports each .96s local; delivery next receiver control boundary; matched exogenous receive-update opportunities in both arms; no pre-start buffering or inter-agent contact dynamics')
-
-
-def job(args):
-    spec,arm,root=args;torch.set_num_threads(1);path=Path(root)/f"{spec['name']}_{spec['seed']}_{arm}.json.gz"
-    try:
-        r=execute(spec,arm);dump(path,r);return dict(scene=spec['name'],seed=spec['seed'],arm=arm,path=path.name,complete=True,goals=sum(a['success'] for a in r['agents']))
-    except Exception as exc:
-        e=dict(scene=spec['name'],seed=spec['seed'],arm=arm,path=path.name,complete=False,error=str(exc),traceback=traceback.format_exc());dump(path,e);return e
-
-
-def frame(results,now):
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Circle,FancyArrowPatch
-    from PIL import Image
-    fig,axes=plt.subplots(2,2,figsize=(14,8),gridspec_kw={'height_ratios':[1.4,1]});r=results['reciprocal_fixed'];spec=r['spec']
-    for ax,arm in zip(axes[0],('disabled','reciprocal_fixed')):
-        rr=results[arm];world_axes(ax,spec)
-        for i,color in enumerate(COLORS):
-            ss=[s for s in rr['samples'][i] if s['time']<=now+1e-9]
-            if not ss:
-                q=spec['initials'][i][:2];ax.scatter(*q,color='gray',s=40);ax.annotate(f'A{i} waiting until {spec["start_seconds"][i]:.2f}s',q,xytext=(3,15),textcoords='offset points',fontsize=8);continue
-            p=np.array([s['x'] for s in ss]);ax.plot(p[:,0],p[:,1],color=color,lw=2);q=p[-1,:2];ax.scatter(*q,color=color,s=35)
-            status='GOAL' if ss[-1]['done'] and rr['agents'][i]['success'] else 'FAILED' if ss[-1]['done'] else 'moving'
-            ax.annotate(f'A{i} {status}',q,xytext=(3,6+i*9),textcoords='offset points',fontsize=8,color=color)
-            controls=[t for t in rr['trajectories'][i] if t['time']<=now]
-            if controls:
-                n=controls[-1]['navigation']
-                if n.get('route'):
-                    path=np.array(n['route']);ax.plot(path[:,0],path[:,1],':',color=color,alpha=.7);ax.scatter(*n['waypoint'],marker='x',color=color,s=15)
-            us=[u for u in rr['updates'][i] if u['time']<=now]
-            if us:
-                for ox,oy,rad in us[-1]['post']['geometry']:ax.add_patch(Circle((ox,oy),rad+.17,fill=False,color=color,alpha=.3))
-        if arm=='reciprocal_fixed':
-            recent=[e for e in r['events'] if e['kind']=='delivered' and 0<=now-e['time']<1.5][-4:]
-            for k,e in enumerate(recent):
-                accepted=e['reason']=='eligible' and e.get('accepted');color='purple' if accepted else 'red'
-                ax.add_patch(FancyArrowPatch(e['sender_q'],e['receiver_q'],arrowstyle='-|>',mutation_scale=15,color=color,connectionstyle='arc3,rad=.2',lw=1.8,alpha=.8))
-                z=np.array(e['anchors']);ax.scatter(z[:,0],z[:,1],marker='+',color=color,s=35)
-                label='accepted' if accepted else e['reason'] if e['reason']!='eligible' else 'update rejected'
-                ax.text(.02,.98-k*.08,f'{e["time"]:.2f}s A{e["sender"]} → A{e["receiver"]}: {label}',transform=ax.transAxes,va='top',fontsize=8,color=color)
-        ax.set_title('Communication OFF' if arm=='disabled' else 'Reciprocal fixed-rate: delivery arrows + field anchors')
-    ax=axes[1,0]
-    for e in r['events']:
-        if e['time']>now:continue
-        if e['kind']=='sent':ax.scatter(e['time'],int(e['sender'])+.14,s=10,color='purple',marker='.')
-        if e['kind']=='delivered':
-            color='green' if e['reason']=='eligible' and e.get('accepted') else 'orange' if e['reason']=='eligible' else 'red'
-            ax.scatter(e['time'],int(e['sender']),s=18,color=color,marker='|')
-    end=max(a['finish_time'] for rr in results.values() for a in rr['agents'])
-    ax.axvline(5,color='gray',ls='--');ax.axvline(now,color='black');ax.set(xlim=(0,end),ylim=(-.35,1.5),yticks=[0,1],yticklabels=['A0 → A1','A1 → A0'],xlabel='Global time (s)',title='Purple: sent | Green: accepted | Orange/red: rejected')
-    ax=axes[1,1];ax.axis('off');lines=['Packet-only effect: identical receiver history,','deliver + update versus withhold + update.']
-    for receiver in (0,1):
-        audits=[a for a in r['audits'] if a['receiver']==receiver and a['time']<=now]
-        if audits:
-            a=audits[-1];lines += ['',f'A{receiver}, audit at {a["time"]:.2f}s (stage {a["stage"]})',f'  field coefficients Δ = {a["field_delta"]:.3e}',f'  applied control Δ = {a["control_delta"]:.3e} N',f'  shaping H Δ = {a["H_delta"]:+.3e} J',f'  deliver accepted: {a["branches"]["deliver"]["accepted"]}']
-        else:lines+=['',f'A{receiver}: no eligible packet audit yet.']
-    lines+=['','Small effects are shown numerically, not magnified.','No mission benefit is inferred from these local audits.']
-    ax.text(0,1,'\n'.join(lines),va='top',fontsize=9,family='monospace')
-    fig.suptitle(f'{spec["name"]} | seed {spec["seed"]} | global time {now:.2f}s\nSame origin and goal. A0 starts 0.00s; A1 starts 5.00s. Logged boundary states; independent plants.',fontsize=11)
-    fig.tight_layout();fig.canvas.draw();im=Image.fromarray(np.asarray(fig.canvas.buffer_rgba())[:,:,:3].copy());plt.close(fig);return im
-
-
-def report(root):
-    complete=load(root/'completion.json');manifest=load(root/'manifest.json');rows=[];pairs={};failures=[]
-    (root/'figures').mkdir(exist_ok=True);gallery=root/'figures/failures';gallery.mkdir(exist_ok=True)
-    for c in complete:
-        if not c['complete']:failures.append(c);continue
-        r=load(root/'episodes'/c['path']);deliveries=[e for e in r['events'] if e['kind']=='delivered']
-        row=dict(scene=c['scene'],seed=c['seed'],arm=c['arm'],agents=r['agents'],goals=sum(a['success'] for a in r['agents']),collisions=sum(a['collision'] for a in r['agents']),timeouts=sum(a['timeout'] for a in r['agents']),
-            deliveries=len(deliveries),eligible=sum(e['reason']=='eligible' for e in deliveries),accepted=sum(e['reason']=='eligible' and e.get('accepted',False) for e in deliveries),
-            reasons={reason:sum(e['reason']==reason for e in deliveries) for reason in sorted({e['reason'] for e in deliveries})},audits=len(r['audits']),nonzero_control_audits=sum(a['control_delta']>1e-10 for a in r['audits']),
-            bytes=sum(sum(a['bytes'].values()) for a in r['agents']),wall_seconds=r['wall_seconds'],audit_seconds=r['audit_seconds'],audit_replay_work=r['audit_replay_work'])
-        rows.append(row)
-        if c['goals']<2:
-            import matplotlib.pyplot as plt
-            fig,ax=plt.subplots(figsize=(11,3));world_axes(ax,r['spec'])
-            for i,ss in enumerate(r['samples']):
-                p=np.array([s['x'] for s in ss]);ax.plot(p[:,0],p[:,1],color=COLORS[i]);ax.annotate('goal' if r['agents'][i]['success'] else 'FAILED',p[-1,:2],fontsize=8)
-            filename=c['path'].replace('.json.gz','.png');ax.set_title(c['path']);fig.tight_layout();fig.savefig(gallery/filename,dpi=110);plt.close(fig)
-            failures.append(dict(c,outcomes=r['agents'],figure=filename))
-        if c['seed']==manifest['animation_seed']:pairs.setdefault(c['scene'],{})[c['arm']]=r
-    dump(root/'rows.json',rows);dump(root/'failures.json',failures)
-    (gallery/'index.html').write_text('<h1>All failures and incomplete episodes</h1>'+('None.' if not failures else ''.join('<p>'+c['path']+(f'<br><img width=1000 src="{c["figure"]}">' if 'figure' in c else c.get('error',''))+'</p>' for c in failures)))
-    lines=['# Staggered-start cooperative navigation','', 'Development demonstration, separate from the frozen validation experiment. Agents share their start and goal. A0 activates at 0.00 s; A1 activates at exactly 5.00 s. Before activation A1 neither senses, learns nor communicates. Each agent retains the 0.12 s step and its full active horizon. Both arms use matched, predeclared local/receive update opportunities.', '', '| Scene | Seed | Communication | Goals | Collisions | Timeouts | Delivered | Eligible | Accepted update | Nonzero control audits / audits |', '|---|---|---|---|---|---|---|---|---|---|']
-    for r in rows:lines.append(f'| {r["scene"]} | {r["seed"]} | {r["arm"]} | {r["goals"]}/2 | {r["collisions"]} | {r["timeouts"]} | {r["deliveries"]} | {r["eligible"]} | {r["accepted"]} | {r["nonzero_control_audits"]}/{r["audits"]} |')
-    comparisons=[]
-    for name,rs in pairs.items():
-        if len(rs)!=2:continue
-        end=max(a['finish_time'] for r in rs.values() for a in r['agents']);times=sorted(set([0.,4.92,5.,5.12]+np.linspace(0,end,64).tolist()))
-        frames=[frame(rs,t) for t in times];frames[0].save(root/'figures'/f'{name}.gif',save_all=True,append_images=frames[1:],duration=180,loop=0)
-        frames[-1].save(root/'figures'/f'{name}_final.png');dump(root/'figures'/f'{name}_frames.json',dict(times=times,playback='illustrative time compression; use global-time label and event timeline',animation_seed=manifest['animation_seed']))
-        for i in range(2):
-            a,b=rs['disabled']['samples'][i],rs['reciprocal_fixed']['samples'][i];n=min(len(a),len(b));dist=np.linalg.norm(np.array([s['x'][:2] for s in a[:n]])-np.array([s['x'][:2] for s in b[:n]]),axis=1)
-            comparisons.append(dict(scene=name,seed=manifest['animation_seed'],agent=i,common_boundary_samples=n,max_paired_position_difference=float(dist.max()),finish_time_difference=rs['reciprocal_fixed']['agents'][i]['finish_time']-rs['disabled']['agents'][i]['finish_time']))
-        lines+=['',f'![{name}](figures/{name}.gif)']
-    dump(root/'paired_visualization_cases.json',comparisons)
-    lines+=['','Arrows show delivery (not instantaneous influence). Rejected or unsupported packets are shown explicitly. Each accepted delivery also records its model version and actual update force/shaping revision. The packet-only panel uses isolated deliver/withhold clones at the first eligible packet per receiver stage, with an update in both branches; it separates packet effects from ordinary local fitting. Audits never mutate operational agents and their computation is separate.', '', 'The five-second head start can make the leader’s current anchors fall outside the follower’s retained support; no support is expanded to force acceptance. Fixed-rate sender opportunities are 0.96 s apart on each local clock. Delivery waits until the next receiver control boundary (at most 0.12 s). No pre-start packet buffering, adaptive rates, or inter-agent collision avoidance is introduced. All failures and incomplete runs remain in failures.json and full episode records. Small trajectory differences are not hidden or exaggerated.']
-    (root/'REPORT.md').write_text('\n'.join(lines)+'\n')
-
-
-def main(argv=None):
-    ap=argparse.ArgumentParser(description=__doc__);ap.add_argument('--out',type=Path,required=True);ap.add_argument('--workers',type=int,default=8);ap.add_argument('--render-only',action='store_true');args=ap.parse_args(argv)
-    if not args.out.exists():
-        args.out.mkdir(parents=True);specs=[specification(n,s) for n in ('slalom_passage','long_corridor') for s in (73000,73001)]
-        old=load(Path('results/routed_validation_v1/manifest.json'))['source_verification']['frozen_source_hashes'];current=source_hashes()
-        assert all(current.get(n)==h for n,h in old.items()),'existing implementation changed'
-        dump(args.out/'manifest.json',dict(preserved_original_sources=old,specs=specs,arms=['disabled','reciprocal_fixed'],animation_seed=73000,source_hashes=source_hashes(),development_only=True));archive_sources(args.out)
-    elif not args.render_only:ap.error('fresh output directory required')
-    if not args.render_only:
-        (args.out/'episodes').mkdir();completed=[];m=load(args.out/'manifest.json')
-        with ProcessPoolExecutor(max_workers=args.workers) as pool:
-            jobs=[pool.submit(job,(s,a,str(args.out/'episodes'))) for s in m['specs'] for a in m['arms']]
-            for f in as_completed(jobs):
-                c=f.result();completed.append(c);dump(args.out/'completion.json',completed);print(c,flush=True)
-    report(args.out)
-
-if __name__=='__main__':main()

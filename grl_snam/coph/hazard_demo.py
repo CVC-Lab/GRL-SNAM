@@ -74,34 +74,17 @@ def table():
     return rows
 
 
-def render(root):
-    """Per-scene decision-vs-field GIFs and one REPORT.md with measured and oracle carrier excess cost."""
-    from .crossing_visuals import report
-    from .evaluation import load
-    root=Path(root);order=list(ARMS);lines=['# Graded hazards: share the environmental field, not the decision','',
-        f'Settings: one noise seed on four designed scenes. Scout risk weight {WEIGHTS[0]}, carrier {WEIGHTS[1]}; carrier starts {STAGGER:.0f} s later. Unknown-terrain prior {UNKNOWN_RISK}. Field packets carry 4 anchors, raw packets {RAW_ANCHORS}. Oracle predictions were frozen in each scene manifest before the runs. Cost = time + weighted risk exposure (effort excluded).','',
-        '| Scene | '+' | '.join(order)+' |','|---|'+'---|'*len(order)]
-    totals={a:[] for a in order}
-    for scene in SCENES:
-        d=root/scene;m=load(d/'manifest.json');cost={};goals={}
-        for a in order:
-            r=load(d/'episodes'/f"{m['specs'][0]['seed']}_{a}.json.gz");z=r['agents'][1];cost[a]=z['components']['time']+z['components']['risk'];goals[a]=sum(x['success'] for x in r['agents'])
-        best=min(cost.values());pred={a:m['predictions'][a][1]['cost'] for a in order};pbest=min(pred.values())
-        for a in order:totals[a].append(cost[a]-best)
-        lines.append(f'| {scene} | '+' | '.join(f'{cost[a]-best:.1f} ({pred[a]-pbest:.1f}){"" if goals[a]==2 else " FAIL"}' for a in order)+' |')
-        report(d,pair=('decision','field'))
-    lines.append('| **worst-case excess cost** | '+' | '.join(f'**{max(totals[a]):.1f}**' for a in order)+' |')
-    lines+=['','Cells: carrier excess cost relative to the best tested arm in that scene (not regret against a globally optimal policy), measured (oracle). Every episode reached both goals unless marked FAIL.',
-            'Oracle agreement is qualitative: it idealizes constant speed and immediate full transfer, so magnitudes can differ (for example a timing cost the oracle omits).','',
-            'Per-scene animations compare the sender\'s decision with the learned environmental field: `<scene>/figures/decision_vs_field.gif`.']
-    (root/'REPORT.md').write_text('\n'.join(lines)+'\n')
-
-
 def main(argv=None):
+    # grl_snam.coph: --steps and --seeds added (upstream runs seed 79000 at 1800 steps); each scene
+    # manifest lists one spec per seed. --render writes results.json and REPORT.md through
+    # grl_snam.coph.results in place of render() (crossing_visuals GIFs), which is not vendored, and
+    # a run ends by writing them.
     ap=argparse.ArgumentParser(description=__doc__);ap.add_argument('--out',type=Path);ap.add_argument('--workers',type=int,default=40)
-    ap.add_argument('--table',action='store_true',help='print oracle predictions and exit');ap.add_argument('--render',action='store_true',help='write GIFs and REPORT.md for an existing --out')
+    ap.add_argument('--steps',type=int,default=1800);ap.add_argument('--seeds',type=int,nargs='+',default=[79000])
+    ap.add_argument('--table',action='store_true',help='print oracle predictions and exit');ap.add_argument('--render',action='store_true',help='write results.json and REPORT.md for an existing --out')
     args=ap.parse_args(argv)
-    if args.render:return render(args.out)
+    from .results import hazard
+    if args.render:return hazard(args.out)
     if args.table:
         rows=table()
         for scene in SCENES:
@@ -112,14 +95,15 @@ def main(argv=None):
         return
     args.out.mkdir(parents=True,exist_ok=False);jobs=[]
     for scene in SCENES:
-        spec=specification(scene);root=args.out/scene;(root/'episodes').mkdir(parents=True)
-        dump(root/'manifest.json',dict(specs=[spec],arms=list(ARMS),export='retained-stage rotation (LedgerExport), newest first',arm_definitions={k:dict(mode=v[0],kwargs=v[1],channel=v[2]) for k,v in ARMS.items()},
+        specs=[specification(scene,seed,args.steps) for seed in args.seeds];spec=specs[0];root=args.out/scene;(root/'episodes').mkdir(parents=True)
+        dump(root/'manifest.json',dict(specs=specs,arms=list(ARMS),export='retained-stage rotation (LedgerExport), newest first',arm_definitions={k:dict(mode=v[0],kwargs=v[1],channel=v[2]) for k,v in ARMS.items()},
             predictions={arm:oracle(spec,arm)['agents'] for arm in ARMS},config=asdict(configuration(spec['steps'])),
             communication={arm:asdict(communication(arm)) for arm in ARMS},source_hashes=source_hashes(),animation_seed=spec['seed']))
-        archive_sources(root);jobs+=[(spec,arm,str(root)) for arm in ARMS]
+        archive_sources(root);jobs+=[(s,arm,str(root)) for s in specs for arm in ARMS]
     done=[]
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         for f in as_completed([pool.submit(run,j) for j in jobs]):done.append(f.result());dump(args.out/'completion.json',done);print(done[-1],flush=True)
+    return hazard(args.out)
 
 
 if __name__=='__main__':main()

@@ -1,7 +1,6 @@
 """Committed-field route evaluation. No truth, raw values, or support expansion."""
 import copy,json,time
 import numpy as np
-from .terrain_warning import terrain_values
 from .model import risk,tensor
 
 # Process-local accounting only; never a controller or learner input.
@@ -41,6 +40,8 @@ def hypothetical_context(agent):
 
 def values(points,context,details=False):
     global FIELD_EVALUATIONS
+    # grl_snam.coph: imported here, not at load, so the core does not load the cooperative stack.
+    from .terrain_warning import terrain_values
     points=np.asarray(points,dtype=float).reshape(-1,2);anchors=context.get('terrain_anchors',[])
     result=terrain_values(points,anchors,context.get('unknown_risk',1.));raw=result.copy();n=len(points)
     support=(np.linalg.norm(points[:,None,:]-np.asarray(anchors)[None,:,:2],axis=2)<=.65).any(1) if anchors else np.zeros(n,bool)
