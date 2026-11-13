@@ -82,6 +82,7 @@ def evaluate(
     """Run ``model`` over ``scenes`` city scenes (seeds ``0..scenes-1``), collecting one
     base ``EpisodeStats`` per scene via the Swarm collector, and aggregate them into a
     ``NavScorecard``. Each scene runs to ``all_reached`` or ``steps``, whichever first.
+    :func:`episodes` is the same run for any scene seeds, one ``EpisodeStats`` per scene.
 
     ``material`` (default on) attaches a per-scene discrete material-id raster so the
     ``material_time_share`` / terrain-risk buckets are populated. For a BASE net this is a
@@ -91,6 +92,30 @@ def evaluate(
     and applies the reroute force it was trained with — i.e. the net is scored as deployed.
     Pass ``material=False`` for a corpus with no material terrain (a risk net then has no
     risk column source and cannot be scored)."""
+    eps = episodes(
+        model,
+        range(scenes),
+        agents=agents,
+        steps=steps,
+        grid=grid,
+        contact_r=contact_r,
+        material=material,
+    )
+    return aggregate_nav(eps, checkpoint_label)
+
+
+def episodes(
+    model,
+    seeds,
+    *,
+    agents: int = 64,
+    steps: int = 400,
+    grid: int = 96,
+    contact_r: float = 0.0,
+    material: bool = True,
+):
+    """One base ``EpisodeStats`` per scene seed in ``seeds``, in order (see :func:`evaluate`):
+    the per-scene values a paired comparison of policies resamples."""
     from ..material import city_material_grid, city_material_ids
 
     # A risk net needs the material grid for its risk column; a lam-head net needs it for the
@@ -99,8 +124,8 @@ def evaluate(
     if needs_grid and not material:
         raise ValueError("scoring a use_risk/use_lam net needs material=True (its drive source)")
 
-    episodes = []
-    for seed in range(scenes):
+    out = []
+    for seed in seeds:
         story, truth, specs = scene_specs(grid, seed, agents)
         mids = mgrid = None
         if material:
@@ -129,8 +154,8 @@ def evaluate(
             sw.step()
             if sw.all_reached:
                 break
-        episodes.append(sw.episode_stats())
-    return aggregate_nav(episodes, checkpoint_label)
+        out.append(sw.episode_stats())
+    return out
 
 
 def main(argv=None):

@@ -8,6 +8,13 @@ drift from the checkpoint; the C++ loader verifies an ``arch_hash`` so a
 hidden-size change bumps the file rather than loading silently wrong.
 
     python -m grl_snam.tools.coef_export <checkpoint.pt> <out.cvcnav>
+    python -m grl_snam.tools.coef_export --constant alpha=1.2,beta=3,gamma=4 <out.cvcnav | out.pt>
+
+``--constant`` writes a constant policy, the constant arm of a learning comparison
+(:func:`grl_snam.learning.arms.constant_coef_mlp`): every weight zero, and the output's bias
+the inverse of the output activation at each constant, so the C++ ``coef_mlp`` returns those
+coefficients wherever it is asked. :func:`read_coef_mlp` reads any ``.cvcnav`` back into a
+torch ``CoefMLP`` (a run's step-0 blob is the untrained arm).
 
 Format (little-endian):
     char magic[4] = "CVNV"
@@ -126,15 +133,124 @@ def write_coef_mlp(model, path, meta: bytes = b""):
     return path
 
 
-def main(argv=None):
+def read_coef_mlp(path):
+    """The torch ``sdf_nav.CoefMLP`` a ``.cvcnav`` holds (the inverse of :func:`write_coef_mlp`):
+    the same forward, and :func:`write_coef_mlp` writes it back byte for byte (bar ``meta``).
+    Refuses a blob that is not a CoefMLP (three Linear layers, SiLU between) or whose arch_hash
+    does not match its layers."""
     import torch
 
     import grl_snam.sdf_nav as sdf_nav
 
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if len(argv) != 2:
+    with open(path, "rb") as f:
+        raw = f.read()
+    off = 0
+
+    def take(fmt):
+        nonlocal off
+        vals = struct.unpack_from(fmt, raw, off)
+        off += struct.calcsize(fmt)
+        return vals
+
+    def floats(n):
+        nonlocal off
+        a = np.frombuffer(raw, np.float32, n, off).copy()
+        off += 4 * n
+        return a
+
+    if raw[:4] != b"CVNV":
+        raise ValueError(f"{path}: not a .cvcnav (magic {raw[:4]!r})")
+    off = 4
+    version, flags, in_f, out_f, n_layers = take("<IIIII")
+    (ah,) = take("<Q")
+    if version not in (FORMAT_VERSION, FORMAT_VERSION_V2):
+        raise ValueError(f"{path}: format version {version} (this reader knows 1 and 2)")
+    layers, shape_act = [], []
+    for _ in range(n_layers):
+        rows, cols, act = take("<III")
+        layers.append((floats(rows * cols).reshape(rows, cols), floats(rows), act))
+        shape_act += [rows, cols, act]
+    if arch_hash(in_f, out_f, shape_act) != ah:
+        raise ValueError(f"{path}: arch_hash does not match the layers")
+    if [a for _w, _b, a in layers] != [_ACT_SILU, _ACT_SILU, _ACT_IDENTITY]:
+        raise ValueError(f"{path}: not a CoefMLP (three Linear layers, SiLU between)")
+    (n_bias,) = take("<I")
+    out_bias = floats(n_bias)
+    sigmoid = bool(flags & FLAG_LAM_SIGMOID)
+    lam_soft_max, lam_hard_max = take("<ff") if sigmoid else (5.0, 10.0)
+    model = sdf_nav.CoefMLP(
+        hidden=layers[0][0].shape[0],
+        bias=tuple(float(v) for v in out_bias[:3]),
+        in_dim=in_f,
+        use_mu=bool(flags & FLAG_FEAT_MU),
+        use_risk=bool(flags & FLAG_FEAT_RISK),
+        use_lam=out_f >= 4,
+        lam_init=float(out_bias[3]) if out_f >= 4 and not sigmoid else 0.5 * lam_soft_max,
+        use_lam_hard=out_f >= 5,
+        lam_hard_init=0.5 * lam_hard_max,
+        lam_sigmoid=sigmoid,
+        lam_soft_max=lam_soft_max,
+        lam_hard_max=lam_hard_max,
+    )
+    linears = [m for m in model.net if isinstance(m, torch.nn.Linear)]
+    with torch.no_grad():
+        for lin, (w, b, _act) in zip(linears, layers, strict=True):
+            lin.weight.copy_(torch.from_numpy(w))
+            lin.bias.copy_(torch.from_numpy(b))
+    return model.eval()
+
+
+def main(argv=None):
+    import argparse
+
+    import torch
+
+    import grl_snam.sdf_nav as sdf_nav
+
+    ap = argparse.ArgumentParser(
+        prog="python -m grl_snam.tools.coef_export",
+        description="Export a CoefMLP checkpoint, or a constant policy, as a .cvcnav.",
+    )
+    ap.add_argument("paths", nargs="+", metavar="PATH", help="<checkpoint.pt> <out.cvcnav>")
+    ap.add_argument(
+        "--constant",
+        metavar="SPEC",
+        help="write a constant policy instead of a checkpoint: alpha,beta,gamma[,lam_soft"
+        "[,lam_hard]] or alpha=..,beta=.. or bias or hist=history.jsonl (the trained run's head "
+        "means); the paths are then just <out.cvcnav>",
+    )
+    ap.add_argument(
+        "--like",
+        metavar="POLICY",
+        help="--constant: take the input layout (features, hidden size) from this .cvcnav / .pt",
+    )
+    args = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
+    if args.constant is not None:
+        from grl_snam.learning.arms import (
+            ArmSpec,
+            constant_coef_mlp,
+            load_arm_model,
+            parse_constant,
+        )
+
+        if len(args.paths) != 1:
+            ap.error("--constant takes one path, the .cvcnav to write")
+        like = load_arm_model(ArmSpec("like", args.like)) if args.like else None
+        values = parse_constant(args.constant)
+        model = constant_coef_mlp(values, like=like)
+        out = args.paths[0]
+        meta = "constant policy " + ",".join(f"{k}={v:g}" for k, v in values.items())
+        if out.endswith(".pt"):
+            # The torch checkpoint (tools.scorecard_eval.load_model reads it) instead of the blob.
+            info = {"kind": "constant", "coefficients": values}
+            torch.save({"model_state_dict": model.state_dict(), "meta": info}, out)
+        else:
+            write_coef_mlp(model, out, meta.encode())
+        print(f"wrote {out} ({meta})")
+        return 0
+    if len(args.paths) != 2:
         raise SystemExit("usage: python -m grl_snam.tools.coef_export <checkpoint.pt> <out.cvcnav>")
-    ckpt, out = argv
+    ckpt, out = args.paths
     model = sdf_nav.CoefMLP()
     state = torch.load(ckpt, map_location="cpu")
     # Unwrap the state dict from whichever checkpoint format we were given:
@@ -150,6 +266,7 @@ def main(argv=None):
     model.load_state_dict(sd)
     write_coef_mlp(model, out)
     print(f"wrote {out}")
+    return 0
 
 
 if __name__ == "__main__":
