@@ -161,7 +161,8 @@ A falling training loss does not show that a policy learned anything. `grl_snam.
 three things on held-out data, each against two arms: the untrained policy the run started from,
 and a constant one (the same coefficients everywhere, so no state dependence).
 
-1. The per-term held-out losses, read from the trainer's learning history.
+1. The per-term held-out losses: the trainer's own objective, scored for every arm on the same
+   held-out units, and the trained run's own curve from its learning history.
 2. The task metric on paired seeds, with a bootstrap CI.
 3. In a planted exercise, the error of the recovered latent.
 
@@ -171,7 +172,20 @@ grl-snam coef-train --rollout bicycle --out run/coef.cvcnav \
 grl-snam arms-eval --arm trained=run/coef.best.cvcnav \
     --arm untrained=run/coef.step000000.cvcnav \
     --arm constant=const:hist=run/history.jsonl --seeds 20 --out run/arms.json
-grl-snam learn-report run/history.jsonl --arms run/arms.json --json run/report.json
+grl-snam arms-eval --cases objective-coef --rollout bicycle --arm trained=run/coef.best.cvcnav \
+    --arm untrained=run/coef.step000000.cvcnav \
+    --arm constant=const:hist=run/history.jsonl --out run/objective.json
+grl-snam learn-report run/history.jsonl --arms run/arms.json --arms run/objective.json \
+    --json run/report.json
+```
+
+For `grl-snam train` the loss case is `objective-sdf`, on the run's own held-out blocks:
+
+```bash
+grl-snam arms-eval --cases objective-sdf --sdf nav_sdf.npz --split-history seed0/history.jsonl \
+    --arm trained=seed0/coef_sdf.best_heldout.pt --arm untrained=seed0/coef_sdf.step000000.pt \
+    --arm constant=const:hist=seed0/history.jsonl --label seed0 --out seed0.objective.json
+grl-snam learn-report seed*/history.jsonl --arms seed0.objective.json --arms seed1.objective.json ...
 ```
 
 - **The reader** (`grl_snam.learning.history`) reads any trainer's JSON-lines history by its
@@ -197,15 +211,35 @@ grl-snam learn-report run/history.jsonl --arms run/arms.json --json run/report.j
   percentile bootstrap over seeds, 5000 resamples, pairs kept together).
   `python -m grl_snam.tools.coef_export --constant 1.2,3,4 c.cvcnav` writes a constant arm for
   libcvc's navigator, and `read_coef_mlp` loads any `.cvcnav` back into torch.
+- **The held-out objectives** (`grl_snam.learning.objective`, `arms-eval --cases objective-sdf`
+  or `objective-coef`) score each arm with the trainer's own loss terms, one unit per held-out
+  unit, with no gradient and a forked torch RNG:
+  - `objective-sdf`: `grl-snam train`'s loss, goal, col and reg per held-out pair (`--pairs`
+    drawn with `--pair-seed` inside the run's held-out blocks, `--split-history`). Their mean is
+    the `obj_<term>` the run's history logs.
+  - `objective-coef`: coef-train's loss, goal and coll per held-out start (`--heldout-seed`,
+    `--heldout-agents`, `--horizon`, `--grid`, `--rollout surrogate|bicycle`). Their mean is
+    what the trainer's step record logs at a fixed net.
+
+  A run with several training seeds is one table per seed (`--label`). `learn-report` takes
+  them all (`--arms` repeated) and pools them: the CI resamples the runs and the units.
 - **The report** (`learn-report`) marks each claim pass or fail:
-  - `loss`: each held-out loss term at the last evaluation beats the first, with a CI over seeds
-    (held-out metrics with no training twin, such as reach, get marks but no claim);
+  - `loss`, against the arms: on a loss case, each held-out term is lower for trained than for
+    each other arm (the CI of the paired difference lies below 0);
+  - `loss`, along the run: each held-out loss term at the last evaluation beats the first, with a
+    CI over seeds (held-out metrics with no training twin, such as reach, get marks but no claim);
   - `selection`: the pick was made on held-out data, and is not step 0;
   - `task`: on each primary metric, trained beats each other arm (the CI of the paired
     difference excludes 0 on the better side);
   - `planted`: the recovered latent is within its bound, and the untrained net's is not.
 
   A claim the data cannot support fails and says why. `--strict` exits 1 on any failure.
+
+  On the five-seed `grl-snam train` retrain in [docs/learning-validation.md](docs/learning-validation.md),
+  the loss family fails against both arms. The picks' held-out objective is worse than untrained
+  (+0.75 [+0.26, +1.35]), and it ties a constant at each pick's own head means (+0.03
+  [−0.01, +0.07]). The one term that beats untrained, goal (−0.06), ties that constant
+  (+0.0004).
 
 ### Live inside VolRover3
 

@@ -3,7 +3,9 @@ the same arms, test pairs and paired bootstrap as ``sdf_arms.py``. The histories
 for the trained runs only; this puts the untrained, constant and published arms beside them.
 
 Per pair: ``goal`` (squared end distance after the training horizon), ``col`` (the clearance
-softplus), ``reg`` (the pull toward the bias regime) and ``loss = goal + 3 col + 0.1 reg``.
+softplus), ``reg`` (the pull toward the bias regime) and ``loss = goal + 3 col + 0.1 reg``, from
+the library's scorer (``grl_snam.learning.objective.sdf_terms``, which ``grl-snam arms-eval
+--cases objective-sdf`` runs for one training seed's arms).
 
     python experiments/learning_proof/objective_arms.py --sdf nav_sdf.npz --runs runs/retrain \\
         --published coef_sdf.pt --constants arms.json --out objective.json
@@ -18,9 +20,8 @@ import sys
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
-import grl_snam.sdf_nav as sdf_nav
+from grl_snam.learning import objective
 from grl_snam.tools import sdf_eval
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,17 +31,8 @@ from stats import level, paired  # noqa: E402
 TERMS = ("loss", "goal", "col", "reg")
 
 
-@torch.no_grad()
 def per_pair(model, scene, s, g, meta):
-    al, be, ga = model(sdf_nav.coef_feats(scene.field, s, g))
-    oT, _, clr = sdf_nav.sdf_rollout(
-        scene.field, s, torch.zeros_like(s), g, al, be, ga, int(meta["horizon"]), nsub=1,
-        rr=meta["rr"], d_hat=meta["d_hat"], dt=meta["dt"], vmax=meta["vmax"],
-    )  # fmt: skip
-    goal = ((oT - g) ** 2).sum(-1)
-    col = F.softplus((0.02 - clr) / 0.02)
-    reg = (be - 3.0) ** 2 + (ga - 4.0) ** 2 + (al - 1.0) ** 2
-    return {"goal": goal, "col": col, "reg": reg, "loss": goal + 3.0 * col + 0.1 * reg}
+    return objective.sdf_terms(model, scene, s, g, **objective.sdf_meta(scene, meta))
 
 
 def main(argv=None):
@@ -72,7 +64,7 @@ def main(argv=None):
     units = {a: [per_pair(m, scene, s, g, meta) for m in ms] for a, ms in arms.items()}
 
     def stack(a, t):
-        return np.stack([u[t].numpy().astype(np.float64) for u in units[a]])
+        return np.stack([np.asarray(u[t], np.float64) for u in units[a]])
 
     out = {"seeds": seeds, "picks": picks, "levels": {}, "diffs": {}}
     pairs = [("trained", b) for b in ("untrained", "constant", "published", "constant_trained")]
