@@ -23,7 +23,11 @@ The two arms run on the same seed and stand side by side, communication off on t
   the update that took it in, red when not, as wide as its bytes;
 - **the panels:** per agent, its status, version, ``pi`` (risk, barrier), damping, accepts and
   rejects with the last reason, payload bytes sent and received, and its energy ledger (work,
-  heat, kinetic change, shaping jumps, the balance residual).
+  heat, kinetic change, shaping jumps, the balance residual);
+- **the learning panels** (:class:`Learning`, on pycvc_gl's ``chart:``, libcvc 3.7.14): for one
+  agent, each arm's held-out field loss before and after each update, with the gate's
+  threshold, and a chosen statistic (the field against the truth, damping, ``pi``, the plant's
+  held-out loss, replay cost). An older pycvc_gl hides them.
 
 The headline shows the reference's established result with its seed counts, this run's own number
 once both arms finish, and what the reference has not established (replay, receiver field
@@ -44,7 +48,8 @@ from pathlib import Path
 
 from grl_snam.ariadne import _host
 from grl_snam.coph import feed
-from grl_snam.coph.timeline import Floor, Timeline, comparison, log_arrays
+from grl_snam.coph.records import Config
+from grl_snam.coph.timeline import Floor, Timeline, comparison, learning, log_arrays
 
 TITLES = {
     "crossing": "Crossing traverses: what one agent has seen saves the other's route",
@@ -72,6 +77,10 @@ ARM_LABELS = {
     "no_learning": "no rx fitting",
     "decision": "shared decision",
 }
+#: The arms' names in the Learning charts' legends and markers.
+ARM_SHORT = {"disabled": "off", "none": "off", "reciprocal_fixed": "CoPH",
+             "one_way_01": "CoPH 0>1", "one_way_10": "CoPH 1>0", "field": "field",
+             "raw": "raw", "no_learning": "no rx fit", "decision": "decision"}  # fmt: skip
 COLORS = ((0.93, 0.45, 0.13), (0.16, 0.47, 0.85))  # agent 0, agent 1
 ACCEPT, REJECT = (0.15, 0.75, 0.25), (0.86, 0.16, 0.16)
 GAP = 3.0  # metres between the two arms' floors
@@ -229,6 +238,11 @@ class Transport:
         self.host.set("play.playing", True)
         self.host.set("play.live", False)
 
+    def seek(self, t):
+        """Put the play head at ``t`` (a click on a learning chart), leaving Live."""
+        self.t = max(float(t), 0.0)
+        self.host.set("play.live", False)
+
     def tick(self, dt, head, live):
         host, duration = self.host, max(head, 1e-6)
         pos = host.get_float("play.pos", 0.0)
@@ -339,6 +353,140 @@ def publish(host, demo, source, t, seed, scene):
         state = f"running: {heads} ({source.origin})"
     host.set("coph.status", state)
     host.set("coph.unestablished", UNESTABLISHED)
+
+
+# ── the learning panels ────────────────────────────────────────────────────────────────────────
+
+SLACK = Config().validation_slack
+#: The Learning window's second chart (``learn.show``): its caption, whether its y is log, and
+#: the series it draws from each arm's :func:`~grl_snam.coph.timeline.learning`, as (key, label
+#: suffix, line style, band keys or None).
+STATS = {
+    "field": (
+        "|r - r_true| where it sensed (10-90% band) and not",
+        False,
+        (("error_seen", "sensed", "solid", ("error_seen_lo", "error_seen_hi")),
+         ("error_unseen", "not sensed", "dashed", None)),
+    ),
+    "damping": (
+        "Damping: the plant fit's estimate, and the world's",
+        False,
+        (("damping", "estimate", "solid", None),),
+    ),
+    "policy": (
+        "pi_risk (solid) and pi_barrier (dashed), from replay",
+        False,
+        (("pi_risk", "pi_risk", "solid", None), ("pi_barrier", "pi_barrier", "dashed", None)),
+    ),
+    "plant": (
+        "Held-out plant loss after each update",
+        True,
+        (("plant_heldout", "held-out", "solid", None),),
+    ),
+    "replay": (
+        "Replay cost after each update's line search",
+        False,
+        (("replay", "replay", "solid", None),),
+    ),
+}  # fmt: skip
+
+
+class Learning:
+    """The Learning window: what each arm's learner for one agent (``learn.agent``) measured at
+    each of its updates, on pycvc_gl's ``chart:`` (libcvc 3.7.14, ``host.set_plot``).
+
+    - ``learn.heldout``: the held-out field loss before and after each update, which the gate
+      compares on the learner's validation readings, and the gate's threshold, before + slack.
+    - ``learn.stat``: the statistic ``learn.show`` picks (:data:`STATS`).
+
+    Both mark where the agent first knew of a door and where it arrived, put a cursor at the play
+    head (``learn.t``), and seek there on a click (``learn.pick``, then ``learn_seek``). Without
+    ``host.set_plot`` (an older pycvc_gl) this does nothing, and the document hides the window
+    (``(has? "chart")``)."""
+
+    #: How often a growing run's charts are redrawn (wall seconds).
+    REFRESH = 0.25
+
+    def __init__(self, host, demo, timelines, transport):
+        self.host, self.demo, self.transport = host, demo, transport
+        self.enabled = hasattr(host, "set_plot")
+        self.floors = [Floor(tl.spec, feed.world(demo, tl.spec), px_per_m=4) for tl in timelines]
+        self.key, self._at, self._t = None, -math.inf, None
+        if self.enabled:
+            host.on("learn_seek", self.seek)
+
+    def seek(self):
+        t = self.host.get_float("learn.pick", math.nan)
+        if math.isfinite(t):
+            self.transport.seek(t)
+
+    def publish(self, timelines, t, finished=False):
+        """Move the cursor to ``t``, and redraw the charts when the choice or the data changed
+        (a growing run's at most every :attr:`REFRESH` seconds, until ``finished``)."""
+        if not self.enabled:
+            return
+        host = self.host
+        if self._t is None or abs(t - self._t) > 1e-3:
+            host.set("learn.t", round(t, 3))
+            self._t = t
+        agent = min(max(host.get_int("learn.agent", 0), 0), 1)
+        show = host.get("learn.show", "field")
+        show = show if show in STATS else "field"
+        data = tuple((len(tl.agents[agent].updates), tl.agents[agent].outcome is not None)
+                     for tl in timelines)  # fmt: skip
+        key, now = (agent, show, data), time.perf_counter()
+        if key == self.key or not any(n for n, _ in data):
+            return
+        same_choice = self.key is not None and self.key[:2] == key[:2]
+        if same_choice and not finished and now - self._at < self.REFRESH:
+            return
+        self.key, self._at = key, now
+        series = [learning(tl, agent, floor) for tl, floor in zip(timelines, self.floors)]
+        markers = self.markers(timelines, agent)
+        names = [ARM_SHORT.get(tl.arm, tl.label) for tl in timelines]
+        heldout = []
+        for k, (name, s) in enumerate(zip(names, series)):
+            heldout.append(dict(x=s["t"], y=s["field_before"], label=f"{name} before",
+                                style=f"c{k} points"))  # fmt: skip
+            heldout.append(dict(x=s["t"], y=s["field_heldout"], label=f"{name} after",
+                                style=f"c{k}"))  # fmt: skip
+        last = series[-1]
+        heldout.append(dict(x=last["t"], y=last["field_before"] + SLACK,
+                            label=f"gate ({names[-1]})", style="c7 dotted"))  # fmt: skip
+        host.set_plot("learn.heldout", heldout, markers=markers)
+        caption, log_y, keys = STATS[show]
+        stat = []
+        for k, (arm, s) in enumerate(zip(names, series)):
+            for name, suffix, line, band in keys:
+                d = dict(x=s["t"], y=s[name], label=f"{arm} {suffix}", style=f"c{k} {line}")
+                if band:
+                    d.update(lo=s[band[0]], hi=s[band[1]])
+                stat.append(d)
+        if show == "damping":
+            truth = float(timelines[0].spec.get("damping", math.nan))
+            ends = [min(s["t"][0] for s in series if len(s["t"])),
+                    max(s["t"][-1] for s in series if len(s["t"]))]  # fmt: skip
+            stat.append(dict(x=ends, y=[truth, truth], label="the world's", style="c7 dashed"))
+        host.set_plot("learn.stat", stat, markers=markers)
+        host.set("learn.log", "1" if log_y else "0")
+        arms = "; ".join(f"{n}: {tl.label}" for n, tl in zip(names, timelines))
+        host.set("learn.caption", f"Agent {ROLES[self.demo][agent]}. {arms}")
+        host.set("learn.note", caption)
+
+    @staticmethod
+    def markers(timelines, agent):
+        """Where the agent first knew of an obstacle (a door) and where it reached its goal,
+        per arm."""
+        out = []
+        for tl in timelines:
+            a = tl.agents[agent]
+            a.index()
+            name = ARM_SHORT.get(tl.arm, tl.label)
+            if a.geometry:
+                out.append((a.geometry[0][0], f"door ({name})", "note"))
+            if a.outcome and a.outcome["success"]:
+                out.append((a.outcome["finish_time"], f"goal ({name})", "note"))
+        return sorted(out)
 
 
 # ── the scene ──────────────────────────────────────────────────────────────────────────────────
@@ -583,6 +731,7 @@ def main(argv=None) -> int:
             _host.track_camera(host, length=2.0)
         transport = Transport(host, title)
         host.on("restart", transport.restart)
+        panels = Learning(host, demo, source.timelines, transport)
         host.set("view.heat", args.heat)
         if args.at > 0:
             transport.t = args.at
@@ -598,6 +747,7 @@ def main(argv=None) -> int:
                 return
             t = transport.tick(dt, source.head(), source.live_running)
             publish(host, demo, source, t, seed, args.scene)
+            panels.publish(source.timelines, t, source.finished and not source.live_running)
             if view is not None:
                 view.draw(t, camera)
             if not drawn and source.finished and not source.live_running:

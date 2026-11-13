@@ -12,10 +12,17 @@
 #   both arms finish, and what the panels show that the reference has not established.
 # - Agents: one row per agent per arm: its learner, its packet bytes and its energy ledger.
 # - View: the floor's heat map (the true risk field, or an agent's own r) and the camera.
+# - Learning (pycvc_gl's chart:, libcvc 3.7.14; hidden without it): for one agent, what each
+#   arm's learner measured at each update. The held-out field loss before and after it, which
+#   the gate compares, with the gate's threshold; below, a statistic Show picks. A click on
+#   either chart seeks there.
 
 meta:
   name: GRL-SNAM CoPH
   min_libcvc: 3.4.0
+
+requires:
+  - {name: chart, optional: true}   # the Learning window (libcvc 3.7.14)
 
 init: |
   (begin
@@ -25,7 +32,12 @@ init: |
     (state-set "play.live" "1")
     (state-set "play.pos" "0")
     (state-set "view.heat" "truth")
-    (state-set "view.camera" "overview"))
+    (state-set "view.camera" "overview")
+    (state-set "view.learning" "1")
+    (state-set "learn.agent" "0")
+    (state-set "learn.show" "field")
+    (state-set "learn.log" "0")
+    (state-set "learn.t" "0"))
 
 menubar:
   - menu: CoPH
@@ -46,7 +58,7 @@ windows:
   - window: CoPH
     id: transport
     pos: [8, 28]
-    size: [300, 250]
+    size: [300, 272]
     children:
       - text: ""
         bind: play.title
@@ -76,6 +88,9 @@ windows:
         bind: view.camera
         options: [Overview, Follow agent 0 (right)]
         values: [overview, follow]
+      - checkbox: Learning panels
+        bind: view.learning
+        visible_when: (has? "chart")
 
   - window: Headline
     id: headline
@@ -92,6 +107,44 @@ windows:
         bind: coph.status
       - text: ""
         bind: coph.unestablished
+
+  - window: Learning
+    id: learning
+    pos: [596, 164]
+    size: [420, 390]
+    visible_when: (and (has? "chart") (= (state-get "view.learning") "1"))
+    children:
+      - text: ""
+        bind: learn.caption
+      - combo: Agent
+        bind: learn.agent
+        options: [Agent 0, Agent 1]
+        values: ["0", "1"]
+      - chart: Held-out field loss, each update
+        bind: learn.heldout
+        log_y: true
+        legend: right
+        x_label: time (s)
+        cursor: learn.t
+        pick: learn.pick
+        on: learn_seek
+        height: 110
+      - combo: Show
+        bind: learn.show
+        options: [Own field against the truth, Damping against the world's, Policy pi,
+                  Held-out plant loss, Replay cost]
+        values: [field, damping, policy, plant, replay]
+      - text: ""
+        bind: learn.note
+      - chart: The chosen statistic
+        bind: learn.stat
+        log_y: learn.log
+        legend: right
+        x_label: time (s)
+        cursor: learn.t
+        pick: learn.pick
+        on: learn_seek
+        height: 110
 
   - window: Agents
     id: agents

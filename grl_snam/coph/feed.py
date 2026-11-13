@@ -14,9 +14,13 @@ Messages are tuples of plain JSON values (lists, floats, ints, strings, bools):
   held-input step and its energy balance.
 - ``("packet", identity, sender, recipient, [qx, qy], bytes, timestamp)``: a delivered packet,
   sent just before the update that took it in. ``bytes`` is the length of its compact JSON.
-- ``("update", agent, t, tick, accepted, reason, shaping_jump, [identities], snapshot)``: an
-  update and the learner after it. ``snapshot`` holds ``version``, ``damping``, ``policy``
-  ``[pi_risk, pi_barrier]`` and ``stages``, each ``{id, bounds, centers, weights}``.
+- ``("update", agent, t, tick, accepted, reason, shaping_jump, [identities], snapshot, stats)``:
+  an update and the learner after it. ``snapshot`` holds ``version``, ``damping``, ``policy``
+  ``[pi_risk, pi_barrier]`` and ``stages``, each ``{id, bounds, centers, weights}``. ``stats``
+  holds what the update measured (:data:`STATS`): the held-out field and plant losses before and
+  after it (on the learner's validation records, which its gate compares), the replay cost
+  before and after, the policy gradient's norm and the damping it proposed; ``None`` where the
+  update measured nothing.
 - ``("geometry", agent, t, kind, obstacle)``: an obstacle the agent sensed or received.
 - ``("outcome", agent, success, collision, start_time, finish_time, goal_gap, cost, components,
   bytes)``: the end of the episode, with the runner's cost components (time, risk, effort,
@@ -38,6 +42,17 @@ DEFAULT_SEEDS = {"crossing": 76000, "hazard": 79000}
 #: The demos' full horizons (crossing_demo.main's and hazard_demo.main's --steps defaults).
 DEFAULT_STEPS = {"crossing": 2500, "hazard": 1800}
 HAZARD_SCENES = ("mild", "moderate", "severe", "double_mild")
+#: An update message's ``stats``: its key, and the runner's diagnostic key it is read from.
+STATS = (
+    ("field_before", "field_validation_before"),
+    ("field_after", "field_validation_after"),
+    ("plant_before", "plant_validation_before"),
+    ("plant_after", "plant_validation_after"),
+    ("replay_before", "replay_before"),
+    ("replay_after", "replay_after"),
+    ("gradient_norm", "policy_gradient_norm"),
+    ("damping_proposal", "damping_proposal"),
+)
 
 
 def arms(demo):
@@ -166,6 +181,10 @@ def _snapshot(post):
     )
 
 
+def _stats(diagnostic):
+    return {k: None if diagnostic.get(src) is None else float(diagnostic[src]) for k, src in STATS}
+
+
 def emit(view, cursor):
     """The messages for everything in ``view`` past ``cursor``, which it advances.
 
@@ -242,6 +261,7 @@ def emit(view, cursor):
                         d.get("shaping_jump", 0.0),
                         list(u["packets"]),
                         _snapshot(u["post"]),
+                        _stats(d),
                     )
                 )
             )

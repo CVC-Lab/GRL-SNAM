@@ -194,3 +194,62 @@ def test_log_has_the_cars_shape_and_the_ledger(crossing):
     assert [c["label"] for c in meta["columns"]] == ["left", "left", "right", "right"]
     assert np.array_equal(out["x"][:, :2], out["x"][:, 2:])  # the same episode twice
     assert comparison("crossing", a, b)["saving"] == [0.0, 0.0]
+
+
+# ── what the learners measured ─────────────────────────────────────────────────────────────────
+
+
+def test_updates_carry_what_they_measured(crossing):
+    r = crossing["t1"]
+    updates = [m for m in feed.messages(r) if m[0] == "update"]
+    expected = [(i, u["diagnostic"]) for i in range(2) for u in r["updates"][i]]
+    assert len(updates) == len(expected)
+    for m, (i, d) in zip(updates, expected):
+        assert m[1] == i and list(m[9]) == [k for k, _ in feed.STATS]
+        for k, src in feed.STATS:
+            assert m[9][k] == (None if d.get(src) is None else float(d[src])), k
+
+
+def test_learning_is_what_each_update_measured(crossing):
+    import numpy as np
+
+    from grl_snam.coph.timeline import LEARNING, Floor, Timeline, field_error, learning
+
+    r = crossing["t1"]
+    floor = Floor(r["spec"], feed.world("crossing", r["spec"]), px_per_m=4)
+    replay = Timeline.from_episode("crossing", r)
+    live = Timeline("crossing", r["spec"], "reciprocal_fixed").ingest(crossing["live"])
+    for i in range(2):
+        got = learning(replay, i, floor)
+        assert list(got) == list(LEARNING) and len(got["t"]) == len(r["updates"][i])
+        for k, u in enumerate(r["updates"][i]):
+            d, post = u["diagnostic"], u["post"]
+            before, after = d["field_validation_before"], d["field_validation_after"]
+            assert got["t"][k] == u["time"] and got["version"][k] == post["version"]
+            assert got["field_before"][k] == before and got["field_proposed"][k] == after
+            assert got["field_heldout"][k] == (after if d["accepted"] else before)
+            plant = d["plant_validation_after" if d["accepted"] else "plant_validation_before"]
+            assert got["plant_heldout"][k] == plant
+            assert [got["pi_risk"][k], got["pi_barrier"][k]] == post["policy"]
+            assert got["damping"][k] == post["damping"]
+        # The plant fit finds the world's damping (0.85) from 0.6, 0.15 an update.
+        assert got["damping"][0] == 0.6
+        assert got["damping"][-1] == pytest.approx(r["spec"]["damping"], abs=1e-3)
+        # The field error is |r - r_true| over the covered corridor, split by where it sensed.
+        last = r["updates"][i][-1]
+        seen = np.zeros(floor.points.shape[:2], bool)
+        for s in r["samples"][i]:
+            if s["time"] <= last["time"] + 1e-9:
+                seen |= ((floor.points - s["x"][:2]) ** 2).sum(-1) <= 1.25**2
+        want = field_error(floor, last["post"]["stages"], seen)
+        keys = ("error_seen", "error_seen_lo", "error_seen_hi", "error_unseen")
+        assert [got[k][-1] for k in keys] == pytest.approx(want, nan_ok=True)
+        assert np.isfinite(got["error_seen"]).all()
+        assert (got["error_seen_lo"] <= got["error_seen_hi"]).all()
+        # A live run measures the same, and until= stops at that time.
+        for k in LEARNING:
+            np.testing.assert_array_equal(learning(live, i, floor)[k], got[k])
+        early = learning(replay, i, floor, until=3.0)
+        n = int((got["t"] <= 3.0).sum())
+        assert 0 < n < len(got["t"]) and len(early["t"]) == n
+        np.testing.assert_array_equal(early["field_heldout"], got["field_heldout"][:n])
