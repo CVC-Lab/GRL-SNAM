@@ -266,6 +266,58 @@ def test_round_trip_train_coef_energy(tmp_path):
     assert h.schema == "grl_snam.coef_energy_history/v1"
     traj = next(p for p in h.pairs() if p.term == "traj")
     assert traj.train.name == "epoch.train.traj" and traj.heldout.name == "epoch.heldout.traj"
-    assert traj.heldout.x.tolist() == [0, 1, 2]
-    assert h.selected() is not None and h.selected().x == float(np.argmin(traj.heldout.y))
+    # Epochs 0..2, after an init record (epoch -1) where the writer has one.
+    x = traj.heldout.x.tolist()
+    assert x[-3:] == [0, 1, 2] and x[:-3] in ([], [-1.0])
+    epochs = traj.heldout.x >= 0
+    best = traj.heldout.x[epochs][np.argmin(traj.heldout.y[epochs])]
+    assert h.selected() is not None and h.selected().x == float(best)
     assert {"alpha", "beta", "gamma"} <= set(h.heads())
+
+
+def test_prefixed_heldout_terms_pair_and_metrics_take_their_direction():
+    h = _one("sdf_train_history.jsonl")
+    pairs = {p.term: p for p in h.pairs() if p.heldout is not None}
+    assert pairs["obj_goal"].train.name == "step.terms.goal" and pairs["obj_goal"].is_loss
+    assert pairs["obj_loss"].train.name == "step.terms.loss"
+    assert pairs["reach"].train is None and not pairs["reach"].is_loss
+    assert pairs["reach"].mode == "max" and pairs["min_clear_m"].mode == "max"
+    assert pairs["gap_m"].mode == "min" and pairs["obj_goal"].mode == "min"
+    assert pairs["fitness"].is_loss and pairs["fitness"].mode == "max"
+    assert h.mode_of("checkpoint.heldout.reach") == "max"
+    assert h.mode_of("checkpoint.nope") == "min"
+    assert h.meta["fitness"] == "heldout seek-drive reach"  # a string here: just meta
+    assert h.selected().x == 2100
+
+
+def test_a_header_can_declare_what_to_maximize():
+    recs = [{"kind": "header", "maximize": ["score_x"]}]
+    recs += [{"kind": "e", "epoch": i, "heldout": {"score_x": i, "other": i}} for i in range(3)]
+    h = H.History.from_records(recs)
+    modes = {p.term: p.mode for p in h.pairs()}
+    assert modes == {"score_x": "max", "other": "min"}
+    assert H.History.from_records([{"kind": "header", "maximize": "x"}]).maximize == ()
+
+
+def test_init_record_joins_the_first_evaluated_series():
+    h = _one("coef_energy_history_planted.jsonl")
+    traj = h["epoch.heldout.traj"]
+    assert traj.x.tolist() == [-1.0, 0.0, 1.0] and traj.axis == "epoch"
+    assert "init.heldout.traj" not in h
+    assert h["epoch.heads.alpha.mean"].x[0] == -1.0
+    rows = h.checkpoints()
+    assert rows[0].kind == "init" and rows[0].x == -1.0
+    assert rows[0].heldout["traj"] == pytest.approx(0.007456472463672981)
+    # planted values are recorded as series but are not loss terms.
+    assert "epoch.heldout.planted.lo.rel_err" in h
+    assert not any("planted" in p.term for p in h.pairs())
+    # An init record with nothing else, or with its own x.
+    (only,) = H.parse_lines([json.dumps({"kind": "init", "heldout": {"t": 1.0}})])
+    assert only["init.heldout.t"].x.tolist() == [0.0]
+    (own,) = H.parse_lines(
+        [
+            json.dumps({"kind": "init", "step": 5, "heldout": {"t": 2.0}}),
+            json.dumps({"kind": "c", "step": 10, "heldout": {"t": 1.0}}),
+        ]
+    )
+    assert own["c.heldout.t"].x.tolist() == [5.0, 10.0]

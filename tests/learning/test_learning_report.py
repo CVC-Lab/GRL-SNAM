@@ -19,11 +19,10 @@ FIX = Path(__file__).resolve().parents[1] / "fixtures" / "learning_history"
 def _run(heldout, *, seed=0, train=None, best_at=None, planted=None):
     """A synthetic history: per epoch a held-out term, a training twin, a pick flag."""
     recs = [{"kind": "header", "schema": "test.history/v1", "seed": seed}]
+    train = list(heldout) if train is None else train  # a twin: a loss term
     best = math.inf
     for ep, v in enumerate(heldout):
-        rec = {"kind": "epoch", "epoch": ep, "heldout": {"loss": v}}
-        if train is not None:
-            rec["train"] = {"loss": train[ep]}
+        rec = {"kind": "epoch", "epoch": ep, "heldout": {"loss": v}, "train": {"loss": train[ep]}}
         flag = v < best if best_at is None else ep == best_at
         best = min(best, v)
         rec["best_heldout"] = flag
@@ -77,10 +76,14 @@ def test_one_run_uses_the_curves_own_noise_scale():
 def test_fitness_is_maximized():
     h = load(FIX / "coef_train_history.jsonl")
     c = _by_id(R.report(h))["loss:checkpoint.fitness"]
-    assert c["evidence"]["mode"] == "max" and c["status"] == "pass"  # 0.40 -> 0.60
-    # --maximize turns a term the other way.
-    c2 = _by_id(R.report([_run([0.2, 0.5, 0.9])], maximize=["loss"]))["loss:epoch.heldout.loss"]
-    assert c2["evidence"]["mode"] == "max"
+    # 0.40 -> 0.60 is a gain, but 4 evaluations of one run are too few to pass.
+    assert c["evidence"]["mode"] == "max" and c["evidence"]["gain"]["mean"] == pytest.approx(0.2)
+    assert c["status"] == "fail" and "too short" in c["evidence"]["reason"]
+    # --maximize turns a term the other way; a rising curve of 6 evaluations then passes.
+    rising = _run([0.2, 0.5, 0.7, 0.8, 0.85, 0.9])
+    c2 = _by_id(R.report([rising], maximize=["loss"]))["loss:epoch.heldout.loss"]
+    assert c2["evidence"]["mode"] == "max" and c2["status"] == "pass"
+    assert c2["evidence"]["margin"] >= 0 and "1 run" in c2["evidence"]["basis"]
 
 
 def test_selection_claims():
@@ -259,3 +262,38 @@ def test_grl_snam_subcommands_pass_through(tmp_path):
     assert json.loads(out.read_text())["schema"] == R.REPORT_SCHEMA
     got = CliRunner().invoke(main, ["arms-eval", "--help"])
     assert got.exit_code == 0 and "--arm" in got.output
+
+
+def test_real_sdf_train_history_claims_loss_terms_only():
+    """grl-snam train's history: objective terms obj_<t> pair with the step terms <t>; the drive
+    metrics have no twin, so they get marks (reach and clearance higher-is-better) and no claim."""
+    (h,) = load(FIX / "sdf_train_history.jsonl")
+    rep = R.report([h], n_boot=200)
+    ids = _by_id(rep)
+    assert ids["loss:checkpoint.heldout.obj_goal"]["evidence"]["train"] == "step.terms.goal"
+    assert "loss:checkpoint.fitness" in ids
+    assert not any(k.endswith((".reach", ".path_m", ".min_clear_m")) for k in ids)
+    untested = {u["series"] for u in rep["untested"] if "series" in u}
+    assert {"checkpoint.heldout.reach", "checkpoint.heldout.path_m"} <= untested
+    curves = rep["runs"][0]["curves"]
+    assert curves["checkpoint.heldout.reach"]["mode"] == "max"
+    assert curves["checkpoint.heldout.min_clear_m"]["mode"] == "max"
+    assert curves["checkpoint.heldout.gap_m"]["mode"] == "min"
+    assert curves["checkpoint.heldout.obj_goal"]["loss_term"] is True
+    assert curves["checkpoint.heldout.reach"]["loss_term"] is False
+    assert "untested: checkpoint.heldout.reach" in R.format_claims(rep)
+
+
+def test_init_record_is_the_untrained_first_point_and_planted_is_claimed():
+    (h,) = load(FIX / "coef_energy_history_planted.jsonl")
+    ids = _by_id(R.report([h], n_boot=200))
+    traj = ids["loss:epoch.heldout.traj"]["evidence"]
+    assert traj["first"][0] == pytest.approx(0.007456472463672981)  # the init record
+    assert ids["planted:lo:recovered"]["evidence"]["runs"][0]["first"] == pytest.approx(
+        0.647154438495636
+    )
+    assert "planted:hi:untrained-fails" in ids and "planted:ratio:recovered" in ids
+    # Three evaluations of one run cannot show a gain over noise.
+    assert ids["loss:epoch.heldout.traj"]["status"] == "fail"
+    assert "too short" in ids["loss:epoch.heldout.traj"]["evidence"]["reason"]
+    assert not any(".planted." in k for k in ids if k.startswith("loss:"))

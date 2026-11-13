@@ -4,12 +4,16 @@
 
 The claims, by family:
 
-- **loss**, per held-out term in the histories: the term at the LAST evaluation is better than at
-  the first, the untrained policy at step 0. The last and not the best: the best is picked on the
-  same held-out data, so best against first is biased in the best's favour (the evidence lists
-  the picked value too). With several runs (seeds) the per-run gains are bootstrapped and the CI
-  must lie above 0. With one run the gain must exceed ``delta * IQR`` of the run's own smoothed
-  curve; the evidence says that basis, which is weaker than a CI.
+- **loss**, per held-out LOSS term in the histories (one with a training twin, the losses that
+  carry gradient, or the run's ``fitness``): the term at the LAST evaluation is better than at the
+  first, the untrained policy (step 0, or the ``init`` record). The last and not the best: the
+  best is picked on the same held-out data, so best against first is biased in the best's favour
+  (the evidence lists the picked value too). With several runs (seeds) the per-run gains are
+  bootstrapped and the CI must lie above 0. With one run of at least 5 evaluations the gain must
+  exceed ``max(delta * IQR, z * noise)`` of the run's own curve; the evidence says that basis,
+  which is weaker than a CI. One shorter run cannot pass.
+  Held-out metrics with no twin (reach, a clearance) get their marks but no claim, and are listed
+  under ``untested``.
 - **selection**: each run picked its checkpoint on held-out data (a held-out best, or an ``end``
   record's pick at a held-out evaluation), and the pick is not the first evaluation. A pick at
   step 0 means no step improved on the untrained policy.
@@ -37,10 +41,13 @@ from pathlib import Path
 
 from .arms import arm_values
 from .curves import DEFAULT, MarkParams, marks
-from .history import History, classify, load, mode_of
+from .history import History, TermPair, classify, load
 from .stats import N_BOOT, as_rng, negate, paired_diff, summarize
 
 REPORT_SCHEMA = "grl_snam.learn_report/v1"
+#: A single run's loss claim needs this many evaluations (the noise floor needs 3 second
+#: differences); with fewer, only several runs can show a gain.
+MIN_POINTS_ONE_RUN = 5
 FAMILIES = ("loss", "selection", "task", "planted")
 
 
@@ -78,6 +85,17 @@ def _ordered_names(runs: Sequence[History], pick) -> list[str]:
 # --------------------------------------------------------------------------- loss
 
 
+def _loss_pairs(h: History) -> dict[str, TermPair]:
+    return {p.heldout.name: p for p in h.pairs() if p.is_loss}
+
+
+def _mode(h: History, name: str, maximize: Sequence[str]) -> str:
+    term = (classify(name) or ("", name))[1]
+    if term in maximize or name in maximize:
+        return "max"
+    return h.mode_of(name)
+
+
 def loss_claims(
     runs: Sequence[History],
     *,
@@ -86,12 +104,15 @@ def loss_claims(
     n_boot: int = N_BOOT,
     rng=None,
 ) -> list[Claim]:
+    """The loss family: one claim per held-out LOSS term (one with a training twin, or the run's
+    ``fitness``); other held-out metrics are marked but not claimed (:func:`unclaimed`)."""
     rng = as_rng(rng)
     out = []
-    names = _ordered_names(runs, lambda h: [s.name for s in h.heldout_series()])
+    names = _ordered_names(runs, lambda h: list(_loss_pairs(h)))
     for name in names:
         term = classify(name)[1]
-        mode = "max" if term in maximize or name in maximize else mode_of(term)
+        owner = next(h for h in runs if name in _loss_pairs(h))
+        mode = _mode(owner, name, maximize)
         per = [(h, h[name].finite()) for h in runs if name in h]
         per = [(h, s) for h, s in per if len(s) >= 2]
         better = "lower" if mode == "min" else "higher"
@@ -112,20 +133,42 @@ def loss_claims(
             "last": last,
             "picked": [_picked(h, s) for h, s in per],
         }
+        twin = _loss_pairs(owner)[name].train
+        if twin is not None:
+            ev["train"] = twin.name
         if len(per) >= 2:
             g = summarize(gain, n_boot, rng)
             passed = g["ci95"][0] > 0.0
             ev.update(gain=g, basis=f"{len(per)} runs: bootstrap CI of the per-run gain > 0")
+        elif len(per[0][1]) < MIN_POINTS_ONE_RUN:
+            passed = False
+            ev.update(
+                gain={"mean": gain[0], "n": 1},
+                reason=f"1 run of {len(per[0][1])} points: too short to tell a gain from noise "
+                f"(needs {MIN_POINTS_ONE_RUN}, or more runs)",
+            )
         else:
             m = marks(per[0][1].x, per[0][1].y, mode, params)
-            margin = params.delta * m.iqr if math.isfinite(m.iqr) else math.inf
+            margin = max(params.delta * m.iqr, params.z * m.noise)
+            margin = margin if math.isfinite(margin) else math.inf
             passed = gain[0] > margin
             ev.update(
                 gain={"mean": gain[0], "n": 1},
                 margin=margin,
-                basis="1 run: gain > delta * IQR of its smoothed curve (no CI)",
+                basis="1 run: gain > max(delta * IQR, z * noise) of its curve (no CI)",
             )
         out.append(Claim(f"loss:{name}", "loss", statement, passed, ev))
+    return out
+
+
+def unclaimed(runs: Sequence[History]) -> list[dict]:
+    """Held-out series no loss claim is made on: metrics of the held-out evaluation with no
+    training twin (reach, a clearance, a path length). Their marks are in the report."""
+    out = []
+    for name in _ordered_names(
+        runs, lambda h: [s.name for s in h.heldout_series() if s.name not in _loss_pairs(h)]
+    ):
+        out.append({"series": name, "reason": "no training twin: a metric, not a loss term"})
     return out
 
 
@@ -330,10 +373,11 @@ def curve_marks(runs: Sequence[History], params: MarkParams = DEFAULT, maximize=
     out = []
     for h in runs:
         curves = {}
+        losses = _loss_pairs(h)
         for s in h.heldout_series():
-            term = classify(s.name)[1]
-            mode = "max" if term in maximize or s.name in maximize else mode_of(term)
-            curves[s.name] = marks(s.x, s.y, mode, params).to_dict()
+            d = marks(s.x, s.y, _mode(h, s.name, maximize), params).to_dict()
+            d["loss_term"] = s.name in losses
+            curves[s.name] = d
         heads = {
             g: {st: _plateau(stats[st], params) for st in ("mean", "spread") if st in stats}
             for g, stats in h.heads().items()
@@ -378,9 +422,9 @@ def report(
     rng = as_rng(seed)
     claims = loss_claims(runs, params=params, maximize=maximize, n_boot=n_boot, rng=rng)
     claims += selection_claims(runs)
-    skipped: list[dict] = []
+    skipped: list[dict] = unclaimed(runs)
     if arms is not None:
-        task, skipped = task_claims(
+        task, task_skipped = task_claims(
             arms,
             trained=trained,
             against=against,
@@ -390,6 +434,7 @@ def report(
             rng=rng,
         )
         claims += task
+        skipped += task_skipped
     claims += planted_claims(runs, bound=planted_bound)
     families = {}
     for f in FAMILIES:
@@ -425,15 +470,18 @@ def format_claims(rep: Mapping) -> str:
         if isinstance(g, Mapping) and "ci95" in g:
             lo, hi = g["ci95"]
             detail = f"  {g['mean']:+.4g} [{lo:+.4g}, {hi:+.4g}] n={g['n']}"
-        elif isinstance(g, Mapping):
-            detail = f"  {g['mean']:+.4g} (1 run; margin {ev.get('margin', math.nan):.4g})"
         elif "reason" in ev:
             detail = f"  ({ev['reason']})"
+        elif isinstance(g, Mapping):
+            detail = f"  {g['mean']:+.4g} (1 run; margin {ev.get('margin', math.nan):.4g})"
         lines.append(f"{c['status'].upper():4}  {c['id']}: {c['statement']}{detail}")
     s = rep["summary"]
     lines.append(f"\n{s['pass']} pass, {s['fail']} fail")
     for u in rep.get("untested", []):
-        what = f"{u['case']}/{u['metric']}" + (f" vs {u['against']}" if "against" in u else "")
+        if "series" in u:
+            what = u["series"]
+        else:
+            what = f"{u['case']}/{u['metric']}" + (f" vs {u['against']}" if "against" in u else "")
         lines.append(f"untested: {what}: {u['reason']}")
     return "\n".join(lines)
 

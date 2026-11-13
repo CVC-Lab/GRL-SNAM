@@ -10,14 +10,21 @@ writer follows the same conventions, and the reader reads the conventions.
 - A ``header`` record starts a run, and its fields are the run's :attr:`History.meta`. A file a
   trainer appended to twice holds two runs.
 - A record's x is its ``step``, or its ``epoch`` when it has no step. A record with neither (an
-  ``end``) is kept whole in :attr:`History.extras`, by kind.
+  ``end``) is kept whole in :attr:`History.extras`, by kind. The exception is an ``init``
+  record, the evaluation of the untrained net before any training: it joins the series of the
+  run's first evaluated kind, one before that kind's first x (``epoch`` 0's init is epoch -1).
 - Every numeric leaf is a point of the series ``<kind>.<dotted.path>``: ``{"kind": "step",
   "step": 4, "grad_norm": {"mean": 0.3}}`` adds ``(4, 0.3)`` to ``step.grad_norm.mean``. A
   ``null`` or ``NaN`` is a gap. Strings, booleans and lists are not series.
 - A dict named ``heldout`` or ``heldout_terms``, or a record whose kind starts with ``heldout``,
   holds held-out values. A dict named ``train`` or ``terms`` holds training values. A bare
   ``loss`` is the total, and ``fitness`` is a held-out score where higher is better. A held-out
-  term and the training term of the same name are twins (:meth:`History.pairs`).
+  term and the training term of the same name are twins (:meth:`History.pairs`); a held-out
+  ``<prefix>_<term>`` (``obj_goal``) with no exact twin pairs with ``<term>``. A twin is what
+  makes a held-out value a LOSS TERM (lower is better, and it carries gradient); a held-out value
+  with no twin is a metric of the held-out evaluation (reach, a clearance), higher-is-better when
+  its name is in :data:`HIGHER_IS_BETTER` or the header's ``maximize`` list. A ``planted`` dict
+  (a planted latent's truth and recovery) is not a loss term.
 - ``heads.<g>.{mean,spread,dtheta_rel,...}`` describe head ``g`` (:meth:`History.heads`).
   ``grad_norm`` is a number or a dict of numbers (:meth:`History.grad_norms`).
 - A true leaf whose name starts with ``best`` (``best``, ``best_heldout``, ``heldout_pick.best``)
@@ -51,8 +58,14 @@ X_KEYS = ("step", "epoch")
 BLOB_KEYS = ("blob", "checkpoint")
 #: An ``end`` record's final pick.
 PICK_KEYS = ("best_step", "selected_step")
-#: Held-out terms where higher is better (every other term is a loss).
+#: Held-out scores where higher is better, twin or not.
 MAXIMIZE = frozenset({"fitness"})
+#: Held-out metrics with no training twin where higher is better (every other one is lower).
+HIGHER_IS_BETTER = frozenset(
+    {"fitness", "reach", "reach_rate", "arrival_rate", "success_rate", "min_clear_m", "clear"}
+)
+#: The record kind of the untrained net's evaluation before training.
+INIT_KIND = "init"
 
 
 def record_x(rec: dict) -> tuple[float | None, str | None]:
@@ -84,7 +97,7 @@ def classify(name: str) -> tuple[str, str] | None:
     (heads, gradient norms, the learning rate, ...)."""
     kind, _, path = name.partition(".")
     parts = path.split(".") if path else []
-    if not parts or "heads" in parts or "grad_norm" in parts:
+    if not parts or "heads" in parts or "grad_norm" in parts or "planted" in parts:
         return None
     held_kind = kind.startswith("heldout")
     for i, p in enumerate(parts):
@@ -100,9 +113,14 @@ def classify(name: str) -> tuple[str, str] | None:
     return None
 
 
-def mode_of(term: str) -> str:
-    """``"max"`` for a term where higher is better (``fitness``), else ``"min"``."""
-    return "max" if term.rsplit(".", 1)[-1] in MAXIMIZE else "min"
+def mode_of(term: str, twin: bool = True, maximize=()) -> str:
+    """``"max"`` where higher is better, else ``"min"``: a loss term (one with a training twin)
+    is lower-is-better unless it is a ``fitness``; a held-out metric with no twin is
+    higher-is-better when its name is in :data:`HIGHER_IS_BETTER` or ``maximize``."""
+    leaf = term.rsplit(".", 1)[-1]
+    if term in maximize or leaf in maximize or leaf in MAXIMIZE:
+        return "max"
+    return "max" if not twin and leaf in HIGHER_IS_BETTER else "min"
 
 
 def _flags_best(rec: dict) -> bool:
@@ -206,10 +224,19 @@ class TermPair:
     term: str
     train: Series | None
     heldout: Series | None
+    #: The header's ``maximize`` list (names where higher is better).
+    maximize: tuple[str, ...] = ()
 
     @property
     def mode(self) -> str:
-        return mode_of(self.term)
+        return mode_of(self.term, self.train is not None, self.maximize)
+
+    @property
+    def is_loss(self) -> bool:
+        """A held-out loss term: it has a training twin, or it is the run's ``fitness``."""
+        return self.heldout is not None and (
+            self.train is not None or self.term.rsplit(".", 1)[-1] in MAXIMIZE
+        )
 
 
 @dataclass
@@ -227,14 +254,14 @@ class History:
     @classmethod
     def from_records(cls, records: Iterable[dict], *, path=None, run: int = 0) -> History:
         h = cls(path=None if path is None else str(path), run=run)
+        h.records = list(records)
         pts: dict[str, tuple[list[float], list[float], str]] = {}
-        for rec in records:
-            h.records.append(rec)
+        for rec in h.records:
             kind = str(rec.get("kind", "record"))
             if kind == "header":
                 h.meta.update({k: v for k, v in rec.items() if k != "kind"})
                 continue
-            x, axis = record_x(rec)
+            kind, x, axis = h._place(rec)
             if x is None:
                 h.extras[kind] = rec
                 continue
@@ -248,10 +275,42 @@ class History:
                 h.series[name] = Series(name, np.asarray(xs, dtype=float), y, axis)
         return h
 
+    def _place(self, rec: dict) -> tuple[str, float | None, str | None]:
+        """``(series kind, x, axis)`` of a record; an ``init`` record without an x goes one
+        before the first x of the run's first evaluated kind (see the module docstring)."""
+        kind = str(rec.get("kind", "record"))
+        x, axis = record_x(rec)
+        if kind != INIT_KIND:
+            return kind, x, axis
+        first = self._first_evaluated()
+        if first is None:
+            return kind, (0.0 if x is None else x), (axis or "step")
+        fkind, fx, faxis = first
+        return fkind, (fx - 1.0 if x is None else x), (faxis if x is None else axis)
+
+    def _first_evaluated(self):
+        if not hasattr(self, "_first_cache"):
+            self._first_cache = None
+            for rec in self.records:
+                kind = str(rec.get("kind", "record"))
+                if kind in ("header", INIT_KIND):
+                    continue
+                x, axis = record_x(rec)
+                if x is not None:
+                    self._first_cache = (kind, x, axis)
+                    break
+        return self._first_cache
+
     # ---- naming
     @property
     def schema(self) -> str | None:
         return self.meta.get("schema")
+
+    @property
+    def maximize(self) -> tuple[str, ...]:
+        """The header's ``maximize`` list: held-out names where higher is better."""
+        m = self.meta.get("maximize") or ()
+        return tuple(str(v) for v in m) if isinstance(m, (list, tuple)) else ()
 
     @property
     def label(self) -> str:
@@ -282,20 +341,29 @@ class History:
                 (held if c[0] == "heldout" else train).setdefault(c[1], []).append(s)
         out: list[TermPair] = []
         used: set[str] = set()
+        mx = self.maximize
         for term, hs in held.items():
+            twins = train.get(term) or train.get(term.partition("_")[2], [])
             for h in hs:
-                twins = train.get(term, [])
                 twin = ([t for t in twins if t.kind == h.kind] or twins or [None])[0]
                 if twin is not None:
                     used.add(twin.name)
-                out.append(TermPair(term, twin, h))
+                out.append(TermPair(term, twin, h, mx))
         for term, ts in train.items():
-            out.extend(TermPair(term, t, None) for t in ts if t.name not in used)
+            out.extend(TermPair(term, t, None, mx) for t in ts if t.name not in used)
         return out
 
     def heldout_series(self) -> list[Series]:
         """Every held-out curve (the ones :mod:`grl_snam.learning.curves` marks)."""
         return [p.heldout for p in self.pairs() if p.heldout is not None]
+
+    def mode_of(self, name: str) -> str:
+        """``"min"`` or ``"max"`` for the held-out series ``name`` (see :func:`mode_of`)."""
+        for p in self.pairs():
+            if p.heldout is not None and p.heldout.name == name:
+                return p.mode
+        c = classify(name)
+        return mode_of(c[1] if c else name, True, self.maximize)
 
     def heads(self) -> dict[str, dict[str, Series]]:
         """``{head: {stat: series}}`` from ``heads.<head>.<stat>`` (the first kind that has
@@ -323,15 +391,17 @@ class History:
         rows: list[Checkpoint] = []
         for rec in self.records:
             kind = str(rec.get("kind", "record"))
-            x, axis = record_x(rec)
-            if kind == "header" or x is None:
+            if kind == "header":
+                continue
+            skind, x, axis = self._place(rec)
+            if x is None:
                 continue
             held = {}
             for p, v in _series_leaves(rec, axis).items():
-                c = classify(f"{kind}.{p}")
+                c = classify(f"{skind}.{p}")
                 if c is not None and c[0] == "heldout":
                     held[c[1]] = v
-            if not (kind == "checkpoint" or held or any(k in rec for k in BLOB_KEYS)):
+            if not (kind in ("checkpoint", INIT_KIND) or held or any(k in rec for k in BLOB_KEYS)):
                 continue
             blob = next((rec[k] for k in BLOB_KEYS if isinstance(rec.get(k), str)), None)
             fit = held.get("fitness")

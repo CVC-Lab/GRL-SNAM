@@ -177,8 +177,10 @@ grl-snam learn-report run/history.jsonl --arms run/arms.json --json run/report.j
 - **The reader** (`grl_snam.learning.history`) reads any trainer's JSON-lines history by its
   conventions, with no per-schema adapter. It knows `kind`, `step`/`epoch`, `train`/`terms` beside
   `heldout`, `heads.<g>.{mean,spread,dtheta_rel}`, `grad_norm`, `best*` and `blob`/`checkpoint`.
-  So it reads `coef-train`'s and `train_coef_energy`'s histories, libcvc's
-  `cvc.nav.coef_train_history/v1` and downstream trainers' alike. `load(paths)` gives named series
+  So it reads `coef-train`'s, `grl-snam train`'s and `train_coef_energy`'s histories, libcvc's
+  `cvc.nav.coef_train_history/v1` and downstream trainers' alike. A held-out value with a
+  training twin (the same name, or `<prefix>_<name>`) is a loss term. An `init` record (the
+  untrained net) is the first point. `load(paths)` gives named series
   (`<kind>.<path>`), a checkpoint table with the pick, train/held-out term pairs and `band()`
   across seeds. `follow=True` re-reads a file a trainer is still writing.
 - **The marks** (`grl_snam.learning.curves`) are read on each held-out curve after a 5-point
@@ -196,7 +198,8 @@ grl-snam learn-report run/history.jsonl --arms run/arms.json --json run/report.j
   `python -m grl_snam.tools.coef_export --constant 1.2,3,4 c.cvcnav` writes a constant arm for
   libcvc's navigator, and `read_coef_mlp` loads any `.cvcnav` back into torch.
 - **The report** (`learn-report`) marks each claim pass or fail:
-  - `loss`: each held-out term at the last evaluation beats the first, with a CI over seeds;
+  - `loss`: each held-out loss term at the last evaluation beats the first, with a CI over seeds
+    (held-out metrics with no training twin, such as reach, get marks but no claim);
   - `selection`: the pick was made on held-out data, and is not step 0;
   - `task`: on each primary metric, trained beats each other arm (the CI of the paired
     difference excludes 0 on the better side);
