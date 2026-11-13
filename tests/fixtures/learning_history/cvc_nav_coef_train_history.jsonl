@@ -1,0 +1,11 @@
+{"kind":"header","schema":"cvc.nav.coef_train_history/v1","steps":6,"n":64,"horizon":16,"window":4,"lr":0.00300000003,"grad_clip":5,"w_coll":3,"checkpoint_every":3,"fitness":true,"probe_agents":256,"probe_seed":24301,"seed":0,"heads":["alpha","beta","gamma","trunk"]}
+{"kind":"checkpoint","step":0,"fitness":0.35,"best":true,"rolled_back":false,"heads":{"alpha":{"mean":1,"spread":0.05,"dtheta_rel":0,"dtheta_rel_init":0},"beta":{"mean":3,"spread":0.05,"dtheta_rel":0,"dtheta_rel_init":0},"gamma":{"mean":4,"spread":0.05,"dtheta_rel":0,"dtheta_rel_init":0},"trunk":{"dtheta_rel":0,"dtheta_rel_init":0}},"blob":"run/nav.step000000.cvcnav"}
+{"kind":"step","step":1,"loss":2.4,"last_window_loss":2.16,"lr":0.00300000003,"grad_norm":{"mean":1.2,"max":2,"clipped_frac":0}}
+{"kind":"step","step":2,"loss":1.61306,"last_window_loss":1.45176,"lr":0.00300000003,"grad_norm":{"mean":1.1,"max":1.9,"clipped_frac":0}}
+{"kind":"step","step":3,"loss":1.13576,"last_window_loss":NaN,"lr":0.00300000003,"grad_norm":{"mean":1,"max":1.8,"clipped_frac":0}}
+{"kind":"checkpoint","step":3,"fitness":0.5,"best":true,"rolled_back":false,"heads":{"alpha":{"mean":1.05,"spread":0.075,"dtheta_rel":0.03,"dtheta_rel_init":0.025},"beta":{"mean":3.05,"spread":0.075,"dtheta_rel":0.03,"dtheta_rel_init":0.025},"gamma":{"mean":4.05,"spread":0.075,"dtheta_rel":0.03,"dtheta_rel_init":0.025},"trunk":{"dtheta_rel":0.04,"dtheta_rel_init":0.03}},"blob":"run/nav.step000003.cvcnav"}
+{"kind":"step","step":4,"loss":0.84626,"last_window_loss":0.761634,"lr":0.00300000003,"grad_norm":{"mean":0.9,"max":1.7,"clipped_frac":0}}
+{"kind":"step","step":5,"loss":0.670671,"last_window_loss":0.603604,"lr":0.00300000003,"grad_norm":{"mean":0.8,"max":1.6,"clipped_frac":0}}
+{"kind":"step","step":6,"loss":0.56417,"last_window_loss":0.507753,"lr":0.00300000003,"grad_norm":{"mean":0.7,"max":1.5,"clipped_frac":0}}
+{"kind":"checkpoint","step":6,"fitness":0.48,"best":false,"rolled_back":true,"heads":{"alpha":{"mean":1.1,"spread":0.1,"dtheta_rel":0.03,"dtheta_rel_init":0.05},"beta":{"mean":3.1,"spread":0.1,"dtheta_rel":0.03,"dtheta_rel_init":0.05},"gamma":{"mean":4.1,"spread":0.1,"dtheta_rel":0.03,"dtheta_rel_init":0.05},"trunk":{"dtheta_rel":0.04,"dtheta_rel_init":0.06}},"blob":"run/nav.step000006.cvcnav"}
+{"kind":"end","selected_step":3,"rollbacks":[6],"episodes":6,"episodes_arrived":2}

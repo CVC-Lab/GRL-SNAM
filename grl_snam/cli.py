@@ -11,6 +11,8 @@ One entry point for every workflow, from the world model to a running demo:
   grl-snam austin-material-train ...     train belief-material heads on pinned routes
   grl-snam austin-material-evaluate ...  four-arm held-out material evaluation
   grl-snam train       SDF.npz           self-supervised SDF-coefficient training
+  grl-snam arms-eval   --arm N=P ...     trained / untrained / constant on paired seeds
+  grl-snam learn-report HIST...          did it learn? claims, each pass or fail
   grl-snam capture drive|multigoal ...   drive the policy -> mp4 (offscreen, HUD)
   grl-snam pipeline    BUNDLE            world model -> SDF -> train -> video (all)
   grl-snam fog list|record|capture|play|all   fog-of-war demo: record -> replay
@@ -292,6 +294,38 @@ def coef_train_cmd(args) -> None:
     --w-risk / --lam-soft / --learned-lam / --curriculum / --cuda / --out / --seed / --score ...).
     """
     from .tools.coef_train import main as _run
+
+    raise SystemExit(_run(list(args)))
+
+
+@main.command(
+    "arms-eval",
+    context_settings=dict(ignore_unknown_options=True, help_option_names=[]),
+    add_help_option=False,
+    short_help="Score policies (trained, untrained, constant) on paired held-out seeds.",
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def arms_eval_cmd(args) -> None:
+    """Score each --arm NAME=PATH|const:... on the same held-out seeds through coef_eval and
+    scorecard_eval, and write the grl_snam.arms/v1 table (per seed, mean, CI, paired difference).
+    All flags pass to grl_snam.tools.arms_eval; `grl-snam arms-eval --help` lists them."""
+    from .tools.arms_eval import main as _run
+
+    raise SystemExit(_run(list(args)))
+
+
+@main.command(
+    "learn-report",
+    context_settings=dict(ignore_unknown_options=True, help_option_names=[]),
+    add_help_option=False,
+    short_help="Did the learner learn? Claims from histories and arms, each pass or fail.",
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def learn_report_cmd(args) -> None:
+    """HIST... [--arms A.json] --json R.json: the held-out loss, selection, task-metric and
+    planted-latent claims, each marked pass or fail (grl_snam.learning.report). All flags pass to
+    it; `grl-snam learn-report --help` lists them."""
+    from .learning.report import main as _run
 
     raise SystemExit(_run(list(args)))
 

@@ -77,6 +77,8 @@ grl-snam --help
 | `grl-snam obstacles BUNDLE` | world model → circular-obstacle set (`.npz`) |
 | `grl-snam build-sdf BUNDLE` | world model → navigation SDF (`.npz`) |
 | `grl-snam train SDF.npz` | self-supervised SDF-coefficient training |
+| `grl-snam arms-eval --arm NAME=PATH …` | trained, untrained and constant policies on paired held-out seeds |
+| `grl-snam learn-report HIST…` | did the learner learn? held-out claims, each pass or fail |
 | `grl-snam capture drive\|multigoal …` | drive the policy → mp4 offscreen, with a live HUD |
 | `grl-snam pipeline BUNDLE` | the whole chain: world model → SDF → train → video |
 | `grl-snam demo NAME` | run a demo live inside VolRover3 |
@@ -152,6 +154,55 @@ that made it:
   on grip 0.3 arriving;
 - **five failures:** a dead end, an orbit, sliding past the tire's peak, a spin-out on low grip, and
   a collision with the map unknown.
+
+### Did it learn? Held-out losses, arms and claims
+
+A falling training loss does not show that a policy learned anything. `grl_snam.learning` checks
+three things on held-out data, each against two arms: the untrained policy the run started from,
+and a constant one (the same coefficients everywhere, so no state dependence).
+
+1. The per-term held-out losses, read from the trainer's learning history.
+2. The task metric on paired seeds, with a bootstrap CI.
+3. In a planted exercise, the error of the recovered latent.
+
+```bash
+grl-snam coef-train --rollout bicycle --out run/coef.cvcnav \
+    --history run/history.jsonl --checkpoint-every 20 --keep-best
+grl-snam arms-eval --arm trained=run/coef.best.cvcnav \
+    --arm untrained=run/coef.step000000.cvcnav \
+    --arm constant=const:hist=run/history.jsonl --seeds 20 --out run/arms.json
+grl-snam learn-report run/history.jsonl --arms run/arms.json --json run/report.json
+```
+
+- **The reader** (`grl_snam.learning.history`) reads any trainer's JSON-lines history by its
+  conventions, with no per-schema adapter. It knows `kind`, `step`/`epoch`, `train`/`terms` beside
+  `heldout`, `heads.<g>.{mean,spread,dtheta_rel}`, `grad_norm`, `best*` and `blob`/`checkpoint`.
+  So it reads `coef-train`'s and `train_coef_energy`'s histories, libcvc's
+  `cvc.nav.coef_train_history/v1` and downstream trainers' alike. `load(paths)` gives named series
+  (`<kind>.<path>`), a checkpoint table with the pick, train/held-out term pairs and `band()`
+  across seeds. `follow=True` re-reads a file a trainer is still writing.
+- **The marks** (`grl_snam.learning.curves`) are read on each held-out curve after a 5-point
+  running median: best, the Kneedle elbow, the plateau (a windowed Theil–Sen slope that stays
+  small next to the curve's IQR) and divergence after best. Each one that compares a change to a
+  threshold also clears a noise floor, so a flat, noisy curve gets no elbow and no divergence.
+  `tests/fixtures/learning_marks_golden.json` holds synthetic curves and their marks, for other
+  implementations to check against.
+- **The arms** (`arms-eval`): an arm is a `.cvcnav` (a run's step-0 blob is the untrained arm),
+  a `.pt`, or `const:…` (`const:1.2,3,4`, `const:beta=2.5`, `const:bias`, or `const:hist=H.jsonl`
+  for the trained run's head means at its pick). Every arm runs on the same seeds through
+  `coef_eval` and `scorecard_eval`. The output is `grl_snam.arms/v1`: per metric and arm, the
+  per-seed values, mean, 95% CI and the paired difference to the reference arm (a seeded
+  percentile bootstrap over seeds, 5000 resamples, pairs kept together).
+  `python -m grl_snam.tools.coef_export --constant 1.2,3,4 c.cvcnav` writes a constant arm for
+  libcvc's navigator, and `read_coef_mlp` loads any `.cvcnav` back into torch.
+- **The report** (`learn-report`) marks each claim pass or fail:
+  - `loss`: each held-out term at the last evaluation beats the first, with a CI over seeds;
+  - `selection`: the pick was made on held-out data, and is not step 0;
+  - `task`: on each primary metric, trained beats each other arm (the CI of the paired
+    difference excludes 0 on the better side);
+  - `planted`: the recovered latent is within its bound, and the untrained net's is not.
+
+  A claim the data cannot support fails and says why. `--strict` exits 1 on any failure.
 
 ### Live inside VolRover3
 
