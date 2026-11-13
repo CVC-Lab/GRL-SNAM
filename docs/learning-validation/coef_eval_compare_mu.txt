@@ -1,0 +1,45 @@
+  step    0: goal_dist  1.149  coll  0.493  risk  0.000
+  step   50: goal_dist  1.094  coll  0.342  risk  0.000
+  step  100: goal_dist  1.069  coll  0.261  risk  0.000
+  step  119: goal_dist  1.024  coll  0.263  risk  0.000
+  step    0: goal_dist  1.239  coll  0.631  risk  0.000
+  step   50: goal_dist  1.062  coll  0.271  risk  0.000
+  step  100: goal_dist  1.141  coll  0.146  risk  0.000
+  step  119: goal_dist  1.073  coll  0.191  risk  0.000
+  step    0: goal_dist  1.006  coll  0.343  risk  0.000
+  step   50: goal_dist  0.984  coll  0.170  risk  0.000
+  step  100: goal_dist  1.081  coll  0.260  risk  0.000
+  step  119: goal_dist  1.089  coll  0.288  risk  0.000
+  step    0: goal_dist  1.162  coll  0.376  risk  0.000
+  step   50: goal_dist  1.181  coll  0.471  risk  0.000
+  step  100: goal_dist  1.087  coll  0.351  risk  0.000
+  step  119: goal_dist  1.232  coll  0.162  risk  0.000
+  step    0: goal_dist  1.128  coll  0.212  risk  0.000
+  step   50: goal_dist  1.116  coll  0.313  risk  0.000
+  step  100: goal_dist  1.137  coll  0.236  risk  0.000
+  step  119: goal_dist  1.071  coll  0.385  risk  0.000
+  step    0: goal_dist  1.149  coll  0.493  risk  0.000
+  step   50: goal_dist  1.094  coll  0.342  risk  0.000
+  step  100: goal_dist  1.044  coll  0.305  risk  0.000
+  step  119: goal_dist  1.020  coll  0.263  risk  0.000
+  step    0: goal_dist  1.239  coll  0.631  risk  0.000
+  step   50: goal_dist  1.065  coll  0.272  risk  0.000
+  step  100: goal_dist  1.135  coll  0.147  risk  0.000
+  step  119: goal_dist  1.078  coll  0.135  risk  0.000
+  step    0: goal_dist  1.006  coll  0.343  risk  0.000
+  step   50: goal_dist  0.983  coll  0.177  risk  0.000
+  step  100: goal_dist  1.082  coll  0.257  risk  0.000
+  step  119: goal_dist  1.070  coll  0.366  risk  0.000
+  step    0: goal_dist  1.162  coll  0.376  risk  0.000
+  step   50: goal_dist  1.181  coll  0.471  risk  0.000
+  step  100: goal_dist  1.090  coll  0.332  risk  0.000
+  step  119: goal_dist  1.230  coll  0.165  risk  0.000
+  step    0: goal_dist  1.128  coll  0.212  risk  0.000
+  step   50: goal_dist  1.103  coll  0.343  risk  0.000
+  step  100: goal_dist  1.134  coll  0.242  risk  0.000
+  step  119: goal_dist  1.095  coll  0.317  risk  0.000
+                       arm    reach      pen    clear   raw pen
+---------------------------------------------------------------
+          seed (untrained)    15.1%     0.54    0.335
+         blind (5-feature)    16.5%     0.22    0.581   [0.0, 0.53, 0.03, 0.0, 0.56]  +-0.26
+      mu-ahead (6-feature)    16.0%     0.11    0.590   [0.0, 0.08, 0.46, 0.03, 0.0]  +-0.18

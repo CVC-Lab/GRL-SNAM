@@ -160,3 +160,25 @@ def test_cli_refuses_a_pick_without_checkpoints_and_the_native_backend(tmp_path)
         coef_train.main(["--keep-best", "--out", str(tmp_path / "a.cvcnav")])
     with pytest.raises(SystemExit):
         coef_train.main(["--backend", "native", "--history", str(tmp_path / "h.jsonl")])
+
+
+def test_a_fitness_dict_records_its_heldout_terms(tmp_path):
+    """A fitness may return the held-out terms behind its score: the score is ``fitness``, the
+    rest goes in the checkpoint record as ``heldout``."""
+    mon = _monitor(tmp_path, every=2, fitness=lambda model: {"fitness": 0.25, "gap": 3.0})
+    coef_train.train(steps=2, monitor=mon, **SMALL)
+    cks = [r for r in lh.read_history(tmp_path / "h.jsonl") if r["kind"] == "checkpoint"]
+    assert [c["fitness"] for c in cks] == [0.25, 0.25]
+    assert all(c["heldout"] == {"gap": 3.0} for c in cks)
+    assert mon.best_step == 0
+
+
+def test_checkpoints_take_the_trainers_extension(tmp_path):
+    saved = []
+    cfg = lh.CoefTrainMonitorCfg(
+        checkpoint_every=1, checkpoint_prefix=str(tmp_path / "ck"), checkpoint_ext=".pt"
+    )
+    mon = lh.CoefTrainMonitor(cfg, save=lambda model, path: saved.append(path))
+    coef_train.train(steps=1, monitor=mon, **SMALL)
+    assert saved == [str(tmp_path / "ck.step000000.pt"), str(tmp_path / "ck.step000001.pt")]
+    assert lh.checkpoint_path("p", 7) == "p.step000007.cvcnav"

@@ -149,3 +149,86 @@ def test_split_needs_two_episodes_and_a_fraction():
         tce.split_episodes(6, 0.0, 0)
     tr, he = tce.split_episodes(5, 0.99, 0)
     assert len(tr) == 1 and len(he) == 4
+
+
+def _planted_episode(root: Path, k: int, T: int = 16) -> str:
+    """An episode crossing x = 2 with the damping the generator logs (gamma_o_true): 2.5 before
+    it, 6.0 after."""
+    pt = _episode(root, k, T)
+    jl = root / f"ep{k}.jsonl"
+    rows = [json.loads(line) for line in jl.read_text().splitlines()]
+    for r in rows:
+        r["gamma_o_true"] = 2.5 if r["center"][0] < 2.0 else 6.0
+    jl.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return pt
+
+
+@pytest.fixture(scope="module")
+def planted(tmp_path_factory) -> tuple[Path, Path]:
+    root = tmp_path_factory.mktemp("planted")
+    recs = [{"path": _planted_episode(root, k)} for k in range(6)]
+    (root / "manifest.json").write_text(json.dumps(recs))
+    spec = {
+        "M_o": 1.5,
+        "regions": [
+            {"name": "lo", "x_lo": -1e9, "x_hi": 2.0, "gamma": 2.5},
+            {"name": "hi", "x_lo": 2.0, "x_hi": 1e9, "gamma": 6.0},
+        ],
+    }
+    (root / "planted.json").write_text(json.dumps(spec))
+    return root, root / "planted.json"
+
+
+def test_planted_logs_per_region_truth_mean_and_error_from_the_untrained_net_on(planted, tmp_path):
+    root, spec = planted
+    out, hist = tmp_path / "ck", tmp_path / "h.jsonl"
+    argv = ["--val-frac", "0.34", "--val-samples", "48", "--history", str(hist)]
+    _run(_argv(root, out, *argv, "--planted", str(spec), "--w_friction", "0"))
+    recs = lh.read_history(hist)
+    assert recs[0]["planted"]["M_o"] == 1.5
+    assert [r["kind"] for r in recs[1:]] == ["init", "epoch", "epoch", "epoch"]
+    for r in recs[1:]:
+        p = r["heldout"]["planted"]
+        assert p["lo"]["truth"] == pytest.approx(2.5 / 1.5)
+        assert p["hi"]["truth"] == pytest.approx(4.0)
+        for name in ("lo", "hi"):
+            if p[name]["n"]:
+                assert p[name]["rel_err"] == pytest.approx(
+                    abs(p[name]["mean"] - p[name]["truth"]) / p[name]["truth"]
+                )
+                assert p[name]["truth_logged"] == pytest.approx(p[name]["truth"])
+        assert p["ratio"]["of"] == ["hi", "lo"] and p["ratio"]["truth"] == pytest.approx(2.4)
+    init = torch.load(out / "init.pt", weights_only=False)
+    assert init["epoch"] == -1 and init["heldout_logs"]["kind"] == "init"
+
+
+def test_planted_needs_a_held_out_split(planted, tmp_path):
+    root, spec = planted
+    with pytest.raises(SystemExit):
+        tce.main(_argv(root, tmp_path / "ck", "--planted", str(spec)))
+
+
+def test_planted_summary_counts_windows_inside_a_region_at_both_ends():
+    spec = {
+        "M_o": 2.0,
+        "regions": [
+            {"name": "a", "x_hi": 1.0, "gamma": 2.0},
+            {"name": "b", "x_lo": 1.0, "gamma": 8.0},
+        ],
+    }
+
+    def item(x0, x1, g):
+        return {
+            "o0": torch.tensor([x0, 0.0]),
+            "o_tgt": torch.tensor([x1, 0.0]),
+            "gamma_true": (g, g),
+        }
+
+    items = [item(0.0, 0.5, 2.0), item(0.5, 1.5, 2.0), item(2.0, 3.0, 8.0), item(1.2, 1.4, 8.0)]
+    got = tce.planted_summary(spec, items, torch.tensor([1.5, 9.0, 3.0, 5.0]))
+    assert got["a"] == {"truth": 1.0, "mean": 1.5, "n": 1, "rel_err": 0.5, "truth_logged": 1.0}
+    assert (
+        got["b"]["n"] == 2 and got["b"]["mean"] == pytest.approx(4.0) and got["b"]["truth"] == 4.0
+    )
+    assert got["ratio"]["value"] == pytest.approx(4.0 / 1.5)
+    assert got["ratio"]["rel_err"] == pytest.approx(abs(4.0 / 1.5 - 4.0) / 4.0)

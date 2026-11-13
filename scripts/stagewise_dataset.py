@@ -192,6 +192,8 @@ def make_checkpoint(t, stage_idx, st, info, sys, B,
         "F_s_total": float(info.get("F_s_total", 0.0)),
         "tau_total": float(info.get("tau_total", 0.0)),
         "F_o_total": [float(x) for x in info.get("F_o_total", [0.0, 0.0])],
+        # the translational damping in force on this step (the planted latent, gamma_o_regions)
+        "gamma_o_true": float(info.get("gamma_o_true", sys.gamma_o)),
         # constraints used on THIS step (post-inflate)
         "tube_inflate": float(inflate),
         "barrier": barrier_params,
@@ -964,7 +966,8 @@ def planner_from_cfg(cfg: GenCfg, world_obs: she.WorldObstacles,
                      k_bulk: float, gamma_s: float, d_hat: float, radius: float,
                      alpha_sq: Optional[float]=None, beta_sq: Optional[float]=None,
                      fric_mu: Optional[float]=None, v_t_clip: Optional[float]=None,
-                     gamma_o: Optional[float]=None, gamma_th: Optional[float]=None) -> PlannerOverlapHyper:
+                     gamma_o: Optional[float]=None, gamma_th: Optional[float]=None,
+                     gamma_o_regions=None) -> PlannerOverlapHyper:
 
     planner = PlannerOverlapHyper(
         start_xy=cfg.start, goal_xy=cfg.goal,
@@ -986,6 +989,8 @@ def planner_from_cfg(cfg: GenCfg, world_obs: she.WorldObstacles,
     if beta_sq  is not None: setattr(planner.sys, "beta_squeeze",  float(beta_sq))
 
     if fric_mu  is not None: setattr(planner.sys, "fric_mu",  float(fric_mu))
+    if gamma_o_regions is not None:
+        planner.sys.gamma_o_regions = [tuple(float(v) for v in r) for r in gamma_o_regions]
     if v_t_clip is not None: setattr(planner.sys, "v_t_clip", float(v_t_clip))
 
     return planner
@@ -1012,6 +1017,7 @@ def run_episode(
         v_t_clip=params.get("v_t_clip"),
         gamma_o=params.get("gamma_o"),
         gamma_th=params.get("gamma_th"),
+        gamma_o_regions=params.get("gamma_o_regions"),
     )
 
     frames: List[Dict[str, Any]] = []
@@ -1149,7 +1155,8 @@ def run_episode(
             **tw,
             # include optional perturbations actually used (if any)
             **({k: v for k, v in params.items()
-                if k in ("alpha_sq", "beta_sq", "fric_mu", "v_t_clip", "gamma_o", "gamma_th")}),
+                if k in ("alpha_sq", "beta_sq", "fric_mu", "v_t_clip", "gamma_o", "gamma_th",
+                         "gamma_o_regions")}),
         },
         "obstacles": {
             "centers": world_obs.C_np.astype(np.float32),

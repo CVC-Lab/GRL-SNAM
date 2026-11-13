@@ -17,8 +17,10 @@ them are OPT-IN observers; with none on, the trainers run exactly as before.
     much it varies with the situation an agent is in;
   - per head, its relative parameter change ``||dtheta|| / ||theta||`` since the last checkpoint
     and since the start, with the trunk (the shared layers) alongside;
-  - the held-out fitness, when one is given.
-- **Checkpoints**: the policy at each checkpoint saved as ``<prefix>.stepNNNNNN.cvcnav``.
+  - the held-out fitness, when one is given, and the held-out terms behind it when the fitness
+    returns them (a dict with a ``"fitness"`` key: the rest is recorded as ``heldout``).
+- **Checkpoints**: the policy at each checkpoint saved as ``<prefix>.stepNNNNNN.cvcnav`` (or the
+  extension the trainer's ``save`` writes, ``checkpoint_ext``).
 - **The held-out pick** (``best_path``): the checkpoint with the highest held-out fitness, the
   untrained policy (step 0) included, saved as a ``.cvcnav``. A best at step 0 means no step
   improved on the start policy on held-out data.
@@ -43,9 +45,9 @@ HISTORY_SCHEMA = "grl_snam.coef_train_history/v1"
 COEF_HEADS: tuple[str, ...] = ("alpha", "beta", "gamma", "lam_soft", "lam_hard")
 
 
-def checkpoint_path(prefix: str, step: int) -> str:
+def checkpoint_path(prefix: str, step: int, ext: str = ".cvcnav") -> str:
     """``"<prefix>.step000040.cvcnav"``: an intermediate checkpoint's name."""
-    return f"{prefix}.step{step:06d}.cvcnav"
+    return f"{prefix}.step{step:06d}{ext}"
 
 
 def relative_change(now: torch.Tensor, before: torch.Tensor) -> float:
@@ -91,6 +93,8 @@ class CoefTrainMonitorCfg:
     checkpoint_every: int = 0
     #: Save each checkpoint's policy as ``<prefix>.stepNNNNNN.cvcnav``; ``None``: no blobs.
     checkpoint_prefix: str | None = None
+    #: The checkpoints' extension: what the trainer's ``save`` writes (``.pt`` for a torch one).
+    checkpoint_ext: str = ".cvcnav"
     #: Save the checkpoint with the highest held-out fitness here; ``None``: no pick.
     best_path: str | None = None
     #: Agents in the probe batch the head numbers are read on, and its seed.
@@ -106,8 +110,10 @@ class CoefTrainMonitor:
     """The trainer-side state of the instruments (see the module docstring).
 
     ``probe(model) -> {head: [n]}`` reads the heads on the fixed probe batch; ``fitness(model) ->
-    float`` (higher is better) scores held-out data, ``None`` without one; ``save(model, path)``
-    writes a ``.cvcnav``. ``best_path`` needs a fitness.
+    float`` (higher is better) scores held-out data, ``None`` without one; it may instead return
+    a dict of held-out terms with the score under ``"fitness"``, and the checkpoint record then
+    carries the rest as ``heldout``. ``save(model, path)`` writes a ``.cvcnav`` (or whatever
+    ``checkpoint_ext`` names). ``best_path`` needs a fitness.
     """
 
     def __init__(
@@ -211,7 +217,12 @@ class CoefTrainMonitor:
         was_training = model.training
         with torch.random.fork_rng(devices=[]), torch.no_grad():
             heads = {h: v.detach().to("cpu", torch.float64) for h, v in self._probe(model).items()}
-            fit = None if self.fitness is None else float(self.fitness(model))
+            got = None if self.fitness is None else self.fitness(model)
+        heldout = None
+        if isinstance(got, dict):
+            heldout = {k: v for k, v in got.items() if k != "fitness"}
+            got = got["fitness"]
+        fit = None if got is None else float(got)
         rec_heads: dict[str, dict] = {}
         for g, ps in self._groups.items():
             now = _flat(ps)
@@ -226,7 +237,7 @@ class CoefTrainMonitor:
             self._prev[g] = now
         blob = None
         if self.cfg.checkpoint_prefix:
-            blob = checkpoint_path(self.cfg.checkpoint_prefix, step)
+            blob = checkpoint_path(self.cfg.checkpoint_prefix, step, self.cfg.checkpoint_ext)
             self.save(model, blob)
         best = False
         if fit is not None and fit > self.best:
@@ -242,6 +253,8 @@ class CoefTrainMonitor:
             "heads": rec_heads,
             "blob": blob,
         }
+        if heldout is not None:
+            rec["heldout"] = heldout
         self.checkpoints.append(rec)
         self._last_ckpt = step
         self._write(rec)

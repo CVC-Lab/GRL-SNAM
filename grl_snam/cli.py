@@ -266,13 +266,50 @@ def austin_material_evaluate(args) -> None:
 @click.option("--lr", default=3e-4, show_default=True)
 @click.option("--threads", default=6, show_default=True)
 @click.option("--seed", default=0, show_default=True)
+@click.option("--device", default=None, help="cpu or cuda (default: cuda when present)")
+@click.option("--history", default=None, help="write the learning history (JSON lines) here")
+@click.option(
+    "--checkpoint-every",
+    default=0,
+    show_default=True,
+    help="save <out>.stepNNNNNN.pt every N steps",
+)
+@click.option(
+    "--val-frac",
+    default=0.0,
+    show_default=True,
+    help="hold out this fraction of the region's blocks; score held-out pairs at each checkpoint "
+    "and keep <out>.best_heldout.pt on held-out reach (0 = off)",
+)
+@click.option("--val-seed", default=0, show_default=True, help="--val-frac: the split's seed")
+@click.option("--val-blocks", default=8, show_default=True, help="--val-frac: blocks per axis")
+@click.option("--val-pairs", default=256, show_default=True, help="--val-frac: held-out pairs")
+@click.option("--val-ticks", default=200, show_default=True, help="--val-frac: drive ticks")
 def train(
-    sdf_npz: str, out: str, steps: int, batch: int, lr: float, threads: int, seed: int
+    sdf_npz: str,
+    out: str,
+    steps: int,
+    batch: int,
+    lr: float,
+    threads: int,
+    seed: int,
+    device,
+    history,
+    checkpoint_every: int,
+    val_frac: float,
+    val_seed: int,
+    val_blocks: int,
+    val_pairs: int,
+    val_ticks: int,
 ) -> None:
     """Self-supervised training of the SDF navigation coefficients from a nav_sdf.npz."""
     from .tools import train as _train
 
-    _train.train_sdf(sdf_npz, out, steps=steps, batch=batch, lr=lr, threads=threads, seed=seed)
+    _train.train_sdf(
+        sdf_npz, out, steps=steps, batch=batch, lr=lr, threads=threads, seed=seed, device=device,
+        history=history, checkpoint_every=checkpoint_every, val_frac=val_frac, val_seed=val_seed,
+        val_blocks=val_blocks, val_pairs=val_pairs, val_ticks=val_ticks,
+    )  # fmt: skip
 
 
 @main.command(
