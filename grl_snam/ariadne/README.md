@@ -77,6 +77,9 @@ On Austin the box becomes a Humvee. The published policy's metric (scale 1/300) 
   the same policy (`grl-snam-weights`, exported to `.cvcnav`, in its trained frame). Between
   plants the Plant combo switches live.
 
+- **with several policies side by side** (`--arms`, on a plant). This is the Laboratory's
+  comparison view; see [Arms](#arms-policies-side-by-side) below.
+
 The other demos stay on Austin and on their own stepping:
 - `austin-learned`: its A* spine and corner goals are placed for Austin, and its corridor
   follower is its own Python on the torch rollout.
@@ -100,6 +103,74 @@ The city is the document's (`docs/live.ari`'s `data:` block):
   city at a bundle on disk, with nothing downloaded.
 - **When the package cannot load** (offline, no cache), the installed bundle stands in.
 - **`austin-planner`** drives a world of its own, so the city never loads for it.
+
+#### Arms: policies side by side
+
+```bash
+python -m grl_snam.ariadne live austin-freedrive --plant kinematic --arms trained,untrained,constant
+python -m grl_snam.ariadne live austin-freedrive --plant humvee --arms trained,step0=run/coef.step000000.cvcnav \
+    --arm flat=const:hist=run/history.jsonl
+python -m grl_snam.ariadne live austin-freedrive --plant kinematic --world flat --headless --frames 900 \
+    --arms trained,untrained,constant --set arms.goal=-20,-5 --retarget-at 12 --log arms.npz
+```
+
+Each arm drives its own libcvc sim_world, with the same world, start, goal and seed as the
+others. All the worlds step tick for tick together, and each arm is a see-through ghost in its own
+colour (its chart colour: blue, orange, green, ...).
+- **An arm** is a bare name or what `grl-snam arms-eval --arm` takes, `NAME=PATH.cvcnav`,
+  `NAME=PATH.pt` or `NAME=const:...` (`--arm` adds one more). The bare names are:
+  - `trained`: the published policy, which `--plant` without `--arms` drives (needs
+    `grl-snam-weights`);
+  - `untrained`: a CoefMLP as `torch.manual_seed(--seed)` initializes it (`untrained=PATH` takes a
+    run's step-0 checkpoint instead);
+  - `constant`: `const:bias`, CoefMLP's output bias everywhere (alpha 1, beta 3, gamma 4).
+
+  As in `arms-eval`, a constant arm takes its input layout from the first arm with a net. Each
+  policy is exported to `.cvcnav` and loaded with `nav_sim_world_set_policy`. Every arm runs in
+  the frame of the first `.pt` arm that records one, else the published policy's (1/300).
+- **Retarget** (the Stats window's button, the Demo menu, or `--retarget-at S,...`) moves every
+  arm's goal on the same tick. It goes to the Goal field's `x, y` (`arms.goal`) once that point
+  is clear of buildings by the vehicle's half-width, read from the world's signed distance;
+  otherwise it says why not. With the field empty, it goes to a free point far from every arm.
+  Each Retarget starts a new leg: every arm's `nav_stats` collector restarts there.
+- **Stats**: one row per arm for the current leg (Laboratory §6.5):
+  - the minimum and mean clearance (m) and the ticks penetrating;
+  - the path length (m) and the elapsed time (s, to the goal once there);
+  - the wall time per tick (ms; the arms take turns stepping first) and whether it reached the
+    goal.
+
+  The rows come from libcvc's `nav_stats` (`nav_sim_world_begin_nav_stats`). The mean clearance
+  is the drive telemetry's, and the wall time the port's own.
+- **Ledger**, per arm:
+  - the coefficients in force and the terms of U_nav, from `nav_sim_world_drive_telemetry`
+    (every field; `pycvc_gl.cars` keeps only the coefficients);
+  - the books against U_nav, summed over the run and for this tick: `dU`, `drive`, `projection`
+    (`projection_work`), `context` (`context_work`: a Retarget books here), `dKE` and the
+    `residual`, with `dU = drive + projection + context + residual`. The residual is zero while
+    nothing moves the agent between ticks (`docs/vehicle-ph-plant.tex`, "Context work and
+    projection work");
+  - the plant ledger (libcvc's `plant_ledger.h`) for the arm the Agent combo picks: energy, tilt,
+    load transfer, commands and contacts as a physics plant measures them. An item shows as n/a
+    where it does not apply, which on the kinematic plant is every item.
+- **Charts** (pycvc_gl's `chart:`, libcvc 3.7.14): every arm's clearance, the picked arm's
+  cumulative books, and one book (the Book combo) summed for every arm. A marker shows where each
+  leg starts. On an older pycvc_gl the charts are hidden and the rows show the same numbers.
+- **Follow** picks the arm that the camera, the Navigator window and the rasters follow.
+- **`--log run.npz`** writes every arm's run (`grl_snam.live_arms/v1`). It holds, per tick and
+  arm, the pose, the wall time, every drive telemetry field, the books and the Stats row. It also
+  keeps the legs and, in `meta`, each arm's spec, its `.cvcnav`'s sha256 and its policy key, the
+  seed, start, goal, frame and settings. The exit code counts each arm's arrival at each leg's
+  goal against `--min-arrivals`.
+
+The windows are `docs/stats_panels.ari`'s units, which `docs/live.ari` imports; without `--arms`
+they stay hidden. The torch path (`--plant torch`, the default) refuses `--arms` and says why: its
+demo's state is module-level (`grl_snam.demos._common._STANDALONE` holds the one demo a process
+runs), so a second arm would drive the first one's demo.
+
+On open ground the policies tell apart only near walls and near the goal. Elsewhere every arm
+accelerates at the plant's limit straight at its goal. The published policy sits close to
+CoefMLP's bias (`docs/learning-validation.md`), so on Austin the rows part after tens of
+seconds: `--set view.speed=4` gets there in 300 frames.
 
 ### `fog`: the fog-of-war stories
 
