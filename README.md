@@ -2,7 +2,7 @@
 
 This repository contains the implementation of **GRL-SNAM**, a geometric reinforcement learning framework for simultaneous navigation and mapping in unknown environments using Hamiltonian mechanics and differential policy optimization.
 
-📖 **Documentation:** [Developer Guide](docs/developer-guide.md) · [Native `cvc::nav` acceleration](docs/NATIVE_CVC_NAV.md) · [Running on a vehicle plant (kinematic, dynamic, Jolt)](docs/PLANTS.md) · [Material-aware navigation](docs/MATERIAL_NAV.md) · [Vehicle refinements](docs/VEHICLE_REFINEMENTS.md) · [Navigation stats & scorecard](docs/NAV_STATS.md) · [PyPI Publishing Roadmap](docs/pypi-publishing-roadmap.md) · [Headless server quickstart](docs/headless-quickstart.md) · [The demos on Ariadne, and a template for your own multi-car controller](grl_snam/ariadne/README.md) · [The vehicle plant in port-Hamiltonian form (PDF)](docs/vehicle-ph-plant.pdf)
+📖 **Documentation:** [Developer Guide](docs/developer-guide.md) · [Native `cvc::nav` acceleration](docs/NATIVE_CVC_NAV.md) · [Running on a vehicle plant (kinematic, dynamic, Jolt)](docs/PLANTS.md) · [Material-aware navigation](docs/MATERIAL_NAV.md) · [Vehicle refinements](docs/VEHICLE_REFINEMENTS.md) · [Navigation stats & scorecard](docs/NAV_STATS.md) · [Does the policy learn? The learning check](docs/learning-validation.md) · [PyPI Publishing Roadmap](docs/pypi-publishing-roadmap.md) · [Headless server quickstart](docs/headless-quickstart.md) · [The demos on Ariadne, and a template for your own multi-car controller](grl_snam/ariadne/README.md) · [The vehicle plant in port-Hamiltonian form (PDF)](docs/vehicle-ph-plant.pdf)
 
 ## Overview
 
