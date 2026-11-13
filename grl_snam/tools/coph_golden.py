@@ -7,10 +7,13 @@ tests to reproduce. GRL-SNAM keeps a copy in ``tests/fixtures/coph_golden``.
 fails there until the golden is regenerated and re-committed on both sides.
 
 Every double is written as its raw bits: a 64-bit unsigned integer as 16 lowercase hex digits,
-most significant first (``"3fbeb851eb851eb8"`` is 0.12). The file is the same bytes on every run
-and OS.
+most significant first (``"3fbeb851eb851eb8"`` is 0.12). The file is the same bytes on every run.
+G1, G4 and every input are the same bytes on every OS too. G2, G3 and G11's outputs are the
+platform's float64 torch and libm results, so another OS may differ in their last bits; the test
+compares those at their tier (FLOAT64: rtol 1e-12, atol 1e-12).
 
-The cases are the C1 set: the records and the stage ledger, the spec's G1 and G4.
+The cases are the C1 set (the records and the stage ledger, the spec's G1 and G4) and the C2 set
+(the plant, the potential and command, and the allocation: G2, G3 and G11).
 
 - ``config`` (G1): ``Config`` and ``CommunicationConfig`` built from overrides. An accepted one
   records every field after ``__post_init__`` (which fills ``replay_update_cap``) and the fields
@@ -20,6 +23,14 @@ The cases are the C1 set: the records and the stage ledger, the spec's G1 and G4
   a ``maze_learning.MazeLearner``) along a scripted path, under three configurations. Each tick
   records the advance and each kept stage's readings, transitions, footprints and obstacles.
   ``stage_rules`` below states the rules in full.
+- ``plant`` (G2): ``model.flow`` and ``model.balance`` over 40 ``(x, u, d, dt)``, with ``d``
+  from 1e-8 to 10 and the profile's damping bounds.
+- ``potential`` (G3): ``model.potential``, its gradient and ``model.command`` at 25 points on
+  five scenes (the crossing's doors, doors with disks, a hazard bump, disks alone and a fresh
+  stage), each under legacy and progress shaping, on both sides of the force limit and of
+  progress's alpha clip.
+- ``allocation`` (G11): ``grl_snam.coph.allocation.allocate`` over 60 cases, at rest, in reverse
+  and at the steer lock among them.
 
 The demos' learner is not ``learner.Learner``. Its ``advance`` moves along either axis, pools the
 readings of every kept stage and never sets ``Stage.anchors``, so ``_field_fit``'s overlap
@@ -527,6 +538,279 @@ The layout:
 
 
 # ---------------------------------------------------------------------------
+# G2, G3, G11: the FLOAT64 cases
+# ---------------------------------------------------------------------------
+
+# FLOAT64 (NAV-COPH-ROADMAP §5): |mine - golden| <= rtol * |golden| + atol on each output. The
+# inputs are exact decimals; the outputs are the platform's float64 torch and libm results, which
+# can differ from another platform's in the last bits.
+FLOAT64 = dict(rtol=1e-12, atol=1e-12)
+
+
+def _float64_case(name, inputs: dict, out: dict) -> dict:
+    """Inputs and outputs as bits: a double as 16 hex digits, a sequence as a list of them."""
+
+    def enc(v):
+        if isinstance(v, (int, str)) and not isinstance(v, bool):
+            return v
+        if isinstance(v, (list, tuple)):
+            return [enc(x) for x in v]
+        return hexbits(v)
+
+    return dict(name=name, **{k: enc(v) for k, v in inputs.items()},
+                out={k: enc(v) for k, v in out.items()})  # fmt: skip
+
+
+# G2: the plant. 10 dampings, each under 4 (x, u, dt): d down to 1e-8, the profile's bounds
+# (0.15, 1.5), its initial 0.6 and the demos' world 0.85; dt the profile's 0.12, the Humvee
+# step 0.6 (§3.3.1), 0.05 and 1.
+DAMPINGS = [1e-8, 1e-6, 1e-4, 0.01, 0.15, 0.6, 0.85, 1.5, 3.0, 10.0]
+PLANT_STATES = [(0.0, 4.0, 0.0, 0.0), (2.5, 4.0, 0.8, 0.1), (9.3, 4.2, -0.6, 0.45),
+                (11.0, 7.5, 1.0, 0.0), (0.4, 0.3, -0.2, -0.9)]  # fmt: skip
+PLANT_FORCES = [(0.0, 0.0), (3.0, 0.0), (-1.2, 2.1), (2.12, -2.12), (0.5, 0.25)]
+PLANT_DTS = [0.12, 0.6, 0.05, 1.0]
+
+
+def plant_cases() -> dict:
+    from grl_snam.coph.model import balance, flow, tensor
+
+    cases = []
+    for i, d in enumerate(DAMPINGS):
+        for j, dt in enumerate(PLANT_DTS):
+            x = PLANT_STATES[(i + j) % len(PLANT_STATES)]
+            u = PLANT_FORCES[(2 * i + j) % len(PLANT_FORCES)]
+            after = flow(tensor(x), tensor(u), d, dt).tolist()
+            b = balance(tensor(x), tensor(u), d, dt)
+            cases.append(_float64_case(
+                f"d={d!r} dt={dt!r}", dict(x=x, u=u, d=d, dt=dt),
+                dict(flow=after, work=b["work"], heat=b["heat"],
+                     kinetic_change=b["kinetic_change"], residual=b["residual"]),
+            ))  # fmt: skip
+    return dict(tier=FLOAT64, cases=cases)
+
+
+PLANT_RULES = """\
+model.flow and model.balance, for a state x = (q, v) (q, v in R^2), a force u held over dt and a
+damping d > 0: the exact flow of q' = v, v' = u - d v.
+- flow: a = exp(-d dt); I = -expm1(-d dt) / d; q_after = (q + I v) + ((dt - I) u) / d;
+  v_after = a v + I u.
+- balance: steady = u / d; transient = v - steady; first = -expm1(-d dt) / d;
+  second = -expm1(-2 d dt) / (2 d);
+  heat = d ((steady . steady) dt + 2 (steady . transient) first + (transient . transient) second);
+  work = u . (q_after - q); kinetic_change = (v_after . v_after - v . v) / 2;
+  residual = (kinetic_change - work) + heat, zero but for round-off.
+- Small d is ill-conditioned: dt - I cancels to about d dt^2 / 2, and heat sums terms of size
+  |u|^2 / d. So q_after, heat and residual hold to the tier only with exp and expm1 correctly
+  rounded (torch's are at every argument here; the Windows CRT's expm1 is not at most of them)
+  and the operations in the order written.
+The layout: plant.cases[] = {name, x, u, d, dt, out: {flow: [x, y, vx, vy], work, heat,
+kinetic_change, residual}}.
+"""
+
+
+# G3: the potential, its gradient and the command. Each scene is a stage (the profile's 3 x 4 m
+# box, 4 x 4 RBF centres of width 0.8), its field weights and the obstacles in the geometry store;
+# every point is evaluated under legacy shaping (no cfg: Learner.act, and replay's command) and
+# progress shaping (the profile's routed controller, navigation.guarded_control).
+
+# The crossing's doors: vertical slabs (x, y, r, hx, hy) that span the corridor.
+DOOR_MIDDLE, DOOR_NORTH = door("middle"), door("north")
+
+
+def _cyclic_weights(n, mul, mod, shift, scale):
+    return [((k * mul) % mod - shift) / scale for k in range(n)]
+
+
+def _bump_weights(centers, at, top, floor):
+    """A hazard bump: top - ((cx - at.x)^2 + (cy - at.y)^2) / 2, held above floor."""
+    return [max(top - ((cx - at[0]) ** 2 + (cy - at[1]) ** 2) / 2, floor) for cx, cy in centers]
+
+
+# name, stage centre, obstacles, weights (a function of the centres), policy_bounds, points.
+# A point is (q, v, target, policy).
+POTENTIAL_SCENES = [
+    ("crossing", (8.4, 4.0), [DOOR_MIDDLE, DOOR_NORTH],
+     lambda c: _cyclic_weights(len(c), 7, 11, 5, 8.0), (0.0, 10.0), [
+         ((9.1, 4.0), (0.8, 0.0), (12.0, 4.0), (1.0, 2.0)),
+         ((9.2, 4.9), (0.3, 0.6), (12.0, 4.0), (3.5, 0.5)),
+         ((7.2, 3.1), (0.0, 0.0), (8.6, 4.0), (1.0, 2.0)),
+         ((8.0, 4.4), (-0.5, 0.2), (0.0, 4.0), (10.0, 10.0)),
+         ((9.3, 3.5), (0.1, -0.05), (9.0, 3.6), (0.25, 6.0)),
+         ((6.95, 5.6), (1.0, 0.05), (12.0, 4.0), (0.0, 0.0)),
+         ((9.25, 4.2), (0.05, 0.0), (9.15, 4.1), (1.0, 2.0)),
+     ]),
+    ("crossing_with_disks", (2.1, 4.0), [DOOR_MIDDLE, (3.0, 4.6, 0.2), (1.4, 3.2, 0.25), DOOR_NORTH],
+     lambda c: _cyclic_weights(len(c), 5, 9, 4, 6.0), (0.0, 10.0), [
+         ((2.6, 4.35), (0.6, 0.3), (12.0, 4.0), (1.0, 2.0)),
+         ((3.3, 4.1), (0.2, 0.0), (3.6, 4.0), (2.0, 4.0)),
+         ((1.0, 3.6), (-0.4, -0.4), (0.0, 0.0), (1.0, 2.0)),
+         ((2.1, 5.8), (0.0, 0.9), (2.0, 6.2), (0.5, 1.0)),
+         ((0.8, 2.3), (0.0, 0.0), (0.7, 2.2), (6.0, 0.25)),
+     ]),
+    ("hazard", (6.3, 4.0), [],
+     lambda c: _bump_weights(c, (7.0, 4.0), 1.25, -1.5), (0.0, 10.0), [
+         ((7.0, 4.0), (0.9, 0.0), (12.0, 4.0), (1.0, 2.0)),
+         ((5.2, 4.3), (0.7, -0.1), (12.0, 4.0), (6.0, 2.0)),
+         ((6.6, 2.4), (0.3, 0.3), (7.5, 2.6), (0.25, 2.0)),
+         ((7.6, 5.5), (0.0, 0.0), (7.7, 5.4), (10.0, 0.0)),
+         ((4.9, 3.0), (-0.2, 0.6), (5.1, 3.4), (1.0, 2.0)),
+         ((6.0, 5.95), (0.5, 0.5), (12.0, 4.0), (3.0, 3.0)),
+     ]),
+    # Disks only: the car adapter's obstacles (§3.3.3), and model.potential's disk branch.
+    ("disks", (4.2, 4.0), [(3.0, 4.6, 0.2), (4.8, 3.3, 0.3), (5.5, 4.9, 0.15), (3.6, 2.6, 0.25)],
+     lambda c: _cyclic_weights(len(c), 3, 8, 3.5, 6.0), (0.0, 10.0), [
+         ((4.5, 3.75), (0.5, -0.3), (12.0, 4.0), (1.0, 2.0)),
+         ((5.25, 4.75), (0.4, 0.2), (6.0, 5.0), (1.0, 2.0)),
+         ((3.0, 4.15), (0.0, 0.0), (3.2, 4.0), (0.5, 0.75)),
+         ((4.0, 4.0), (0.1, 0.0), (4.3, 4.05), (1.0, 2.0)),
+         ((2.95, 3.0), (-0.3, 0.1), (12.0, 4.0), (2.5, 8.0)),
+     ]),
+    # A fresh stage (weights -1/16), no obstacles and the box (0, 2): alpha is 1, unclipped.
+    ("fresh_alpha_1", (0.0, 4.0), [], None, (0.0, 2.0), [
+        ((0.3, 4.1), (0.2, 0.0), (0.5, 4.0), (1.0, 2.0)),
+        ((1.2, 3.5), (0.4, 0.3), (1.4, 4.0), (2.0, 0.5)),
+    ]),
+]  # fmt: skip
+FORCE_LIMIT = 3.0  # Config().force_limit; the command's limit
+
+
+def _slab_margin(q, o):
+    """Refuse a point at a slab's core segment ends (where the nearest point's t is clamped) or
+    on its core: model.potential's gradient is not smooth there."""
+    p = (o[0] - o[3], o[1] - o[4])
+    d = (o[0] + o[3] - p[0], o[1] + o[4] - p[1])
+    t = ((q[0] - p[0]) * d[0] + (q[1] - p[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1])
+    tc = min(max(t, 0.0), 1.0)
+    gap = math.hypot(q[0] - (p[0] + tc * d[0]), q[1] - (p[1] + tc * d[1]))
+    if min(abs(t), abs(t - 1)) < 0.01 or gap < 0.01:
+        raise AssertionError(f"{q}: at the slab {o}'s ends or core")
+
+
+def potential_cases() -> dict:
+    import torch
+
+    from grl_snam.coph.model import command, potential, risk, shaping_parameters, tensor
+    from grl_snam.coph.records import new_stage
+
+    scenes, cases = [], []
+    for si, (name, center, obstacles, weights_of, box, points) in enumerate(POTENTIAL_SCENES):
+        cfg = Config(**{**PROFILE, "policy_bounds": box, "policy_initial": (1.0, 2.0)})
+        stage = new_stage(0, center, (*center, 0.0, 0.0), GOAL, cfg)
+        centers = [tuple(c) for c in stage.centers.tolist()]
+        weights = stage.weights.tolist() if weights_of is None else weights_of(centers)
+        w, c = tensor(weights), stage.centers
+        scenes.append(dict(
+            name=name, center=_hexes(center), centers=_hexes(stage.centers.numpy().reshape(-1)),
+            weights=_hexes(weights), obstacles=[_hexes(o) for o in obstacles],
+            policy_bounds=_hexes(box),
+        ))  # fmt: skip
+        for pi, (q, v, target, policy) in enumerate(points):
+            for o in obstacles:
+                if len(o) == 5:
+                    _slab_margin(q, o)
+                elif math.hypot(q[0] - o[0], q[1] - o[1]) < 0.01:
+                    raise AssertionError(f"{q}: at the disk {o}'s centre")
+            for mode in ("legacy", "progress"):
+                mode_cfg = cfg if mode == "progress" else None
+                qt = tensor(q).requires_grad_(True)
+                args = (tensor(target), w, c, cfg.rbf_width, tensor(policy), obstacles)
+                value = potential(qt, *args, mode_cfg)
+                (grad,) = torch.autograd.grad(value, qt)
+                applied, proposed = command(tensor((*q, *v)), *args, FORCE_LIMIT, mode_cfg)
+                out = dict(risk=float(risk(tensor(q), w, c, cfg.rbf_width)),
+                           potential=float(value.detach()), grad=grad.tolist(),
+                           proposed=proposed.tolist(), applied=applied.tolist())  # fmt: skip
+                if mode == "progress":
+                    params = shaping_parameters(w, cfg.rbf_width, obstacles, cfg)
+                    out.update(alpha=params["alpha"], bound=params["bound"])
+                cases.append(_float64_case(
+                    f"{name} {pi} {mode}", dict(scene=si, mode=mode, q=q, v=v, target=target,
+                                                policy=policy), out,
+                ))  # fmt: skip
+    shaping = dict(k=Config().shaping_k, ell=Config().shaping_ell, eta=Config().shaping_eta)
+    return dict(
+        tier=FLOAT64,
+        rbf_width=hexbits(Config().rbf_width),
+        limit=hexbits(FORCE_LIMIT),
+        shaping={k: hexbits(v) for k, v in shaping.items()},
+        scenes=scenes,
+        cases=cases,
+    )
+
+
+POTENTIAL_RULES = """\
+model.potential, model.risk, model.shaping_parameters and model.command (no local residual: the
+demos never set Stage.local_residual). A case evaluates at q, with velocity v, target t, policy
+(pi0, pi1), its scene's RBF centres c_k, weights w_k and obstacles, and rbf_width.
+- softplus(z) = log1p(exp(z)), and z itself for z > 20 (torch's threshold); its derivative is
+  sigmoid(z), and 1 for z > 20.
+- risk(q) = softplus(sum_k w_k exp(-0.5 |(q - c_k) / rbf_width|^2)) / 4.
+- An obstacle's clearance is its surface distance minus 0.12 (the agent's radius). A disk
+  (x, y, r): |q - (x, y)| - r. A slab (x, y, r, hx, hy), with ends p = (x - hx, y - hy) and
+  e = (x + hx, y + hy), d = e - p: |q - (p + clamp(((q - p) . d) / (d . d), 0, 1) d)| - r.
+- barrier(q) = sum over obstacles of softplus(6 (0.35 - clearance))^2 / 36 (0 with none).
+- shaping(q) = pi0 risk(q) + pi1 barrier(q); s = |q - t|^2.
+- legacy (mode 'legacy'): V = 0.5 s + shaping.
+- progress (mode 'progress'): V = 0.5 k s + ((alpha s) / (s + ell^2)) shaping, with k, ell, eta
+  from shaping and alpha = min(1, 2 eta k ell / bound) (1 when bound = 0), bound =
+  policy_bounds[1] (exp(-0.5) sum_k |w_k| / (4 rbf_width) + sum over obstacles of
+  softplus(6 (r + 0.47)) / 3). alpha and bound do not depend on q or the policy.
+- grad = dV/dq. command: proposed = -grad - 1.4 v; applied = proposed min(1, limit /
+  max(|proposed|, 1e-12)).
+The layout: potential.scenes[] = {name, center, centers (x0, y0, x1, y1, ...; x outer, as G4's),
+weights, obstacles, policy_bounds}; potential.cases[] = {name, scene (an index), mode, q, v,
+target, policy, out: {risk, potential, grad, proposed, applied; progress adds alpha, bound}}.
+Every point is given under both modes. No point sits at a slab's segment ends or core, or a
+disk's centre, where V is not smooth.
+"""
+
+
+# G11: the allocation (grl_snam.coph.allocation, §3.3.2). 10 speeds x 6 forces: at rest, below,
+# at and above the speed floor, and in reverse; headings around the circle; a RoboRacer, a
+# Humvee and a slow RoboRacer; the steer lock and the acceleration clip on both sides.
+ALLOCATION_SPEEDS = [0.0, 0.0, 0.2, 0.5, 1.0, 2.5, -0.25, -1.0, 4.0, 1.5]
+ALLOCATION_FORCES = [(3.0, 0.0), (0.0, 3.0), (-2.0, 1.5), (0.4, -0.2), (2.1, 2.1), (0.0, 0.0)]
+ALLOCATION_HEADINGS = [0.0, 1.5707963267948966, -2.3, 3.0, 0.7]
+# (wheelbase, steer_max, accel_max)
+ALLOCATION_CARS = [(0.33, 0.4189, 3.0), (3.3, 0.6, 2.5), (0.33, 0.35, 1.0)]
+ALLOCATION_FLOORS = [0.5, 0.5, 0.25, 1.0]
+
+
+def allocation_cases() -> dict:
+    from grl_snam.coph.allocation import allocate
+
+    cases = []
+    for i, v in enumerate(ALLOCATION_SPEEDS):
+        for j, u in enumerate(ALLOCATION_FORCES):
+            heading = ALLOCATION_HEADINGS[(i + 2 * j) % len(ALLOCATION_HEADINGS)]
+            wheelbase, steer_max, accel_max = ALLOCATION_CARS[(i + j) % len(ALLOCATION_CARS)]
+            floor = ALLOCATION_FLOORS[(i * j) % len(ALLOCATION_FLOORS)]
+            a = allocate(u, heading, v, wheelbase, steer_max, accel_max, floor)
+            cases.append(_float64_case(
+                f"v={v!r} u={u!r}",
+                dict(u=u, heading=heading, speed=v, wheelbase=wheelbase, steer_max=steer_max,
+                     accel_max=accel_max, speed_floor=floor),
+                dict(accel=a.accel, steer=a.steer, kappa=a.kappa, used=a.used,
+                     unallocated=a.unallocated),
+            ))  # fmt: skip
+    return dict(tier=FLOAT64, cases=cases)
+
+
+ALLOCATION_RULES = """\
+grl_snam.coph.allocation.allocate (NAV-COPH-ROADMAP §3.3.2), for a force u, a heading psi (rad),
+a signed speed v along it, a wheelbase L, a steer lock steer_max, an acceleration limit
+accel_max and a speed floor:
+- h = (cos psi, sin psi); n = (-sin psi, cos psi), the left normal.
+- accel = clamp(u . h, -accel_max, accel_max), with u . h = u.x h.x + u.y h.y.
+- kappa = (u . n) / max(v v, speed_floor speed_floor).
+- steer = clamp(atan(L kappa), -steer_max, steer_max): the bicycle angle, + left.
+- lateral = ((v v) tan(steer)) / L; used = accel h + lateral n; unallocated = u - used.
+The layout: allocation.cases[] = {name, u, heading, speed, wheelbase, steer_max, accel_max,
+speed_floor, out: {accel, steer, kappa, used, unallocated}}.
+"""
+
+
+# ---------------------------------------------------------------------------
 # The file
 # ---------------------------------------------------------------------------
 
@@ -539,12 +823,20 @@ def generate(out_dir) -> Path:
         "about": (
             "libcvc's C++ twin of CoPH-Stagewise (NAV-COPH-ROADMAP.md §3.4, §5), written by "
             "GRL-SNAM's grl_snam.tools.coph_golden. Doubles are raw bits: 16 hex digits of the "
-            "uint64, most significant first. Cases: G1 (config) and G4 (stages)."
+            "uint64, most significant first. Cases: G1 (config), G2 (plant), G3 (potential), "
+            "G4 (stages) and G11 (allocation). G1 and G4 are BIT; G2, G3 and G11 are FLOAT64 "
+            "(each section's tier)."
         ),
         "upstream": UPSTREAM,
         "stage_rules": STAGE_RULES,
+        "plant_rules": PLANT_RULES,
+        "potential_rules": POTENTIAL_RULES,
+        "allocation_rules": ALLOCATION_RULES,
         "config": config_cases(),
+        "plant": plant_cases(),
+        "potential": potential_cases(),
         "stages": stage_cases(),
+        "allocation": allocation_cases(),
     }
     path = out_dir / JSON_NAME
     # Bytes, not text: a text-mode write would end the file with \r\n on Windows.

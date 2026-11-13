@@ -13,8 +13,8 @@ graded hazards. The copy is kept in sync with upstream by re-vendoring and by th
 | Dependencies | torch, numpy and matplotlib. Upstream's scipy and Pillow are used only by modules that stay out. |
 
 The copied files keep upstream's formatting and names, so that re-syncing is a mechanical diff.
-black and ruff skip them (`pyproject.toml` lists them). `__init__.py`, `results.py`, `feed.py`
-and `timeline.py` are GRL-SNAM's own code and are linted.
+black and ruff skip them (`pyproject.toml` lists them). `__init__.py`, `results.py`, `feed.py`,
+`timeline.py` and `allocation.py` are GRL-SNAM's own code and are linted.
 
 ## What was copied
 
@@ -50,6 +50,11 @@ messages. `timeline.py` turns those messages into what the viewer draws: each ag
 time, the floor image and the `.npz` log. Neither changes a vendored module.
 `tests/test_coph_feed.py` checks that a live run's episode equals `crossing_demo.run`'s (apart
 from wall-clock fields) and that its messages equal its replay's.
+
+**New for the cars** (GRL-SNAM code, roadmap §3.3.2, T4 and C5): `allocation.py` allocates CoPH's
+planar force to a car's steer and acceleration (the Ackermann allocation) and books the force the
+car did not take. The golden pins it (G11), so the cars controller and libcvc's fleet driver
+share it. It changes no vendored module.
 
 This is 25 of upstream's 120 modules. It is more than the roadmap's estimate of about 15 because
 the demos call into `staggered_demo`, `cooperative_evaluation`, `maze_family`, `terrain_warning`,
