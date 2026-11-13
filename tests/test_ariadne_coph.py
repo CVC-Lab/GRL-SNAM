@@ -68,3 +68,29 @@ def test_refusals(tmp_path, capsys):
 def test_min_goals_sets_exit_code_3(live):
     root = live["root"]
     assert _main(["crossing", "--headless", "--from", str(root / "run"), "--min-goals", "1"]) == 3
+
+
+@pytest.mark.skipif(
+    not (_host.HAS_HOST and hasattr(_host.Host, "set_plot")),
+    reason="needs pycvc_gl's chart: (libcvc 3.7.14, host.set_plot)",
+)
+def test_the_learning_charts(live, monkeypatch):
+    hosts = []
+    real = _host.open_host
+
+    def open_host(*args, **kwargs):
+        hosts.append(real(*args, **kwargs))
+        return hosts[-1]
+
+    monkeypatch.setattr(_host, "open_host", open_host)
+    assert _main(["crossing", "--headless", "--from", str(live["root"] / "run")]) == 0
+    host = hosts[0]
+    heldout, stat = host.get_tree("learn.heldout"), host.get_tree("learn.stat")
+    assert [s["label"] for s in heldout["s"]] == [
+        "off before", "off after", "CoPH before", "CoPH after", "gate (CoPH)",
+    ]  # fmt: skip
+    assert [m["label"] for m in heldout["m"]] == ["door (CoPH)"]
+    assert [s["label"] for s in stat["s"]] == [
+        "off sensed", "off not sensed", "CoPH sensed", "CoPH not sensed",
+    ]  # fmt: skip
+    assert "lo" in stat["s"][0] and host.get("learn.show") == "field"

@@ -59,7 +59,7 @@ class _Agent:
         self.initial, self.goal = [float(v) for v in initial], [float(v) for v in goal]
         self.poses = []  # (t, x4, stage, version, done)
         self.steps = []  # (t_end, u, work, heat, kinetic_change, residual, observation_jump)
-        self.updates = []  # (t, tick, accepted, reason, shaping_jump, packets, snapshot)
+        self.updates = []  # (t, tick, accepted, reason, shaping_jump, packets, snapshot, stats)
         self.geometry = []  # (t, kind, obstacle)
         self.outcome = None
         self._dirty = False
@@ -128,8 +128,11 @@ class Timeline:
                 _, identity, sender, recipient, q, nbytes, stamp = m
                 self.packets[identity] = (sender, recipient, q, nbytes, stamp)
             elif kind == "update":
-                _, i, t, tick, accepted, reason, jump, packets, snap = m
-                self.agents[i].updates.append((t, tick, accepted, reason, jump, packets, snap))
+                _, i, t, tick, accepted, reason, jump, packets, snap, *stats = m
+                stats = stats[0] if stats else {}
+                self.agents[i].updates.append(
+                    (t, tick, accepted, reason, jump, packets, snap, stats)
+                )
                 for identity in packets:
                     sender, _, _, nbytes, _ = self.packets[identity]
                     self.deliveries.append((t, sender, i, identity, nbytes, accepted, reason))
@@ -364,6 +367,84 @@ class Floor:
 # ── the log ────────────────────────────────────────────────────────────────────────────────────
 
 #: The cars template's per-tick fields (pycvc_gl.cars.LOG_FIELDS), in its order.
+# ── what the learners measured ─────────────────────────────────────────────────────────────────
+
+#: :func:`learning`'s series: one value per update.
+LEARNING = ("t", "version", "accepted", "field_before", "field_proposed", "field_heldout",
+            "plant_heldout", "replay", "gradient_norm", "pi_risk", "pi_barrier", "damping",
+            "error_seen", "error_seen_lo", "error_seen_hi", "error_unseen")  # fmt: skip
+
+
+def _num(x):
+    return math.nan if x is None else float(x)
+
+
+def field_error(floor, stages, seen):
+    """How far an agent's own field is from the truth over the corridor cells of ``floor`` that
+    its kept stages cover (the newest stage wins where they overlap): the mean, 10th and 90th
+    percentile of ``|r - r_true|`` where it has sensed (``seen``, a mask over ``floor.points``),
+    and the mean elsewhere. NaN where there are no such cells."""
+    r = floor.agent_risk(stages)
+    covered = floor.corridor & ~np.isnan(r)
+    if floor.truth is None:
+        return (math.nan,) * 4
+    e = np.abs(r - floor.truth)
+    a, b = e[covered & seen], e[covered & ~seen]
+    if not a.size:
+        return (math.nan, math.nan, math.nan, float(b.mean()) if b.size else math.nan)
+    return (float(a.mean()), float(np.percentile(a, 10)), float(np.percentile(a, 90)),
+            float(b.mean()) if b.size else math.nan)  # fmt: skip
+
+
+def learning(timeline, agent, floor=None, until=None):
+    """What one agent's learner measured at each of its updates, up to time ``until`` (all of them
+    when None), as arrays named by :data:`LEARNING`.
+
+    - ``field_heldout`` and ``plant_heldout``: the held-out field and plant losses of the model in
+      force after the update. They are measured on the learner's validation records, which its
+      gate compares: the gate's ``after`` when it accepted, ``before`` when it did not.
+      ``field_before`` is the model's it started from, and ``field_proposed`` the
+      proposal's either way.
+    - ``replay``: the replay cost after the update's line search, NaN where it could not replay.
+    - ``pi_risk``, ``pi_barrier`` and ``damping``: the learner after the update.
+    - ``error_seen`` (with its 10th and 90th percentiles) and ``error_unseen``, with ``floor`` (a
+      coarse :class:`Floor` built with the world): :func:`field_error` after the update, where
+      the agent has sensed being the cells within its sensor radius of the poses so far. A floor
+      at 4 px/m costs about 2k risk evaluations an update; each update's value is kept.
+    """
+    a = timeline.agents[agent]
+    a.index()  # sorts the poses and updates
+    cache = a.__dict__.setdefault("_field_error", {})
+    seen = np.zeros(floor.points.shape[:2], bool) if floor is not None else None
+    radius2, poses, k = CFG.sensor_radius**2, a.poses, 0
+    rows = []
+    for u in a.updates:
+        t, tick, accepted, snap = u[0], u[1], u[2], u[6]
+        if until is not None and t > until + 1e-9:
+            break
+        stats = u[7] if len(u) > 7 else {}
+        before, after = _num(stats.get("field_before")), _num(stats.get("field_after"))
+        plant = _num(stats.get("plant_after" if accepted else "plant_before"))
+        err = (math.nan,) * 4
+        if floor is not None:
+            while k < len(poses) and poses[k][0] <= t + 1e-9:
+                d = floor.points - np.asarray(poses[k][1][:2])
+                seen |= (d * d).sum(-1) <= radius2
+                k += 1
+            key = (t, tick, id(floor))
+            if key not in cache:
+                cache[key] = field_error(floor, snap["stages"], seen)
+            err = cache[key]
+        rows.append((
+            t, snap["version"], float(accepted), before, after, after if accepted else before,
+            plant,
+            _num(stats.get("replay_after")), _num(stats.get("gradient_norm")), *snap["policy"],
+            snap["damping"], *err,
+        ))  # fmt: skip
+    arr = np.array(rows, float).reshape(-1, len(LEARNING))
+    return {k: arr[:, j] for j, k in enumerate(LEARNING)}
+
+
 LOG_FIELDS = ("x", "y", "heading", "speed", "steer", "vx", "vy", "goal_x", "goal_y", "goal_dist",
               "reached", "collided", "cmd_steer", "cmd_accel")  # fmt: skip
 #: The columns this log adds as ``coef_<name>``: the ledger and the learner.

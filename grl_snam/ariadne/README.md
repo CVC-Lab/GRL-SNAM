@@ -253,6 +253,21 @@ adaptive-rate sharing run all the same.
   - accepts and rejects, with the last update's reason;
   - packet payload bytes sent and received;
   - the energy ledger: work, heat, kinetic change, shaping jumps and the balance residual.
+- **The learning panels** (the Learning window). They draw on pycvc_gl's `chart:` (libcvc
+  3.7.14, `host.set_plot`). On an older pycvc_gl the document hides the window, and the port runs
+  as before. For one agent (the Agent combo), each arm's learner at each of its updates:
+  - **Held-out field loss**, before and after the update. The gate compares the two on the
+    learner's validation readings, and the chart draws the gate's threshold, before + 0.003.
+    That slack is about 100 times the losses here, so the gate accepts every update.
+  - **One statistic below** (the Show combo):
+    - the own field against the truth, `|r - r_true|` over the corridor its stages cover,
+      where it has sensed (with a 10th..90th percentile band) and elsewhere;
+    - the damping estimate against the world's;
+    - `pi`;
+    - the held-out plant loss;
+    - the replay cost.
+  - **Markers** where the agent first knew of a door and where it reached its goal. A cursor
+    follows the play head, and a click on either chart seeks there.
 - **Headless:** the run goes to its end. `--log run.npz` writes the `cars` template's log shape,
   with one column per agent per arm. CoPH drives a point, so `steer` and the commands are NaN, and
   the force is `coef_ux` and `coef_uy`. The ledger and the learner are `coef_*` columns too.
