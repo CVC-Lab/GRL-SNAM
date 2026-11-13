@@ -742,7 +742,8 @@ class HyperelasticRingSystem:
                  # rigid:
                  M_o=1.5, gamma_o=4.0,
                  I=0.6,  gamma_th=1.6,
-                 seed=7, radius=0.35):
+                 seed=7, radius=0.35,
+                 fric_mu=0.1, gamma_o_regions=None):
         torch.manual_seed(seed); self.device=device; self.dtype=dtype
         self.B,self.D = periodic_cubic_uniform_matrices(n_ctrl,K,device,dtype)
         self.w = torch.full((K,), 1.0/float(K), dtype=dtype, device=device)
@@ -761,6 +762,11 @@ class HyperelasticRingSystem:
         self.k_bulk=float(k_bulk); self.gamma_s=float(gamma_s); self.M_s=float(M_s)
         self.M_o=float(M_o); self.gamma_o=float(gamma_o)
         self.I=float(I); self.gamma_th=float(gamma_th)
+        # Tangential contact friction coefficient (was a hard-coded 0.1; 0 turns friction off).
+        self.fric_mu=float(fric_mu)
+        # Planted dissipation: [(x_lo, x_hi, gamma), ...]. Where the centre's x falls in a region,
+        # that region's gamma replaces gamma_o (the first match wins). None: gamma_o everywhere.
+        self.gamma_o_regions=gamma_o_regions
         self.J = torch.tensor([[0.,-1.],[1.,0.]], dtype=dtype, device=device)
         # area reference
         with torch.no_grad():
@@ -769,6 +775,14 @@ class HyperelasticRingSystem:
             X0 = self.B @ Pw0
             A0, _ = polygon_area_and_grad(X0)
         self.A_ref = float(torch.abs(A0).item()) + 1e-6   # reference area at s=1
+
+    def gamma_o_at(self, x: float) -> float:
+        """The translational damping in force with the centre at ``x``: the first
+        ``gamma_o_regions`` entry with ``x_lo <= x < x_hi``, else ``gamma_o``."""
+        for x_lo, x_hi, g in getattr(self, "gamma_o_regions", None) or ():
+            if x_lo <= x < x_hi:
+                return float(g)
+        return self.gamma_o
 
     # ---- kinematics ----
     def world_points(self):
@@ -853,8 +867,8 @@ class HyperelasticRingSystem:
         p_k = g_sum.norm(dim=1)
         p_k = p_k.clamp(max=200.0)          # cap normal proxy
         v_t = v_t.clamp(-2.0, 2.0)   # cap tangential speed per sample
-        #TODO:make 0.25 be a parameter
-        f_fric = -0.1 * (p_k * v_t * contact_mask).unsqueeze(-1) * T_hat  # small μ built-in; tune if needed
+        fric_mu = float(getattr(self, "fric_mu", 0.1))
+        f_fric = -fric_mu * (p_k * v_t * contact_mask).unsqueeze(-1) * T_hat
         F_world_from_fric = self.B.T @ (w.unsqueeze(-1) * f_fric)
         F_o_from_fric = torch.sum(w.unsqueeze(-1) * f_fric, dim=0)
         tau_fric = torch.sum(w * torch.sum(f_fric * (J @ X_minus_o.T).T, dim=1))
@@ -884,7 +898,8 @@ class HyperelasticRingSystem:
         self.theta = self.theta + dt * self.omega
 
         # translation
-        F_o_total = F_o_cons + F_o_from_fric + F_o_from_stage - self.gamma_o * self.v_o
+        gamma_o = self.gamma_o_at(float(self.o[0]))
+        F_o_total = F_o_cons + F_o_from_fric + F_o_from_stage - gamma_o * self.v_o
         if self.v_o[0] ** 2 + self.v_o[1] ** 2 >=5.0:
             print(F_o_cons, F_o_from_fric, F_o_from_stage)
         self.v_o  = self.v_o + dt * (F_o_total / self.M_o)
@@ -938,6 +953,8 @@ class HyperelasticRingSystem:
             "theta": float(self.theta.item()),
             "scale": float(self.s.item()),
             "min_d": float(min_d.min().item()),
+            # the translational damping this step integrated with (gamma_o_regions)
+            "gamma_o_true": gamma_o,
             # forces actually used in integration (stagewise)
             "F_s_total": dbg["F_s_total"],
             "tau_total": dbg["tau_total"],

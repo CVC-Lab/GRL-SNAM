@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import math
 import os
 import random
 from collections.abc import Iterable
@@ -268,6 +269,10 @@ class ShortRollouts(Dataset):
             "v_tgt": v_tgt,
             "gamma_o": torch.tensor(epi["gamma_o"], dtype=torch.float32),
         }
+        if "gamma_o_true" in c0:
+            # The damping the generator integrated with at both ends of the window (a planted
+            # latent; spline_stagewise6 gamma_o_regions). Read by --planted only, never trained on.
+            item["gamma_true"] = (float(c0["gamma_o_true"]), float(c1["gamma_o_true"]))
         return item, self.item_episode[i_epi]
 
 
@@ -691,8 +696,20 @@ def main(argv=None):
         "norm before the clip, and per head (alpha, beta, gamma) its held-out mean and spread "
         "across episodes and its ||dtheta||/||theta||",
     )
+    ap.add_argument(
+        "--planted",
+        type=str,
+        default="",
+        help="a planted-dissipation spec (JSON: M_o and regions [{name, x_lo, x_hi, gamma}]): "
+        "with --val-frac, record per region the held-out truth gamma/M_o, the mean predicted "
+        "gamma on held-out windows inside it, and their relative error (heldout.planted), for "
+        "the untrained net and every epoch. Train it with --w_friction 0: the friction term "
+        "fits gamma to the episode's gamma_o, which hands the head its answer",
+    )
 
     args = ap.parse_args(argv)
+    if args.planted and args.val_frac <= 0.0:
+        ap.error("--planted scores held-out windows: it needs --val-frac")
 
     # data
     held = None
@@ -730,6 +747,8 @@ def main(argv=None):
     os.makedirs(args.outdir, exist_ok=True)
     best = float("inf")
     monitor = _EpochMonitor(model, args, held) if (args.history or held is not None) else None
+    if monitor is not None:
+        monitor.untrained(trainer)
 
     for ep in range(tcfg.epochs):
         logs_acc = {
@@ -773,6 +792,46 @@ def main(argv=None):
         monitor.close()
 
 
+def planted_summary(spec: dict, items: list[dict[str, Any]], gamma: torch.Tensor) -> dict:
+    """Per planted region: ``truth`` (its gamma over ``M_o``: the surrogate integrates unit mass,
+    so that is the damping it should recover), ``mean`` (the predicted ``gamma`` averaged over the
+    held-out windows that start and end inside the region), ``rel_err`` and ``n``; plus ``ratio``
+    (the last region's mean over the first's, against the same ratio of truths). A window counts
+    by its centre's x at both ends; ``truth_logged`` is the generator's own ``gamma_o_true`` over
+    the same windows, when it logged one."""
+    m_o = float(spec.get("M_o", 1.0))
+    x0 = torch.stack([it["o0"][0] for it in items])
+    x1 = torch.stack([it["o_tgt"][0] for it in items])
+    logged = [it.get("gamma_true") for it in items]
+    out: dict[str, Any] = {}
+    names = []
+    for r in spec["regions"]:
+        name = str(r["name"])
+        names.append(name)
+        lo, hi = float(r.get("x_lo", -math.inf)), float(r.get("x_hi", math.inf))
+        inside = (x0 >= lo) & (x0 < hi) & (x1 >= lo) & (x1 < hi)
+        truth = float(r["gamma"]) / m_o
+        k = int(inside.sum())
+        mean = float(gamma[inside].mean()) if k else None
+        rec = {"truth": truth, "mean": mean, "n": k}
+        rec["rel_err"] = None if mean is None else abs(mean - truth) / truth
+        got = [sum(g) / 2.0 for g, ok in zip(logged, inside.tolist(), strict=True) if ok and g]
+        if got:
+            rec["truth_logged"] = sum(got) / len(got) / m_o
+        out[name] = rec
+    if len(names) >= 2:
+        a, b = out[names[0]], out[names[-1]]
+        truth = b["truth"] / a["truth"]
+        value = None if not a["mean"] or b["mean"] is None else b["mean"] / a["mean"]
+        out["ratio"] = {
+            "of": [names[-1], names[0]],
+            "truth": truth,
+            "value": value,
+            "rel_err": None if value is None else abs(value - truth) / truth,
+        }
+    return out
+
+
 class _EpochMonitor:
     """``main``'s opt-in instruments: the per-epoch history and, with a held-out set, the scoring
     of it and ``best_heldout.pt`` (lowest held-out traj loss)."""
@@ -791,6 +850,10 @@ class _EpochMonitor:
         self.best = float("inf")
         self.fh = open(args.history, "w", encoding="utf-8") if args.history else None
         self.gn: list[float] = []
+        self.planted = None
+        if getattr(args, "planted", ""):
+            with open(args.planted, encoding="utf-8") as f:
+                self.planted = json.load(f)
         self._write(
             {
                 "kind": "header",
@@ -802,14 +865,62 @@ class _EpochMonitor:
                 "heldout_samples": 0 if held is None else len(held[0]),
                 "heldout_episodes": None if held is None else sorted(set(held[1])),
                 "heads": list(self.groups),
+                "planted": self.planted,
             }
         )
+
+    def untrained(self, trainer):
+        """Before the first epoch, with a held-out set: the untrained net's held-out terms (an
+        ``init`` record) and ``init.pt``, the untrained arm."""
+        if self.held is None:
+            return
+        rec = {"kind": "init"}
+        rec["heldout"], rec["heads"] = self._score(trainer)
+        torch.save(
+            {"epoch": -1, "model_state_dict": trainer.model.state_dict(), "heldout_logs": rec},
+            os.path.join(self.args.outdir, "init.pt"),
+        )
+        self._write(rec)
 
     def batch(self, grad_norm):
         self.gn.append(float(grad_norm))
 
+    def _score(self, trainer):
+        """The held-out set's mean loss terms (with ``planted`` when a spec is given) and each
+        head's held-out mean and spread across episodes."""
+        from .learning_history import scene_summary
+
+        items, eps = self.held
+        # The same held-out draws every epoch (common random numbers for multi_start), and the
+        # training RNG left as it was: the CPU one and, training on a GPU, its CUDA one (where
+        # multi_start draws its starts).
+        acc: dict[str, float] = {}
+        vals: dict[str, list[torch.Tensor]] = {"alpha": [], "beta": [], "gamma": []}
+        gam: list[torch.Tensor] = []
+        dev = torch.device(trainer.cfg.device)
+        cuda = [dev.index or 0] if dev.type == "cuda" else []
+        with torch.random.fork_rng(devices=cuda):
+            torch.manual_seed(self.args.val_seed)
+            bs = self.args.bs
+            for i in range(0, len(items), bs):
+                batch = collate_short(items[i : i + bs])
+                logs, (alphas, beta, gamma, mask) = trainer.eval_batch(batch)
+                for k, v in logs.items():
+                    acc[k] = acc.get(k, 0.0) + v * len(items[i : i + bs])
+                m = mask.float()
+                a = (alphas * m).sum(1) / m.sum(1).clamp_min(1.0)
+                for k, v in (("alpha", a), ("beta", beta), ("gamma", gamma)):
+                    vals[k].append(v.detach().cpu())
+                g = gamma.detach().cpu()
+                gam.append(g * batch["gamma_o"] if self.args.gamma_rel else g)
+        heldout = {k: v / len(items) for k, v in acc.items()}
+        if self.planted is not None:
+            heldout["planted"] = planted_summary(self.planted, items, torch.cat(gam))
+        heads = {k: scene_summary(torch.cat(v), eps) for k, v in vals.items()}
+        return heldout, heads
+
     def epoch(self, ep, trainer, train_logs, ckpt):
-        from .learning_history import relative_change, scene_summary
+        from .learning_history import relative_change
 
         rec = {"kind": "epoch", "epoch": ep, "train": dict(train_logs)}
         n = max(len(self.gn), 1)
@@ -821,33 +932,13 @@ class _EpochMonitor:
         self.gn = []
         heads: dict[str, dict] = {}
         if self.held is not None:
-            items, eps = self.held
-            # The same held-out draws every epoch (common random numbers for multi_start), and the
-            # training RNG left as it was.
-            acc: dict[str, float] = {}
-            vals: dict[str, list[torch.Tensor]] = {"alpha": [], "beta": [], "gamma": []}
-            with torch.random.fork_rng(devices=[]):
-                torch.manual_seed(self.args.val_seed)
-                bs = self.args.bs
-                for i in range(0, len(items), bs):
-                    logs, (alphas, beta, gamma, mask) = trainer.eval_batch(
-                        collate_short(items[i : i + bs])
-                    )
-                    for k, v in logs.items():
-                        acc[k] = acc.get(k, 0.0) + v * len(items[i : i + bs])
-                    m = mask.float()
-                    a = (alphas * m).sum(1) / m.sum(1).clamp_min(1.0)
-                    for k, v in (("alpha", a), ("beta", beta), ("gamma", gamma)):
-                        vals[k].append(v.detach().cpu())
-            heldout = {k: v / len(items) for k, v in acc.items()}
+            heldout, heads = self._score(trainer)
             rec["heldout"] = heldout
-            for k, v in vals.items():
-                heads[k] = scene_summary(torch.cat(vals[k]), eps)
             rec["best_heldout"] = heldout["traj"] < self.best
             if rec["best_heldout"]:
                 self.best = heldout["traj"]
                 torch.save(
-                    dict(ckpt, heldout_logs=heldout, heldout_episodes=sorted(set(eps))),
+                    dict(ckpt, heldout_logs=heldout, heldout_episodes=sorted(set(self.held[1]))),
                     os.path.join(self.args.outdir, "best_heldout.pt"),
                 )
         now = self._snapshot(self.groups)
