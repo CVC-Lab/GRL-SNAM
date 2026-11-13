@@ -1,2 +1,3 @@
 # Golden files compared byte for byte: never convert their line endings.
 tests/fixtures/belief_material_controller_golden/** -text
+tests/fixtures/coph_golden/** -text
