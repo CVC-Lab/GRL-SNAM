@@ -1,0 +1,239 @@
+# stats_panels.ari — the arms' windows, Stats and Ledger, as units: live.ari imports this file and
+# includes them; grl_snam/ariadne/live.py (--arms) writes what they show, from
+# grl_snam.ariadne._arms.ArmsRun:
+#
+#   import: [cvc://cars_panels.ari, stats_panels.ari]
+#   windows:
+#     - include: arms_stats        # pos: / size: at the include site place it
+#     - include: arms_ledger
+#
+# Both show while arms.on is 1 (live.py sets it with --arms). The keys they bind:
+#   arms_stats    arms.time; arms.stats (a table, one row per arm: arm, colour, clear_min,
+#                 clear_mean, pen, path, elapsed, ms, reached); arms.goal (the next Retarget's
+#                 "x, y": empty draws one) and the button, which sends arms_retarget; arms.status;
+#                 view.arm (the arm the camera, the HUD and the rasters follow; arms.names lists
+#                 them, one a line); the chart arms.clearance
+#   arms_ledger   ledger.coef, ledger.terms, ledger.books (summed over the run), ledger.tick (this
+#                 tick's): a row per arm; ledger.agent (the arm whose plant ledger and books chart
+#                 show), ledger.plant (key, value, unit; n/a where the item does not apply) and
+#                 ledger.plant_note; ledger.book and the charts ledger.cum, ledger.compare
+#
+# The charts are pycvc_gl's chart: (libcvc 3.7.14, host.set_plot). On an older host they are
+# hidden, and the rows above them show the same numbers as text. The document that imports this
+# file lists chart in its requires: as optional, as live.ari does.
+
+units:
+  arms_stats:
+    args: { title: Stats, id: arms_stats }
+    window: "{title}"
+    id: "{id}"
+    size: [600, 400]
+    visible_when: (= (state-get "arms.on") "1")
+    children:
+      - text: "one row per arm, this leg: clearance (m), ticks penetrating, path (m),"
+      - text: "elapsed (s, to the goal once there), wall time per tick (ms), reached"
+      - text: ""
+        bind: arms.time
+      - type: group
+        layout: { kind: grid, col_widths: [88, 60, 54, 54, 40, 56, 58, 60, 52] }
+        children:
+          - text: "arm"
+          - text: "colour"
+          - text: "min"
+          - text: "mean"
+          - text: "pen"
+          - text: "path"
+          - text: "elapsed"
+          - text: "ms/tick"
+          - text: "reached"
+      - type: group
+        repeat: (state-get "arms.stats")
+        layout: { kind: grid, col_widths: [88, 60, 54, 54, 40, 56, 58, 60, 52] }
+        children:
+          - text: ""
+            bind: arms.stats.{i}.arm
+          - text: ""
+            bind: arms.stats.{i}.colour
+          - text: ""
+            bind: arms.stats.{i}.clear_min
+          - text: ""
+            bind: arms.stats.{i}.clear_mean
+          - text: ""
+            bind: arms.stats.{i}.pen
+          - text: ""
+            bind: arms.stats.{i}.path
+          - text: ""
+            bind: arms.stats.{i}.elapsed
+          - text: ""
+            bind: arms.stats.{i}.ms
+          - text: ""
+            bind: arms.stats.{i}.reached
+      - separator
+      - input_text: Goal (x, y)
+        bind: arms.goal
+        tooltip: "where the next Retarget sends every arm (m); empty: a free point far from all of them"
+      - button: Retarget every arm
+        on: arms_retarget
+        tooltip: "every arm's goal moves on the same tick, and a new leg starts"
+      - text: ""
+        bind: arms.status
+      - combo: Follow
+        bind: view.arm
+        options: (string.split (state-get "arms.names") "\n")
+        tooltip: "the arm the camera, the Navigator window and the rasters follow"
+      - type: group
+        visible_when: (has? "chart")
+        children:
+          - chart: Clearance (m), every arm
+            bind: arms.clearance
+            legend: right
+            x_label: time (s)
+            height: 110
+
+  arms_ledger:
+    args: { title: Ledger, id: arms_ledger }
+    window: "{title}"
+    id: "{id}"
+    size: [640, 560]
+    visible_when: (= (state-get "arms.on") "1")
+    children:
+      - text: "per arm, this tick: the coefficients in force and the terms of U_nav"
+      - type: group
+        layout: { kind: grid, col_widths: [96, 64, 64, 64, 68, 68, 56] }
+        children:
+          - text: "arm"
+          - text: "alpha"
+          - text: "beta"
+          - text: "gamma"
+          - text: "lam_soft"
+          - text: "lam_hard"
+          - text: "mu"
+      - type: group
+        repeat: (state-get "ledger.coef")
+        layout: { kind: grid, col_widths: [96, 64, 64, 64, 68, 68, 56] }
+        children:
+          - text: ""
+            bind: ledger.coef.{i}.arm
+          - text: ""
+            bind: ledger.coef.{i}.alpha
+          - text: ""
+            bind: ledger.coef.{i}.beta
+          - text: ""
+            bind: ledger.coef.{i}.gamma
+          - text: ""
+            bind: ledger.coef.{i}.lam_soft
+          - text: ""
+            bind: ledger.coef.{i}.lam_hard
+          - text: ""
+            bind: ledger.coef.{i}.mu
+      - type: group
+        layout: { kind: grid, col_widths: [96, 64, 64, 70, 56, 56, 60] }
+        children:
+          - text: "arm"
+          - text: "U"
+          - text: "goal"
+          - text: "barrier"
+          - text: "soft"
+          - text: "hard"
+          - text: "terrain"
+      - type: group
+        repeat: (state-get "ledger.terms")
+        layout: { kind: grid, col_widths: [96, 64, 64, 70, 56, 56, 60] }
+        children:
+          - text: ""
+            bind: ledger.terms.{i}.arm
+          - text: ""
+            bind: ledger.terms.{i}.potential
+          - text: ""
+            bind: ledger.terms.{i}.u_goal
+          - text: ""
+            bind: ledger.terms.{i}.u_barrier
+          - text: ""
+            bind: ledger.terms.{i}.u_soft
+          - text: ""
+            bind: ledger.terms.{i}.u_hard
+          - text: ""
+            bind: ledger.terms.{i}.u_terrain
+      - separator
+      - text: "the books against U_nav (unit mass, normalized units):"
+      - text: "dU = drive + projection + context + residual; dH = dKE + dU. Summed over the run:"
+      - type: group
+        layout: { kind: grid, col_widths: [96, 64, 64, 76, 64, 60, 64] }
+        children:
+          - text: "arm"
+          - text: "dU"
+          - text: "drive"
+          - text: "projection"
+          - text: "context"
+          - text: "dKE"
+          - text: "residual"
+      - type: group
+        repeat: (state-get "ledger.books")
+        layout: { kind: grid, col_widths: [96, 64, 64, 76, 64, 60, 64] }
+        children:
+          - text: ""
+            bind: ledger.books.{i}.arm
+          - text: ""
+            bind: ledger.books.{i}.dU
+          - text: ""
+            bind: ledger.books.{i}.drive
+          - text: ""
+            bind: ledger.books.{i}.projection
+          - text: ""
+            bind: ledger.books.{i}.context
+          - text: ""
+            bind: ledger.books.{i}.dKE
+          - text: ""
+            bind: ledger.books.{i}.residual
+      - text: "this tick:"
+      - type: group
+        repeat: (state-get "ledger.tick")
+        layout: { kind: grid, col_widths: [96, 64, 64, 76, 64, 60, 64] }
+        children:
+          - text: ""
+            bind: ledger.tick.{i}.arm
+          - text: ""
+            bind: ledger.tick.{i}.dU
+          - text: ""
+            bind: ledger.tick.{i}.drive
+          - text: ""
+            bind: ledger.tick.{i}.projection
+          - text: ""
+            bind: ledger.tick.{i}.context
+          - text: ""
+            bind: ledger.tick.{i}.dKE
+          - text: ""
+            bind: ledger.tick.{i}.residual
+      - separator
+      - combo: Agent
+        bind: ledger.agent
+        options: (string.split (state-get "arms.names") "\n")
+        tooltip: "the arm whose plant ledger and cumulative books show below"
+      - type: group
+        visible_when: (has? "chart")
+        children:
+          - chart: Its books, cumulative
+            bind: ledger.cum
+            legend: right
+            x_label: time (s)
+            height: 110
+          - combo: Book
+            bind: ledger.book
+            options: [dU, drive, projection, context, dKE, residual]
+          - chart: That book, cumulative, every arm
+            bind: ledger.compare
+            legend: right
+            x_label: time (s)
+            height: 110
+      - text: ""
+        bind: ledger.plant_note
+      - type: group
+        repeat: (state-get "ledger.plant")
+        layout: { kind: grid, col_widths: [170, 90, 60] }
+        children:
+          - text: ""
+            bind: ledger.plant.{i}.key
+          - text: ""
+            bind: ledger.plant.{i}.value
+          - text: ""
+            bind: ledger.plant.{i}.unit

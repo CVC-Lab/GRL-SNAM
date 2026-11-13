@@ -13,7 +13,12 @@
 #   grl_snam/ariadne/README.md), nav_plant.* (the plant: nav_plant.vehicle), run.* (the world),
 #   world.* (the terrain generator);
 # - the scene: the city this document names (data: below), or a generated world, and the demo's
-#   vehicle, under a soft afternoon light.
+#   vehicle, under a soft afternoon light;
+# - Stats and Ledger (stats_panels.ari, beside this file): with --arms only (arms.on), one row per
+#   arm, the Retarget, and each arm's coefficients, U terms, books and plant ledger, with charts
+#   on a host with chart: (libcvc 3.7.14; text rows without it):
+#
+#   python -m grl_snam.ariadne live austin-freedrive --plant kinematic --arms trained,untrained,constant
 #
 # The city is the Austin scene package on cvcpkg.org. The host downloads it once (later runs read
 # its cache), unpacks it into the state tree and decodes it: the terrain with its aerial image, and
@@ -25,7 +30,10 @@ meta:
   name: GRL-SNAM live demo
   min_libcvc: 3.7.11
 
-import: cvc://cars_panels.ari
+import: [cvc://cars_panels.ari, stats_panels.ari]
+
+requires:
+  - {name: chart, optional: true}   # the arms' charts (libcvc 3.7.14)
 
 data:
   city:
@@ -55,13 +63,19 @@ init: |
     (state-set "world.trees" "200")
     (state-set "world.rocks" "40")
     (state-set "world.terrain" "fbm")
-    (state-set "world.city" "districts"))
+    (state-set "world.city" "districts")
+    (state-set "arms.on" "0")
+    (state-set "arms.goal" "")
+    (state-set "ledger.book" "dU"))
 
 menubar:
   - menu: Demo
     items:
       - menu_item: Paused
         bind: view.paused
+      - menu_item: Retarget every arm
+        on: arms_retarget
+        visible_when: (= (state-get "arms.on") "1")
       - separator
       - menu_item: Quit
         on: quit
@@ -132,6 +146,14 @@ windows:
     args: { cost: "the wall barrier's reach (on a plant: the belief)" }
     pos: [740, 30]
     size: [420, 300]
+
+  - include: arms_stats
+    pos: [1172, 30]
+    size: [600, 400]
+
+  - include: arms_ledger
+    pos: [1172, 442]
+    size: [600, 540]
 
 scene:
   chrome: false
