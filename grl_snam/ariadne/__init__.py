@@ -35,6 +35,9 @@ PORTS = {
     "coph": ("grl_snam.ariadne.coph",
              "CoPH-Stagewise's crossing and hazard episodes, communication off beside CoPH",
              "grl-snam coph crossing|hazard (live, or --from a run)"),
+    "learn": ("grl_snam.ariadne.learn",
+              "did it learn? held-out curves, heads, checkpoints, arms and the claims",
+              "new: grl-snam learn-report's verdict, from learning histories"),
 }  # fmt: skip
 
 
