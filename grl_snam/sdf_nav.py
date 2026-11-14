@@ -410,11 +410,15 @@ def sdf_rollout(
     mat_k_sharp=5.0,
     mat_d_hat_m=3.0,
     ext_force_fn=None,
+    clr_grad=False,
 ):
     """Differentiable SDF surrogate rollout. ``al,be,ga`` are ``[B]`` coefficients.
     Returns ``(oT, vT, min_clearance[B])``. Substep (``nsub``>1) + ``vmax`` clamp at
     inference so a fast step can't tunnel a thin wall; ``nsub=1`` is fine for the
     training gradient.
+
+    ``min_clearance`` is detached unless ``clr_grad``: a loss on it then carries gradient
+    (through the step that came closest). The forward values are the same either way.
 
     ``material`` (with ``[B]`` ``lam_soft``/``lam_hard``) adds the material-aware
     force term — see :func:`_material_force`. ``None`` (the default) is bit-for-bit
@@ -432,7 +436,7 @@ def sdf_rollout(
         for _s in range(nsub):
             phi, nrm = field.sample(o)
             d = phi - rr
-            minclr = torch.minimum(minclr, d.detach())
+            minclr = torch.minimum(minclr, d if clr_grad else d.detach())
             F_bar = -(al * _ipc_dbdd(d, d_hat)).unsqueeze(-1) * nrm  # push out along wall normal
             F_goal = -be.unsqueeze(-1) * (o - goal)
             if material is not None:

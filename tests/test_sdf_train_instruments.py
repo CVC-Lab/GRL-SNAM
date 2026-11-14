@@ -50,7 +50,7 @@ def test_the_instruments_do_not_change_training(sdf_npz, tmp_path):
     plain = train_sdf(sdf_npz, str(tmp_path / "a.pt"), seed=3, **SMALL)
     inst = train_sdf(
         sdf_npz, str(tmp_path / "b.pt"), seed=3, history=str(tmp_path / "h.jsonl"),
-        checkpoint_every=2, **SMALL,
+        checkpoint_every=2, grad_terms_every=1, **SMALL,
     )  # fmt: skip
     a, b = _state(plain), _state(inst)
     assert all(torch.equal(a[k], b[k]) for k in a)
@@ -59,6 +59,7 @@ def test_the_instruments_do_not_change_training(sdf_npz, tmp_path):
     steps = [r for r in recs if r["kind"] == "step"]
     assert [r["step"] for r in steps] == [1, 2, 3, 4]
     assert set(steps[0]["terms"]) == {"loss", "goal", "col", "reg"}
+    assert set(steps[0]["grad_norm"]["terms"]) == {"goal", "col", "reg"}
     cks = [r for r in recs if r["kind"] == "checkpoint"]
     assert [c["step"] for c in cks] == [0, 2, 4]
     assert all(c["fitness"] is None for c in cks)

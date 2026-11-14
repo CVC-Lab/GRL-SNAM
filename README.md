@@ -244,6 +244,14 @@ grl-snam learn-report seed*/history.jsonl --arms seed0.objective.json --arms see
   [−0.01, +0.07]). The one term that beats untrained, goal (−0.06), ties that constant
   (+0.0004).
 
+  That retrain diverged: its backward ran through a rollout that is chaotic on Austin's
+  geometry, and its collision term had no gradient. `grl-snam train` now truncates the backward
+  every 7 steps and gives the collision term its gradient (`--bptt-window`, `--col-grad`; the
+  doc's §8). Rerun, the held-out loss passes against every arm: −0.81 [−0.92, −0.69] against
+  untrained, and −0.16 [−0.21, −0.12] against a constant at the trained net's own mean. The
+  task does not: the trained nets reach fewer held-out goals than untrained (Austin
+  −1.2 [−1.8, −0.6]), because on Austin that objective prefers clearance.
+
 ### Live inside VolRover3
 
 ```bash
