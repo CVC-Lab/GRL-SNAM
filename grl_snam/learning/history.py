@@ -32,15 +32,17 @@ writer follows the same conventions, and the reader reads the conventions.
   final pick (:meth:`History.selected`).
 - ``blob`` or ``checkpoint`` is the path of the policy saved at that record.
 
-``load(paths)`` returns every run of every file as a :class:`Runs` list. ``load(paths,
-follow=True)`` is for a file a trainer is still writing: :meth:`Runs.refresh` re-reads a file
-when its modification time or size changes, a file that does not exist yet reads as empty, and a
-half-written last line is skipped rather than refused.
+``load(paths)`` returns every run of every file as a :class:`Runs` list. A file may be gzipped
+(``.jsonl.gz``; told by gzip's magic bytes, not by its name). ``load(paths, follow=True)`` is for
+a file a trainer is still writing: :meth:`Runs.refresh` re-reads a file when its modification
+time or size changes, a file that does not exist yet reads as empty, and a half-written last line
+is skipped rather than refused.
 """
 
 from __future__ import annotations
 
 import functools
+import gzip
 import json
 import math
 import os
@@ -59,6 +61,8 @@ X_KEYS = ("step", "epoch")
 BLOB_KEYS = ("blob", "checkpoint")
 #: An ``end`` record's final pick.
 PICK_KEYS = ("best_step", "selected_step")
+#: The first two bytes of a gzip file.
+GZIP_MAGIC = b"\x1f\x8b"
 #: Held-out scores where higher is better, twin or not.
 MAXIMIZE = frozenset({"fitness"})
 #: Held-out metrics with no training twin where higher is better (every other one is lower).
@@ -492,9 +496,17 @@ def parse_lines(lines: Iterable[str], *, path=None, tolerant: bool = False) -> l
     return [History.from_records(g, path=path, run=k) for k, g in enumerate(groups)]
 
 
+def open_text(path):
+    """``path`` opened as UTF-8 text, through gzip when its first bytes are gzip's magic."""
+    p = Path(path)
+    with p.open("rb") as f:
+        gzipped = f.read(len(GZIP_MAGIC)) == GZIP_MAGIC
+    return gzip.open(p, "rt", encoding="utf-8") if gzipped else p.open(encoding="utf-8")
+
+
 def read_runs(path, *, tolerant: bool = False) -> list[History]:
-    """Every run in one history file."""
-    with Path(path).open(encoding="utf-8") as f:
+    """Every run in one history file, plain or gzipped."""
+    with open_text(path) as f:
         return parse_lines(f, path=path, tolerant=tolerant)
 
 
