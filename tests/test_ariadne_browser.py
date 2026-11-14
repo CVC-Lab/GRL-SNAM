@@ -162,3 +162,23 @@ def test_main_unpacks_the_package_and_runs_a_port(site, tmp_path):
     assert r.returncode == 0, r.stderr
     assert "learn" in r.stdout and "grl-snam: --list: started in" in r.stderr
     assert (page / "grl_snam" / "ariadne" / "docs" / "learn.ari").is_file()
+
+
+def test_the_learn_page_alone_with_histories_of_your_choice(tmp_path, site):
+    assemble = _pages_module("assemble")
+    plain = tmp_path / "runs" / "a.history.jsonl"
+    plain.parent.mkdir()
+    plain.write_text((site / "learn" / "data" / "seed0.history.jsonl").read_text())
+    gz = REPO / "docs/learning-validation/retrain/seed1.history.jsonl.gz"
+    out = tmp_path / "other" / "learn"
+    host = site / "learn"
+    assert assemble.main(["--host", str(host), "--out", str(out), "--learn-only",
+                          "--histories", str(plain), str(gz)]) == 0  # fmt: skip
+    config = json.loads((out / "ariadne.config.json").read_text())
+    assert config["args"] == ["learn", "data/a.history.jsonl", "data/seed1.history.jsonl"]
+    assert all((out / f).is_file() for f in config["preload"])
+    assert (out / "index.html").is_file() and not (out / "learn").exists()
+    assert not (out.parent / "index.html").exists() and not (out / "style.css").exists()
+    with pytest.raises(SystemExit, match="share a name"):
+        assemble.main(["--host", str(host), "--out", str(tmp_path / "x"), "--learn-only",
+                       "--histories", str(gz), str(gz)])  # fmt: skip

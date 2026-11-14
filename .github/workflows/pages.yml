@@ -1,23 +1,21 @@
 name: pages
 
-# GRL-SNAM's GitHub Pages site (https://cvc-lab.github.io/GRL-SNAM/): a static landing page, and
-# GRL-SNAM's Ariadne ports running in the browser on libcvc's ariglx-web (CPython 3.12, pycvc,
-# pycvc_gl and numpy in WebAssembly). The pattern is libcvc's deploy-pages.yml: build the host with
-# its recipe's own script, assemble the site, check it in a headless Chrome, and deploy it as a
-# Pages artifact (nothing is committed to a gh-pages branch).
+# GRL-SNAM's pages: a static landing page, and GRL-SNAM's Ariadne ports running in the browser on
+# libcvc's ariglx-web (CPython 3.12, pycvc, pycvc_gl and numpy in WebAssembly). This workflow
+# builds and checks them; it deploys nothing. The site is published from another repository's
+# workflow, which checks out this repo and calls the same scripts (pages/README.md says how):
 #
-#   1. Build ariglx-web from the pinned libcvc tag (LIBCVC_REF): the single-threaded build (wasm),
-#      since Pages sends no COOP/COEP headers, in the lean tier (no vtk-python). About 30 minutes,
-#      so it is cached by libcvc's commit and pages/build-ariglx-web.sh.
-#   2. Assemble the site (pages/assemble.py): the landing page (pages/site/), and learn/, which
-#      runs `grl-snam ariadne learn` on the learning check's retrain histories
-#      (docs/learning-validation/retrain/). Everything a page fetches is on the site's own origin.
-#   3. Load it in headless Chrome as Pages serves it (pages/smoke.mjs): learn must start, run its
-#      frames and make learn-report's claims in the page.
-#
-# Pull requests and pushes to main build and check the site. Deploying is by hand: Run workflow
-# with `deploy` checked. It needs Settings -> Pages -> Source = "GitHub Actions", which a CVC-Lab
-# admin sets.
+#   1. pages/build-ariglx-web.sh builds ariglx-web from the pinned libcvc tag (LIBCVC_REF), as
+#      libcvc's own deploy-pages.yml builds its gallery: the recipe's script, the single-threaded
+#      build (wasm), since GitHub Pages sends no COOP/COEP headers, in the lean tier (no
+#      vtk-python). About 30 minutes, so it is cached by libcvc's commit and the script.
+#   2. pages/assemble.py writes the site: the landing page (pages/site/) and learn/, which runs
+#      `grl-snam ariadne learn` on the learning check's retrain histories
+#      (docs/learning-validation/retrain/); with --learn-only, the learn page alone, for another
+#      site. Everything a page fetches is on the site's own origin.
+#   3. pages/smoke.mjs loads it in headless Chrome as Pages serves it: learn must start, run its
+#      frames and make learn-report's claims in the page. It runs on the whole site under
+#      /GRL-SNAM/, and on the learn page alone at another path, as another site serves it.
 
 on:
   pull_request:
@@ -34,11 +32,6 @@ on:
       - docs/learning-validation/**
       - .github/workflows/pages.yml
   workflow_dispatch:
-    inputs:
-      deploy:
-        description: "Deploy the site to GitHub Pages once it passes"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -54,7 +47,7 @@ env:
 
 jobs:
   build:
-    name: build and check the site
+    name: build and check the pages
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     defaults:
@@ -85,10 +78,13 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: bash pages/build-ariglx-web.sh libcvc "$RUNNER_TEMP/ariglx-web-work" ariglx-web
 
-      - name: Assemble the site
-        run: python3 pages/assemble.py --host ariglx-web/share/ariglx-web --out _site
+      - name: Assemble the site, and the learn page alone
+        run: |
+          python3 pages/assemble.py --host ariglx-web/share/ariglx-web --out _site
+          python3 pages/assemble.py --host ariglx-web/share/ariglx-web --learn-only \
+            --out _other_site/demos/learn
 
-      - name: Load the site in headless Chrome
+      - name: Load them in headless Chrome
         run: |
           command -v cvcpkg >/dev/null || {
             curl -fsSL https://cvcpkg.org/install.sh | sh
@@ -97,10 +93,13 @@ jobs:
           # Node 22 for the smoke's fetch and WebSocket, from the catalog.
           cvcpkg install nodejs22 --platform linux --prefix "$RUNNER_TEMP/node" \
             --config release --link shared --no-fallback-to-source
+          node="$RUNNER_TEMP/node/bin/node"
           chrome=$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)
           "$chrome" --version
-          "$RUNNER_TEMP/node/bin/node" pages/smoke.mjs --site _site --chrome "$chrome" \
-            --base /GRL-SNAM/ --shots shots
+          "$node" pages/smoke.mjs --site _site --chrome "$chrome" --base /GRL-SNAM/ --shots shots
+          # The learn page alone, as another site serves it: under its own path, no landing page.
+          "$node" pages/smoke.mjs --site _other_site --chrome "$chrome" --base /other-site/ \
+            --learn demos/learn/ --no-landing --shots shots/learn-only
 
       - name: Upload the smoke's screenshots
         if: always()
@@ -109,25 +108,3 @@ jobs:
           name: pages-smoke-shots
           path: shots
           if-no-files-found: ignore
-
-      - name: Upload the Pages artifact
-        if: github.event_name == 'workflow_dispatch' && inputs.deploy
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-
-  deploy:
-    name: deploy to GitHub Pages
-    needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy
-    runs-on: ubuntu-24.04
-    permissions:
-      pages: write # deploy the Pages artifact
-      id-token: write # the OIDC token actions/deploy-pages verifies the deploy with
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4

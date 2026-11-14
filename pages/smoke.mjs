@@ -2,16 +2,19 @@
 // on libcvc's src/arigl/web/test/arigl_web_smoke.mjs, whose server and DevTools driver it follows.
 //
 //   node pages/smoke.mjs --site _site --chrome <chrome or chromium> [--base /GRL-SNAM/] [--shots DIR]
+//        [--learn learn/] [--no-landing]
 //
 // It serves the site at --base (the project site's path on github.io) on 127.0.0.1, with an
 // ordinary site's headers: no COOP/COEP, as GitHub Pages sends none (the single-threaded ariglx-web
 // needs none), and a strict Content-Security-Policy (no inline code or style, no eval, nothing from
 // another origin), so a pass also says the pages fetch only from their own origin. Then:
 //
-//   - the landing page: every link and image on the site itself must be there;
-//   - learn/: grl-snam ariadne learn must start in the page (main.py says so on stderr), its frames
-//     must run, and the learn-report it makes in the page (?arg=--report, read back from the page's
-//     file system) must hold claims; no Python traceback, no CSP violation.
+//   - the landing page: every link and image on the site itself must be there (--no-landing skips
+//     it, for a site whose landing page is not GRL-SNAM's);
+//   - the learn page (--learn, the path under --base; learn/ by default): grl-snam ariadne learn
+//     must start in the page (main.py says so on stderr), its frames must run, and the learn-report
+//     it makes in the page (?arg=--report, read back from the page's file system) must hold
+//     claims; no Python traceback, no CSP violation.
 //
 // --shots writes each page as DIR/<name>.png. Exit status 0 when every case passes.
 
@@ -27,9 +30,12 @@ const opt = (name, dflt) => {
   return i >= 0 ? argv[i + 1] : dflt;
 };
 const SITE = opt('--site'), CHROME = opt('--chrome'), SHOTS = opt('--shots');
-const BASE = opt('--base', '/GRL-SNAM/');
-if (!SITE || !CHROME || !BASE.startsWith('/') || !BASE.endsWith('/')) {
-  console.error('usage: smoke.mjs --site DIR --chrome PATH [--base /PATH/] [--shots DIR]');
+const BASE = opt('--base', '/GRL-SNAM/'), LEARN = opt('--learn', 'learn/');
+const LANDING = !argv.includes('--no-landing');
+if (!SITE || !CHROME || !BASE.startsWith('/') || !BASE.endsWith('/') || !LEARN.endsWith('/') ||
+    LEARN.startsWith('/')) {
+  console.error('usage: smoke.mjs --site DIR --chrome PATH [--base /PATH/] [--shots DIR] ' +
+                '[--learn PATH/] [--no-landing]');
   process.exit(2);
 }
 const TIMEOUT_MS = Number(process.env.GRL_SNAM_SMOKE_TIMEOUT_MS || 600000);
@@ -70,7 +76,7 @@ const record = (name, ok, detail) => {
 };
 
 // ── the landing page: its own links and images resolve ─────────────────────────────────────────
-{
+if (LANDING) {
   const html = fs.readFileSync(path.join(SITE, 'index.html'), 'utf8');
   const refs = [...html.matchAll(/(?:href|src)="([^"#]+)"/g)].map(m => m[1])
                  .filter(r => !/^[a-z]+:/i.test(r));
@@ -157,17 +163,19 @@ async function watch(page, done) {
 if (SHOTS) fs.mkdirSync(SHOTS, {recursive: true});
 let failed = false;
 try {
-  const landing = await openPage(ORIGIN + BASE);
-  await new Promise(r => setTimeout(r, 1500));
-  const csp = JSON.parse(await landing.evaluate('JSON.stringify(window.__csp || [])'));
-  record('the landing page loads under a strict CSP', csp.length === 0, csp.join(', '));
-  if (SHOTS) await landing.screenshot(path.join(SHOTS, 'landing.png'));
-  await landing.close();
+  if (LANDING) {
+    const landing = await openPage(ORIGIN + BASE);
+    await new Promise(r => setTimeout(r, 1500));
+    const csp = JSON.parse(await landing.evaluate('JSON.stringify(window.__csp || [])'));
+    record('the landing page loads under a strict CSP', csp.length === 0, csp.join(', '));
+    if (SHOTS) await landing.screenshot(path.join(SHOTS, 'landing.png'));
+    await landing.close();
+  }
 
   // learn/, writing its report into the page's file system (the page's own directory, since
   // main.py runs the port there; the page writes each file at its URL path).
   const t0 = Date.now();
-  const page = await openPage(`${ORIGIN}${BASE}learn/?arg=--report&arg=report.json`);
+  const page = await openPage(`${ORIGIN}${BASE}${LEARN}?arg=--report&arg=report.json`);
   const v = await watch(page, v => v.log.some(l => /^grl-snam: learn: running/.test(l)));
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   const started = v.log.find(l => /^grl-snam: learn: started in/.test(l)) || '';
@@ -185,7 +193,7 @@ try {
            !later.log.some(l => /^Traceback/.test(l)),
          `state ${later.state}; csp ${later.csp.join(', ')}; warnings ${later.warnings.length}`);
   const report = await page.evaluate(
-      `(() => { try { return FS.readFile(${JSON.stringify(BASE + 'learn/report.json')}, ` +
+      `(() => { try { return FS.readFile(${JSON.stringify(BASE + LEARN + 'report.json')}, ` +
       `{encoding: 'utf8'}); } catch (e) { return 'ERROR ' + e; } })()`);
   let summary = null;
   try { summary = JSON.parse(report).summary; } catch (e) {}
