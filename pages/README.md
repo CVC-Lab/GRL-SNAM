@@ -63,4 +63,6 @@ To look at it, serve the site's parent at `/GRL-SNAM/` (for example a directory 
   from its own origin, and cvcpkg.org sends no CORS headers for github.io.
 - **Size.** A first visit to the learn page downloads about 34 MB gzip (28 MB of it
   `ariglx.wasm`), which the browser then caches. learn takes about 20 s to start in the page.
+  Gzipped histories ship as they are (the retrain's five: 1.1 MB, 5.4 MB unzipped); learn's
+  reader unzips them in the page, whether or not the server marks them `Content-Encoding: gzip`.
 - **Charts.** libcvc v3.7.13 has no `chart:` widget (3.7.14), so learn's windows show text.

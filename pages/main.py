@@ -1,9 +1,10 @@
 """The Pages site's program: one of GRL-SNAM's Ariadne ports, in the browser on libcvc's ariglx-web.
 
 A page's ``ariadne.config.json`` runs this file in place of a document (``"src": "main.py"``),
-with the port and its arguments as the config's ``args`` (``["learn", "data/seed0.history.jsonl",
-...]``), and preloads ``grl_snam_web.zip`` and the port's data beside it. The page writes those
-files into its file system at their URL paths, so they sit in this file's directory.
+with the port and its arguments as the config's ``args`` (``["learn",
+"data/seed0.history.jsonl.gz", ...]``), and preloads ``grl_snam_web.zip`` and the port's data
+beside it. The page writes those files into its file system at their URL paths, so they sit in
+this file's directory.
 
 grl_snam ships as files, not as a wheel: its package metadata requires torch, which has no
 browser build. The zip holds the package with its ``.ari`` documents, and is unpacked here because
