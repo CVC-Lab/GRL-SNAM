@@ -66,8 +66,7 @@ def _load(bundle: str, checkpoint: str, sdf_npz: str | None):
     model.eval()
     bounds = terrain_bounds(bundle)
     if sdf_npz and os.path.exists(sdf_npz):
-        d = np.load(sdf_npz)
-        phi, nxg, nyg = d["phi"], d["normal_x"], d["normal_y"]
+        phi, nxg, nyg = sdf_nav.load_sdf_planes(sdf_npz, float(meta["scale"]))
     else:
         from pycvc_gl.scenes import building_occupancy
 

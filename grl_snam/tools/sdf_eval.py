@@ -9,7 +9,14 @@ pairs drawn over one SDF. This module holds the pieces that judge it on data it 
 - **Held-out pairs** (:func:`sample_pairs`): starts from a pool, goals ``d_min..d_max`` away in
   free space (the training draw, minus goals inside geometry).
 - **The objective's terms** (:func:`objective_terms`): the training loss on fixed pairs, without
-  a gradient.
+  a gradient. Two objectives (:data:`OBJECTIVES`, :func:`loss_terms`): ``task`` (the default since
+  docs/learning-validation.md §9) and ``end-distance`` (the objective before it).
+- **The sim frame** (:func:`in_frame`, :data:`SIM_METRES_PER_UNIT`): the physics constants are
+  numbers in sim units, tuned where one unit is 20 m. ``grl-snam sdf`` frames a map at about 10
+  units across its region (Austin's ``nav_sdf.npz``: 300 m per unit), so there the same numbers
+  are a 270 m/s robot with a 105 m barrier band. A scene read in the 20 m frame is the same
+  geometry, in metres, with the robot at its real size. Pairs are drawn in the npz's own frame and
+  converted (:func:`heldout_pairs`), so a held-out pair is the same place in every frame.
 - **The seek drive** (:func:`seek_drive`): the deployed navigator's seek mode
   (:class:`grl_snam.nav.SdfNavigator`: a carrot ``min(1.8, d)`` toward the goal, the policy's
   coefficients at the carrot, one ``sdf_rollout`` step of ``nsub`` substeps) for a whole batch of
@@ -30,10 +37,20 @@ import torch.nn.functional as F
 
 import grl_snam.sdf_nav as sdf_nav
 
+#: Metres per sim unit in the frame ``grl-snam train``'s physics constants were tuned in: rr 3 m
+#: (0.15), ``d_hat`` 0.35 = 7 m, ``vmax`` 0.9 = 18 m/s, the seek carrot 1.8 = 36 m, and libcvc's
+#: carrot machine (``sim_world``: stall 0.15 = 3 m, wall-follow 1.6 = 32 m). The procedural city
+#: and :mod:`grl_snam.tools.austin`'s story run in it.
+SIM_METRES_PER_UNIT = 20.0
+
+#: ``grl-snam train``'s objectives (:func:`loss_terms`).
+OBJECTIVES = ("task", "end-distance")
+
 
 @dataclass
 class SdfScene:
-    """One ``nav_sdf.npz``: its field and the frame it is in."""
+    """One ``nav_sdf.npz``: its field and the frame it is in. ``task`` is the scene in the npz's
+    own frame when this one was read in another (:func:`in_frame`), else ``None``."""
 
     field: sdf_nav.SDFField
     phi: np.ndarray
@@ -41,20 +58,55 @@ class SdfScene:
     center: list[float]
     scale: float
     region: float
+    task: SdfScene | None = None
 
     @property
     def region_n(self) -> float:
         """The working region's half-extent in normalized units."""
         return self.region * self.scale
 
+    @property
+    def task_k(self) -> float:
+        """Sim units per unit of the frame pairs are drawn in (1 in the npz's own frame)."""
+        return 1.0 if self.task is None else self.scale / self.task.scale
 
-def load_scene(sdf_npz: str, device="cpu") -> SdfScene:
+
+def sim_scale(npz_scale: float, metres_per_unit: float) -> float:
+    """The sim frame's units per metre: ``1 / metres_per_unit``, or the npz's own scale when
+    ``metres_per_unit`` is 0 (the frame ``grl-snam train`` used before §9)."""
+    if metres_per_unit <= 0:
+        return float(npz_scale)
+    s = 1.0 / float(metres_per_unit)
+    # An npz already in that frame (its scale a float32 of it) is read as it is.
+    return float(npz_scale) if abs(s - float(npz_scale)) <= 1e-6 * s else s
+
+
+def load_scene(sdf_npz: str, device="cpu", scale: float | None = None) -> SdfScene:
+    """``sdf_npz``'s scene, in the npz's own frame or, with ``scale`` (sim units per metre, as a
+    checkpoint's ``meta["scale"]``), in that frame (:func:`in_frame`)."""
     d = np.load(sdf_npz)
     bounds = [float(v) for v in d["bounds"]]
     center = [float(v) for v in d["center"]]
-    scale = float(d["scale"])
-    field = sdf_nav.SDFField(d["phi"], d["normal_x"], d["normal_y"], bounds, center, scale, device)
-    return SdfScene(field, d["phi"], bounds, center, scale, float(d["region"]))
+    s0 = float(d["scale"])
+    field = sdf_nav.SDFField(d["phi"], d["normal_x"], d["normal_y"], bounds, center, s0, device)
+    scene = SdfScene(field, d["phi"], bounds, center, s0, float(d["region"]))
+    return scene if scale is None else in_frame(scene, float(scale))
+
+
+def in_frame(scene: SdfScene, scale: float) -> SdfScene:
+    """``scene`` read in the sim frame of ``scale`` units per metre. The geometry is the same in
+    metres: ``phi`` is multiplied by ``scale / scene.scale``; normals, bounds and region are
+    unchanged. The result keeps ``scene`` as its ``task``. The same frame (to float32
+    precision) returns ``scene``."""
+    if abs(float(scale) - scene.scale) <= 1e-6 * scene.scale:
+        return scene
+    k = float(scale) / scene.scale
+    planes = scene.field.field[0].cpu().numpy()
+    phi = (scene.phi.astype(np.float64) * k).astype(np.float32)
+    field = sdf_nav.SDFField(
+        phi, planes[1], planes[2], scene.bounds, scene.center, float(scale), scene.field.dev
+    )
+    return SdfScene(field, phi, scene.bounds, scene.center, float(scale), scene.region, scene)
 
 
 def free_pool(scene: SdfScene, rr: float, margin: float = 0.02) -> np.ndarray:
@@ -129,6 +181,29 @@ def sample_pairs(
     )
 
 
+def heldout_pairs(scene: SdfScene, blocks: int, held: list[int], n: int, seed: int, *, rr: float):
+    """``n`` fixed ``(starts, goals)`` started inside the held-out blocks, in ``scene``'s frame
+    (``rr`` too). They are drawn in the npz's own frame (``scene.task``), as ``grl-snam train``
+    draws them, and converted, so a pair is the same place in metres in every sim frame."""
+    t, k = scene.task or scene, scene.task_k
+    rt = rr / k
+    pool = free_pool(t, rt)
+    _, held_pool = split_pool(pool, t.region_n, blocks, held)
+    if not len(held_pool):
+        raise ValueError("no free start point lies inside the held-out blocks")
+    s, g = sample_pairs(t, held_pool, n, seed, rr=rt)
+    dev = scene.field.dev
+    return (s * k).to(dev), (g * k).to(dev)
+
+
+def carrot_of(o, goals, carrot=1.8):
+    """The seek carrot: ``min(carrot, d)`` from ``o`` toward ``goals`` (``grl_snam.nav``'s and
+    libcvc's ``carrot_step`` seek branch)."""
+    dg = goals - o
+    dist = dg.norm(dim=-1, keepdim=True)
+    return o + dg / (dist + 1e-6) * dist.clamp(max=carrot)
+
+
 def loss_terms(
     model,
     field,
@@ -142,11 +217,34 @@ def loss_terms(
     horizon,
     window=0,
     col_grad=False,
+    kind="end-distance",
+    carrot_m=36.0,
+    col_margin_m=0.4,
+    col_temp_m=0.4,
+    reach_tol_m=15.0,
+    per_pair=False,
+    v0=None,
+    state=None,
 ):
-    """``grl-snam train``'s objective on ``(starts, goals)``, as tensors: ``goal`` (the mean
-    squared distance to the goal after ``horizon`` steps), ``col`` (the softplus of the rollout's
-    minimum clearance), ``reg`` (the pull toward the bias regime) and
-    ``loss = goal + 3 col + 0.1 reg``. Two settings change its gradient and no value:
+    """``grl-snam train``'s objective on ``(starts, goals)``, as tensors: ``goal``, ``col``,
+    ``reg`` (the pull toward the bias regime, ``(beta-3)^2 + (gamma-4)^2 + (alpha-1)^2``) and
+    ``loss = goal + 3 col + 0.1 reg``. Two objectives (``kind``):
+
+    - ``task`` (docs/learning-validation.md §9): the deployed seek drive's rule each step (the
+      carrot ``min(carrot_m, d)`` toward the goal, the coefficients at it), and terms in metres
+      (``field.S`` converts each ``_m``): with a constant policy its value is the same in any sim
+      frame.
+      ``goal`` is the share of the possible progress toward arrival not made: ``1 - (r0 - rT) /
+      min(r0, vmax * dt * horizon)``, with ``r`` the distance left to within ``reach_tol_m`` of
+      the goal. 0 is arrival, or every step at full speed toward it. Each window's progress
+      carries that window's gradient. ``col`` is ``softplus((m - c) / tau)`` of the rollout's
+      minimum clearance ``c``, with ``m = col_margin_m`` and ``tau = col_temp_m``. ``reg`` is
+      averaged over the steps.
+    - ``end-distance`` (before §9): the coefficients once, at the start, toward the goal itself;
+      ``goal`` the squared distance left after ``horizon`` steps, ``col`` the softplus with
+      margin and temperature 0.02 units (6 m on Austin's npz, 0.4 m in a 20 m frame).
+
+    Two settings change the gradient and no value:
 
     - ``window`` (0: the whole horizon) cuts the rollout into windows of that many steps and
       detaches the state between them, so the backward runs through at most one window
@@ -154,8 +252,22 @@ def loss_terms(
     - ``col_grad``: the collision term carries gradient. Without it the clearance is detached
       and ``col`` is a constant to the optimizer.
 
-    Returns ``(terms, (alpha, beta, gamma))``.
+    ``per_pair`` returns ``[n]`` tensors (``loss`` per pair) in place of their means. ``task``
+    only: ``v0`` starts the rollout at that velocity (else at rest), and a dict ``state``
+    receives its end (``o``, ``v``, detached), so a leg can be driven across calls. Returns
+    ``(terms, (alpha, beta, gamma))``, the coefficients at the start.
     """
+    if kind == "task":
+        return _task_terms(
+            model, field, starts, goals, rr=rr, d_hat=d_hat, dt=dt, vmax=vmax, horizon=horizon,
+            window=window, col_grad=col_grad, carrot_m=carrot_m, col_margin_m=col_margin_m,
+            col_temp_m=col_temp_m, reach_tol_m=reach_tol_m, per_pair=per_pair, v0=v0,
+            state=state,
+        )  # fmt: skip
+    if kind != "end-distance":
+        raise ValueError(f"unknown objective {kind!r} (objectives: {', '.join(OBJECTIVES)})")
+    if v0 is not None or state is not None:
+        raise ValueError("v0= and state= are the task objective's")
     al, be, ga = model(sdf_nav.coef_feats(field, starts, goals))
     o, v = starts, torch.zeros_like(starts)
     w = window if window > 0 else horizon
@@ -168,6 +280,15 @@ def loss_terms(
             dt=dt, vmax=vmax, clr_grad=col_grad,
         )  # fmt: skip
         clr = c if clr is None else torch.minimum(clr, c)
+    if per_pair:
+        goal = ((o - goals) ** 2).sum(-1)
+        col = F.softplus((0.02 - clr) / 0.02)
+        reg = (be - 3.0) ** 2 + (ga - 4.0) ** 2 + (al - 1.0) ** 2
+        return {"loss": goal + 3.0 * col + 0.1 * reg, "goal": goal, "col": col, "reg": reg}, (
+            al,
+            be,
+            ga,
+        )
     goal = ((o - goals) ** 2).sum(-1).mean()
     col = F.softplus((0.02 - clr) / 0.02).mean()
     reg = ((be - 3.0) ** 2).mean() + ((ga - 4.0) ** 2).mean() + ((al - 1.0) ** 2).mean()
@@ -176,6 +297,53 @@ def loss_terms(
         be,
         ga,
     )
+
+
+def _task_terms(
+    model, field, starts, goals, *, rr, d_hat, dt, vmax, horizon, window, col_grad, carrot_m,
+    col_margin_m, col_temp_m, reach_tol_m, per_pair, v0=None, state=None,
+):  # fmt: skip
+    """:func:`loss_terms`'s ``task`` objective."""
+    S = field.S
+    tol, m, tau, carrot = reach_tol_m * S, col_margin_m * S, col_temp_m * S, carrot_m * S
+
+    def left(p):
+        return ((goals - p).norm(dim=-1) - tol).clamp_min(0.0)
+
+    r0 = left(starts)
+    possible = torch.minimum(r0, torch.full_like(r0, vmax * dt * horizon))
+    o, v = starts, (torch.zeros_like(starts) if v0 is None else v0)
+    w = window if window > 0 else horizon
+    clr, first = None, None
+    prog = torch.zeros_like(r0)
+    reg = torch.zeros_like(r0)
+    for t0 in range(0, horizon, w):
+        if t0:
+            o, v = o.detach(), v.detach()
+        r_in = left(o)
+        for _ in range(min(w, horizon - t0)):
+            c = carrot_of(o, goals, carrot)
+            al, be, ga = model(sdf_nav.coef_feats(field, o, c))
+            if first is None:
+                first = (al, be, ga)
+            o, v, cl = sdf_nav.sdf_rollout(
+                field, o, v, c, al, be, ga, 1, nsub=1, rr=rr, d_hat=d_hat, dt=dt, vmax=vmax,
+                clr_grad=col_grad,
+            )  # fmt: skip
+            clr = cl if clr is None else torch.minimum(clr, cl)
+            reg = reg + (be - 3.0) ** 2 + (ga - 4.0) ** 2 + (al - 1.0) ** 2
+        prog = prog + (r_in - left(o))
+    if state is not None:
+        state.update(o=o.detach(), v=v.detach())
+    # A pair that starts within reach of its goal has nothing left to make: 0.
+    goal = torch.where(possible > 0, 1.0 - prog / possible.clamp_min(1e-9), torch.zeros_like(r0))
+    col = F.softplus((m - clr) / tau)
+    reg = reg / horizon
+    t = {"goal": goal, "col": col, "reg": reg}
+    if not per_pair:
+        t = {k: x.mean() for k, x in t.items()}
+    t["loss"] = t["goal"] + 3.0 * t["col"] + 0.1 * t["reg"]
+    return {k: t[k] for k in ("loss", "goal", "col", "reg")}, first
 
 
 @torch.no_grad()
@@ -232,9 +400,7 @@ def seek_drive(
         live = ~done
         if not bool(live.any()):
             break
-        dg = goals - o
-        dist = dg.norm(dim=-1, keepdim=True)
-        c = o + dg / (dist + 1e-6) * dist.clamp(max=carrot)
+        c = carrot_of(o, goals, carrot)
         al, be, ga = model(sdf_nav.coef_feats(field, o, c))
         o2, v2, _ = sdf_nav.sdf_rollout(
             field, o, v, c, al, be, ga, 1, nsub=nsub, rr=rr, d_hat=d_hat, dt=dt, vmax=vmax
@@ -268,11 +434,20 @@ def seek_drive(
     }
 
 
+def clean_reach(d: dict) -> np.ndarray:
+    """Per pair of a :func:`seek_drive` result: reached the goal with no penetration tick."""
+    return d["reached"] & (d["pen_ticks"] == 0)
+
+
 def drive_summary(d: dict, dt: float) -> dict:
-    """A :func:`seek_drive` result reduced to the held-out terms a history records."""
+    """A :func:`seek_drive` result reduced to the held-out terms a history records:
+    ``clean_reach`` is :func:`clean_reach`'s share, ``pen_frac`` the share of pairs with a
+    penetration tick."""
     reached = d["reached"]
     out = {
         "reach": float(reached.mean()),
+        "clean_reach": float(clean_reach(d).mean()),
+        "pen_frac": float((d["pen_ticks"] > 0).mean()),
         "pen_ticks": float(d["pen_ticks"].mean()),
         "path_m": float(d["path_m"].mean()),
         "min_clear_m": float(d["min_clear_m"].mean()),

@@ -7,8 +7,30 @@ rollout — no labels. The net is biased toward the known-good navigating regime
 it starts near-optimal and converges in a few hundred to a few thousand steps. Runs
 on CPU (fast — the SDF removes the per-step obstacle search) or CUDA if present.
 
-The objective is ``goal + 3 col + 0.1 reg`` (:func:`grl_snam.tools.sdf_eval.loss_terms`). Two
-settings decide its gradient, and neither changes a forward value:
+The objective is ``goal + 3 col + 0.1 reg`` (:func:`grl_snam.tools.sdf_eval.loss_terms`), in a
+sim frame of ``metres_per_unit`` metres per unit (docs/learning-validation.md §9):
+
+- ``metres_per_unit`` (default 20, :data:`grl_snam.tools.sdf_eval.SIM_METRES_PER_UNIT`): the
+  physics constants (``d_hat``, ``vmax``, the carrot) are numbers in sim units, tuned where one
+  unit is 20 m. ``grl-snam sdf`` frames a map at ~10 units across its region, 300 m per unit on
+  Austin, where the same numbers are a 270 m/s robot with a 105 m barrier band. The field is
+  read in the sim frame (the same geometry in metres); training and held-out pairs are drawn in
+  the npz's own frame, as before, and converted, so they are the same places. ``0`` is the npz's
+  own frame (the trainer before §9). The checkpoint's ``meta["scale"]`` is the sim frame's and
+  ``meta["sdf_scale"]`` the npz's; a consumer reads the npz in ``meta["scale"]``.
+- ``objective`` ``task`` (default): the seek drive's carrot rule each step, the goal term the
+  share of possible progress toward arrival not made, the collision margin and temperature in
+  metres (``col_margin_m``, ``col_temp_m``). ``end-distance``: the objective before §9 (the
+  coefficients once, the squared end distance, a 0.02-unit margin).
+- ``leg_ticks`` (``task``'s default 1000, the held-out drive's length): each batch row drives one
+  leg, start to goal, across optimizer steps, ``horizon`` steps a step from where it stopped,
+  and is redrawn when it arrives or after ``leg_ticks`` ticks. The objective's windows then see
+  the whole of a 300-600 m leg, stalls behind buildings included, where a fresh draw sees its
+  first 30 m. ``0``: fresh pairs every step, from rest (``end-distance`` always).
+- ``pick`` ``clean-reach`` (default): the held-out pick is the share of held-out pairs reached
+  with no penetration tick, a fitness the objective also serves; ``reach`` is the pick before §9.
+
+Two settings decide the gradient, and neither changes a forward value:
 
 - ``bptt_window`` (default 7): the backward is truncated every that many rollout steps. Through
   the full 28-step horizon it is the derivative of a chaotic map. On dense geometry in the
@@ -21,8 +43,10 @@ settings decide its gradient, and neither changes a forward value:
   clearance is detached, so ``col`` is a constant to the optimizer. A clean gradient then lowers
   ``goal`` by weakening the wall barrier while ``col`` climbs, and the loss rises.
 
-``bptt_window=0, col_grad=False`` is the trainer before the fix; seed 0 for 200 steps on the CPU
-reproduces the published ``coef_sdf.pt`` bit for bit (docs/learning-validation.md §2.2, §8).
+``metres_per_unit=0, objective="end-distance", bptt_window=0, col_grad=False`` is the trainer
+before the fix; seed 0 for 200 steps on the CPU reproduces the published ``coef_sdf.pt`` bit for
+bit (docs/learning-validation.md §2.2, §8). With ``bptt_window=7, col_grad=True`` and
+``pick="reach"`` it is §8's trainer.
 
 The learning instruments (:mod:`grl_snam.learning_history`) are opt-in, as in coef-train:
 
@@ -36,8 +60,10 @@ The learning instruments (:mod:`grl_snam.learning_history`) are opt-in, as in co
   blocks (:func:`grl_snam.tools.sdf_eval.block_split`). Training starts are drawn only outside
   them. Each checkpoint scores fixed held-out pairs started inside them: the objective's terms,
   and the seek drive's reach, penetration, path length, clearance and time to goal. The
-  checkpoint with the highest held-out reach is kept as ``<out stem>.best_heldout.pt``; a best at
-  step 0 means no step beat the untrained net on held-out pairs.
+  checkpoint with the best ``pick`` is kept as ``<out stem>.best_heldout.pt``; a best at step 0
+  means no step beat the untrained net on held-out pairs. ``val_ticks`` (default 1000: 60 s, in
+  which a 300-600 m Austin leg at 18 m/s has room for a detour) and ``reach_tol`` (in the npz's
+  units: 0.05 is 15 m on Austin) set the drive.
 
 With none of them on, training draws and weights are what they were. ``val_frac`` changes the
 training pool, so it changes the weights; the instruments alone do not.
@@ -81,11 +107,17 @@ def train_sdf(
     val_seed: int = 0,
     val_blocks: int = 8,
     val_pairs: int = 256,
-    val_ticks: int = 200,
+    val_ticks: int = 1000,
     reach_tol: float = 0.05,
     bptt_window: int = 7,
     col_grad: bool = True,
     grad_terms_every: int = 0,
+    metres_per_unit: float = sdf_eval.SIM_METRES_PER_UNIT,
+    objective: str = "task",
+    col_margin_m: float = 0.4,
+    col_temp_m: float = 0.4,
+    pick: str = "clean-reach",
+    leg_ticks: int | None = None,
 ) -> str:
     """Train the SDF coefficient net on ``sdf_npz`` and save a checkpoint ``.pt``
     (state dict + physics ``meta``) plus a ``_result.json``. Returns the checkpoint path.
@@ -97,18 +129,30 @@ def train_sdf(
     torch.manual_seed(seed)
     np.random.seed(seed)
 
+    if objective not in sdf_eval.OBJECTIVES:
+        raise ValueError(f"unknown objective {objective!r} ({', '.join(sdf_eval.OBJECTIVES)})")
+    if pick not in PICKS:
+        raise ValueError(f"unknown pick {pick!r} ({', '.join(PICKS)})")
     d = np.load(sdf_npz)
     phi, nxg, nyg = d["phi"], d["normal_x"], d["normal_y"]
     bounds = [float(v) for v in d["bounds"]]
     center = [float(v) for v in d["center"]]
-    scale = float(d["scale"])
+    npz_scale = float(d["scale"])
     region = float(d["region"])
+    # The task (pools, pairs, legs, reach_tol) is drawn in the npz's frame; the sim runs in
+    # `scale`'s. k converts: k == 1.0 (metres_per_unit 0) multiplies nothing.
+    scale = sdf_eval.sim_scale(npz_scale, metres_per_unit)
+    k = scale / npz_scale
+    rr_task = robot_radius_world * npz_scale
     rr = robot_radius_world * scale
-    field = sdf_nav.SDFField(phi, nxg, nyg, bounds, center, scale, device=dev)
+    task_field = sdf_nav.SDFField(phi, nxg, nyg, bounds, center, npz_scale, device=dev)
+    task_scene = sdf_eval.SdfScene(task_field, phi, bounds, center, npz_scale, region)
+    scene = sdf_eval.in_frame(task_scene, scale)
+    field = scene.field
     mnx, mny, mxx, mxy = bounds
     print(
-        "device=%s field=%s phi[%.2f,%.2f] rr=%.3f S=%.5f"
-        % (dev, phi.shape, phi.min(), phi.max(), rr, scale)
+        "device=%s field=%s phi[%.2f,%.2f] rr=%.3f S=%.5f (%.1f m/unit; npz %.1f m/unit)"
+        % (dev, phi.shape, scene.phi.min(), scene.phi.max(), rr, scale, 1 / scale, 1 / npz_scale)
     )
 
     # drivable free-point pool (normalized, centered) within the working region
@@ -116,26 +160,39 @@ def train_sdf(
     gxs = np.linspace(mnx, mxx, nx_)
     gys = np.linspace(mny, mxy, ny_)
     grid_x, grid_y = np.meshgrid(gxs, gys)
-    free = phi > (rr + 0.02)
+    free = phi > (rr_task + 0.02)
     reg = (np.abs(grid_x - center[0]) < region) & (np.abs(grid_y - center[1]) < region)
     sel = free & reg
-    pool = np.stack([(grid_x[sel] - center[0]) * scale, (grid_y[sel] - center[1]) * scale], 1)
+    pool = np.stack(
+        [(grid_x[sel] - center[0]) * npz_scale, (grid_y[sel] - center[1]) * npz_scale], 1
+    )
     pool = pool.astype(np.float32)
     held_blocks, held_pool = None, None
     if val_frac > 0.0:
         held_blocks = sdf_eval.block_split(val_blocks, val_frac, val_seed)
-        pool, held_pool = sdf_eval.split_pool(pool, region * scale, val_blocks, held_blocks)
+        pool, held_pool = sdf_eval.split_pool(pool, region * npz_scale, val_blocks, held_blocks)
         print(
             "held out %d of %d blocks: %d points"
             % (len(held_blocks), val_blocks**2, len(held_pool))
         )
     poolt = torch.from_numpy(pool).to(dev)
+    if k != 1.0:
+        poolt = poolt * k
     print("pool=%d drivable points" % len(pool))
 
     model = sdf_nav.CoefMLP().to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     kw = dict(rr=rr, d_hat=d_hat, dt=dt, vmax=vmax)
-    objective = dict(window=bptt_window, col_grad=col_grad)
+    obj = dict(kind=objective, window=bptt_window, col_grad=col_grad)
+    if leg_ticks is None:
+        leg_ticks = 1000 if objective == "task" else 0
+    if leg_ticks > 0 and objective != "task":
+        raise ValueError("leg_ticks is the task objective's")
+    if objective == "task":
+        obj.update(
+            carrot_m=36.0, col_margin_m=col_margin_m, col_temp_m=col_temp_m,
+            reach_tol_m=round(reach_tol / npz_scale, 6),
+        )  # fmt: skip
     meta = {
         "scale": scale,
         "center": center,
@@ -150,27 +207,47 @@ def train_sdf(
         "bounds": bounds,
         "kind": "sdf",
         "sdf_npz": os.path.abspath(sdf_npz),
-        "objective": objective,
+        "sdf_scale": npz_scale,
+        "metres_per_unit": 1.0 / scale,
+        "objective": obj,
+        "pick": pick,
+        "leg_ticks": leg_ticks,
     }
     monitor = None
     if history or checkpoint_every > 0 or val_frac > 0.0:
-        scene = sdf_eval.SdfScene(field, phi, bounds, center, scale, region)
         monitor, probe = _monitor(
-            out, meta, scene, pool, held_pool, held_blocks, kw,
+            out, meta, scene, task_scene, pool, held_pool, held_blocks, kw,
             history=history, checkpoint_every=checkpoint_every, seed=seed, lr=lr,
             val_frac=val_frac, val_seed=val_seed, val_blocks=val_blocks, val_pairs=val_pairs,
-            val_ticks=val_ticks, reach_tol=reach_tol, nsub=nsub_infer, objective=objective,
+            val_ticks=val_ticks, reach_tol=reach_tol, nsub=nsub_infer, objective=obj, pick=pick,
+            rr_task=rr_task,
         )  # fmt: skip
         monitor.begin(model, probe)
+
+    def draw(n):
+        si = torch.randint(0, len(poolt), (n,), device=dev)
+        o0 = poolt[si]
+        ang = torch.rand(n, device=dev) * 6.2832
+        dd = 1.0 + torch.rand(n, device=dev)  # 1..2 local goal (npz units)
+        if k != 1.0:
+            dd = dd * k
+        return o0, o0 + torch.stack([torch.cos(ang), torch.sin(ang)], -1) * dd.unsqueeze(-1)
+
+    legs = None
+    if leg_ticks > 0:  # each row drives one leg across steps (see the module docstring)
+        o_l, g_l = draw(batch)
+        legs = dict(o=o_l, g=g_l, v=torch.zeros_like(o_l), age=torch.zeros(batch, device=dev))
     t0 = time.time()
     for it in range(steps):
-        si = torch.randint(0, len(poolt), (batch,), device=dev)
-        o0 = poolt[si]
-        ang = torch.rand(batch, device=dev) * 6.2832
-        dd = 1.0 + torch.rand(batch, device=dev)  # 1..2 local goal
-        goal = o0 + torch.stack([torch.cos(ang), torch.sin(ang)], -1) * dd.unsqueeze(-1)
+        state = None
+        if legs is None:
+            o0, goal = draw(batch)
+            lk = {}
+        else:
+            o0, goal, state = legs["o"], legs["g"], {}
+            lk = dict(v0=legs["v"], state=state)
         t, (al, be, ga) = sdf_eval.loss_terms(
-            model, field, o0, goal, horizon=horizon, **kw, **objective
+            model, field, o0, goal, horizon=horizon, **kw, **obj, **lk
         )
         loss, loss_goal, loss_col, loss_reg = t["loss"], t["goal"], t["col"], t["reg"]
         term_grads = None
@@ -180,6 +257,17 @@ def train_sdf(
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
         opt.step()
+        if legs is not None:
+            legs.update(o=state["o"], v=state["v"], age=legs["age"] + horizon)
+            done = ((legs["g"] - legs["o"]).norm(dim=-1) < reach_tol * k) | (
+                legs["age"] >= leg_ticks
+            )
+            nd = int(done.sum())
+            if nd:
+                o_n, g_n = draw(nd)
+                legs["o"][done], legs["g"][done] = o_n, g_n
+                legs["v"][done] = 0.0
+                legs["age"][done] = 0.0
         if monitor is not None:
             terms = {"loss": loss.item(), "goal": loss_goal.item(), "col": loss_col.item()}
             terms["reg"] = loss_reg.item()
@@ -203,7 +291,7 @@ def train_sdf(
     if monitor is not None:
         monitor.finish(steps, model)
         if monitor.best_step is not None:
-            print("best held-out reach %.4f at step %d" % (monitor.best, monitor.best_step))
+            print("best held-out %s %.4f at step %d" % (pick, monitor.best, monitor.best_step))
     dt_total = time.time() - t0
     print(
         "TIME %d steps %.1fs = %.1f ms/step on %s"
@@ -235,13 +323,28 @@ def _term_grad_norms(model, terms: dict) -> dict[str, float]:
     return out
 
 
+#: The held-out pick (``train_sdf``'s ``pick``): the history field it maximizes, and its name.
+PICKS = {
+    "clean-reach": ("clean_reach", "heldout seek-drive reach without penetration"),
+    "reach": ("reach", "heldout seek-drive reach"),
+}
+
+
 def _stem(out: str) -> str:
     return out[: -len(".pt")] if out.endswith(".pt") else out
 
 
-def _monitor(out, meta, scene, pool, held_pool, held_blocks, kw, **o):
+def _monitor(out, meta, scene, task_scene, pool, held_pool, held_blocks, kw, **o):
     """The instruments for :func:`train_sdf` (see the module docstring): the monitor, and the
-    probe that reads the heads on its fixed batch (pairs from the training pool)."""
+    probe that reads the heads on its fixed batch (pairs from the training pool). ``pool`` and
+    ``held_pool`` are in ``task_scene``'s frame (the npz's); pairs are drawn there and converted
+    to ``scene``'s."""
+    k = scene.scale / task_scene.scale
+
+    def pairs(p, n, seed):
+        s, g = sdf_eval.sample_pairs(task_scene, p, n, seed, rr=o["rr_task"])
+        return (s * k, g * k) if k != 1.0 else (s, g)
+
     stem = _stem(out)
     every = o["checkpoint_every"]
 
@@ -252,9 +355,14 @@ def _monitor(out, meta, scene, pool, held_pool, held_blocks, kw, **o):
     fitness = None
     hdr = {"trainer": "grl-snam train", "seed": o["seed"], "lr": o["lr"], "steps": meta["steps"]}
     hdr["objective"] = o["objective"]
+    hdr.update(
+        metres_per_unit=meta["metres_per_unit"], sdf_scale=meta["sdf_scale"],
+        leg_ticks=meta["leg_ticks"],
+    )  # fmt: skip
     if held_pool is not None:
-        hs, hg = sdf_eval.sample_pairs(scene, held_pool, o["val_pairs"], o["val_seed"], rr=kw["rr"])
-        drive = dict(kw, nsub=o["nsub"], ticks=o["val_ticks"], reach_tol=o["reach_tol"])
+        hs, hg = pairs(held_pool, o["val_pairs"], o["val_seed"])
+        drive = dict(kw, nsub=o["nsub"], ticks=o["val_ticks"], reach_tol=o["reach_tol"] * k)
+        field_key, fitness_name = PICKS[o["pick"]]
 
         def fitness(model):
             terms = sdf_eval.objective_terms(
@@ -263,13 +371,13 @@ def _monitor(out, meta, scene, pool, held_pool, held_blocks, kw, **o):
             d = sdf_eval.seek_drive(model, scene, hs, hg, **drive)
             got = {f"obj_{k}": v for k, v in terms.items()}
             got.update(sdf_eval.drive_summary(d, kw["dt"]))
-            got["fitness"] = got["reach"]
+            got["fitness"] = got[field_key]
             return got
 
         hdr.update(
             val_frac=o["val_frac"], val_seed=o["val_seed"], val_blocks=o["val_blocks"],
             heldout_blocks=held_blocks, heldout_pairs=o["val_pairs"], heldout_ticks=o["val_ticks"],
-            reach_tol=o["reach_tol"], fitness="heldout seek-drive reach",
+            reach_tol=o["reach_tol"], fitness=fitness_name, pick=o["pick"],
         )  # fmt: skip
     cfg = CoefTrainMonitorCfg(
         history=o["history"] or None,
@@ -279,5 +387,7 @@ def _monitor(out, meta, scene, pool, held_pool, held_blocks, kw, **o):
         best_path=f"{stem}.best_heldout.pt" if held_pool is not None else None,
     )
     monitor = CoefTrainMonitor(cfg, save=save, fitness=fitness, meta=hdr)
-    po, pg = sdf_eval.sample_pairs(scene, pool, cfg.probe_agents, cfg.probe_seed, rr=kw["rr"])
+    po, pg = pairs(pool, cfg.probe_agents, cfg.probe_seed)
+    if o["objective"]["kind"] == "task":  # the heads where the net is used: at the seek carrot
+        pg = sdf_eval.carrot_of(po, pg, o["objective"]["carrot_m"] * scene.scale)
     return monitor, lambda m: coef_heads(m, sdf_nav.coef_feats(scene.field, po, pg))

@@ -15,6 +15,12 @@ Arms:
 - ``constant_final``: the same at each seed's ``final`` means, the control for ``final`` (when
   the pick is step 0, ``constant_trained`` controls the untrained net, not what training made).
 
+Every arm drives in the runs' sim frame, with the runs' physics (``meta`` of the first seed's
+``coef_sdf.pt``: ``scale``, ``rr``, ``d_hat``, ``dt``, ``vmax``, ``nsub``), the published policy
+included; for runs from before the 20 m frame that is the published policy's own. Test pairs are
+drawn in the npz's frame and converted (``sdf_eval.heldout_pairs``), so they are the same places
+in every frame; ``--reach-tol`` is in the npz's units (0.05 = 15 m on Austin).
+
 Scorers (every arm drives the same units, so comparisons are paired):
 
 - ``austin``: the seek drive (``grl_snam.tools.sdf_eval.seek_drive``, the point plant the policy
@@ -79,6 +85,25 @@ def load(path):
     return m.eval()
 
 
+def run_meta(runs: str) -> dict:
+    """The runs' checkpoint ``meta`` (the first seed's ``coef_sdf.pt``): the sim frame and the
+    physics every arm drives with."""
+    seed0 = sorted(glob.glob(os.path.join(runs, "seed*")))[0]
+    return torch.load(os.path.join(seed0, "coef_sdf.pt"), map_location="cpu", weights_only=False)[
+        "meta"
+    ]
+
+
+def austin_pairs(args, header, meta):
+    """The Austin test scene in the runs' frame, and its held-out test pairs."""
+    scene = sdf_eval.load_scene(args.sdf, scale=meta["scale"])
+    starts, goals = sdf_eval.heldout_pairs(
+        scene, header["val_blocks"], header["heldout_blocks"], args.test_pairs, args.test_seed,
+        rr=meta["rr"],
+    )  # fmt: skip
+    return scene, starts, goals
+
+
 def arms_from_runs(runs: str, published: str):
     seeds = sorted(glob.glob(os.path.join(runs, "seed*")))
     arms = {"published": [load(published)]}
@@ -100,19 +125,12 @@ def arms_from_runs(runs: str, published: str):
 
 
 def austin(arms, args, header):
-    scene = sdf_eval.load_scene(args.sdf)
-    ck = torch.load(args.published, map_location="cpu", weights_only=False)
-    meta = ck["meta"]
+    meta = run_meta(args.runs)
     kw = dict(rr=meta["rr"], d_hat=meta["d_hat"], dt=meta["dt"], vmax=meta["vmax"])
-    pool = sdf_eval.free_pool(scene, meta["rr"])
-    blocks = header["val_blocks"]
-    held = header["heldout_blocks"]
-    _, held_pool = sdf_eval.split_pool(pool, scene.region_n, blocks, held)
-    starts, goals = sdf_eval.sample_pairs(
-        scene, held_pool, args.test_pairs, args.test_seed, rr=meta["rr"]
-    )
-    block = sdf_eval.block_ids(starts.numpy(), scene.region_n, blocks)
-    drive = dict(kw, nsub=meta["nsub"], ticks=args.ticks, reach_tol=args.reach_tol)
+    scene, starts, goals = austin_pairs(args, header, meta)
+    block = sdf_eval.block_ids(starts.numpy(), scene.region_n, header["val_blocks"])
+    tol = args.reach_tol * scene.task_k
+    drive = dict(kw, nsub=meta["nsub"], ticks=ticks(args, header), reach_tol=tol)
     out = {}
     for name, models in arms.items():
         out[name] = [
@@ -250,15 +268,10 @@ def austin_native(arms, args, header):
     from grl_snam.nav import SdfNavigator
 
     _pycvc = nav_native._pycvc
-    scene = sdf_eval.load_scene(args.sdf)
-    meta = torch.load(args.published, map_location="cpu", weights_only=False)["meta"]
-    pool = sdf_eval.free_pool(scene, meta["rr"])
-    _, held_pool = sdf_eval.split_pool(
-        pool, scene.region_n, header["val_blocks"], header["heldout_blocks"]
-    )
-    starts, goals = sdf_eval.sample_pairs(
-        scene, held_pool, args.test_pairs, args.test_seed, rr=meta["rr"]
-    )
+    meta = run_meta(args.runs)
+    scene, starts, goals = austin_pairs(args, header, meta)
+    tol = args.reach_tol * scene.task_k
+    n_ticks = args.native_ticks if args.native_ticks is not None else 3 * ticks(args, header)
     occ = np.ascontiguousarray(scene.phi < 0.0, np.uint8)
     rows, cols = occ.shape
     mnx, mny, mxx, mxy = scene.bounds
@@ -278,13 +291,13 @@ def austin_native(arms, args, header):
                 scene.center[0], scene.center[1], scene.scale, 60.0, 240, 2 * np.pi,
                 meta["rr"], meta["d_hat"], meta["dt"], meta["vmax"], v["L"], v["delta_max"],
                 v["a_max"], v["a_lat_max"], v["k_steer"], int(meta["nsub"]),
-                int(bool(v["allow_reverse"])), args.reach_tol, 4, 1, 2.2, -1.4, 8.0, 1, 0.5, 0.15,
+                int(bool(v["allow_reverse"])), tol, 4, 1, 2.2, -1.4, 8.0, 1, 0.5, 0.15,
                 4.0,
             )  # fmt: skip
             world = nav_native.NativeSimWorld(h, n)
             world.set_plant(None)
             world.begin_nav_stats(scene_id="austin-test", seed=args.test_seed, checkpoint=name)
-            for _ in range(args.native_ticks):
+            for _ in range(n_ticks):
                 world.step()
                 if bool(world.snapshot()[4].all()):
                     break
@@ -306,6 +319,11 @@ def austin_native(arms, args, header):
                 u["gap_m"].append(float(np.hypot(*(pos[i] - gw[i]))))
             out[name].append({key: np.asarray(val, np.float64) for key, val in u.items()})
     return out
+
+
+def ticks(args, header) -> int:
+    """The seek drive's ticks: ``--ticks``, else the runs' own held-out drive's."""
+    return int(args.ticks if args.ticks is not None else header.get("heldout_ticks", 200))
 
 
 # --------------------------------------------------------------------------- reduction
@@ -381,15 +399,15 @@ def main(argv=None):
     ap.add_argument("--out", required=True, help="arms.json; per-unit arrays go beside it (.npz)")
     ap.add_argument("--test-pairs", type=int, default=1024)
     ap.add_argument("--test-seed", type=int, default=777)
-    ap.add_argument("--ticks", type=int, default=200)
-    ap.add_argument("--reach-tol", type=float, default=0.05)
+    ap.add_argument("--ticks", type=int, help="seek-drive ticks (default: the runs' heldout_ticks)")
+    ap.add_argument("--reach-tol", type=float, default=0.05, help="in the npz's units")
     ap.add_argument("--city-scenes", type=int, default=8)
     ap.add_argument("--city-agents", type=int, default=64)
     ap.add_argument("--city-steps", type=int, default=400)
     ap.add_argument("--city-grid", type=int, default=96)
     ap.add_argument("--no-city", action="store_true")
     ap.add_argument("--austin-native", action="store_true", help="also score Austin on sim_world")
-    ap.add_argument("--native-ticks", type=int, default=600)
+    ap.add_argument("--native-ticks", type=int, help="sim_world ticks (default: 3x --ticks)")
     ap.add_argument("--n-boot", type=int, default=10000)
     ap.add_argument("--boot-seed", type=int, default=0)
     ap.add_argument(

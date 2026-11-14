@@ -7,11 +7,12 @@ held-out units with the trainer's own objective. This module does that for the t
 arms :mod:`grl_snam.learning.arms` builds:
 
 - **``grl-snam train``** (:func:`sdf_terms`): the SDF policy's objective on fixed held-out pairs
-  started inside the run's held-out blocks (:func:`sdf_heldout_pairs`). Per pair: ``goal``
-  (squared end distance after ``horizon`` steps of the training rollout), ``col`` (the clearance
-  softplus), ``reg`` (the pull toward the bias regime) and ``loss = goal + 3 col + 0.1 reg``. The
-  mean over pairs is :func:`grl_snam.tools.sdf_eval.objective_terms`, the ``obj_<term>`` a
-  ``--val-frac`` history logs.
+  started inside the run's held-out blocks (:func:`sdf_heldout_pairs`), in the run's sim frame
+  and with the run's objective (:func:`grl_snam.tools.sdf_eval.loss_terms`: ``task`` or
+  ``end-distance``). Per pair: ``goal``, ``col`` (the clearance softplus), ``reg`` (the pull
+  toward the bias regime) and ``loss = goal + 3 col + 0.1 reg``. The mean over pairs is
+  :func:`grl_snam.tools.sdf_eval.objective_terms`, the ``obj_<term>`` a ``--val-frac`` history
+  logs.
 - **coef-train** (:func:`coef_terms`): its loss on held-out starts and goals in the procedural
   city, drawn with ``--heldout-seed`` (``--heldout-agents`` of them), rolled out for
   ``--horizon`` steps on ``--grid``. Per start: the training loop's windows (the graph is cut
@@ -100,11 +101,20 @@ def sdf_split(
     return int(val_blocks), block_split(val_blocks, val_frac, val_seed)
 
 
+#: A checkpoint's ``meta["objective"]`` keys that :func:`sdf_terms` takes (``window`` and
+#: ``col_grad`` change no value; a checkpoint from before §9 has neither ``kind`` nor the rest).
+SDF_OBJECTIVE_KEYS = ("kind", "carrot_m", "col_margin_m", "col_temp_m", "reach_tol_m")
+
+
 def sdf_meta(scene, ckpt_meta: Mapping | None = None) -> dict:
-    """The rollout settings: a checkpoint's ``meta`` when there is one, else ``train_sdf``'s
-    defaults on ``scene``'s scale."""
+    """The rollout settings: a checkpoint's ``meta`` when there is one (its physics and its
+    objective), else ``train_sdf``'s defaults on ``scene``'s scale with the objective before §9.
+    ``scene`` must be in the checkpoint's frame (``load_scene(sdf, scale=meta["scale"])``)."""
     if ckpt_meta:
-        return {k: ckpt_meta[k] for k in ("rr", "d_hat", "dt", "vmax", "horizon")}
+        got = {k: ckpt_meta[k] for k in ("rr", "d_hat", "dt", "vmax", "horizon")}
+        obj = ckpt_meta.get("objective") or {}
+        got.update({k: obj[k] for k in SDF_OBJECTIVE_KEYS if k in obj})
+        return got
     d = SDF_DEFAULTS
     return {
         "rr": d["robot_radius_world"] * scene.scale,
@@ -116,35 +126,26 @@ def sdf_meta(scene, ckpt_meta: Mapping | None = None) -> dict:
 
 
 def sdf_heldout_pairs(scene, blocks: int, held: list[int], n: int, seed: int, *, rr: float):
-    """``n`` fixed ``(starts, goals)`` started inside the held-out blocks (the training draw)."""
+    """``n`` fixed ``(starts, goals)`` started inside the held-out blocks (the training draw, in
+    the npz's frame, converted to ``scene``'s: :func:`grl_snam.tools.sdf_eval.heldout_pairs`)."""
     from ..tools import sdf_eval
 
-    pool = sdf_eval.free_pool(scene, rr)
-    _, held_pool = sdf_eval.split_pool(pool, scene.region_n, blocks, held)
-    if not len(held_pool):
-        raise ValueError("no free start point lies inside the held-out blocks")
-    return sdf_eval.sample_pairs(scene, held_pool, n, seed, rr=rr)
+    return sdf_eval.heldout_pairs(scene, blocks, held, n, seed, rr=rr)
 
 
 def sdf_terms(
-    model, scene, starts, goals, *, rr, d_hat, dt, vmax, horizon
+    model, scene, starts, goals, *, rr, d_hat, dt, vmax, horizon, **objective
 ) -> dict[str, np.ndarray]:
-    """``grl-snam train``'s loss terms per pair (``[n]`` arrays, see the module docstring)."""
-    import torch.nn.functional as F
-
-    import grl_snam.sdf_nav as sdf_nav
+    """``grl-snam train``'s loss terms per pair (``[n]`` arrays, see the module docstring);
+    ``objective`` is :data:`SDF_OBJECTIVE_KEYS` (none: the objective before §9)."""
+    from ..tools import sdf_eval
 
     with scoring(model):
-        al, be, ga = model(sdf_nav.coef_feats(scene.field, starts, goals))
-        oT, _, clr = sdf_nav.sdf_rollout(
-            scene.field, starts, starts.new_zeros(starts.shape), goals, al, be, ga, int(horizon),
-            nsub=1, rr=rr, d_hat=d_hat, dt=dt, vmax=vmax,
+        t, _ = sdf_eval.loss_terms(
+            model, scene.field, starts, goals, rr=rr, d_hat=d_hat, dt=dt, vmax=vmax,
+            horizon=int(horizon), per_pair=True, **objective,
         )  # fmt: skip
-        goal = ((oT - goals) ** 2).sum(-1)
-        col = F.softplus((0.02 - clr) / 0.02)
-        reg = (be - 3.0) ** 2 + (ga - 4.0) ** 2 + (al - 1.0) ** 2
-        loss = goal + 3.0 * col + 0.1 * reg
-    return {"loss": _np(loss), "goal": _np(goal), "col": _np(col), "reg": _np(reg)}
+    return {k: _np(t[k]) for k in SDF_TERMS}
 
 
 # --------------------------------------------------------------------------- coef-train

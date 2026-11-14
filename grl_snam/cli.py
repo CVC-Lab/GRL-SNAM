@@ -279,12 +279,17 @@ def austin_material_evaluate(args) -> None:
     default=0.0,
     show_default=True,
     help="hold out this fraction of the region's blocks; score held-out pairs at each checkpoint "
-    "and keep <out>.best_heldout.pt on held-out reach (0 = off)",
+    "and keep <out>.best_heldout.pt on the held-out --pick (0 = off)",
 )
 @click.option("--val-seed", default=0, show_default=True, help="--val-frac: the split's seed")
 @click.option("--val-blocks", default=8, show_default=True, help="--val-frac: blocks per axis")
 @click.option("--val-pairs", default=256, show_default=True, help="--val-frac: held-out pairs")
-@click.option("--val-ticks", default=200, show_default=True, help="--val-frac: drive ticks")
+@click.option(
+    "--val-ticks",
+    default=1000,
+    show_default=True,
+    help="--val-frac: drive ticks (dt 0.06 s; 200 was the default before the 20 m sim frame)",
+)
 @click.option(
     "--bptt-window",
     default=7,
@@ -303,6 +308,38 @@ def austin_material_evaluate(args) -> None:
     default=0,
     show_default=True,
     help="--history: record each loss term's gradient norm every N steps (0 = off)",
+)
+@click.option(
+    "--metres-per-unit",
+    default=20.0,
+    show_default=True,
+    help="the sim frame: metres per sim unit, the frame the physics constants are tuned in (0 = "
+    "the npz's own frame, as before: 300 m per unit on Austin)",
+)
+@click.option(
+    "--objective",
+    type=click.Choice(["task", "end-distance"]),
+    default="task",
+    show_default=True,
+    help="task: the seek drive's carrot, progress toward arrival, the collision margin in metres; "
+    "end-distance: the objective before (squared end distance, 0.02-unit margin)",
+)
+@click.option("--col-margin-m", default=0.4, show_default=True, help="--objective task, metres")
+@click.option("--col-temp-m", default=0.4, show_default=True, help="--objective task, metres")
+@click.option(
+    "--pick",
+    type=click.Choice(["clean-reach", "reach"]),
+    default="clean-reach",
+    show_default=True,
+    help="--val-frac: the held-out fitness <out>.best_heldout.pt maximizes (clean-reach: reached "
+    "with no penetration tick)",
+)
+@click.option(
+    "--leg-ticks",
+    default=None,
+    type=int,
+    help="--objective task: each batch row drives one leg across steps, redrawn on arrival or "
+    "after N ticks (default 1000; 0 = fresh pairs every step)",
 )
 def train(
     sdf_npz: str,
@@ -323,17 +360,27 @@ def train(
     bptt_window: int,
     col_grad: bool,
     grad_terms_every: int,
+    metres_per_unit: float,
+    objective: str,
+    col_margin_m: float,
+    col_temp_m: float,
+    pick: str,
+    leg_ticks,
 ) -> None:
     """Self-supervised training of the SDF navigation coefficients from a nav_sdf.npz.
-    `--bptt-window 0 --no-col-grad` is the trainer before the fix (the published coef_sdf.pt:
-    seed 0, 200 steps, --device cpu --threads 1)."""
+    `--metres-per-unit 0 --objective end-distance --bptt-window 0 --no-col-grad` is the trainer
+    before the fix (the published coef_sdf.pt: seed 0, 200 steps, --device cpu --threads 1);
+    `--metres-per-unit 0 --objective end-distance --pick reach --val-ticks 200` is the trainer of
+    docs/learning-validation.md §8."""
     from .tools import train as _train
 
     _train.train_sdf(
         sdf_npz, out, steps=steps, batch=batch, lr=lr, threads=threads, seed=seed, device=device,
         history=history, checkpoint_every=checkpoint_every, val_frac=val_frac, val_seed=val_seed,
         val_blocks=val_blocks, val_pairs=val_pairs, val_ticks=val_ticks, bptt_window=bptt_window,
-        col_grad=col_grad, grad_terms_every=grad_terms_every,
+        col_grad=col_grad, grad_terms_every=grad_terms_every, metres_per_unit=metres_per_unit,
+        objective=objective, col_margin_m=col_margin_m, col_temp_m=col_temp_m, pick=pick,
+        leg_ticks=leg_ticks,
     )  # fmt: skip
 
 
