@@ -90,13 +90,17 @@ def test_a_stats_row():
 
 def test_the_plant_ledger_shows_n_a_where_an_item_does_not_apply():
     rows = _arms.plant_ledger_rows({"total_path_m": 4.0})  # the kinematic plant feeds none
-    assert [r["key"] for r in rows] == [k for k, _ in _arms.PLANT_LEDGER]
+    assert [r["key"] for r in rows] == [k for k, _, _ in _arms.PLANT_LEDGER]
     assert {r["value"] for r in rows} == {"n/a"}
-    rows = {r["key"]: r for r in _arms.plant_ledger_rows(
-        {"energy_J": 1250.5, "rolled_over": False, "ltr_max": None, "vehicle_hits": 2})}  # fmt: skip
+    record = {"energy_J": 1250.5, "rolled_over": False, "ltr_max": None, "vehicle_hits": 2}
+    rows = {r["key"]: r for r in _arms.plant_ledger_rows(record)}
     assert rows["energy_J"]["value"] == "1250.500" and rows["energy_J"]["unit"] == "J"
     assert rows["rolled_over"]["value"] == "no" and rows["vehicle_hits"]["value"] == "2"
     assert rows["ltr_max"]["value"] == "n/a" and rows["tilt_s"]["value"] == "n/a"
+    # As numbers in a run log (NaN where it does not apply), the same rows.
+    values = _arms.plant_values(record)
+    assert values["rolled_over"] == 0.0 and math.isnan(values["ltr_max"])
+    assert _arms.plant_ledger_rows(values) == list(rows.values())
 
 
 def _tel(u0, u1, ctx=0.0, **kw):
@@ -131,15 +135,26 @@ def test_the_run_keeps_every_arm_and_its_legs(tmp_path):
     rows = run.stats_rows()
     assert [r["arm"] for r in rows] == ["one", "two"] and rows[1]["colour"] == "orange"
     assert rows[0]["clear_mean"] == "3.00"  # 0.03 normalized at 0.01 per metre
-    assert [r["alpha"] for r in run.coefficient_rows()] == ["1.000", "1.000"]
-    assert run.book_rows()[1]["drive"] == "-1.000" and run.book_rows(False)[1]["drive"] == "-0.200"
+    tables = run.tables()
+    assert [r["alpha"] for r in tables["ledger.coef"]] == ["1.000", "1.000"]
+    assert tables["ledger.books"][1]["drive"] == "-1.000"
+    assert tables["ledger.tick"][1]["drive"] == "-0.200"
     assert {r["value"] for r in run.plant_rows(0)} == {"n/a"}
+    assert a["plant_energy_J"].shape == (5, 2) and np.isnan(a["plant_energy_J"]).all()
+    charts = run.charts(1, "context")
+    series, marks = charts["ledger.compare"]
+    assert [x["style"] for x in series] == ["c0", "c1"]
+    assert [(pytest.approx(x), label) for x, label, _ in marks] == [(0.15, "leg 2")]
+    assert series[0]["y"][3] == pytest.approx(1.0)  # leg 2's goal, booked as context work
+    assert [x["label"] for x in charts["ledger.cum"][0]] == list(_arms.BOOKS)
     path = run.save(tmp_path / "run.npz", note="x")
     z = np.load(path)
     meta = json.loads(str(z["meta"]))
-    assert meta["schema"] == _arms.SCHEMA and meta["note"] == "x" and meta["seed"] == 4
+    assert meta["schema"] == _arms.SCHEMA == "grl_snam.run_log/v1"
+    assert meta["note"] == "x" and meta["seed"] == 4 and "provenance" in meta
     assert [m["name"] for m in meta["arms"]] == ["one", "two"] and len(meta["legs"]) == 2
     assert len(meta["finished_legs"][1]) == 1 and z["stats_path_m"].shape == (5, 2)
+    assert z["goal_dist"].shape == (5, 2) and "coef_alpha" in z.files  # the cars template's
 
 
 class _World:
@@ -232,36 +247,67 @@ def _main(args):
     return main(args)
 
 
-@pytest.fixture(scope="module")
-def arms_run(tmp_path_factory):
-    """Three arms on the flat square for FRAMES frames, the Retarget pressed once, at PRESS."""
-    pytest.importorskip("torch")
+#: The tables the Stats and Ledger windows show.
+TABLES = (
+    "arms.stats",
+    "ledger.coef",
+    "ledger.terms",
+    "ledger.books",
+    "ledger.tick",
+    "ledger.plant",
+)
+#: The frame the live run's tables are kept at, to compare a replay at that tick with.
+SNAP = 300
+
+
+def _tables(host) -> dict:
+    return {k: host.get_tree(k) for k in TABLES}
+
+
+def _run(args, actions=None):
+    """``main(args)`` with every host it opens kept, and ``actions`` ({frame: fn(host)}) run on
+    those frames (before the port's own frame). Returns (exit code, hosts)."""
     from grl_snam.ariadne import _host
 
-    root = tmp_path_factory.mktemp("live-arms")
     hosts = []
     real = _host.open_host
 
-    def open_host(*args, **kwargs):
-        host = real(*args, **kwargs)
+    def open_host(*a, **kw):
+        host = real(*a, **kw)
         hosts.append(host)
         frames = [0]
 
         @host.on_frame
-        def press(dt):
+        def act(dt):
             frames[0] += 1
-            if frames[0] == PRESS:
-                host.emit("arms_retarget")
+            if frames[0] in (actions or {}):
+                actions[frames[0]](host)
 
         return host
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(_host, "open_host", open_host)
-        code = _main(["live", "austin-freedrive", "--headless", "--frames", str(FRAMES),
-                      "--world", "flat", "--plant", "kinematic", "--arms", ARMS, "--seed", "3",
-                      "--set", f"arms.goal={GOAL}", "--log", str(root / "arms.npz")])  # fmt: skip
+        return _main(args), hosts
+
+
+@pytest.fixture(scope="module")
+def arms_run(tmp_path_factory):
+    """Three arms on the flat square for FRAMES frames, the Retarget pressed once, at PRESS; the
+    tables as the windows showed them at frame SNAP kept, with the tick they were at."""
+    pytest.importorskip("torch")
+    root = tmp_path_factory.mktemp("live-arms")
+    snap = {}
+
+    def keep(host):
+        snap.update(tables=_tables(host), time=host.get("arms.time"))
+
+    code, hosts = _run(["live", "austin-freedrive", "--headless", "--frames", str(FRAMES),
+                        "--world", "flat", "--plant", "kinematic", "--arms", ARMS, "--seed", "3",
+                        "--set", f"arms.goal={GOAL}", "--log", str(root / "arms.npz")],
+                       {PRESS: lambda host: host.emit("arms_retarget"), SNAP: keep})  # fmt: skip
     z = np.load(root / "arms.npz")
-    return dict(code=code, host=hosts[0], z=z, meta=json.loads(str(z["meta"])))
+    return dict(code=code, host=hosts[0], z=z, meta=json.loads(str(z["meta"])), snap=snap,
+                log=root / "arms.npz")  # fmt: skip
 
 
 @needs_host
@@ -356,17 +402,92 @@ def test_arms_refusals(capsys):
     assert "austin-freedrive's" in err and "no arm 'nope'" in err
 
 
-@needs_host
-@pytest.mark.skipif(
+GL = pytest.mark.skipif(
     os.environ.get("GRL_SNAM_ARIADNE_GL", "0") in ("", "0"),
     reason="GRL_SNAM_ARIADNE_GL=1 runs the offscreen checks (needs a GL context)",
 )
+
+
+@needs_host
+@GL
 def test_the_ghosts_offscreen(tmp_path):
     png = tmp_path / "arms.png"
     assert _main(["live", "austin-freedrive", "--offscreen", "--frames", "90", "--world", "flat",
                   "--plant", "kinematic", "--arms", ARMS, "--set", "view.camera=orbit",
-                  "--retarget-at", "1", "--png", str(png)]) == 0  # fmt: skip
+                  "--retarget-at", "1", "--png", str(png), "--log", str(tmp_path / "r.npz")]) == 0  # fmt: skip
     assert png.stat().st_size > 10_000
+    png = tmp_path / "replay.png"
+    assert _main(["replay", str(tmp_path / "r.npz"), "--offscreen", "--frames", "30", "--at", "1.5",
+                  "--paused", "--png", str(png)]) == 0  # fmt: skip
+    assert png.stat().st_size > 10_000
+
+
+# ── the replay ─────────────────────────────────────────────────────────────────────────────────
+
+
+def _replay(arms_run, *extra, actions=None):
+    code, hosts = _run(["replay", str(arms_run["log"]), "--headless", "--paused", *extra], actions)
+    assert code == 0
+    return hosts[0]
+
+
+@needs_host
+def test_the_replay_shows_what_the_live_run_showed(arms_run):
+    """At the run's end, and at a tick mid-run, a replay's Stats and Ledger tables are the live
+    run's, cell for cell."""
+    host = _replay(arms_run, "--frames", "2", "--at", "1e9")  # clamped to the end
+    assert _tables(host) == _tables(arms_run["host"])
+    assert float(host.get("play.pos")) == 1.0 and host.get("arms.time").endswith("leg 2")
+    tick = int(arms_run["snap"]["time"].split("tick ")[1].split(",")[0])
+    at = tick * arms_run["meta"]["dt"]
+    host = _replay(arms_run, "--frames", "2", "--at", f"{at:.6f}")
+    assert _tables(host) == arms_run["snap"]["tables"]
+    assert f"tick {tick} of {len(arms_run['z']['t'])}" in host.get("arms.time")
+    assert host.get("replay.made").startswith("GRL-SNAM ") and "libcvc" in host.get("replay.made")
+
+
+@needs_host
+def test_the_replay_steps_seeks_and_restarts(arms_run):
+    dt = arms_run["meta"]["dt"]
+
+    def seek(host):
+        host.set("play.seek", "5.0")
+        host.emit("arms_seek")  # a click on a chart, at 5 s
+
+    times = {}
+
+    def keep(name):
+        return lambda host: times.__setitem__(name, float(host.get("play.t")))
+
+    _replay(arms_run, "--frames", "12", "--at", "2", actions={
+        2: keep("start"), 3: lambda host: host.emit("sim.step"), 5: keep("stepped"), 6: seek,
+        8: keep("sought"), 9: lambda host: host.emit("sim.restart"), 11: keep("restarted"),
+    })  # fmt: skip
+    assert times["start"] == pytest.approx(2.0)
+    assert times["stepped"] == pytest.approx(2.0 + dt)  # one tick on, still paused
+    assert times["sought"] == pytest.approx(5.0)
+    assert 0.0 <= times["restarted"] < 0.2  # back to the start, and playing
+
+
+@needs_host
+def test_the_replay_refuses_what_is_not_a_run_log(tmp_path, capsys):
+    np.savez(tmp_path / "cars.npz", x=np.zeros((3, 1)), meta=json.dumps({"demo": "cars"}))
+    assert _main(["replay", str(tmp_path / "cars.npz"), "--headless"]) == 2
+    assert _main(["replay", str(tmp_path / "none.npz"), "--headless"]) == 2
+    err = capsys.readouterr().err
+    assert "not a run log" in err and "No such file" in err
+
+
+@needs_host
+def test_the_replays_charts(arms_run):
+    """On a host with chart: the whole run's curves, the cursor at the play head."""
+    host = _replay(arms_run, "--frames", "2", "--at", "3")
+    if not hasattr(host, "set_plot"):
+        pytest.skip("needs pycvc_gl's chart: (libcvc 3.7.14, host.set_plot)")
+    compare = host.get_tree("ledger.compare")
+    assert [s["label"] for s in compare["s"]] == ["untrained", "constant", "brisk"]
+    assert [m["label"] for m in compare["m"]] == ["leg 2"]
+    assert float(host.get("play.t")) == pytest.approx(3.0)
 
 
 def _weights():
