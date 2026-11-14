@@ -13,16 +13,16 @@ installs. The site:
       LICENSE THIRD_PARTY_NOTICES.md    the host, as its recipe installs it
       main.py                         the program the page runs (pages/main.py)
       grl_snam_web.zip                grl_snam's files, its .ari documents with them
-      data/<name>.history.jsonl       the learning histories, unzipped
+      data/<name>.history.jsonl[.gz]  the learning histories, as given (learn reads gzip)
       ariadne.config.json             src main.py, every file above in its preload, the args
 
 ``--learn-only`` writes the learn page alone, self-contained, at ``--out`` (for another site to
 serve, at any path). Everything the page fetches is beside it, on the site's own origin.
 
-``--histories`` names the learning histories the page shows (``.jsonl``, or ``.jsonl.gz``, which
-is unzipped here because learn reads text); by default the learning check's retrain,
-docs/learning-validation/retrain/seed*.history.jsonl.gz. A run is labelled by its file's stem,
-so their names must differ. ``--arms`` adds an arms table (``grl_snam.arms/v1``, what ``grl-snam
+``--histories`` names the learning histories the page shows (``.jsonl`` or ``.jsonl.gz``, copied
+as they are: a gzipped one stays gzipped on the wire, and learn reads it); by default the learning
+check's retrain, docs/learning-validation/retrain/seed*.history.jsonl.gz. A run is labelled by its
+file's stem (``.gz`` dropped), so their names must differ. ``--arms`` adds an arms table (``grl_snam.arms/v1``, what ``grl-snam
 arms-eval`` writes) as ``data/arms.json`` and learn's ``--arms``; any other schema is refused,
 since learn would refuse it in the page. Standard library only; grl_snam's files are the ones git
 tracks when the repo is a git checkout, else every file under grl_snam/ but caches.
@@ -96,13 +96,9 @@ def learn_page(host: Path, page: Path, histories, arms: Path | None) -> dict:
     n = write_package(page / "grl_snam_web.zip")
     data = page / "data"
     data.mkdir()
-    for h, name in zip(histories, names):
-        if h.name.endswith(".gz"):
-            with gzip.open(h, "rb") as f:
-                (data / name).write_bytes(f.read())
-        else:
-            shutil.copy2(h, data / name)
-    args = ["learn", *(f"data/{name}" for name in names)]
+    for h in histories:
+        shutil.copy2(h, data / h.name)
+    args = ["learn", *(f"data/{h.name}" for h in histories)]
     if arms is not None:
         schema = json.loads(arms.read_text()).get("schema")
         if schema != ARMS_SCHEMA:

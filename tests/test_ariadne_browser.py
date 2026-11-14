@@ -6,6 +6,7 @@ None of it needs a browser: the browser mode is switched on by hand. The site it
 headless Chrome in pages.yml (pages/smoke.mjs).
 """
 
+import gzip
 import importlib.util
 import json
 import os
@@ -18,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from grl_snam.ariadne import _host
+from grl_snam.learning import history
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -126,13 +128,16 @@ def test_learns_config_preloads_what_its_args_name(site):
     config = json.loads((learn / "ariadne.config.json").read_text())
     assert config["src"] == "main.py" and config["src_param"] is False
     assert config["args"][0] == "learn"
-    hists = [a for a in config["args"] if a.endswith(".history.jsonl")]
+    hists = [a for a in config["args"] if a.endswith(".history.jsonl.gz")]
     assert len(hists) == 5
     assert set(config["preload"]) == {"grl_snam_web.zip", *hists}
     for f in config["preload"]:
         assert (learn / f).is_file(), f
-    first = (learn / hists[0]).read_text().splitlines()[0]
-    assert json.loads(first)  # unzipped: learn reads text
+    # Shipped still gzipped, byte for byte, and learn's reader reads them as they are.
+    retrain = REPO / "docs" / "learning-validation" / "retrain"
+    assert (learn / hists[0]).read_bytes() == (retrain / Path(hists[0]).name).read_bytes()
+    runs = history.load(learn / hists[0])
+    assert runs[0].schema == "grl_snam.coef_train_history/v1"
 
 
 def test_the_package_zip_holds_grl_snam_and_its_documents(site):
@@ -168,17 +173,24 @@ def test_the_learn_page_alone_with_histories_of_your_choice(tmp_path, site):
     assemble = _pages_module("assemble")
     plain = tmp_path / "runs" / "a.history.jsonl"
     plain.parent.mkdir()
-    plain.write_text((site / "learn" / "data" / "seed0.history.jsonl").read_text())
+    seed0 = site / "learn" / "data" / "seed0.history.jsonl.gz"
+    plain.write_bytes(gzip.decompress(seed0.read_bytes()))
     gz = REPO / "docs/learning-validation/retrain/seed1.history.jsonl.gz"
     out = tmp_path / "other" / "learn"
     host = site / "learn"
     assert assemble.main(["--host", str(host), "--out", str(out), "--learn-only",
                           "--histories", str(plain), str(gz)]) == 0  # fmt: skip
     config = json.loads((out / "ariadne.config.json").read_text())
-    assert config["args"] == ["learn", "data/a.history.jsonl", "data/seed1.history.jsonl"]
+    assert config["args"] == ["learn", "data/a.history.jsonl", "data/seed1.history.jsonl.gz"]
     assert all((out / f).is_file() for f in config["preload"])
     assert (out / "index.html").is_file() and not (out / "learn").exists()
     assert not (out.parent / "index.html").exists() and not (out / "style.css").exists()
     with pytest.raises(SystemExit, match="share a name"):
         assemble.main(["--host", str(host), "--out", str(tmp_path / "x"), "--learn-only",
                        "--histories", str(gz), str(gz)])  # fmt: skip
+    zipped = tmp_path / "zipped" / "a.history.jsonl.gz"  # the same run label as plain's
+    zipped.parent.mkdir()
+    zipped.write_bytes(gzip.compress(plain.read_bytes()))
+    with pytest.raises(SystemExit, match="share a name"):
+        assemble.main(["--host", str(host), "--out", str(tmp_path / "y"), "--learn-only",
+                       "--histories", str(plain), str(zipped)])  # fmt: skip
