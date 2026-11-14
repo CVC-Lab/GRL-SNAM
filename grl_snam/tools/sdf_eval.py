@@ -129,30 +129,66 @@ def sample_pairs(
     )
 
 
-@torch.no_grad()
-def objective_terms(model, scene: SdfScene, starts, goals, *, rr, d_hat, dt, vmax, horizon):
-    """``grl-snam train``'s loss terms on fixed pairs: ``goal`` (mean squared end distance after
-    ``horizon`` steps), ``col`` (the clearance softplus), ``reg`` (the pull toward the bias
-    regime) and their weighted ``loss``."""
-    al, be, ga = model(sdf_nav.coef_feats(scene.field, starts, goals))
-    oT, _, clr = sdf_nav.sdf_rollout(
-        scene.field,
-        starts,
-        torch.zeros_like(starts),
-        goals,
+def loss_terms(
+    model,
+    field,
+    starts,
+    goals,
+    *,
+    rr,
+    d_hat,
+    dt,
+    vmax,
+    horizon,
+    window=0,
+    col_grad=False,
+):
+    """``grl-snam train``'s objective on ``(starts, goals)``, as tensors: ``goal`` (the mean
+    squared distance to the goal after ``horizon`` steps), ``col`` (the softplus of the rollout's
+    minimum clearance), ``reg`` (the pull toward the bias regime) and
+    ``loss = goal + 3 col + 0.1 reg``. Two settings change its gradient and no value:
+
+    - ``window`` (0: the whole horizon) cuts the rollout into windows of that many steps and
+      detaches the state between them, so the backward runs through at most one window
+      (truncated BPTT).
+    - ``col_grad``: the collision term carries gradient. Without it the clearance is detached
+      and ``col`` is a constant to the optimizer.
+
+    Returns ``(terms, (alpha, beta, gamma))``.
+    """
+    al, be, ga = model(sdf_nav.coef_feats(field, starts, goals))
+    o, v = starts, torch.zeros_like(starts)
+    w = window if window > 0 else horizon
+    clr = None
+    for t0 in range(0, horizon, w):
+        if t0:
+            o, v = o.detach(), v.detach()
+        o, v, c = sdf_nav.sdf_rollout(
+            field, o, v, goals, al, be, ga, min(w, horizon - t0), nsub=1, rr=rr, d_hat=d_hat,
+            dt=dt, vmax=vmax, clr_grad=col_grad,
+        )  # fmt: skip
+        clr = c if clr is None else torch.minimum(clr, c)
+    goal = ((o - goals) ** 2).sum(-1).mean()
+    col = F.softplus((0.02 - clr) / 0.02).mean()
+    reg = ((be - 3.0) ** 2).mean() + ((ga - 4.0) ** 2).mean() + ((al - 1.0) ** 2).mean()
+    return {"loss": goal + 3.0 * col + 0.1 * reg, "goal": goal, "col": col, "reg": reg}, (
         al,
         be,
         ga,
-        horizon,
-        nsub=1,
-        rr=rr,
-        d_hat=d_hat,
-        dt=dt,
-        vmax=vmax,
     )
-    goal = float(((oT - goals) ** 2).sum(-1).mean())
-    col = float(F.softplus((0.02 - clr) / 0.02).mean())
-    reg = float(((be - 3.0) ** 2).mean() + ((ga - 4.0) ** 2).mean() + ((al - 1.0) ** 2).mean())
+
+
+@torch.no_grad()
+def objective_terms(
+    model, scene: SdfScene, starts, goals, *, rr, d_hat, dt, vmax, horizon, **objective
+):
+    """:func:`loss_terms` on fixed pairs, as floats, without a gradient (``objective``: its
+    ``window`` and ``col_grad``, which change no value)."""
+    t, _ = loss_terms(
+        model, scene.field, starts, goals, rr=rr, d_hat=d_hat, dt=dt, vmax=vmax,
+        horizon=horizon, **objective,
+    )  # fmt: skip
+    goal, col, reg = float(t["goal"]), float(t["col"]), float(t["reg"])
     return {"loss": goal + 3.0 * col + 0.1 * reg, "goal": goal, "col": col, "reg": reg}
 
 
