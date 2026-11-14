@@ -7,7 +7,11 @@
 #     - include: arms_stats        # pos: / size: at the include site place it
 #     - include: arms_ledger
 #
-# Both show while arms.on is 1 (live.py sets it with --arms). The keys they bind:
+# replay.ari includes them too: grl_snam/ariadne/replay.py writes the same keys from a run log at
+# the play head. Both show while arms.on is 1 (live.py sets it with --arms, replay.py always); the
+# Retarget's controls only while arms.live is 1 (a live run). The charts draw a cursor at play.t
+# (the replay's play head), and a click on one writes the time there to play.seek and sends
+# arms_seek (the replay seeks there). The keys they bind:
 #   arms_stats    arms.time; arms.stats (a table, one row per arm: arm, colour, clear_min,
 #                 clear_mean, pen, path, elapsed, ms, reached); arms.goal (the next Retarget's
 #                 "x, y": empty draws one) and the button, which sends arms_retarget; arms.status;
@@ -69,12 +73,15 @@ units:
           - text: ""
             bind: arms.stats.{i}.reached
       - separator
-      - input_text: Goal (x, y)
-        bind: arms.goal
-        tooltip: "where the next Retarget sends every arm (m); empty: a free point far from all of them"
-      - button: Retarget every arm
-        on: arms_retarget
-        tooltip: "every arm's goal moves on the same tick, and a new leg starts"
+      - type: group
+        visible_when: (= (state-get "arms.live") "1")
+        children:
+          - input_text: Goal (x, y)
+            bind: arms.goal
+            tooltip: "where the next Retarget sends every arm (m); empty: a free point far from all of them"
+          - button: Retarget every arm
+            on: arms_retarget
+            tooltip: "every arm's goal moves on the same tick, and a new leg starts"
       - text: ""
         bind: arms.status
       - combo: Follow
@@ -88,6 +95,9 @@ units:
             bind: arms.clearance
             legend: right
             x_label: time (s)
+            cursor: play.t
+            pick: play.seek
+            on: arms_seek
             height: 110
 
   arms_ledger:
@@ -216,6 +226,9 @@ units:
             bind: ledger.cum
             legend: right
             x_label: time (s)
+            cursor: play.t
+            pick: play.seek
+            on: arms_seek
             height: 110
           - combo: Book
             bind: ledger.book
@@ -224,6 +237,9 @@ units:
             bind: ledger.compare
             legend: right
             x_label: time (s)
+            cursor: play.t
+            pick: play.seek
+            on: arms_seek
             height: 110
       - text: ""
         bind: ledger.plant_note
