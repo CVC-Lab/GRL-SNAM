@@ -425,6 +425,51 @@ python -m grl_snam.ariadne replay run.npz --at 26 --paused --camera orbit --offs
   `--frames` frames.
 - **The exit code** is 0, and 2 for a file that is not a run log.
 
+### `scrub`: watch it learn
+
+```bash
+python -m grl_snam.ariadne scrub run/history.jsonl                           # Austin, kinematic
+python -m grl_snam.ariadne scrub run/history.jsonl --world flat --ticks 600
+python -m grl_snam.ariadne scrub run/history.jsonl --headless --report scrub.json
+```
+
+`scrub` deploys every checkpoint of a training run. The learning history names the policy each
+checkpoint saved: its `blob`, a `.cvcnav` or a `.pt`. A relative path is the history's
+directory's, and blobs that are not there are listed and skipped.
+- **The scenario:** each policy drives libcvc's sim_world on `--plant` (kinematic by default)
+  from the scenario's start to its goal for `--ticks` ticks, as `live --arms` drives an arm, tick
+  for tick. So checkpoint 0 deployed here is the untrained arm deployed there, which the tests
+  check.
+- **The cache:** each run is a run log, cached at `<history>.scrub/<blob sha256>-<scenario
+  hash>.npz`. A second look costs nothing. The scenario hash covers the world (its `run.*`
+  keys, and a generated world's `world.*`), the start and goal, the seed, the ticks, the plant,
+  the policies' frame (`--scale`, else the first `.pt` checkpoint's), the settings set on the
+  command line, and libcvc's version.
+- **Checkpoint k** is picked by a combo, a slider, Previous and Next, or a click on a chart. It
+  opens on the history's pick (`--at K` for another). Its ghost (orange) runs beside step 0's
+  (blue) over the episode, with the Stats and Ledger windows for the two and libcvc's sim
+  transport.
+- **The deployed metric** (the Metric combo: reached, time, path, ticks penetrating, clearance,
+  what is left to the goal) is charted against the checkpoint's step, with step 0's as a dashed
+  line, and shown as a table, one row per checkpoint.
+- **The training curve** is a held-out curve from the history, with the `learn` port's marks.
+  Both charts carry a cursor at checkpoint k.
+- **Headless,** it deploys and reports: `--report R.json` writes every checkpoint's metrics
+  (`grl_snam.scrub/v1`).
+- **The exit code** is 0, and 2 when the history names no saved policy that is there, or the
+  plant is torch.
+
+On the learning check's retrain (seed 0, 41 checkpoints, Austin, kinematic, 60 s each), no
+checkpoint reaches the goal, and there are two outcomes:
+- 25 checkpoints, step 0 among them, stop 516 to 558 m short, after 255 to 266 ticks
+  penetrating.
+- 16 checkpoints take another turn and end 865 to 883 m away, after 323 to 334 ticks. They are
+  scattered from step 400 to step 4000, and include the history's pick (step 2100) and the last
+  checkpoint.
+
+Nothing orders the outcomes by training step. That is the null of `docs/learning-validation.md`,
+seen checkpoint by checkpoint.
+
 ### `cars`: N Ackermann cars driven by your own controller
 
 ```bash
@@ -490,6 +535,7 @@ controller made for them ([docs/PLANTS.md](../../docs/PLANTS.md#what-to-expect))
 | `grl-snam coph crossing / hazard` | episodes, `results.json`, `REPORT.md` | `coph crossing` / `coph hazard` (live, or `--from` a run) |
 | `grl-snam learn-report` | text, `report.json` | `learn` (the claims, and the curves, heads, checkpoints and arms behind them) |
 | (new) policies side by side, recorded | | `live austin-freedrive --arms ... --log`, then `replay run.npz` |
+| (new) a training run's checkpoints, deployed | | `scrub run/history.jsonl` |
 | `grl-snam capture drive / multigoal` | mp4 | covered by `live austin-freedrive` / `austin-learned` (the same navigator, live) |
 | `grl-snam pipeline`, `build-sdf`, `train` | batch | not ported: no picture of their own |
 | `wall_vis` | a post-pass for the finale | not ported |

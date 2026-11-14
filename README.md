@@ -100,7 +100,9 @@ the learning instruments ([Did it learn?](#did-it-learn-held-out-losses-arms-and
 windows: the held-out curves and their marks, the heads, the checkpoints, the arms and
 `learn-report`'s claims. `grl-snam ariadne live austin-freedrive --plant kinematic --arms
 trained,untrained,constant` drives policies side by side, one sim_world each, with Stats and
-Ledger windows. `--log` records the run, and `grl-snam ariadne replay` plays it back. `live` and
+Ledger windows. `--log` records the run, and `grl-snam ariadne replay` plays it back. `grl-snam ariadne scrub
+HIST` deploys every checkpoint of a training run on one scenario and shows checkpoint k beside
+step 0. `live` and
 `fleet` take the `cars` template's settings (libcvc's
 `nav.*`, `nav.vehicle.*` and `nav_plant.*` keys, mapped onto GRL-SNAM's torch navigator where
 they mean the same thing), its worlds (Austin, another city, a generated world, a flat square),

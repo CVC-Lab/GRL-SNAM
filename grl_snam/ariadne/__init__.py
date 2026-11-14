@@ -41,6 +41,9 @@ PORTS = {
     "replay": ("grl_snam.ariadne.replay",
                "a recorded live --arms run: the ghosts, Stats and Ledger at the play head",
                "new: a run log, from live austin-freedrive --arms ... --log"),
+    "scrub": ("grl_snam.ariadne.scrub",
+              "watch it learn: every checkpoint of a training run deployed, k beside step 0",
+              "new: a learning history's saved policies, on one scenario"),
 }  # fmt: skip
 
 

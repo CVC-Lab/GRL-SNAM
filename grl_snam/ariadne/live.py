@@ -473,7 +473,6 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
     stepped tick for tick together (:mod:`grl_snam.ariadne._arms`): their ghosts, the Retarget,
     the Stats and Ledger windows, the HUD and the rasters around the arm the camera follows."""
     import tempfile
-    import time
 
     import pycvc
 
@@ -486,20 +485,13 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
     except (RuntimeError, ValueError, OSError) as e:
         host.close()
         return _refuse(f"--arms: {e}")
-    library = pycvc.nav_policy_library_create()
-    fleet = []
-    for a in arms:
-        cars = C.Cars(world, 1, plant, navigator=True, scale=scale, seed=args.seed, app=host.app,
-                      prefix=host.prefix, starts=[start], goals=[goal])  # fmt: skip
-        a.key = pycvc.nav_sim_world_set_policy(cars.sim, 0, library, a.path, a.sha256)
-        fleet.append(cars)
+    fleet = make_fleet(world, plant, arms, start, goal, seed=args.seed, scale=scale,
+                       app=host.app, prefix=host.prefix)  # fmt: skip
     run = _arms.ArmsRun(arms, start=start, goal=goal, seed=args.seed, dt=C.DT, scale=scale,
                         world=world.info, plant=plant)  # fmt: skip
 
     def arm_stats():  # every arm's collector, from where it stands, to the current goal
-        for a, cars in zip(arms, fleet, strict=True):
-            pycvc.nav_sim_world_begin_nav_stats(cars.sim, 0.10, 0.20, 2.0, 0.0, 0.0, 0.0, 0.0,
-                                                0.0, world.kind, int(args.seed), a.name)  # fmt: skip
+        begin_stats(fleet, arms, world.kind, args.seed)
 
     arm_stats()
     rng = np.random.default_rng(args.seed + 1)
@@ -561,17 +553,7 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
                     if st["due"] and run.tick * C.DT >= st["due"][0] - 1e-9:
                         st["due"].pop(0)
                         retarget(_arms.parse_point(host.get("arms.goal")))
-                    for j in np.roll(np.arange(len(fleet)), -run.tick):  # each first in turn
-                        cars = fleet[j]
-                        t0 = time.perf_counter()
-                        s = cars.step_navigator()
-                        ms = 1e3 * (time.perf_counter() - t0)
-                        run.record(j, x=s.x[0], y=s.y[0], heading=s.heading[0], speed=s.speed[0],
-                                   goal=s.goal[0], ms=ms, size=(s.length[0], s.width[0],
-                                                                s.wheelbase[0]),
-                                   tel=pycvc.nav_sim_world_drive_telemetry(cars.sim),
-                                   nav_stats=json.loads(pycvc.nav_sim_world_nav_stats(cars.sim)))  # fmt: skip
-                    run.end_tick()
+                    tick_arms(fleet, run)
             fleet[0].publish()
             publish_arms(host, run, fleet, st, charts)
             if drawn:
@@ -603,6 +585,53 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
     host.close()
     return C.exit_code(code, error=st["error"], arrivals=run.arrivals,
                        min_arrivals=args.min_arrivals, who="live")  # fmt: skip
+
+
+def make_fleet(world, plant, arms, start, goal, *, seed=0, scale=_arms.POLICY_SCALE, app=None,
+               prefix="") -> list:  # fmt: skip
+    """One ``pycvc_gl.cars.Cars`` per arm (a libcvc sim_world with one vehicle on ``plant``), from
+    ``start`` to ``goal`` on ``world``, driven by the arm's policy (its ``.cvcnav``, loaded with
+    ``nav_sim_world_set_policy`` from one library; the arm's ``key`` is set). With ``app`` the
+    settings come from its state tree, as the template's cars read them."""
+    import pycvc
+
+    C = _cars.C
+    library = pycvc.nav_policy_library_create()
+    fleet = []
+    for a in arms:
+        cars = C.Cars(world, 1, plant, navigator=True, scale=scale, seed=seed, app=app,
+                      prefix=prefix, starts=[start], goals=[goal])  # fmt: skip
+        a.key = pycvc.nav_sim_world_set_policy(cars.sim, 0, library, a.path, a.sha256)
+        fleet.append(cars)
+    return fleet
+
+
+def begin_stats(fleet, arms, scene: str, seed: int) -> None:
+    """Every arm's ``nav_stats`` collector armed from where it stands, to its current goal."""
+    import pycvc
+
+    for a, cars in zip(arms, fleet, strict=True):
+        pycvc.nav_sim_world_begin_nav_stats(cars.sim, 0.10, 0.20, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                            scene, int(seed), a.name)  # fmt: skip
+
+
+def tick_arms(fleet, run) -> None:
+    """One tick of every arm's world (each first in turn, so no arm's wall time always pays for
+    going first), recorded in ``run`` (an :class:`~grl_snam.ariadne._arms.ArmsRun`)."""
+    import time
+
+    import pycvc
+
+    for j in np.roll(np.arange(len(fleet)), -run.tick):
+        cars = fleet[j]
+        t0 = time.perf_counter()
+        s = cars.step_navigator()
+        ms = 1e3 * (time.perf_counter() - t0)
+        run.record(j, x=s.x[0], y=s.y[0], heading=s.heading[0], speed=s.speed[0], goal=s.goal[0],
+                   ms=ms, size=(s.length[0], s.width[0], s.wheelbase[0]),
+                   tel=pycvc.nav_sim_world_drive_telemetry(cars.sim),
+                   nav_stats=json.loads(pycvc.nav_sim_world_nav_stats(cars.sim)))  # fmt: skip
+    run.end_tick()
 
 
 def world_meta(host) -> dict:

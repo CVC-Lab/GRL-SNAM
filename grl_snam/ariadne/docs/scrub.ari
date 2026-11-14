@@ -1,0 +1,257 @@
+# scrub.ari — watch it learn: every checkpoint of a training run, deployed. grl_snam/ariadne/scrub.py
+# runs each checkpoint's policy headless on one scenario (cached), then shows checkpoint k beside
+# step 0; this document is the window around it:
+#
+#   python -m grl_snam.ariadne scrub run/history.jsonl
+#
+# - Scrub: the history, the scenario, and the checkpoint: a combo, a slider, previous / next, or a
+#   click on either chart picks it (scrub.k). A deployed metric (Metric picks it) against the
+#   checkpoint's step, with step 0's as a dashed line and a cursor at the checkpoint; the same as
+#   a table, one row per checkpoint.
+# - Training: a held-out curve from the history (Curve picks it), with its marks and a cursor at
+#   the checkpoint (the learn port's chart).
+# - Episode: the two runs' time: libcvc's sim transport (Paused, Speed, Step, Restart), a Position
+#   slider (play.pos) and the camera.
+# - Stats and Ledger (stats_panels.ari): step 0 and the checkpoint, at the play head.
+# - The scene: the scenario's world, the start, the goal, and the two ghosts (step 0 blue, the
+#   checkpoint orange) with their tracks.
+# The charts are pycvc_gl's chart: (libcvc 3.7.14); on an older host the text and the table show
+# the same numbers.
+
+meta:
+  name: GRL-SNAM scrub
+  min_libcvc: 3.7.11
+
+import:
+  - {uri: cvc://components/sim_transport.ari, optional: true}
+  - stats_panels.ari
+
+requires:
+  - {name: chart, optional: true}   # the metric, training and Stats/Ledger charts (libcvc 3.7.14)
+
+units:
+  sim_transport:                    # where the host has no libcvc component library
+    fallback: true
+    window: Simulation
+    id: sim_transport
+    children:
+      - checkbox: Paused
+        bind: sim.paused
+      - slider_float: Speed
+        bind: sim.speed
+        lo: 0.0
+        hi: 4.0
+        fmt: "%.2f"
+      - button: Step
+        on: sim.step
+      - button: Restart
+        on: sim.restart
+
+data:
+  city:
+    uri: cvcpkg://cy-pca/scene-austin-south-small
+    path: share/cvc-scenes/austin_south
+    as: city_bundle
+    load: lazy
+
+init: |
+  (begin
+    (state-set "sim.paused" "0")
+    (state-set "sim.speed" "1.0")
+    (state-set "play.pos" "0")
+    (state-set "play.loop" "1")
+    (state-set "view.camera" "follow")
+    (state-set "arms.on" "1")
+    (state-set "arms.live" "0")
+    (state-set "ledger.book" "dU")
+    (state-set "scrub.metric_name" "path_m")
+    (state-set "nav_plant.vehicle" "kinematic")
+    (state-set "run.world" "data")
+    (state-set "run.uri" "cvcpkg://cy-pca/scene-austin-south-small")
+    (state-set "run.data_path" "share/cvc-scenes/austin_south")
+    (state-set "run.crop" "600")
+    (state-set "world.seed" "7")
+    (state-set "world.half" "500")
+    (state-set "world.amp" "25")
+    (state-set "world.water_level" "-4")
+    (state-set "world.buildings" "160")
+    (state-set "world.trees" "200")
+    (state-set "world.rocks" "40")
+    (state-set "world.terrain" "fbm")
+    (state-set "world.city" "districts"))
+
+menubar:
+  - menu: Scrub
+    items:
+      - menu_item: Previous checkpoint
+        on: scrub_prev
+      - menu_item: Next checkpoint
+        on: scrub_next
+      - menu_item: Paused
+        bind: sim.paused
+      - separator
+      - menu_item: Quit
+        on: quit
+
+windows:
+  - window: Scrub
+    id: scrub
+    pos: [16, 30]
+    size: [520, 640]
+    children:
+      - text: ""
+        bind: scrub.title
+      - text: ""
+        bind: scrub.scenario
+      - combo: Checkpoint
+        bind: scrub.choice
+        options: (string.split (state-get "scrub.labels") "\n")
+      - slider_float: Scrub
+        bind: scrub.pos
+        lo: 0
+        hi: 1
+        fmt: ""
+        tooltip: "drag through the checkpoints, step 0 to the last"
+      - button: Previous
+        on: scrub_prev
+      - button: Next
+        on: scrub_next
+      - text: ""
+        bind: scrub.now
+      - separator
+      - combo: Metric
+        bind: scrub.metric_name
+        options: [Reached the goal, Time (s), Path (m), Ticks penetrating, Clearance min (m),
+                  Clearance mean (m), Left to the goal (m)]
+        values: [reached, time_s, path_m, pen_steps, clear_min_m, clear_mean_m, goal_m]
+      - type: group
+        visible_when: (has? "chart")
+        children:
+          - chart: The deployed metric, each checkpoint
+            bind: scrub.metric
+            legend: top
+            x_label: training step
+            cursor: scrub.step
+            pick: scrub.pick
+            on: scrub_pick
+            height: 130
+      - text: ""
+        bind: scrub.metric_text
+      - type: group
+        layout: { kind: grid, col_widths: [14, 50, 40, 54, 44, 52, 36, 54, 56] }
+        children:
+          - text: ""
+          - text: "step"
+          - text: "flag"
+          - text: "reached"
+          - text: "time"
+          - text: "path"
+          - text: "pen"
+          - text: "clr min"
+          - text: "to goal"
+      - type: group
+        repeat: (state-get "scrub.table")
+        layout: { kind: grid, col_widths: [14, 50, 40, 54, 44, 52, 36, 54, 56] }
+        children:
+          - text: ""
+            bind: scrub.table.{i}.at
+          - text: ""
+            bind: scrub.table.{i}.step
+          - text: ""
+            bind: scrub.table.{i}.flag
+          - text: ""
+            bind: scrub.table.{i}.reached
+          - text: ""
+            bind: scrub.table.{i}.time_s
+          - text: ""
+            bind: scrub.table.{i}.path_m
+          - text: ""
+            bind: scrub.table.{i}.pen_steps
+          - text: ""
+            bind: scrub.table.{i}.clear_min_m
+          - text: ""
+            bind: scrub.table.{i}.goal_m
+
+  - window: Training
+    id: training
+    pos: [548, 30]
+    size: [520, 300]
+    children:
+      - combo: Curve
+        bind: scrub.curve_name
+        options: (string.split (state-get "scrub.curve_names") "\n")
+      - type: group
+        visible_when: (has? "chart")
+        children:
+          - chart: Held-out curve
+            bind: scrub.curve
+            log_y: scrub.curve_log
+            legend: top
+            x_label: training step
+            cursor: scrub.step
+            pick: scrub.pick
+            on: scrub_pick
+            height: 150
+      - text: ""
+        bind: scrub.curve_text
+
+  - window: Episode
+    id: episode
+    pos: [548, 342]
+    size: [520, 150]
+    children:
+      - text: ""
+        bind: play.title
+      - slider_float: Position
+        bind: play.pos
+        lo: 0
+        hi: 1
+        fmt: "%.3f"
+      - text: ""
+        bind: play.time
+      - combo: Camera
+        bind: view.camera
+        options: [Follow the arm, Orbit]
+        values: [follow, orbit]
+
+  - include: sim_transport
+    pos: [548, 504]
+    size: [260, 170]
+
+  - include: arms_stats
+    pos: [1080, 30]
+    size: [600, 300]
+
+  - include: arms_ledger
+    pos: [1080, 342]
+    size: [600, 540]
+
+scene:
+  chrome: false
+  background: { top: [0.38, 0.54, 0.78], bottom: [0.78, 0.83, 0.88] }
+  shadows:
+    enabled: true
+    resolution: 4096
+    update_interval: 2
+    softness: 3
+    focus: { follow: camera, min_radius: 60, max_radius: 600, per_distance: 3, lead: 0.5,
+             lift: 20, ground: city }
+  lights:
+    - light: sun
+      rig: three_point
+      stage: { center: [0, 0, 25], radius: 900 }
+      key: { intensity: 1.3, azimuth: -60, elevation: 32, cone: 62 }
+      fill: 0.3
+      back: 0
+      wash: 0
+      warmth: 0.5
+      environment: 0.5
+      ambient: 0.32
+  nodes:
+    - node: city
+      source: { data: city }     # the terrain (aerial image draped) and the buildings, when loaded
+      visible: { bind: view.city, default: true }
+    - node: gen                  # World: Generated (austin-freedrive): libcvc's generator
+      type: generated_world
+      look: soft
+      visible: { bind: view.generated, default: false }
