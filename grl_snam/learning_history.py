@@ -8,7 +8,8 @@ them are OPT-IN observers; with none on, the trainers run exactly as before.
 - **The history** (a JSON-lines file). A header, then one record per outer step:
   - the loss terms (window means);
   - the global gradient norm ``clip_grad_norm_`` returns, BEFORE the clip (mean and max over the
-    step's optimizer steps, and the share that clipped);
+    step's optimizer steps, and the share that clipped), and, when the trainer measures them, each
+    loss term's own gradient norm (``grad_norm.terms.<term>``);
   - the learning rate.
 
   Then one record per checkpoint:
@@ -168,10 +169,20 @@ class CoefTrainMonitor:
             )
         self.checkpoint(0, model)
 
-    def window(self, terms: dict[str, float], grad_norm, lr: float, clip: float) -> None:
-        """After each optimizer step: its loss terms and its pre-clip gradient norm."""
+    def window(
+        self,
+        terms: dict[str, float],
+        grad_norm,
+        lr: float,
+        clip: float,
+        term_grads: dict[str, float] | None = None,
+    ) -> None:
+        """After each optimizer step: its loss terms and its pre-clip gradient norm, and, when the
+        trainer measured them, each loss term's own gradient norm (``term_grads``)."""
         for k, v in terms.items():
             self._terms[k] = self._terms.get(k, 0.0) + float(v)
+        for k, v in (term_grads or {}).items():
+            self._term_gn.setdefault(k, []).append(float(v))
         g = float(grad_norm)
         self._gn.append(g)
         self._clipped += int(clip > 0.0 and g > clip)
@@ -180,6 +191,13 @@ class CoefTrainMonitor:
     def end_step(self, step: int, model) -> None:
         """After outer step ``step`` (0-based): its record, and a checkpoint when one is due."""
         n = max(len(self._gn), 1)
+        grad_norm = {
+            "mean": sum(self._gn) / n if self._gn else 0.0,
+            "max": max(self._gn) if self._gn else 0.0,
+            "clipped_frac": self._clipped / n,
+        }
+        if self._term_gn:
+            grad_norm["terms"] = {k: sum(v) / len(v) for k, v in self._term_gn.items()}
         self._write(
             {
                 "kind": "step",
@@ -187,11 +205,7 @@ class CoefTrainMonitor:
                 "windows": len(self._gn),
                 "terms": {k: v / n for k, v in self._terms.items()},
                 "lr": self._lr,
-                "grad_norm": {
-                    "mean": sum(self._gn) / n if self._gn else 0.0,
-                    "max": max(self._gn) if self._gn else 0.0,
-                    "clipped_frac": self._clipped / n,
-                },
+                "grad_norm": grad_norm,
             }
         )
         self._reset_step()
@@ -263,6 +277,7 @@ class CoefTrainMonitor:
     # ---- internals
     def _reset_step(self) -> None:
         self._terms: dict[str, float] = {}
+        self._term_gn: dict[str, list[float]] = {}
         self._gn: list[float] = []
         self._clipped = 0
         self._lr = 0.0

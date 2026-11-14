@@ -285,6 +285,25 @@ def austin_material_evaluate(args) -> None:
 @click.option("--val-blocks", default=8, show_default=True, help="--val-frac: blocks per axis")
 @click.option("--val-pairs", default=256, show_default=True, help="--val-frac: held-out pairs")
 @click.option("--val-ticks", default=200, show_default=True, help="--val-frac: drive ticks")
+@click.option(
+    "--bptt-window",
+    default=7,
+    show_default=True,
+    help="truncate the backward every N rollout steps (0 = through the whole horizon, as before "
+    "the fix: on dense geometry that gradient explodes)",
+)
+@click.option(
+    "--col-grad/--no-col-grad",
+    default=True,
+    show_default=True,
+    help="the collision term carries gradient (--no-col-grad: detached, as before the fix)",
+)
+@click.option(
+    "--grad-terms-every",
+    default=0,
+    show_default=True,
+    help="--history: record each loss term's gradient norm every N steps (0 = off)",
+)
 def train(
     sdf_npz: str,
     out: str,
@@ -301,14 +320,20 @@ def train(
     val_blocks: int,
     val_pairs: int,
     val_ticks: int,
+    bptt_window: int,
+    col_grad: bool,
+    grad_terms_every: int,
 ) -> None:
-    """Self-supervised training of the SDF navigation coefficients from a nav_sdf.npz."""
+    """Self-supervised training of the SDF navigation coefficients from a nav_sdf.npz.
+    `--bptt-window 0 --no-col-grad` is the trainer before the fix (the published coef_sdf.pt:
+    seed 0, 200 steps, --device cpu --threads 1)."""
     from .tools import train as _train
 
     _train.train_sdf(
         sdf_npz, out, steps=steps, batch=batch, lr=lr, threads=threads, seed=seed, device=device,
         history=history, checkpoint_every=checkpoint_every, val_frac=val_frac, val_seed=val_seed,
-        val_blocks=val_blocks, val_pairs=val_pairs, val_ticks=val_ticks,
+        val_blocks=val_blocks, val_pairs=val_pairs, val_ticks=val_ticks, bptt_window=bptt_window,
+        col_grad=col_grad, grad_terms_every=grad_terms_every,
     )  # fmt: skip
 
 

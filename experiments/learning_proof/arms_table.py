@@ -9,7 +9,15 @@ from __future__ import annotations
 import json
 import sys
 
-ORDER = ("published", "trained", "untrained", "final", "constant", "constant_trained")
+ORDER = (
+    "published",
+    "trained",
+    "untrained",
+    "final",
+    "constant",
+    "constant_trained",
+    "constant_final",
+)
 LABEL = {
     "reached": ("reach", 100.0, "%", 1),
     "pen_ticks": ("pen ticks", 1.0, "", 2),
