@@ -347,6 +347,40 @@ adaptive-rate sharing run all the same.
 
 It needs torch, as `grl-snam coph` does, and no city.
 
+### `learn`: did it learn?
+
+```bash
+grl-snam ariadne learn run/history.jsonl                          # one training run
+grl-snam ariadne learn seed*/history.jsonl --arms arms.json       # seeds, and the arms
+grl-snam ariadne learn run/history.jsonl --follow                 # a run still training
+grl-snam ariadne learn seed*/history.jsonl --arms arms.json --headless --report report.json
+```
+
+The learning instruments as windows. The port reads learning histories with `grl_snam.learning`:
+any trainer that follows its conventions (`coef-train`, `grl-snam train`, `train_coef_energy`,
+libcvc's `coef_trainer` and downstream trainers alike). It also reads an optional arms table
+(`grl-snam arms-eval`'s `grl_snam.arms/v1`, or the A/B harness's JSON), and makes
+`grl-snam learn-report`'s claims on them.
+
+- **Did it learn?**: every claim, pass or fail, with its evidence, and the summary.
+- **Loss**: the held-out curve Term picks against its training twin, marked where it was best,
+  bent (Kneedle), went flat and turned back up. With several runs, Runs shows their band (the
+  marks are the mean curve's) or each run's own curves and pick.
+- **Heads**: a head's mean over the probe or held-out set, with its spread as a band, per run,
+  marked where it settled.
+- **Training**: each run's gradient norm, and each head's dtheta / theta per checkpoint for the
+  run Run picks.
+- **Checkpoints**: that run's checkpoints with Term's value, the pick marked `*`.
+- **Arms** (with `--arms`): each arm's mean [95% CI] per metric, primary metrics first, and its
+  paired difference to the untrained arm. `*` marks a CI that excludes 0, with better or worse.
+- **Planted** (when a history logs `...planted.<region>.rel_err`): each region's recovered error
+  at the pick and at the start, against `--planted-bound`.
+
+The curves are pycvc_gl's `chart:` (libcvc 3.7.14). On an older pycvc_gl each window shows its
+marks as text, and the tables are the same. `--follow` re-reads a history when it changes and
+re-makes the claims at most every `--every` seconds. Headless, the port writes `--report` and
+exits; `--strict` makes it exit 1 when a claim fails. It needs no torch and no city.
+
 ### `cars`: N Ackermann cars driven by your own controller
 
 ```bash
@@ -410,6 +444,7 @@ controller made for them ([docs/PLANTS.md](../../docs/PLANTS.md#what-to-expect))
 | `Squad(plant=...)`, `--plant` on the recorders | library, `capture --plant` | `fleet --plant humvee / dynamic:humvee / kinematic` (any plant libcvc's `plant_host` names), `squad --plant` |
 | `grl-snam material-demo` | two PNGs | `material` |
 | `grl-snam coph crossing / hazard` | episodes, `results.json`, `REPORT.md` | `coph crossing` / `coph hazard` (live, or `--from` a run) |
+| `grl-snam learn-report` | text, `report.json` | `learn` (the claims, and the curves, heads, checkpoints and arms behind them) |
 | `grl-snam capture drive / multigoal` | mp4 | covered by `live austin-freedrive` / `austin-learned` (the same navigator, live) |
 | `grl-snam pipeline`, `build-sdf`, `train` | batch | not ported: no picture of their own |
 | `wall_vis` | a post-pass for the finale | not ported |

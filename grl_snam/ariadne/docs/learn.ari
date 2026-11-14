@@ -1,0 +1,238 @@
+# learn.ari — did it learn? grl_snam/ariadne/learn.py reads learning histories (and an arms
+# table), makes grl-snam learn-report's claims on them, and writes what these windows show.
+#
+#   python -m grl_snam.ariadne learn seed*/history.jsonl --arms arms.json
+#   python -m grl_snam.ariadne learn run/history.jsonl --follow
+#
+# - Did it learn?: every claim, pass or fail, and its evidence. A claim the data cannot support
+#   fails and says why.
+# - Loss: a held-out curve (Term) against its training twin, marked where it was best, bent,
+#   went flat and turned back up, and where each run picked. Several runs: their band, or each.
+# - Heads: a head's mean with its spread as a band, per run, marked where it settled.
+# - Training: the gradient norm per run; each head's relative parameter change for one run.
+# - Checkpoints: that run's checkpoints with Term's value, the pick marked *.
+# - Arms: each arm's mean [95% CI], and its paired difference to the untrained arm (* = the CI
+#   excludes 0). Shown when there is an arms table.
+# - Planted: a planted latent's recovery against its bound. Shown when a history logs one.
+#
+# The charts are pycvc_gl's chart: (libcvc 3.7.14). Without it each window shows its marks as
+# text; the tables need nothing new.
+
+meta:
+  name: GRL-SNAM learning
+  min_libcvc: 3.4.0
+
+requires:
+  - {name: chart, optional: true}   # the curves (libcvc 3.7.14)
+
+init: |
+  (begin
+    (state-set "learn.term" "")
+    (state-set "learn.head" "")
+    (state-set "learn.run" "")
+    (state-set "learn.seeds" "band")
+    (state-set "learn.terms" "")
+    (state-set "learn.heads" "")
+    (state-set "learn.runs" "")
+    (state-set "learn.claims" "0")
+    (state-set "learn.arms" "0")
+    (state-set "learn.planted" "0")
+    (state-set "learn.checkpoints" "0"))
+
+menubar:
+  - menu: Learning
+    items:
+      - menu_item: Quit
+        on: quit
+
+windows:
+  - window: Did it learn?
+    id: verdict
+    pos: [8, 28]
+    size: [860, 290]
+    children:
+      - text: ""
+        bind: learn.caption
+      - text: ""
+        bind: learn.summary
+      - separator
+      - type: group
+        layout: { kind: grid, col_widths: [44, 64, 500, 240] }
+        children:
+          - text: ""
+          - text: "family"
+          - text: "claim"
+          - text: "evidence"
+      - type: group
+        repeat: (state-get "learn.claims")
+        layout: { kind: grid, col_widths: [44, 64, 500, 240] }
+        children:
+          - text: ""
+            bind: learn.claims.{i}.status
+          - text: ""
+            bind: learn.claims.{i}.family
+          - text: ""
+            bind: learn.claims.{i}.claim
+          - text: ""
+            bind: learn.claims.{i}.detail
+
+  - window: Loss
+    id: loss
+    pos: [876, 28]
+    size: [396, 380]
+    children:
+      - combo: Term
+        bind: learn.term
+        options: (string.split (state-get "learn.terms") "\n")
+      - radio_row: Runs
+        bind: learn.seeds
+        options: [Band, Each]
+        values: [band, each]
+        visible_when: (> (int (state-get "learn.n_runs")) 1)
+      - chart: Held-out and train
+        bind: learn.loss
+        log_y: learn.loss_log
+        legend: top
+        x_label: step (or epoch)
+        height: 200
+        visible_when: (has? "chart")
+      - text_view: ""
+        bind: learn.loss_text
+        follow: false
+
+  - window: Heads
+    id: heads
+    pos: [876, 416]
+    size: [396, 300]
+    children:
+      - combo: Head
+        bind: learn.head
+        options: (string.split (state-get "learn.heads") "\n")
+      - chart: Mean, spread as a band
+        bind: learn.head_chart
+        legend: top
+        x_label: step (or epoch)
+        height: 160
+        visible_when: (has? "chart")
+      - text_view: ""
+        bind: learn.head_chart_text
+        follow: false
+
+  - window: Training
+    id: training
+    pos: [8, 326]
+    size: [430, 400]
+    children:
+      - chart: Gradient norm
+        bind: learn.grad
+        log_y: learn.grad_log
+        legend: top
+        height: 130
+        visible_when: (has? "chart")
+      - text_view: ""
+        bind: learn.grad_text
+        follow: false
+      - combo: Run
+        bind: learn.run
+        options: (string.split (state-get "learn.runs") "\n")
+      - chart: Each head's dtheta / theta per checkpoint
+        bind: learn.dtheta
+        log_y: learn.dtheta_log
+        legend: top
+        height: 130
+        visible_when: (has? "chart")
+      - text: ""
+        bind: learn.dtheta_text
+
+  - window: Checkpoints
+    id: checkpoints
+    pos: [446, 326]
+    size: [422, 400]
+    children:
+      - text: ""
+        bind: learn.ck_caption
+      - type: group
+        layout: { kind: grid, col_widths: [56, 76, 76, 52, 140] }
+        children:
+          - text: "x"
+          - text: "kind"
+          - text: "value"
+          - text: ""
+          - text: "policy"
+      - type: group
+        repeat: (state-get "learn.checkpoints")
+        layout: { kind: grid, col_widths: [56, 76, 76, 52, 140] }
+        children:
+          - text: ""
+            bind: learn.checkpoints.{i}.x
+          - text: ""
+            bind: learn.checkpoints.{i}.kind
+          - text: ""
+            bind: learn.checkpoints.{i}.value
+          - text: ""
+            bind: learn.checkpoints.{i}.mark
+          - text: ""
+            bind: learn.checkpoints.{i}.blob
+
+  - window: Arms
+    id: arms
+    pos: [8, 734]
+    size: [860, 260]
+    visible_when: (> (int (state-get "learn.arms")) 0)
+    children:
+      - text: "mean [95% bootstrap CI] over paired seeds; diff: arm minus the untrained arm, * = the CI excludes 0"
+      - type: group
+        layout: { kind: grid, col_widths: [70, 170, 80, 220, 300] }
+        children:
+          - text: "case"
+          - text: "metric"
+          - text: "arm"
+          - text: "mean [CI]"
+          - text: "paired diff"
+      - type: group
+        repeat: (state-get "learn.arms")
+        layout: { kind: grid, col_widths: [70, 170, 80, 220, 300] }
+        children:
+          - text: ""
+            bind: learn.arms.{i}.case
+          - text: ""
+            bind: learn.arms.{i}.metric
+          - text: ""
+            bind: learn.arms.{i}.arm
+          - text: ""
+            bind: learn.arms.{i}.value
+          - text: ""
+            bind: learn.arms.{i}.diff
+
+  - window: Planted
+    id: planted
+    pos: [876, 724]
+    size: [396, 200]
+    visible_when: (> (int (state-get "learn.planted")) 0)
+    children:
+      - text: "relative error of the recovered latent: at each run's pick, and at its start"
+      - type: group
+        layout: { kind: grid, col_widths: [44, 40, 84, 84, 46, 56] }
+        children:
+          - text: "region"
+          - text: "bound"
+          - text: "at the pick"
+          - text: "untrained"
+          - text: "within"
+          - text: "untr. out"
+      - type: group
+        repeat: (state-get "learn.planted")
+        layout: { kind: grid, col_widths: [44, 40, 84, 84, 46, 56] }
+        children:
+          - text: ""
+            bind: learn.planted.{i}.region
+          - text: ""
+            bind: learn.planted.{i}.bound
+          - text: ""
+            bind: learn.planted.{i}.picked
+          - text: ""
+            bind: learn.planted.{i}.start
+          - text: ""
+            bind: learn.planted.{i}.recovered
+          - text: ""
+            bind: learn.planted.{i}.untrained
