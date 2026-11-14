@@ -19,18 +19,26 @@ the per-seed values, their mean and 95% bootstrap CI, and the paired difference 
 arm. It has the shape of the downstream A/B harness's JSON (``arms``; ``results[].case`` /
 ``metrics[metric][arm] = {mean, ci95, n, paired_diff}``, the difference being arm minus
 reference, the reference being the first arm unless named), so one table reader reads both; the
-per-seed ``seeds``/``values``, ``direction`` and ``primary`` are additions.
+per-seed ``seeds``/``values``, ``direction`` and ``primary`` are additions. A case may also say
+its ``family`` (``"task"``, a task metric, or ``"loss"``, a trainer's held-out loss terms, which
+``grl-snam learn-report`` claims on as loss terms) and its ``unit`` (``"seed"``, ``"pair"``,
+``"start"``).
+
+One table is one trained policy against its arms. A run with several training seeds is one table
+per seed; :func:`runs_paired_diff` pools them, resampling the runs and the units (a two-level
+bootstrap), so the interval carries training-seed variance as well as evaluation noise.
 """
 
 from __future__ import annotations
 
 import hashlib
 import math
+import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .stats import N_BOOT, as_rng, paired_diff, summarize
+from .stats import ALPHA, N_BOOT, as_rng, paired_diff, summarize
 
 ARMS_SCHEMA = "grl_snam.arms/v1"
 
@@ -214,6 +222,8 @@ def arms_table(
     direction: Mapping[str, str] | None = None,
     primary: Mapping[str, Sequence[str]] | None = None,
     case_flags: Mapping[str, Sequence[str]] | None = None,
+    family: Mapping[str, str] | None = None,
+    unit: Mapping[str, str] | None = None,
     n_boot: int = N_BOOT,
     seed: int = 1,
     meta: Mapping | None = None,
@@ -222,7 +232,8 @@ def arms_table(
 
     ``arms`` fixes the column order, ``reference`` the arm the paired differences are taken to
     (default the first). ``direction[metric]`` is ``"up"`` (higher is better) or ``"down"``;
-    ``primary[case]`` names the metrics a claim is made on. The bootstrap draws come from one
+    ``primary[case]`` names the metrics a claim is made on; ``family[case]`` and ``unit[case]``
+    are written to the case when given. The bootstrap draws come from one
     generator seeded ``seed``, consumed case by case, metric by metric, arm by arm (the arm's CI,
     then its paired difference's), as the A/B harness does.
     """
@@ -265,6 +276,10 @@ def arms_table(
         }
         if primary and case in primary:
             res["primary"] = list(primary[case])
+        if family and case in family:
+            res["family"] = family[case]
+        if unit and case in unit:
+            res["unit"] = unit[case]
         results.append(res)
     return {
         "schema": ARMS_SCHEMA,
@@ -297,3 +312,90 @@ def arm_values(table: Mapping, case: str, metric: str, arm: str) -> dict | None:
         seeds = e.get("seeds") or list(range(len(e["values"])))
         return dict(zip((str(s) for s in seeds), e["values"], strict=True))
     return None
+
+
+def case_result(table: Mapping, case: str) -> Mapping | None:
+    """The table's result for ``case``, or ``None``."""
+    return next((r for r in table.get("results", []) if r.get("case") == case), None)
+
+
+# --------------------------------------------------------------------------- several runs
+
+
+def _unit_grid(per_run: Sequence[Mapping]) -> tuple[list, list]:
+    units: list = []
+    seen: set = set()
+    for d in per_run:
+        for u in d:
+            if u not in seen:
+                seen.add(u)
+                units.append(u)
+    return units, [[_present(d.get(u)) for u in units] for d in per_run]
+
+
+def _present(v) -> bool:
+    return v is not None and isinstance(v, int | float) and math.isfinite(v)
+
+
+def runs_paired_diff(
+    reference: Sequence[Mapping],
+    arm: Sequence[Mapping],
+    n_boot: int = N_BOOT,
+    rng: random.Random | int | None = None,
+    alpha: float = ALPHA,
+) -> dict | None:
+    """``arm - reference`` over several runs, each a pair of ``{unit: value}`` (run ``k``'s
+    reference and arm). A cell is a (run, unit) both sides have; the mean is over the cells.
+
+    The interval is a two-level percentile bootstrap: each draw resamples the runs and the units
+    (the union of the runs' units), both with replacement, and takes the mean over the drawn
+    cells, so runs that share their held-out units are resampled unit by unit together. The
+    draws come from a numpy generator seeded from ``rng``; the percentiles are
+    :func:`grl_snam.learning.stats.bootstrap_ci`'s. Returns ``{"mean", "ci95", "n", "runs",
+    "per_run"}`` (``n`` cells; ``per_run`` each run's own mean difference, ``None`` when it has
+    no cell), or ``None`` when no cell pairs."""
+    import numpy as np
+
+    if len(reference) != len(arm):
+        raise ValueError("one reference per run")
+    rng = as_rng(rng)
+    diffs = [
+        {u: float(a[u]) - float(r[u]) for u in r if u in a and _present(r[u]) and _present(a[u])}
+        for r, a in zip(reference, arm, strict=True)
+    ]
+    units, mask = _unit_grid(diffs)
+    if not units:
+        return None
+    m = np.asarray(mask, np.float64)
+    dz = np.asarray([[d.get(u, 0.0) for u in units] for d in diffs], np.float64)
+    per_run = [float(dz[k][mask[k]].mean()) if any(mask[k]) else None for k in range(len(diffs))]
+    S, P = dz.shape
+    gen = np.random.default_rng(rng.getrandbits(63))
+    means = np.empty(n_boot)
+    for lo in range(0, n_boot, 500):
+        b = min(500, n_boot - lo)
+        cs = np.stack([np.bincount(gen.integers(0, S, S), minlength=S) for _ in range(b)])
+        cu = np.stack([np.bincount(gen.integers(0, P, P), minlength=P) for _ in range(b)])
+        num = ((cs @ dz) * cu).sum(1)
+        den = ((cs @ m) * cu).sum(1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            means[lo : lo + b] = np.where(den > 0, num / np.where(den > 0, den, 1.0), np.nan)
+    means = np.sort(means[np.isfinite(means)])
+    mean = float(dz.sum() / m.sum())
+    if len(means) < 2:
+        ci = [mean, mean]
+    else:
+        k = len(means)
+        ci = [
+            float(means[int((alpha / 2) * k)]),
+            float(means[min(k - 1, int((1 - alpha / 2) * k))]),
+        ]
+    return {"mean": mean, "ci95": ci, "n": int(m.sum()), "runs": S, "per_run": per_run}
+
+
+def runs_summary(
+    per_run: Sequence[Mapping], n_boot: int = N_BOOT, rng: random.Random | int | None = None
+) -> dict | None:
+    """One arm's mean and two-level CI over several runs (:func:`runs_paired_diff` to 0)."""
+    zero = [{u: 0.0 for u in d} for d in per_run]
+    return runs_paired_diff(zero, per_run, n_boot, rng)

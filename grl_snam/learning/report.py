@@ -1,9 +1,16 @@
 """Claims that a learner learned, each marked pass or fail: ``grl-snam learn-report``.
 
     grl-snam learn-report run*/history.jsonl --arms arms.json --json report.json
+    grl-snam learn-report seed*/history.jsonl --arms seed0.json --arms seed1.json ...
 
 The claims, by family:
 
+- **loss**, against the arms: for an arms table's loss case (``"family": "loss"``, e.g.
+  ``grl-snam arms-eval --cases objective-sdf``: the trainer's own objective on held-out units),
+  per term, the trained arm's held-out term is lower than each other arm's (the untrained step 0,
+  the constant), i.e. the 95% CI of ``trained - other`` over paired units lies below 0. With
+  several tables (one per training run, ``--arms`` repeated) the runs pool: the CI resamples the
+  runs and the units (:func:`grl_snam.learning.arms.runs_paired_diff`).
 - **loss**, per held-out LOSS term in the histories (one with a training twin, the losses that
   carry gradient, or the run's ``fitness``): the term at the LAST evaluation is better than at the
   first, the untrained policy (step 0, or the ``init`` record). The last and not the best: the
@@ -18,8 +25,9 @@ The claims, by family:
   record's pick at a held-out evaluation), and the pick is not the first evaluation. A pick at
   step 0 means no step improved on the untrained policy.
 - **task**, from ``--arms`` (``grl_snam.arms/v1``, or the A/B harness's JSON with ``--better``):
-  on each primary metric, the trained arm beats each other arm on paired seeds, i.e. the 95% CI of
-  ``trained - other`` lies on the better side of 0.
+  on each primary metric of a task case, the trained arm beats each other arm on paired seeds,
+  i.e. the 95% CI of ``trained - other`` lies on the better side of 0 (pooled over the tables as
+  the loss case is, when there are several).
 - **planted**, for a planted-latent exercise that logs ``...planted.<region>.rel_err``: at each
   run's pick the recovered latent's relative error is within ``--planted-bound``, and at the first
   evaluation (the untrained net) it is not.
@@ -39,7 +47,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .arms import arm_values
+from .arms import arm_values, case_result, runs_paired_diff, runs_summary
 from .curves import DEFAULT, MarkParams, marks
 from .history import History, TermPair, classify, load
 from .stats import N_BOOT, as_rng, negate, paired_diff, summarize
@@ -247,8 +255,19 @@ def trained_minus(
     return None, "no per-seed values, and neither arm is the table's reference"
 
 
-def task_claims(
-    table: Mapping,
+def _tables(arms) -> list[Mapping]:
+    """One table (a mapping) or several, as a list."""
+    if arms is None:
+        return []
+    return [arms] if isinstance(arms, Mapping) else list(arms)
+
+
+def _label(table: Mapping, k: int) -> str:
+    return str(table.get("meta", {}).get("label") or f"table {k}")
+
+
+def arms_claims(
+    arms,
     *,
     trained: str = "trained",
     against: Sequence[str] | None = None,
@@ -257,19 +276,33 @@ def task_claims(
     n_boot: int = N_BOOT,
     rng=None,
 ) -> tuple[list[Claim], list[dict]]:
-    """The task claims, and the metrics no claim could be made on (with why)."""
+    """The claims on an arms table (or several, one per training run), and the metrics no claim
+    could be made on (with why). A loss case's claims are family ``"loss"``, the others
+    ``"task"``. One table: each difference from its per-unit values, else from its own paired
+    difference. Several: the cases, metrics and arms of the first table, pooled over every table
+    that has them (:func:`grl_snam.learning.arms.runs_paired_diff`)."""
     rng = as_rng(rng)
-    names = [a["name"] for a in table.get("arms", [])]
-    if trained not in names:
-        raise ValueError(f"the arms table has no {trained!r} arm (arms: {', '.join(names)})")
+    tables = _tables(arms)
+    if not tables:
+        return [], []
+    names = [a["name"] for a in tables[0].get("arms", [])]
+    for k, t in enumerate(tables):
+        got = [a["name"] for a in t.get("arms", [])]
+        if trained not in got:
+            which = "the arms table" if len(tables) == 1 else f"the arms table {_label(t, k)!r}"
+            raise ValueError(f"{which} has no {trained!r} arm (arms: {', '.join(got)})")
     others = list(against) if against else [a for a in names if a != trained]
     missing = [a for a in others if a not in names]
     if missing:
         raise ValueError(f"the arms table has no {missing} arm (arms: {', '.join(names)})")
-    direction = {**table.get("direction", {}), **(better or {})}
+    direction = {}
+    for t in reversed(tables):
+        direction.update(t.get("direction", {}))
+    direction.update(better or {})
     claims, skipped = [], []
-    for res in table.get("results", []):
+    for res in tables[0].get("results", []):
         case = res.get("case", "default")
+        family = "loss" if res.get("family") == "loss" else "task"
         chosen = list(metrics or res.get("primary") or res.get("metrics", {}))
         for metric in chosen:
             if metric not in res.get("metrics", {}):
@@ -279,7 +312,11 @@ def task_claims(
                 skipped.append({"case": case, "metric": metric, "reason": "direction unknown"})
                 continue
             for other in others:
-                diff, how = trained_minus(table, res, metric, trained, other, n_boot, rng)
+                if len(tables) == 1:
+                    diff, how = trained_minus(tables[0], res, metric, trained, other, n_boot, rng)
+                    sides = {a: _summary(_arm_entry(res, metric, a)) for a in (trained, other)}
+                else:
+                    diff, how, sides = _pooled(tables, case, metric, trained, other, n_boot, rng)
                 if diff is None:
                     skipped.append(
                         {"case": case, "metric": metric, "against": other, "reason": how}
@@ -287,25 +324,60 @@ def task_claims(
                     continue
                 lo, hi = diff["ci95"]
                 word = "higher" if d == "up" else "lower"
-                claims.append(
-                    Claim(
-                        f"task:{case}:{metric}:{trained}-vs-{other}",
-                        "task",
-                        f"{case} {metric} is {word} for {trained} than for {other} "
-                        "(paired seeds, 95% CI)",
-                        lo > 0.0 if d == "up" else hi < 0.0,
-                        {
-                            "case": case,
-                            "metric": metric,
-                            "direction": d,
-                            trained: _summary(_arm_entry(res, metric, trained)),
-                            other: _summary(_arm_entry(res, metric, other)),
-                            "diff": diff,
-                            "from": how,
-                        },
+                ev = {"case": case, "metric": metric, "direction": d, **sides}
+                ev.update(diff=diff, **{"from": how})
+                passed = lo > 0.0 if d == "up" else hi < 0.0
+                if family == "loss":
+                    unit = res.get("unit", "unit")
+                    ev["unit"] = unit
+                    statement = (
+                        f"held-out {metric} ({case}) is {word} for {trained} than for {other} "
+                        f"(paired by held-out {unit}, 95% CI)"
                     )
-                )
+                    cid = f"loss:{case}:{metric}:{trained}-vs-{other}"
+                else:
+                    statement = (
+                        f"{case} {metric} is {word} for {trained} than for {other} "
+                        "(paired seeds, 95% CI)"
+                    )
+                    cid = f"task:{case}:{metric}:{trained}-vs-{other}"
+                claims.append(Claim(cid, family, statement, passed, ev))
     return claims, skipped
+
+
+def task_claims(table: Mapping, **kw) -> tuple[list[Claim], list[dict]]:
+    """:func:`arms_claims` on one table (the name the task family had first)."""
+    return arms_claims(table, **kw)
+
+
+def _pooled(tables, case, metric, trained, other, n_boot, rng):
+    """``(diff, how, sides)`` over several tables: the two-level bootstrap of the per-unit
+    differences, each arm's own pooled level, and the runs that took part."""
+    a_runs, b_runs, labels = [], [], []
+    for k, t in enumerate(tables):
+        if case_result(t, case) is None:
+            continue
+        a = arm_values(t, case, metric, trained)
+        b = arm_values(t, case, metric, other)
+        if a is None or b is None:
+            return None, f"{_label(t, k)} has no per-unit values for both arms", {}
+        a_runs.append(a)
+        b_runs.append(b)
+        labels.append(_label(t, k))
+    diff = runs_paired_diff(b_runs, a_runs, n_boot, rng)
+    if diff is None:
+        return None, "no unit pairs in any table", {}
+    diff["labels"] = labels
+    sides = {
+        trained: _pooled_level(a_runs, n_boot, rng),
+        other: _pooled_level(b_runs, n_boot, rng),
+    }
+    return diff, f"per-unit values of {len(labels)} runs (runs x units bootstrap)", sides
+
+
+def _pooled_level(per_run, n_boot, rng) -> dict | None:
+    got = runs_summary(per_run, n_boot, rng)
+    return None if got is None else {k: got[k] for k in ("mean", "ci95", "n", "runs")}
 
 
 def _summary(e: Mapping | None) -> dict | None:
@@ -418,13 +490,14 @@ def report(
     seed: int = 1,
     sources: Mapping | None = None,
 ) -> dict:
-    """The ``grl_snam.learn_report/v1`` dict (see the module docstring)."""
+    """The ``grl_snam.learn_report/v1`` dict (see the module docstring). ``arms`` is one arms
+    table or a list of them (one per training run)."""
     rng = as_rng(seed)
     claims = loss_claims(runs, params=params, maximize=maximize, n_boot=n_boot, rng=rng)
-    claims += selection_claims(runs)
     skipped: list[dict] = unclaimed(runs)
+    on_arms: list[Claim] = []
     if arms is not None:
-        task, task_skipped = task_claims(
+        on_arms, arms_skipped = arms_claims(
             arms,
             trained=trained,
             against=against,
@@ -433,8 +506,10 @@ def report(
             n_boot=n_boot,
             rng=rng,
         )
-        claims += task
-        skipped += task_skipped
+        skipped += arms_skipped
+    claims += [c for c in on_arms if c.family == "loss"]
+    claims += selection_claims(runs)
+    claims += [c for c in on_arms if c.family != "loss"]
     claims += planted_claims(runs, bound=planted_bound)
     families = {}
     for f in FAMILIES:
@@ -470,6 +545,8 @@ def format_claims(rep: Mapping) -> str:
         if isinstance(g, Mapping) and "ci95" in g:
             lo, hi = g["ci95"]
             detail = f"  {g['mean']:+.4g} [{lo:+.4g}, {hi:+.4g}] n={g['n']}"
+            if "runs" in g:
+                detail += f" over {g['runs']} runs"
         elif "reason" in ev:
             detail = f"  ({ev['reason']})"
         elif isinstance(g, Mapping):
@@ -503,7 +580,13 @@ def main(argv=None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("hist", nargs="+", metavar="HIST", help="learning histories (JSON lines)")
-    ap.add_argument("--arms", help="an arms table (grl_snam.arms/v1, or the A/B harness's JSON)")
+    ap.add_argument(
+        "--arms",
+        action="append",
+        default=[],
+        help="an arms table (grl_snam.arms/v1, or the A/B harness's JSON); repeat it for one "
+        "table per training run",
+    )
     ap.add_argument("--json", dest="out", metavar="R.json", help="write the report here")
     ap.add_argument("--trained", default="trained", help="the trained arm's name (trained)")
     ap.add_argument("--against", help="comma-separated arms to beat (default: every other arm)")
@@ -531,7 +614,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     runs = load(args.hist)
-    table = json.loads(Path(args.arms).read_text()) if args.arms else None
+    tables = [json.loads(Path(p).read_text()) for p in args.arms]
+    table = tables[0] if len(tables) == 1 else (tables or None)
     try:
         rep = report(
             runs,
@@ -544,7 +628,11 @@ def main(argv=None) -> int:
             planted_bound=args.planted_bound,
             n_boot=args.boot,
             seed=args.seed,
-            sources={"histories": list(args.hist), "arms": args.arms},
+            sources={
+                "histories": list(args.hist),
+                "arms": args.arms[0] if args.arms else None,
+                "arms_tables": list(args.arms),
+            },
         )
     except ValueError as e:
         print(f"learn-report: {e}", file=sys.stderr)
