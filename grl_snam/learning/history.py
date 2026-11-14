@@ -32,14 +32,17 @@ writer follows the same conventions, and the reader reads the conventions.
   final pick (:meth:`History.selected`).
 - ``blob`` or ``checkpoint`` is the path of the policy saved at that record.
 
-``load(paths)`` returns every run of every file as a :class:`Runs` list. ``load(paths,
-follow=True)`` is for a file a trainer is still writing: :meth:`Runs.refresh` re-reads a file
-when its modification time or size changes, a file that does not exist yet reads as empty, and a
-half-written last line is skipped rather than refused.
+``load(paths)`` returns every run of every file as a :class:`Runs` list. A file may be gzipped
+(``.jsonl.gz``; told by gzip's magic bytes, not by its name). ``load(paths, follow=True)`` is for
+a file a trainer is still writing: :meth:`Runs.refresh` re-reads a file when its modification
+time or size changes, a file that does not exist yet reads as empty, and a half-written last line
+is skipped rather than refused.
 """
 
 from __future__ import annotations
 
+import functools
+import gzip
 import json
 import math
 import os
@@ -58,6 +61,8 @@ X_KEYS = ("step", "epoch")
 BLOB_KEYS = ("blob", "checkpoint")
 #: An ``end`` record's final pick.
 PICK_KEYS = ("best_step", "selected_step")
+#: The first two bytes of a gzip file.
+GZIP_MAGIC = b"\x1f\x8b"
 #: Held-out scores where higher is better, twin or not.
 MAXIMIZE = frozenset({"fitness"})
 #: Held-out metrics with no training twin where higher is better (every other one is lower).
@@ -92,9 +97,11 @@ def flatten(rec: dict, prefix: str = "") -> dict[str, float]:
     return out
 
 
+@functools.cache
 def classify(name: str) -> tuple[str, str] | None:
     """``("heldout" | "train", term)`` for a loss-term series name, ``None`` for any other
-    (heads, gradient norms, the learning rate, ...)."""
+    (heads, gradient norms, the learning rate, ...). Cached: a run repeats its names on every
+    record."""
     kind, _, path = name.partition(".")
     parts = path.split(".") if path else []
     if not parts or "heads" in parts or "grad_norm" in parts or "planted" in parts:
@@ -387,7 +394,15 @@ class History:
         return out
 
     def checkpoints(self) -> list[Checkpoint]:
-        """The checkpoint table, in order, with the final pick marked ``selected``."""
+        """The checkpoint table, in order, with the final pick marked ``selected``. Built once
+        per run: a report asks for it dozens of times, and a run's records do not change (a
+        followed file that grew is read into a new History)."""
+        cache = getattr(self, "_checkpoints_cache", None)
+        if cache is None or cache[0] != len(self.records):
+            cache = self._checkpoints_cache = (len(self.records), self._checkpoint_table())
+        return list(cache[1])
+
+    def _checkpoint_table(self) -> list[Checkpoint]:
         rows: list[Checkpoint] = []
         for rec in self.records:
             kind = str(rec.get("kind", "record"))
@@ -481,9 +496,17 @@ def parse_lines(lines: Iterable[str], *, path=None, tolerant: bool = False) -> l
     return [History.from_records(g, path=path, run=k) for k, g in enumerate(groups)]
 
 
+def open_text(path):
+    """``path`` opened as UTF-8 text, through gzip when its first bytes are gzip's magic."""
+    p = Path(path)
+    with p.open("rb") as f:
+        gzipped = f.read(len(GZIP_MAGIC)) == GZIP_MAGIC
+    return gzip.open(p, "rt", encoding="utf-8") if gzipped else p.open(encoding="utf-8")
+
+
 def read_runs(path, *, tolerant: bool = False) -> list[History]:
-    """Every run in one history file."""
-    with Path(path).open(encoding="utf-8") as f:
+    """Every run in one history file, plain or gzipped."""
+    with open_text(path) as f:
         return parse_lines(f, path=path, tolerant=tolerant)
 
 

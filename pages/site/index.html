@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GRL-SNAM</title>
+<meta name="description" content="GRL-SNAM: geometric reinforcement learning for navigation and mapping. Its tools, running in the browser.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>GRL-SNAM</h1>
+  <p class="lead">Geometric reinforcement learning for navigation and mapping in unknown
+  environments: navigation as energy minimization with symplectic (Hamiltonian) dynamics, a
+  learned policy that sets the energy's coefficients, and radius-aware collision avoidance with
+  IPC barriers.</p>
+  <p class="links"><a href="https://github.com/CVC-Lab/GRL-SNAM">Source on GitHub</a>
+  · <a href="https://github.com/CVC-Lab/GRL-SNAM/blob/main/docs/developer-guide.md">Developer guide</a>
+  · <a href="https://github.com/CVC-Lab/GRL-SNAM/blob/main/grl_snam/ariadne/README.md">The Ariadne ports</a></p>
+</header>
+
+<main>
+<section>
+  <h2>In your browser</h2>
+  <p>These pages run GRL-SNAM's own Python in the page: CPython 3.12 and numpy compiled to
+  WebAssembly, with libcvc's Ariadne documents for the windows (libcvc's
+  <code>ariglx-web</code>). Nothing is installed and nothing leaves the page. The first visit
+  downloads about 34&nbsp;MB, which the browser then caches. A desktop browser with WebGL&nbsp;2
+  works best.</p>
+
+  <article class="card">
+    <a class="thumb" href="learn/"><img src="img/curves.png" alt="Training and held-out loss curves of five training runs" width="1650" height="880"></a>
+    <div>
+      <h3><a href="learn/">Did it learn?</a></h3>
+      <p><code>grl-snam ariadne learn</code> on the five training runs of the
+      <a href="https://github.com/CVC-Lab/GRL-SNAM/blob/main/docs/learning-validation.md">learning
+      check</a>: each held-out curve against its training twin with its marks (best, elbow,
+      plateau, divergence), the policy's heads with their spread, gradient norms, the checkpoint
+      table, and <code>grl-snam learn-report</code>'s claims, each pass or fail with its
+      evidence. The page reads the runs' learning histories and makes the claims itself.</p>
+      <p><a class="btn" href="learn/">Open it &rarr;</a></p>
+    </div>
+  </article>
+</section>
+
+<section>
+  <h2>Navigation on libcvc</h2>
+  <p>GRL-SNAM's reactive navigation also runs natively on libcvc's <code>cvc::nav</code>
+  runtime, with no Python and no libtorch. These demos are in libcvc's gallery.</p>
+  <ul class="demos">
+    <li><a href="https://transfix.github.io/libcvc/nav_city_swarm/">nav_city_swarm</a>:
+    hundreds of vehicles cross a foggy city with no global plan; tune the agents, the fog and
+    shared or private belief live.</li>
+    <li><a href="https://transfix.github.io/libcvc/nav_city_drive/">nav_city_drive</a>:
+    convoys drive downtown Austin to rally points on the published policy; follow a lead
+    vehicle, or drag a rally point to re-route a convoy.</li>
+    <li><a href="https://transfix.github.io/libcvc/nav_fog_ghost/">nav_fog_ghost</a>:
+    a vehicle's stale map shows a wall that is not there; it detours, then erases the wall as
+    its sensor clears the ground.</li>
+  </ul>
+  <p><a href="https://transfix.github.io/libcvc/">All of libcvc's demos &rarr;</a></p>
+</section>
+</main>
+
+<footer>
+  <p>GRL-SNAM is MIT-licensed. The browser pages run libcvc's <code>ariglx-web</code>
+  (LGPL-2.1, with BSD-3-Clause and PSF-2.0 parts):
+  <a href="learn/LICENSE">license</a> · <a href="learn/THIRD_PARTY_NOTICES.md">notices</a>.</p>
+</footer>
+</body>
+</html>
