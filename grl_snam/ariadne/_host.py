@@ -5,14 +5,52 @@ The ports are Python hosts of Ariadne (``.ari``) documents: the document declare
 the look and the controls; the port steps or replays the simulation and writes what the panels
 show. They need a pycvc_gl with the Python host (libcvc 3.7.9+); :data:`HAS_HOST` says whether
 the installed one has it.
+
+In a browser (libcvc's ariglx-web, :data:`BROWSER`) a port is the page's program: its Host adopts
+the page's (mode ``embedded``), ``host.run()`` returns at once and the page runs the frames once
+the program returns, so :func:`finish` leaves the Host open for them. The documents a port loads
+are read from files, so a directory of them that is inside a zip (pycvc_gl's, in the page's
+python312.zip) is unpacked first (:func:`on_disk`).
 """
 
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
-DOCS = Path(__file__).resolve().parent / "docs"
+#: True in a browser: CPython built for Emscripten, as libcvc's ariglx-web links it.
+BROWSER = sys.platform == "emscripten"
+
+_UNPACKED: dict[str, Path] = {}  # a directory inside a zip -> where on_disk unpacked it
+
+
+def on_disk(path) -> Path:
+    """``path``, a directory of documents, as one on disk. A directory inside a zip on the import
+    path (a package zipimport reads) is unpacked once, all but its ``.py`` files, to a temporary
+    directory, since the document loader reads files: in ariglx-web, pycvc_gl's package (whose
+    ``cars_panels.ari`` the ports import) is in python312.zip. Otherwise ``path`` itself."""
+    p = Path(path)
+    if p.is_dir() or str(p) in _UNPACKED:
+        return _UNPACKED.get(str(p), p)
+    import zipfile
+
+    archive = next((a for a in p.parents if a.is_file() and zipfile.is_zipfile(a)), None)
+    if archive is None:
+        return p
+    import tempfile
+
+    inner = p.relative_to(archive).as_posix().strip("/") + "/"
+    root = Path(tempfile.mkdtemp(prefix="grl-snam-ari-"))
+    with zipfile.ZipFile(archive) as z:
+        for name in z.namelist():
+            if name.startswith(inner) and not name.endswith(("/", ".py")):
+                z.extract(name, root)
+    _UNPACKED[str(p)] = root / inner
+    return root / inner
+
+
+DOCS = on_disk(Path(__file__).resolve().parent / "docs")
 
 try:  # pragma: no cover - depends on the installed bindings
     from pycvc_gl.ariadne import Host, main_args
@@ -37,11 +75,14 @@ def require_host():
 def parse(argv, add_args=None, *, frames=0):
     """The ports' command line: the host's flags (``--offscreen | --headless``, ``--frames N``,
     ``--png PATH``, ``--width``, ``--height``) and the port's own, which ``add_args(parser)``
-    declares. Returns one namespace."""
+    declares. Returns one namespace. In a browser the mode is ``embedded`` (the page's Host)
+    unless a flag asks for another."""
     import argparse
 
     _, main_args_ = require_host()
     host_ns = main_args_(argv, frames=frames)
+    if BROWSER and host_ns.mode == "window":
+        host_ns.mode = "embedded"
     p = argparse.ArgumentParser(add_help=False)
     if add_args:
         add_args(p)
@@ -69,7 +110,11 @@ def open_host(doc, name, args, *, load=True, **kw):
 
 
 def finish(host, args) -> int:
-    """Run the frames, write the PNG if asked, close; the document's exit code."""
+    """Run the frames, write the PNG if asked, close; the document's exit code. In a browser the
+    page runs the frames after the program returns, so the Host stays open and this returns
+    ``host.run()``'s 0 at once."""
+    if BROWSER and getattr(host, "embedded", False) and not args.frames:
+        return host.run()
     host.run(fps=30, frames=args.frames or None)
     if args.png and host.mode != "headless":
         host.snapshot(args.png)

@@ -381,6 +381,12 @@ marks as text, and the tables are the same. `--follow` re-reads a history when i
 re-makes the claims at most every `--every` seconds. Headless, the port writes `--report` and
 exits; `--strict` makes it exit 1 when a claim fails. It needs no torch and no city.
 
+It also runs in a browser, on libcvc's `ariglx-web` (CPython, pycvc, pycvc_gl and numpy in
+WebAssembly): there the port's Host adopts the page's, `host.run()` returns at once and the page
+runs the frames, and the documents are read from files even when a package is in a zip
+(`_host.BROWSER`, `_host.on_disk`). [`pages/`](../../pages/README.md) builds that page for
+GitHub Pages.
+
 ### `cars`: N Ackermann cars driven by your own controller
 
 ```bash

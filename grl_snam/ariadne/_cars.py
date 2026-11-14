@@ -57,8 +57,13 @@ def require(what: str):
 
 
 def component_paths() -> list[str]:
-    """The component paths a port's Host takes, so its document imports cvc://cars_panels.ari."""
-    return [C.COMPONENTS] if HAS_CARS else []
+    """The component paths a port's Host takes, so its document imports cvc://cars_panels.ari:
+    pycvc_gl.cars's directory, on disk (unpacked when pycvc_gl is in a zip, as in a browser)."""
+    if not HAS_CARS:
+        return []
+    from grl_snam.ariadne._host import on_disk
+
+    return [str(on_disk(C.COMPONENTS))]
 
 
 # ── libcvc's keys on GRL-SNAM's torch navigator ───────────────────────────────────────────────

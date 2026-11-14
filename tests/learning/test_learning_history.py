@@ -49,6 +49,17 @@ def test_grl_snam_coef_train_history():
     assert "checkpoint.blob" not in h  # paths are not series
 
 
+def test_the_checkpoint_table_is_built_once_per_run():
+    h = _one("coef_train_history.jsonl")
+    rows = h.checkpoints()
+    rows.clear()  # the caller's list, not the run's
+    again = h.checkpoints()
+    assert [r.x for r in again] == [0, 2, 4, 6]
+    assert again[2] is h.checkpoints()[2] and h.selected() is again[2]
+    grown = H.History.from_records(h.records + [{"kind": "checkpoint", "step": 8}], path=h.path)
+    assert [r.x for r in grown.checkpoints()] == [0, 2, 4, 6, 8]
+
+
 def test_grl_snam_coef_energy_history():
     h = _one("coef_energy_history.jsonl")
     assert h.schema == "grl_snam.coef_energy_history/v1"
