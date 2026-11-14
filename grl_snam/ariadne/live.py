@@ -45,8 +45,9 @@ What each demo takes:
   Retarget (the button, or ``--retarget-at``) that moves every arm's goal on the same tick; and
   the Stats and Ledger windows (``docs/stats_panels.ari``). An arm is a bare name or
   ``grl-snam arms-eval``'s ``NAME=PATH.cvcnav|PATH.pt|const:...`` (:mod:`grl_snam.ariadne._arms`
-  says what each bare name is, and what the windows show). ``--log`` then writes every arm's
-  run (``grl_snam.live_arms/v1``). The torch path refuses arms (:data:`TORCH_ARMS`).
+  says what each bare name is, and what the windows show). ``--log`` then writes a run log
+  (:mod:`grl_snam.learning.runlog`) that ``grl-snam ariadne replay`` plays back. The torch path
+  refuses arms (:data:`TORCH_ARMS`).
 
 The learned demos need ``grl-snam-weights``, as ``grl-snam demo`` does. ``lab`` stays a VolRover3
 demo. Needs pycvc-gl 3.7.12+ (libcvc's pycvc_gl.cars); with an older one it says what to install.
@@ -112,6 +113,9 @@ def _args(p):
                    help="one more arm, as arms-eval's --arm (repeatable; after --arms)")  # fmt: skip
     p.add_argument("--seed", type=int, default=0,
                    help="with --arms: the untrained arm's initialization and the Retarget goals")  # fmt: skip
+    p.add_argument("--history", action="append", default=[], metavar="H.jsonl",
+                   help="with --arms --log: a training history the arms come from, kept in the "
+                        "run log's provenance with its sha256 (repeatable)")  # fmt: skip
     p.add_argument("--retarget-at", default=None, metavar="S,S,...",
                    help="with --arms: a Retarget at each of these sim times (s), as the button "
                         "does (to arms.goal, e.g. --set arms.goal=120,-40, else a drawn goal)")  # fmt: skip
@@ -506,7 +510,7 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
           "d0": None, "modeled": None}  # fmt: skip
     drawn = host.mode != "headless"
     charts = hasattr(host, "set_plot")
-    host.set_many({"on": "1", "names": "\n".join(a.name for a in arms), "status": "",
+    host.set_many({"on": "1", "live": "1", "names": "\n".join(a.name for a in arms), "status": "",
                    "plant": plant, "scale": f"{scale:.6g}", "seed": str(args.seed)}, prefix="arms")  # fmt: skip
     for key in ("view.arm", "ledger.agent"):
         if host.get(key, "") not in [a.name for a in arms]:
@@ -537,6 +541,7 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
         st["pending"] = _arms.parse_point(host.get("arms.goal")) or "draw"
 
     host.on("arms_retarget", press)
+    host.on("arms_seek", lambda: None)  # a click on a chart: a live run has no play head to move
     if drawn:
         C.draw_world(host, st)
         host.lab.add_markers("start", [(start[0], start[1], world.z(*start) + 1.0)],
@@ -562,14 +567,20 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
                         s = cars.step_navigator()
                         ms = 1e3 * (time.perf_counter() - t0)
                         run.record(j, x=s.x[0], y=s.y[0], heading=s.heading[0], speed=s.speed[0],
-                                   goal=s.goal[0], ms=ms,
+                                   goal=s.goal[0], ms=ms, size=(s.length[0], s.width[0],
+                                                                s.wheelbase[0]),
                                    tel=pycvc.nav_sim_world_drive_telemetry(cars.sim),
                                    nav_stats=json.loads(pycvc.nav_sim_world_nav_stats(cars.sim)))  # fmt: skip
                     run.end_tick()
             fleet[0].publish()
             publish_arms(host, run, fleet, st, charts)
             if drawn:
-                update_arms_scene(host, run, fleet, st)
+                states = [c.state() for c in fleet]
+                poses = [(s.x[0], s.y[0], s.heading[0]) for s in states]
+                sizes = [(s.length[0], s.width[0], s.wheelbase[0]) for s in states]
+                update_ghosts(host, st, world, run.arms, poses, sizes, run.goal,
+                              run.index(host.get("view.arm", "")),
+                              presets=[c.preset[0] for c in fleet])  # fmt: skip
         except Exception as e:  # noqa: BLE001 - a failure ends the run with its reason
             import traceback
 
@@ -581,8 +592,8 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
     if args.png and drawn:
         host.snapshot(args.png)
     if args.log:
-        settings = {d["path"]: d["value"] for d in C.settings(host.app, host.prefix)}
-        out = run.save(args.log, settings=settings, arrivals=run.arrivals, error=st["error"])
+        out = run.save(args.log, history=args.history or None, error=st["error"],
+                       arrivals=run.arrivals, **world_meta(host))  # fmt: skip
         print(f"live: {len(run)} ticks of {len(arms)} arms to {out}")
     for row in run.stats_rows():
         print(f"live: {row['arm']:>12}: clearance {row['clear_min']} / {row['clear_mean']} m, "
@@ -592,6 +603,37 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
     host.close()
     return C.exit_code(code, error=st["error"], arrivals=run.arrivals,
                        min_arrivals=args.min_arrivals, who="live")  # fmt: skip
+
+
+def world_meta(host) -> dict:
+    """What a run log keeps to rebuild the world and the settings: ``run`` (``run.*``: the world's
+    kind, its uri, the part of the package kept, the crop), ``world_keys`` (the generator's
+    ``world.*``) and ``settings`` (``nav.*``, ``nav_plant.*``)."""
+    C = _cars.C
+    return {
+        "run": {k: host.get(f"run.{k}") for k in ("world", "uri", "data_path", "crop")},
+        "world_keys": {k: host.get(f"world.{k}") for k in C.WORLD_KEYS},
+        "settings": {d["path"]: d["value"] for d in C.settings(host.app, host.prefix)},
+    }
+
+
+def publish_tables(host, tables, plant_rows, agent_name, plant_name):
+    """The Stats and Ledger windows' tables (:func:`grl_snam.ariadne._arms.panel_tables`), and the
+    plant ledger of the arm the Agent combo picks."""
+    for key, rows in tables.items():
+        host.set_table(key, rows)
+    host.set_table("ledger.plant", plant_rows)
+    applies = sum(r["value"] != "n/a" for r in plant_rows)
+    host.set("ledger.plant_note", f"{agent_name} on {plant_name}: "
+             + (f"{applies} of {len(plant_rows)} items apply" if applies else
+                "no item applies (a physics plant feeds them)"))  # fmt: skip
+
+
+def publish_charts(host, charts):
+    """The charts (pycvc_gl's chart:, libcvc 3.7.14): ``charts`` as
+    :func:`grl_snam.ariadne._arms.chart_series` gives them."""
+    for key, (series, marks) in charts.items():
+        host.set_plot(key, series, markers=marks)
 
 
 def publish_arms(host, run, fleet, st, charts):
@@ -613,18 +655,8 @@ def publish_arms(host, run, fleet, st, charts):
     coeffs = {c: s.nav[c] for c in ("alpha", "beta", "gamma", "clearance") if c in s.nav}
     if coeffs:
         C.plot_coefficients(host, st["coef"], coeffs, 0)
-    host.set_table("arms.stats", run.stats_rows())
-    host.set_table("ledger.coef", run.coefficient_rows())
-    host.set_table("ledger.terms", run.term_rows())
-    host.set_table("ledger.books", run.book_rows(cumulative=True))
-    host.set_table("ledger.tick", run.book_rows(cumulative=False))
     j = run.index(host.get("ledger.agent", ""))
-    rows = run.plant_rows(j)
-    host.set_table("ledger.plant", rows)
-    applies = sum(r["value"] != "n/a" for r in rows)
-    host.set("ledger.plant_note", f"{run.arms[j].name} on {s.driving}: "
-             + (f"{applies} of {len(rows)} items apply" if applies else
-                "no item applies (a physics plant feeds them)"))  # fmt: skip
+    publish_tables(host, run.tables(), run.plant_rows(j), run.arms[j].name, s.driving)
     host.set("arms.time", f"t = {run.tick * run.dt:.1f} s, tick {run.tick}, leg {len(run.legs)}")
     if host.mode != "headless" and host.frame_count % 4 == 0:
         size = C.raster_size(host, s.length[0])
@@ -632,48 +664,27 @@ def publish_arms(host, run, fleet, st, charts):
         for name, img in C.raster_pictures(r, s, 0, size).items():
             host.publish_image(name, img)
     if charts and len(run) and (host.frame_count % CHART_EVERY == 0 or len(run) <= 2):
-        chart_arms(host, run, j)
+        publish_charts(host, run.charts(j, host.get("ledger.book", "dU")))
 
 
-def chart_arms(host, run, j):
-    """The charts (pycvc_gl's chart:, libcvc 3.7.14): every arm's clearance, agent ``j``'s
-    cumulative books, and one book's cumulative sum for every arm (``ledger.book``)."""
-    t = np.asarray(run.t, float)
-    marks = [(t[g["tick"]] if g["tick"] < len(t) else t[-1], f"leg {i + 1}", "note")
-             for i, g in enumerate(run.legs[1:], start=1)]  # fmt: skip
-    style = [f"c{a.slot}" for a in run.arms]
-    host.set_plot("arms.clearance", [
-        {"x": t, "y": np.asarray(s.tel.get("clearance", []), float) / run.scale, "label": a.name,
-         "style": style[i]} for i, (a, s) in enumerate(zip(run.arms, run.series, strict=True))
-    ], markers=marks)  # fmt: skip
-    host.set_plot("ledger.cum", [{"x": t, "y": run.cumulative(j, b), "label": b}
-                                 for b in _arms.BOOKS], markers=marks)  # fmt: skip
-    book = host.get("ledger.book", "dU")
-    book = book if book in _arms.BOOKS else "dU"
-    host.set_plot("ledger.compare", [{"x": t, "y": run.cumulative(i, book), "label": a.name,
-                                      "style": style[i]} for i, a in enumerate(run.arms)],
-                  markers=marks)  # fmt: skip
-
-
-def draw_arms(host, fleet, st, arms):
+def draw_ghosts(host, st, arms, sizes, presets):
     """Each arm's ghost: the Humvee's model (or a box its size) in the arm's colour, see-through;
-    a tag above it; and the goal's post."""
-    from pycvc_gl.vehicle import seat_transform  # noqa: F401 - fail here, not mid-frame
-
+    a tag above it; and the goal's post. ``sizes`` are each arm's (length, width, wheelbase) (m),
+    ``presets`` its vehicle preset (None on nav's bicycle, which has a Humvee's body)."""
     C = _cars.C
     for name in st["nodes"]:
         if host.scene.hasGraphics(name):
             host.scene.removeGraphics(name)
     st["nodes"], modeled = [], []
-    for j, (a, cars) in enumerate(zip(arms, fleet, strict=True)):
+    for j, (a, (length, width, _), preset) in enumerate(zip(arms, sizes, presets, strict=True)):
         col = _arms.slot_rgb(a.slot)
-        length, width = float(cars.length[0]), float(cars.width[0])
-        model = C.humvee_model(host, length) if cars.preset[0] in (None, "humvee") else None
+        model = C.humvee_model(host, float(length)) if preset in (None, "humvee") else None
         name = f"arm{j}_car"
         if model is not None:
             model.add(host.scene, name, col)
         else:
-            host.lab.add_mesh(name, *_host.humvee_box(length, width, 0.4 * length), color=col)
+            host.lab.add_mesh(name, *_host.humvee_box(float(length), float(width),
+                                                      0.4 * float(length)), color=col)  # fmt: skip
         gn = host.scene.geometry_node(name)
         gn.setUseSingleColor(True)
         gn.setColor(*col)
@@ -681,41 +692,44 @@ def draw_arms(host, fleet, st, arms):
         host.lab.add_mesh(f"arm{j}_tag", *_host.humvee_box(0.7, 0.7, 0.5), color=col)
         st["nodes"] += [name, f"arm{j}_tag"]
         modeled.append(model is not None)
-    u = float(np.max(fleet[0].length))
+    u = float(max(sz[0] for sz in sizes))
     host.lab.add_mesh("arms_goal", *_host.humvee_box(0.16 * u, 0.16 * u, 2 * u),
                       color=(0.95, 0.80, 0.10))  # fmt: skip
     st["nodes"].append("arms_goal")
     st["modeled"] = modeled
 
 
-def update_arms_scene(host, run, fleet, st):
-    """The ghosts at their poses, their tracks, the goal, and the camera on the followed arm."""
+def update_ghosts(host, st, world, arms, poses, sizes, goal, follow, presets=None):
+    """The ghosts at ``poses`` (each arm's rear axle x, y and heading), their tracks, the goal's
+    post at ``goal``, and the camera on arm ``follow``. Live and replay both draw with it."""
     import pycvc_gl
     from pycvc_gl.vehicle import seat_transform
 
     C = _cars.C
-    world = fleet[0].world
+    presets = presets if presets is not None else [None] * len(arms)
     sampler = None if world.height is None else world.z
-    sized = [float(c.length[0]) for c in fleet]
+    sized = [round(float(sz[0]), 3) for sz in sizes]
     if (
-        st["modeled"] is None
+        st.get("modeled") is None
         or st.get("sized") != sized
         or (not all(st["modeled"]) and host.frame_count % 30 == 0 and C.humvee_model_path(host))
     ):  # a new plant's vehicles, or the model has come since
-        draw_arms(host, fleet, st, run.arms)
+        draw_ghosts(host, st, arms, sizes, presets)
         st["sized"] = sized
-    for j, cars in enumerate(fleet):
-        s = cars.state()
-        c = s.center[0]
+    centers = []
+    for j, ((x, y, heading), (_, _, wheelbase)) in enumerate(zip(poses, sizes, strict=True)):
+        h = 0.5 * float(wheelbase)
+        cx, cy = float(x) + h * math.cos(heading), float(y) + h * math.sin(heading)
+        centers.append((cx, cy))
         host.scene.getGraphics(f"arm{j}_car").setTransform(
-            seat_transform(c[0], c[1], s.heading[0], sampler)
+            seat_transform(cx, cy, float(heading), sampler)
         )
         host.scene.getGraphics(f"arm{j}_tag").setTransform(
-            seat_transform(c[0], c[1], s.heading[0], sampler, lift=2.3 + 0.6 * j)
+            seat_transform(cx, cy, float(heading), sampler, lift=2.3 + 0.6 * j)
         )
         if host.frame_count % 3 == 0:
-            st["tracks"][j] = (st["tracks"][j] + [(float(s.x[0]), float(s.y[0]))])[-600:]
-    gx, gy = run.goal
+            st["tracks"][j] = (st["tracks"][j] + [(float(x), float(y))])[-600:]
+    gx, gy = goal
     host.scene.getGraphics("arms_goal").setTransform(
         [1, 0, 0, gx, 0, 1, 0, gy, 0, 0, 1, world.z(gx, gy), 0, 0, 0, 1]
     )
@@ -726,22 +740,20 @@ def update_arms_scene(host, run, fleet, st):
                 host.scene.removeGraphics(name)
             if len(pts) >= 2:
                 host.lab.add_path(name, [(x, y, world.z(x, y) + 0.3) for x, y in pts],
-                                  _arms.slot_rgb(run.arms[j].slot))  # fmt: skip
+                                  _arms.slot_rgb(arms[j].slot))  # fmt: skip
                 g = host.scene.geometry_node(name)
                 g.setRenderMode(pycvc_gl.GeometryRenderMode_LINES)
                 g.setLineWidth(2.5)
-    k = run.index(host.get("view.arm", ""))
-    s = fleet[k].state()
-    c = s.center[0]
+    cx, cy = centers[follow]
     mode = host.get("view.camera", "follow")
     if mode == "follow":
         if st["camera"] != "follow":
-            u = float(np.max(fleet[0].length))
+            u = float(max(sz[0] for sz in sizes))
             host.set_many({"back": 4.0 * u, "height": 2.0 * u, "look_ahead": 1.5 * u,
                            "look_up": 0.4 * u, "cam_tau": 0.15, "pos_tau": 0.1},
                           prefix="viewers.main.camera.track")  # fmt: skip
         host.camera.setMode(pycvc_gl.CameraController.Mode_Track)
-        host.camera.feedTrackTarget(float(c[0]), float(c[1]), world.z(c[0], c[1]))
+        host.camera.feedTrackTarget(cx, cy, world.z(cx, cy))
     elif st["camera"] != mode:  # once: the whole world, then the orbit is the viewer's
         mnx, mny, mxx, mxy = world.bounds
         host.camera.setMode(pycvc_gl.CameraController.Mode_Orbit)

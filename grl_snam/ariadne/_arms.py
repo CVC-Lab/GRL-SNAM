@@ -5,8 +5,10 @@ same world, start, goal and seed for every arm, one ghost vehicle per arm in its
 Retarget that moves every arm's goal on the same tick, and two windows, Stats and Ledger
 (``docs/stats_panels.ari``). This module is the part that needs no host: what an arm is, the
 policy each world loads, the ledger's books, the Stats rows, the plant ledger, and
-:class:`ArmsRun`, the one object that holds every arm's run. ``grl_snam/ariadne/live.py`` steps
-the worlds, draws them and writes the panels from it.
+:class:`ArmsRun`, the one object that holds every arm's run, which ``--log`` saves as a run log
+(:mod:`grl_snam.learning.runlog`). ``grl_snam/ariadne/live.py`` steps the worlds, draws them and
+writes the panels from it; ``grl_snam/ariadne/replay.py`` writes the same panels from a run log,
+through the same :func:`panel_tables` and :func:`chart_series`.
 
 **Arms.** ``--arms trained,untrained,constant`` names them; each is a bare name or
 ``NAME=SPEC`` in ``grl-snam arms-eval``'s syntax (:mod:`grl_snam.learning.arms`): a ``.cvcnav``, a
@@ -55,7 +57,6 @@ out or null; it shows as n/a (on the kinematic plant, every item). pycvc does no
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import os
 from collections.abc import Mapping, Sequence
@@ -64,7 +65,8 @@ from pathlib import Path
 
 import numpy as np
 
-SCHEMA = "grl_snam.live_arms/v1"
+from grl_snam.learning.runlog import SCHEMA, RunLog
+
 #: The bare arm names, in their default order.
 BARE = ("trained", "untrained", "constant")
 #: The published policy's frame (normalized units per metre), when no ``.pt`` arm records one.
@@ -80,28 +82,28 @@ BOOKS = ("dU", "drive", "projection", "context", "dKE", "residual")
 #: The Stats row's columns.
 STATS = ("clear_min_m", "clear_mean_m", "pen_steps", "path_m", "elapsed_s", "ms_step", "reached")
 #: libcvc's plant ledger, each vehicle's items in its order (src/cvc/nav/plant_ledger.cpp):
-#: (key, unit).
+#: (key, unit, kind), the kind a ``measure``, a ``count`` or a ``flag`` (0 or 1).
 PLANT_LEDGER = (
-    ("energy_J", "J"),
-    ("energy_per_km", "J/km"),
-    ("building_contacts", ""),
-    ("plant_steps", ""),
-    ("rolled_over", ""),
-    ("rolled_over_s", "s"),
-    ("tilt_max_deg", "deg"),
-    ("roll_max_deg", "deg"),
-    ("pitch_max_deg", "deg"),
-    ("tilt_s", "s"),
-    ("ltr_max", "1"),
-    ("lift_s", "s"),
-    ("wheels_up_s", "s"),
-    ("a_lat_max_g", "g"),
-    ("steer_cmd_abs_mean", "rad"),
-    ("steer_sat_share", "1"),
-    ("accel_cmd_mean", "m/s^2"),
-    ("brake_share", "1"),
-    ("vehicle_hits", ""),
-    ("vehicle_hit_s", "s"),
+    ("energy_J", "J", "measure"),
+    ("energy_per_km", "J/km", "measure"),
+    ("building_contacts", "", "count"),
+    ("plant_steps", "", "count"),
+    ("rolled_over", "", "flag"),
+    ("rolled_over_s", "s", "measure"),
+    ("tilt_max_deg", "deg", "measure"),
+    ("roll_max_deg", "deg", "measure"),
+    ("pitch_max_deg", "deg", "measure"),
+    ("tilt_s", "s", "measure"),
+    ("ltr_max", "1", "measure"),
+    ("lift_s", "s", "measure"),
+    ("wheels_up_s", "s", "measure"),
+    ("a_lat_max_g", "g", "measure"),
+    ("steer_cmd_abs_mean", "rad", "measure"),
+    ("steer_sat_share", "1", "measure"),
+    ("accel_cmd_mean", "m/s^2", "measure"),
+    ("brake_share", "1", "measure"),
+    ("vehicle_hits", "", "count"),
+    ("vehicle_hit_s", "s", "measure"),
 )
 #: The clearance libcvc reports before it measured one (a sentinel, not a distance).
 _UNMEASURED = 1e20
@@ -336,16 +338,83 @@ def _num(v, digits=2) -> str:
     return f"{x:.{digits}f}"
 
 
-def plant_ledger_rows(per_vehicle: Mapping | None) -> list[dict]:
-    """The plant ledger for one vehicle: ``{key, value, unit}`` per :data:`PLANT_LEDGER` item, the
-    value ``"n/a"`` where the collector left it out or null (it does not apply on this plant)."""
-    v = dict(per_vehicle or {})
+def _absent(x) -> bool:
+    return x is None or (isinstance(x, float) and math.isnan(x))
+
+
+def plant_ledger_rows(values: Mapping | None) -> list[dict]:
+    """The plant ledger for one vehicle: ``{key, value, unit}`` per :data:`PLANT_LEDGER` item from
+    ``values`` (the collector's vehicle record, or a run log's values), the value ``"n/a"`` where
+    it is left out, null or NaN (the item does not apply on this plant)."""
+    v = dict(values or {})
     rows = []
-    for key, unit in PLANT_LEDGER:
+    for key, unit, kind in PLANT_LEDGER:
         x = v.get(key)
-        value = "n/a" if x is None else (_num(x, 3) if not isinstance(x, bool) else _num(x))
-        rows.append({"key": key, "value": value, "unit": unit if x is not None else ""})
+        if _absent(x):
+            rows.append({"key": key, "value": "n/a", "unit": ""})
+            continue
+        text = (
+            _num(bool(x)) if kind == "flag" else (_num(int(x)) if kind == "count" else _num(x, 3))
+        )
+        rows.append({"key": key, "value": text, "unit": unit})
     return rows
+
+
+def plant_values(per_vehicle: Mapping | None) -> dict:
+    """The plant ledger's items as numbers (NaN where one does not apply), for a run's arrays."""
+    v = dict(per_vehicle or {})
+    return {k: (math.nan if _absent(v.get(k)) else float(v[k])) for k, _, _ in PLANT_LEDGER}
+
+
+def stats_cells(stats: Mapping | None) -> dict:
+    """A Stats row's text from its numbers (:data:`STATS`; "-" before the first tick)."""
+    if not stats:
+        return {k: "-" for k in ("clear_min", "clear_mean", "pen", "path", "elapsed", "ms",
+                                 "reached")}  # fmt: skip
+    return {"clear_min": _num(stats["clear_min_m"]), "clear_mean": _num(stats["clear_mean_m"]),
+            "pen": _num(int(stats["pen_steps"])), "path": _num(stats["path_m"], 1),
+            "elapsed": _num(stats["elapsed_s"], 1), "ms": _num(stats["ms_step"], 3),
+            "reached": _num(bool(stats["reached"]))}  # fmt: skip
+
+
+def panel_tables(arms: Sequence[Arm], stats, tel, book_sum, book_tick) -> dict:
+    """The Stats and Ledger windows' tables (state key -> rows), from each arm's numbers: its Stats
+    row, its drive telemetry this tick, and its books summed and this tick's (each a list over
+    the arms of name -> number)."""
+    nan = math.nan
+    out = {"arms.stats": [], "ledger.coef": [], "ledger.terms": [], "ledger.books": [],
+           "ledger.tick": []}  # fmt: skip
+    for a, st, te, bs, bt in zip(arms, stats, tel, book_sum, book_tick, strict=True):
+        out["arms.stats"].append({"arm": a.name, "colour": SLOT_NAMES[a.slot % len(SLOT_NAMES)],
+                                  **stats_cells(st)})  # fmt: skip
+        out["ledger.coef"].append(
+            {"arm": a.name, **{k: _num(te.get(k, nan), 3) for k in COEFFICIENTS}}
+        )
+        out["ledger.terms"].append({"arm": a.name, **{k: _num(te.get(k, nan), 3) for k in U_TERMS}})
+        out["ledger.books"].append({"arm": a.name, **{k: _num(bs.get(k, nan), 3) for k in BOOKS}})
+        out["ledger.tick"].append({"arm": a.name, **{k: _num(bt.get(k, nan), 3) for k in BOOKS}})
+    return out
+
+
+def chart_series(arms: Sequence[Arm], t, clearance_m, book_sums: Mapping, legs, agent: int,
+                 book: str) -> dict:  # fmt: skip
+    """The charts' curves (state key -> (series, markers), as ``host.set_plot`` takes them): every
+    arm's clearance (m, (T, A)), ``agent``'s cumulative books (``book_sums``: name -> (T, A)
+    running sums), and ``book``'s for every arm; a marker where each leg after the first starts
+    (``legs``: their start times, s)."""
+    t = np.asarray(t, float)
+    marks = [(float(x), f"leg {i}", "note") for i, x in enumerate(legs, start=1) if i > 1]
+    book = book if book in BOOKS else "dU"
+    clearance_m = np.asarray(clearance_m, float)
+    return {
+        "arms.clearance": ([{"x": t, "y": clearance_m[:, j], "label": a.name,
+                             "style": f"c{a.slot}"} for j, a in enumerate(arms)], marks),
+        "ledger.cum": ([{"x": t, "y": np.asarray(book_sums[b], float)[:, agent], "label": b}
+                        for b in BOOKS], marks),
+        "ledger.compare": ([{"x": t, "y": np.asarray(book_sums[book], float)[:, j],
+                             "label": a.name, "style": f"c{a.slot}"} for j, a in enumerate(arms)],
+                           marks),
+    }  # fmt: skip
 
 
 # ── every arm's run ────────────────────────────────────────────────────────────────────────────
@@ -354,9 +423,9 @@ def plant_ledger_rows(per_vehicle: Mapping | None) -> list[dict]:
 @dataclass
 class ArmSeries:
     """One arm's run, a value per tick: the pose (``x``, ``y``, ``heading``, ``speed``, the goal),
-    the wall time, the drive telemetry (``tel``: every field), the books, the Stats row and the
-    leg the tick was in. ``stats`` is the current leg's Stats row, ``nav_stats`` its collector's
-    last record, ``legs`` the finished legs' records."""
+    the wall time, the drive telemetry (``tel``: every field), the books, the Stats row, the
+    plant ledger's items and the vehicle's size. ``stats`` is the current leg's Stats row,
+    ``nav_stats`` its collector's last record, ``legs`` the finished legs' records."""
 
     x: list = field(default_factory=list)
     y: list = field(default_factory=list)
@@ -367,7 +436,10 @@ class ArmSeries:
     ms: list = field(default_factory=list)
     tel: dict = field(default_factory=dict)
     books: dict = field(default_factory=lambda: {k: [] for k in BOOKS})
+    book_sum: dict = field(default_factory=lambda: dict.fromkeys(BOOKS, 0.0))
     stats_series: dict = field(default_factory=lambda: {k: [] for k in STATS})
+    plant: dict = field(default_factory=lambda: {k: [] for k, _, _ in PLANT_LEDGER})
+    size: dict = field(default_factory=lambda: {k: [] for k in ("length", "width", "wheelbase")})
     stats: dict = field(default_factory=dict)
     nav_stats: dict = field(default_factory=dict)
     legs: list = field(default_factory=list)
@@ -407,10 +479,10 @@ class ArmsRun:
         return int(self.legs[-1]["tick"])
 
     def record(self, j: int, *, x, y, heading, speed, goal, tel: Mapping | None, ms: float,
-               nav_stats: Mapping | None = None) -> None:  # fmt: skip
+               nav_stats: Mapping | None = None, size=(math.nan,) * 3) -> None:  # fmt: skip
         """Arm ``j``'s tick: its pose (m, rad, m/s; the goal (x, y)), its drive telemetry (one
-        agent's fields, arrays or numbers), its wall time (ms) and its collector's record (the
-        ``nav_stats()`` JSON, parsed)."""
+        agent's fields, arrays or numbers), its wall time (ms), its collector's record (the
+        ``nav_stats()`` JSON, parsed) and its vehicle's (length, width, wheelbase) (m)."""
         s = self.series[j]
         s.x.append(float(x))
         s.y.append(float(y))
@@ -428,8 +500,9 @@ class ArmsRun:
         if tel:
             self._prev_end[j] = _f(tel, "potential_end")
         self._prev_speed[j] = v_n
-        for k in BOOKS:
+        for k in BOOKS:  # summed in order, as a run log's cumulative sums are
             s.books[k].append(b[k])
+            s.book_sum[k] += b[k]
         if nav_stats is not None:
             s.nav_stats = dict(nav_stats)
         leg = slice(self.leg_start, None)
@@ -439,6 +512,10 @@ class ArmsRun:
         s.stats = stats_row(per, clear, s.ms[leg], ticks, self.dt)
         for k in STATS:
             s.stats_series[k].append(float(s.stats[k]))
+        for k, v in plant_values(per).items():
+            s.plant[k].append(v)
+        for k, v in zip(("length", "width", "wheelbase"), size, strict=True):
+            s.size[k].append(float(v))
 
     def end_tick(self) -> None:
         self.tick += 1
@@ -465,55 +542,44 @@ class ArmsRun:
 
     # ── what the panels show ──
 
-    def stats_rows(self) -> list[dict]:
-        """One text row per arm (the Stats window)."""
-        rows = []
-        for a, s in zip(self.arms, self.series, strict=True):
-            st = s.stats
-            row = {"arm": a.name, "colour": SLOT_NAMES[a.slot % len(SLOT_NAMES)]}
-            if not st:
-                rows.append({**row, **{k: "-" for k in ("clear_min", "clear_mean", "pen", "path",
-                                                         "elapsed", "ms", "reached")}})  # fmt: skip
-                continue
-            rows.append({**row, "clear_min": _num(st["clear_min_m"]),
-                         "clear_mean": _num(st["clear_mean_m"]), "pen": _num(st["pen_steps"]),
-                         "path": _num(st["path_m"], 1), "elapsed": _num(st["elapsed_s"], 1),
-                         "ms": _num(st["ms_step"], 3), "reached": _num(st["reached"])})  # fmt: skip
-        return rows
-
     def _last(self, s: ArmSeries, k: str) -> float:
         col = s.tel.get(k)
         return col[-1] if col else math.nan
 
-    def coefficient_rows(self) -> list[dict]:
-        return [{"arm": a.name, **{k: _num(self._last(s, k), 3) for k in COEFFICIENTS}}
-                for a, s in zip(self.arms, self.series, strict=True)]  # fmt: skip
+    def tables(self) -> dict:
+        """The Stats and Ledger windows' tables now (:func:`panel_tables`)."""
+        tel = [{k: self._last(s, k) for k in (*COEFFICIENTS, *U_TERMS)} for s in self.series]
+        book_sum = [dict(s.book_sum) for s in self.series]
+        book_tick = [{k: (s.books[k][-1] if s.books[k] else math.nan) for k in BOOKS}
+                     for s in self.series]  # fmt: skip
+        return panel_tables(self.arms, [s.stats for s in self.series], tel, book_sum, book_tick)
 
-    def term_rows(self) -> list[dict]:
-        return [{"arm": a.name, **{k: _num(self._last(s, k), 3) for k in U_TERMS}}
-                for a, s in zip(self.arms, self.series, strict=True)]  # fmt: skip
-
-    def book_rows(self, cumulative: bool = True) -> list[dict]:
-        """Each arm's books: summed over the run (``cumulative``), or the last tick's."""
-        rows = []
-        for j, a in enumerate(self.arms):
-            b = self.series[j].books
-            vals = {k: (float(np.sum(b[k])) if cumulative else (b[k][-1] if b[k] else math.nan))
-                    for k in BOOKS}  # fmt: skip
-            rows.append({"arm": a.name, **{k: _num(v, 3) for k, v in vals.items()}})
-        return rows
+    def stats_rows(self) -> list[dict]:
+        """One text row per arm (the Stats window)."""
+        return self.tables()["arms.stats"]
 
     def plant_rows(self, j: int) -> list[dict]:
-        per = (self.series[j].nav_stats.get("per_vehicle") or [{}])[0]
-        return plant_ledger_rows(per)
+        return plant_ledger_rows(self.series[j].nav_stats.get("per_vehicle", [{}])[0])
+
+    def column(self, get) -> np.ndarray:
+        """(T, A): ``get(series)`` (a list a tick) for every arm."""
+        return np.stack([np.asarray(get(s), float) for s in self.series], axis=1)
+
+    def charts(self, agent: int, book: str) -> dict:
+        """The charts' curves now (:func:`chart_series`)."""
+        clearance = self.column(lambda s: s.tel.get("clearance", [math.nan] * len(s.x)))
+        sums = {b: np.cumsum(self.column(lambda s, b=b: s.books[b]), axis=0) for b in BOOKS}
+        legs = [g["tick"] * self.dt for g in self.legs]
+        return chart_series(self.arms, self.t, clearance / self.scale, sums, legs, agent, book)
 
     # ── the log ──
 
     def arrays(self) -> dict:
         """The run as arrays: ``t`` (T,), and per field (T, A), one column per arm in order: the
         pose (``x``, ``y``, ``heading``, ``speed``, ``goal_x``, ``goal_y``), ``ms``, ``tel_<field>``
-        (every drive telemetry field), ``book_<name>`` and ``stats_<column>``; ``leg_tick``
-        (L,) and ``leg_goal`` (L, 2)."""
+        (every drive telemetry field), ``book_<name>``, ``stats_<column>``, ``plant_<key>`` and
+        the size (``length``, ``width``, ``wheelbase``); ``leg_tick`` (L,) and ``leg_goal``
+        (L, 2). :class:`~grl_snam.learning.runlog.RunLog` documents the format."""
         out = {"t": np.asarray(self.t, float)}
 
         def cols(get):
@@ -527,6 +593,10 @@ class ArmsRun:
             out[f"book_{k}"] = cols(lambda s, k=k: s.books[k])
         for k in STATS:
             out[f"stats_{k}"] = cols(lambda s, k=k: s.stats_series[k])
+        for k, _, _ in PLANT_LEDGER:
+            out[f"plant_{k}"] = cols(lambda s, k=k: s.plant[k])
+        for k in ("length", "width", "wheelbase"):
+            out[k] = cols(lambda s, k=k: s.size[k])
         out["leg_tick"] = np.asarray([g["tick"] for g in self.legs], int)
         out["leg_goal"] = np.asarray([g["goal"] for g in self.legs], float).reshape(-1, 2)
         return out
@@ -548,22 +618,10 @@ class ArmsRun:
             "finished_legs": [s.legs for s in self.series],
         }
 
-    def save(self, path, **meta) -> str:
-        """``path`` (.npz): :meth:`arrays`, and :meth:`meta` (with ``meta`` added) as JSON in
-        ``meta``."""
-        path = str(path)
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        m = {**self.meta(), **meta}
-        np.savez_compressed(path, meta=json.dumps(m, default=_jsonable), **self.arrays())
-        return path
-
-
-def _jsonable(v):
-    if isinstance(v, np.generic):
-        return v.item()
-    if isinstance(v, np.ndarray):
-        return v.tolist()
-    return str(v)
+    def save(self, path, /, *, history=None, **meta) -> str:
+        """``path`` (.npz): the run as a :class:`~grl_snam.learning.runlog.RunLog`, with ``meta``
+        added and ``history`` (the training histories it names) in its provenance."""
+        return RunLog.from_run(self, history=history, **meta).save(path)
 
 
 # ── where a Retarget goes ──────────────────────────────────────────────────────────────────────
