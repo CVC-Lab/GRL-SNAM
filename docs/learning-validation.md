@@ -557,6 +557,10 @@ grl-snam train $SDF -o coef_sdf.pt --steps 4000 --seed $s --threads 1 --device c
 # 3.1
 python experiments/learning_proof/learning_curves.py runs/retrain/seed*/history.jsonl --json curves.json --png curves.png
 
+# the claims, on the committed histories (gzipped histories read as they are)
+grl-snam learn-report docs/learning-validation/retrain/seed*.history.jsonl.gz
+grl-snam ariadne learn docs/learning-validation/retrain/seed*.history.jsonl.gz
+
 # 3.4, 3.6, 3.7 (writes arms.constant.pt / arms.constant_trained<k>.pt beside arms.json)
 python experiments/learning_proof/sdf_arms.py --sdf $SDF --runs runs/retrain --published $PUB --out arms.json
 python experiments/learning_proof/arms_table.py arms.json

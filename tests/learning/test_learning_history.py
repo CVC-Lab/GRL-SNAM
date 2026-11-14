@@ -7,6 +7,7 @@ their exact record layouts, with neutral names).
 
 from __future__ import annotations
 
+import gzip
 import json
 import math
 import os
@@ -200,6 +201,45 @@ def test_follow_rereads_a_growing_file(tmp_path):
     assert runs[0]["step.train.a"].y.tolist() == [1.0, 0.5]
     with pytest.raises(FileNotFoundError):
         H.load(tmp_path / "missing.jsonl")
+
+
+def _same_runs(a, b):
+    assert len(a) == len(b)
+    for ha, hb in zip(a, b):
+        assert ha.meta == hb.meta and ha.records == hb.records and ha.extras == hb.extras
+        assert list(ha.series) == list(hb.series)
+        for name, s in ha.series.items():
+            t = hb[name]
+            assert s.axis == t.axis and np.array_equal(s.x, t.x)
+            assert np.array_equal(s.y, t.y, equal_nan=True)
+        assert [r.to_dict() for r in ha.checkpoints()] == [r.to_dict() for r in hb.checkpoints()]
+
+
+def test_gzipped_history_reads_as_the_plain_file(tmp_path):
+    plain = FIX / "coef_train_history.jsonl"
+    gz = tmp_path / "coef_train_history.jsonl.gz"
+    gz.write_bytes(gzip.compress(plain.read_bytes()))
+    _same_runs(H.load(gz), H.load(plain))
+    assert H.load(gz)[0].path == str(gz)
+    # Told by its magic bytes, not its name.
+    renamed = tmp_path / "renamed.jsonl"
+    renamed.write_bytes(gz.read_bytes())
+    _same_runs(H.load(renamed), H.load(plain))
+
+
+def test_follow_rereads_a_rewritten_gzipped_file(tmp_path):
+    p = tmp_path / "live.jsonl.gz"
+    head = json.dumps({"kind": "header", "schema": "t/v1"}) + "\n"
+    one = json.dumps({"kind": "step", "step": 1, "train": {"a": 1.0}}) + "\n"
+    p.write_bytes(gzip.compress((head + one + '{"kind": "step", "st').encode()))
+    runs = H.load(p, follow=True)  # the tolerant last line holds inside a gzip too
+    assert runs[0]["step.train.a"].y.tolist() == [1.0] and runs.refresh() is False
+    two = json.dumps({"kind": "step", "step": 2, "train": {"a": 0.5}}) + "\n"
+    p.write_bytes(gzip.compress((head + one + two).encode()))
+    st = p.stat()
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    assert runs.refresh() is True
+    assert runs[0]["step.train.a"].y.tolist() == [1.0, 0.5]
 
 
 def test_round_trip_coef_train_monitor(tmp_path):
