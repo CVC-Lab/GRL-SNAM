@@ -3,6 +3,9 @@
 Measured 2026-11-13 on `feat/learning-proof-base` (off `main` at dbf1603). Every number below has
 its file in [`learning-validation/`](learning-validation/) and its command in §7.
 
+**§8 (2026-11-14) finds why the retrain diverged, fixes it, and runs the measure again.** §§0–7
+describe the trainer before that fix.
+
 ## 0. The answer
 
 **A null, and on held-out scenes a negative.**
@@ -184,7 +187,8 @@ On all five seeds, 100% of the optimizer steps had a pre-clip gradient norm abov
   `d → 0`. The training rollout is `nsub = 1`, so an agent can step to the wall in one step
   (`vmax·dt` = 0.054 units, against rr = 0.01).
 
-This is the first thing to fix before another retrain (§5).
+This is the first thing to fix before another retrain (§5). §8.1 finds the source: the barrier
+is half of it, and clamping it does not help.
 
 ### 3.3 Held-out per-term losses against untrained and constant
 
@@ -547,12 +551,13 @@ The picks' sha256 (not committed; `grl-snam train` on the CPU regenerates them b
 `PYTHONPATH=.`.
 
 ```bash
-# 2.2: the published policy, reproduced
-python -c "from grl_snam.tools.train import train_sdf; train_sdf('$SDF', 'repro.pt', steps=200, seed=0, threads=1, device='cpu')"
+# 2.2: the published policy, reproduced (bptt_window=0, col_grad=False: the trainer before §8's fix)
+python -c "from grl_snam.tools.train import train_sdf; train_sdf('$SDF', 'repro.pt', steps=200, seed=0, threads=1, device='cpu', bptt_window=0, col_grad=False)"
 
 # 2.3: the retrain, one seed (s = 0..4), each in its own directory runs/retrain/seed$s
 grl-snam train $SDF -o coef_sdf.pt --steps 4000 --seed $s --threads 1 --device cpu \
-  --history history.jsonl --checkpoint-every 100 --val-frac 0.25 --val-seed 0 --val-pairs 512 --val-ticks 200
+  --history history.jsonl --checkpoint-every 100 --val-frac 0.25 --val-seed 0 --val-pairs 512 --val-ticks 200 \
+  --bptt-window 0 --no-col-grad
 
 # 3.1
 python experiments/learning_proof/learning_curves.py runs/retrain/seed*/history.jsonl --json curves.json --png curves.png
@@ -582,4 +587,455 @@ python experiments/learning_proof/e1_ceiling.py runs/e1/data/planted runs/e1/dat
 python -m grl_snam.train_coef_energy --root runs/e1/data/planted --epochs 2 --bs 64 --lr 3e-4 --workers 2 \
   --outdir ck --val-frac 0.25 --val-seed 0 --val-samples 1024 --history history.jsonl \
   --planted runs/e1/data/planted/planted.json --w_friction 0
+```
+
+## 8. Addendum, 2026-11-14: why the retrain diverged, the fix, and the measure again
+
+Measured 2026-11-14 on `fix/sdf-trainer-divergence` (off `main` at be76e3c). Every number in this
+section has its file in [`learning-validation/fixed/`](learning-validation/fixed/) and its command
+in §8.9. §§0–7 above describe the trainer before the fix and are unchanged, except that §7's
+commands now name the flags that reproduce it.
+
+### 8.0 The answer
+
+**The trainer is fixed: it now descends its own objective, on held-out pairs, on every seed, and
+beats a constant at its own mean. It does not reach more goals: on Austin the objective it
+optimizes prefers clearance to reach. On the task metric this is still not the rising curve.**
+
+- **Why it diverged: two faults** (§8.1).
+  - **The backward ran through all 28 rollout steps, and on Austin those steps are chaotic.**
+    - Austin's SDF is normalized at 1 unit = 300 m. The physics constants were set where
+      1 unit = 20 m.
+    - So in units, Austin's robot radius is one SDF cell, one step crosses 5.5 cells, and 99% of
+      the map lies inside the barrier band.
+    - An agent near a wall bounces among buildings like a billiard ball. Within 15 m of a wall
+      one step's Jacobian has norm ~15, and the gradient grows ~1.65× per step of backward:
+      median norm 7.8·10⁴ at 28 steps, 2.2 at 7.
+    - On the procedural city the same objective's gradient is 0.22 and never clips.
+    - Neither of §5's first guesses fixes it: clamping the barrier, or substepping.
+  - **The collision term had no gradient.** `sdf_rollout` detaches the clearance, so `3·col` was
+    a constant to the optimizer. A clean gradient of the rest weakens the barrier and the loss
+    rises (§8.2).
+- **The fix** (§8.2), now `grl-snam train`'s default:
+  - truncate the backward every 7 steps, and give the collision term its gradient;
+  - no forward value changes;
+  - `--bptt-window 0 --no-col-grad` still reproduces the published `coef_sdf.pt` bit for bit;
+  - `tests/test_sdf_train_divergence.py` fails on `main`.
+- **The retrain now learns its objective** (§8.3, five seeds of 4000 steps).
+  - 13–16% of steps clip, against 100%.
+  - The training loss falls on every seed (3.23–3.54 → 2.77–2.79); before, three of five rose.
+  - The held-out objective falls on every seed (2.91–3.23 → 2.27–2.30).
+  - The seeds agree: a stronger barrier, a weaker goal spring, more damping.
+- **Criterion 1 passes on the loss** (§8.4). On 5120 held-out pairs the trained net's objective
+  is below every arm's:
+  - untrained: −0.81 [−0.92, −0.69];
+  - constant: −0.77 [−0.84, −0.69];
+  - published: −0.73 [−0.81, −0.66];
+  - a constant at the trained net's own mean coefficients: −0.16 [−0.21, −0.12].
+
+  The collision term passes too. The goal and reg terms get worse: that is the trade the
+  objective makes.
+- **The net uses what it sees** (§8.5, §8.6).
+  - On Austin's held-out pairs it reaches more than a constant at its own mean: +0.7 [+0.3, +1.2]
+    points on its plant, +1.4 [+0.6, +2.2] on libcvc's navigator. #172's picks only tied that
+    control.
+  - On coef's ice-band city it penetrates 92% less than any other arm.
+- **Criterion 2 still fails, now in the other direction** (§8.5, §8.6).
+  - It reaches fewer held-out goals than the untrained net: Austin −1.2 [−1.8, −0.6] and
+    −1.7 [−2.7, −0.7]; city scorecard −3.4 [−4.7, −2.2].
+  - In exchange it keeps 5.7 m more clearance on Austin.
+  - The reach pick is step 0 on every seed.
+  - The objective's collision margin is 0.02 units: 6 m on Austin, 0.4 m in the city. The task
+    curve needs an objective that is the task in metres (§8.8).
+- **Do not republish `grl-snam-weights` on these runs.** The final nets reach fewer goals than
+  what ships, and the picks are the untrained nets.
+
+### 8.1 Where the gradient blew up
+
+`gradient_source.json` (`experiments/learning_proof/gradient_source.py`): the objective's gradient
+at the untrained net, on 40 fixed batches of 128 Austin pairs.
+
+**The frame.** The physics constants are in normalized units: `d_hat` 0.35, `vmax` 0.9, `dt` 0.06,
+goals 1–2 units away. They were set on the procedural city, where 1 unit is 20 m. Austin's SDF is
+normalized at 1 unit = 300 m, so in units its buildings, its robot radius and its SDF cells are 15×
+smaller:
+
+| | procedural city | Austin |
+|---|---|---|
+| metres per unit | 20 | 300 |
+| SDF cell, units | 0.105 | 0.0098 |
+| rr, units (cells) | 0.15 (1.4) | 0.010 (1.0) |
+| one step at `vmax`, in cells | 0.5 | 5.5 |
+| share of the map within `d_hat` of geometry | 42% | 99% |
+| full-BPTT gradient norm, median (max) | 0.22 (0.26) | 5.9·10⁴ (2.7·10¹⁰) |
+| batches above the clip (5) | 0% | 100% |
+
+**The mechanism: the rollout is chaotic near walls.** One rollout step's Jacobian
+`d(o′, v′)/d(o, v)` (spectral norm, median over the 16,384 states the untrained net's rollouts
+visit), by the agent's clearance `d` in units:
+
+| clearance | share of states | full | without the wall normal's turn | without the barrier's curvature | without either |
+|---|---|---|---|---|---|
+| d < 0 (inside geometry) | 1% | 37.5 | 1.00 | 37.5 | 1.00 |
+| 0 < d < rr (within 3 m) | 3% | 84 | 67 | 28 | 1.00 |
+| rr < d < 0.05 (3–15 m) | 49% | 14.8 | 7.6 | 9.7 | 1.02 |
+| 0.05 < d < `d_hat` | 45% | 2.2 | 1.9 | 1.3 | 1.02 |
+| d > `d_hat` | 2% | 1.02 | 1.02 | 1.02 | 1.02 |
+
+- Half the states lie within 15 m of a wall, where one step stretches a perturbation about 15×.
+- Two things do it, about equally:
+  - the barrier's curvature `b″(d)`;
+  - the wall normal, which turns from one SDF cell to the next while one step crosses 5.5 cells.
+
+  With both switched off in the backward, every band is 1.0.
+- An agent bouncing among convex buildings is a dispersing billiard: nearby trajectories separate
+  exponentially. So does the derivative of the end position with respect to the coefficients, as
+  the horizon grows. The gradient is huge because the map is chaotic, not because one constant is
+  badly chosen.
+
+**The window decides it.** The gradient norm per batch as the backward is cut every k steps,
+with the collision term's gradient on:
+
+| backward window (steps) | 28 (full) | 14 | 7 | 4 | 2 |
+|---|---|---|---|---|---|
+| total, median | 7.8·10⁴ | 57 | 2.2 | 0.99 | 0.42 |
+| total, max | 2.7·10¹⁰ | 3.4·10⁵ | 84 | 2.5 | 0.69 |
+| batches above the clip | 100% | 100% | 23% | 0% | 0% |
+| goal term, median | 5.9·10⁴ | 21 | 0.14 | 0.089 | 0.052 |
+| 3·col term, median | 5.1·10³ | 18 | 2.2 | 1.07 | 0.47 |
+
+From 7 to 28 steps the median grows about 1.65× per added step.
+
+**The other candidates are not it.**
+- **The barrier's singularity as d → 0** (§3.2's guess) is part of it, not the cause. Clamping
+  the barrier as `ipc_piecewise` does (`max_grad` 200) binds only within ~0.2 m of the robot
+  radius. At full BPTT it leaves the median at 2.9·10⁴, and 100% of batches clip.
+- **Substepping** (`nsub` 3, the inference setting): median 318, and 95% of batches still clip.
+  The stretching is in the dynamics, not only in the integrator.
+- **The learning rate:** the norm is 7.8·10⁴ at step 0, before any update.
+- **The softplus head:** its derivative is at most 1. The blow-up is upstream of it: the
+  derivative of the goal term with respect to each pair's own (α, β, γ) has a median of 0.31 and
+  a maximum of 3.7·10¹² over 5,120 pairs. In 80% of the batches, the pair that dominates has
+  penetrated a wall.
+
+**The second fault: the collision term had no gradient.** `sdf_rollout` accumulates the minimum
+clearance from `d.detach()`, so `col` was a constant to the optimizer. Its gradient norm is 0 in
+every batch (`window.before_fix.col`). The objective said "goal + 3 col"; the gradient said
+"goal".
+
+### 8.2 The fix, and what each half does
+
+- **`grl-snam train --bptt-window 7`** (the default): `sdf_eval.loss_terms` rolls out in windows
+  of 7 steps and detaches the state between them. Seven is coef-train's own window for the same
+  surrogate.
+- **`--col-grad`** (the default): `sdf_rollout(clr_grad=True)` keeps the clearance's gradient,
+  through the step that came closest to a wall.
+- **Neither changes a value.** The objective and its held-out twins are the same numbers (the
+  history's `obj_*`, `arms-eval --cases objective-sdf`).
+- **`--bptt-window 0 --no-col-grad` is the trainer before the fix.** At seed 0, for 200 steps,
+  it reproduces the published `coef_sdf.pt` bit for bit (checked again on this branch).
+- **`--grad-terms-every N`** records each weighted term's gradient norm in the history
+  (`grad_norm.terms.<term>`). It adds backward passes, and the update is the same.
+- **`tests/test_sdf_train_divergence.py`**: a 96² field in Austin's frame (1 unit = 300 m, 3 m
+  cells, buildings on ~40% of it).
+  - On `main`, the trainer's median pre-clip norm there is 864, and every step clips.
+  - The test bounds the median at 50 and the clipped share at 50%. It checks that the collision
+    term's gradient is nonzero and that no objective value moves.
+
+**What each half does alone** (seed 0, 1500 steps, the same split; `pilot/`):
+
+| variant | steps clipped | training loss, first → last 100 | held-out objective, 0 → 1500 | held-out reach %, 0 → 1500 | α at 1500 |
+|---|---|---|---|---|---|
+| before the fix | 100% | 3.79 → 3.67 | 3.12 → 3.04 | 6.1 → 6.1 | 1.03 |
+| truncation only | 3% | 3.96 → 5.40 | 3.12 → 4.66 | 6.1 → 8.0 | 0.47 |
+| collision gradient only | 100% | 3.72 → 2.97 | 3.12 → 2.40 | 6.1 → 4.9 | 1.64 |
+| both (the fix) | 16% | 3.54 → 2.75 | 3.12 → 2.31 | 6.1 → 5.1 | 1.20 |
+
+- **The missing collision gradient is why the loss did not fall.**
+  - Truncation alone gives a clean gradient of the goal and reg terms only. The optimizer lowers
+    the goal term the one way it can: it weakens the barrier (α 1.02 → 0.47), and the collision term climbs.
+  - That is §3.4's reach-for-clearance trade, now done efficiently: held-out reach rises to 8%
+    while the loss rises.
+- **The chaotic backward is why every step clipped.** The collision gradient alone does lower
+  the loss, under 100% clipping: Adam's averaging keeps its consistent direction and washes out
+  the goal term's random one. But α is still climbing at step 1500.
+- **With both, all of the loss's terms are seen, the gradient is bounded, and the run settles by
+  step ~400.**
+
+### 8.3 The retrain: it now descends its own objective
+
+The same recipe as §2.3 (seeds 0–4, 4000 steps, CPU, the same held-out split, 512 pick pairs,
+the pick on held-out reach), with the fix and `--grad-terms-every 10`.
+
+![learning curves after the fix](learning-validation/fixed/curves.png)
+
+| seed | pick | training loss, first → last 100 steps | held-out loss, step 0 → 500 → 4000 | held-out reach %, 0 → 4000 | held-out min clearance m, 0 → 4000 | (α, β, γ), 0 → 4000 | α spread, 0 → 4000 | trunk ‖Δθ‖/‖θ‖ at 4000 |
+|---|---|---|---|---|---|---|---|---|
+| 0 | 0 | 3.54 → 2.79 | 3.12 → 2.29 → 2.30 | 6.1 → 5.1 | 10.6 → 17.0 | (1.02, 3.06, 3.99) → (1.18, 1.84, 4.26) | 0.024 → 0.111 | 0.324 |
+| 1 | 0 | 3.51 → 2.78 | 3.13 → 2.30 → 2.29 | 5.7 → 5.1 | 11.0 → 17.4 | (1.04, 3.04, 3.94) → (1.30, 1.94, 4.39) | 0.018 → 0.126 | 0.388 |
+| 2 | 0 | 3.49 → 2.78 | 3.10 → 2.30 → 2.30 | 6.1 → 5.1 | 11.0 → 16.6 | (1.10, 3.11, 3.93) → (1.18, 1.86, 4.28) | 0.012 → 0.049 | 0.319 |
+| 3 | 0 | 3.51 → 2.78 | 3.23 → 2.28 → 2.29 | 5.9 → 5.3 | 10.6 → 16.3 | (1.08, 3.21, 3.86) → (1.25, 2.07, 4.34) | 0.022 → 0.131 | 0.335 |
+| 4 | 0 | 3.23 → 2.77 | 2.91 → 2.29 → 2.27 | 6.1 → 5.3 | 11.6 → 17.2 | (1.03, 2.86, 4.09) → (1.33, 2.00, 4.35) | 0.025 → 0.120 | 0.312 |
+
+- **Every seed descends its training loss and its held-out loss**, where before three of five
+  rose. Most of the fall is in the first 400 steps, and the curves are flat after ~500.
+- **The gradient is bounded.**
+  - 13–16% of steps clip (before: 100%).
+  - The median pre-clip norm is 1.1–1.3 (before: 4.3·10⁴–3.4·10⁵).
+  - The worst step's norm is 1.3–3.2·10³ (before: 1.9·10¹²–6.8·10¹³).
+  - Per term, the median norms at the end are: goal 0.26–0.32, 3·col 1.0–1.3, 0.1·reg 0.47–0.54.
+    The collision term carries most of the gradient.
+- **The seeds agree.** All five move the same way: a stronger barrier (α 1.0 → 1.2–1.3), a
+  weaker goal spring (β 3.0 → 1.8–2.1), more damping (γ 3.9–4.1 → 4.3–4.4). Before the fix, α
+  went up on one seed and down to 0.63 on another.
+- **The net varies its heads more with what it sees.** α's spread on the probe batch grows 4–7×
+  (0.012–0.025 → 0.05–0.13). The weights keep moving after the held-out curves stop (trunk
+  ‖Δθ‖/‖θ‖ 0.31–0.39 at 4000, still rising).
+- **The objective's terms trade.** On held-out pairs, `col` falls (0.64–0.76 → 0.27–0.30) and
+  `goal` rises (0.94–1.00 → 1.29–1.34): agents keep 6 m more clearance (10.6–11.6 → 16.3–17.4
+  m) and end further from the goal. `reg` rises (to 1.1–1.5) as β leaves 3.
+- **The pick is step 0 on every seed.** No checkpoint reached more held-out pairs than the
+  untrained net: held-out reach falls from 5.7–6.1% to 4.9–5.5% within 300 steps, and stays
+  there. So the `trained` arm below *is* the `untrained` arm, seed for seed. The `final` arm
+  (step 4000) is what training made, and `constant_final`, a constant net at each final net's
+  own mean coefficients on the Austin test drive, is its control.
+
+### 8.4 Held-out per-term losses, against every arm
+
+`objective.json` (`objective_arms.py`): the training objective's terms on §3.3's 1024 test pairs,
+started in the held-out blocks, for each of the five seeds (5120 paired units).
+
+| term | published | untrained | final | constant | constant_final |
+|---|---|---|---|---|---|
+| loss | 3.053 | 3.125 | 2.318 | 3.083 | 2.483 |
+| goal | 0.973 | 0.958 | 1.319 | 0.963 | 1.143 |
+| col | 0.693 | 0.721 | 0.289 | 0.706 | 0.432 |
+| reg | 0.016 | 0.029 | 1.322 | 0.010 | 0.426 |
+
+| term | final − untrained | final − constant | final − constant_final |
+|---|---|---|---|
+| loss | **−0.807 [−0.915, −0.694]*** | **−0.765 [−0.842, −0.688]*** | **−0.164 [−0.210, −0.120]*** |
+| goal | +0.361 [+0.330, +0.390]* | +0.356 [+0.326, +0.385]* | +0.176 [+0.157, +0.195]* |
+| col | **−0.432 [−0.470, −0.389]*** | **−0.417 [−0.446, −0.389]*** | **−0.143 [−0.160, −0.128]*** |
+| reg | +1.293 [+1.151, +1.413]* | +1.312 [+1.190, +1.416]* | +0.896 [+0.823, +0.965]* |
+
+- **Criterion 1 passes on the loss.**
+  - The trained net's held-out objective is below the untrained, constant and published nets'.
+    Against published: −0.73 [−0.81, −0.66] in `learn-report`.
+  - It is also below a constant net at its own mean coefficients: −0.16 at its means on the
+    Austin test drive (here), and −0.04 [−0.06, −0.02] at its means on the probe batch
+    (`arms-eval`'s `constant_final`, §8.7).
+  - The collision term passes against every arm.
+- **The goal and reg terms get worse.**
+  - That is the trade the objective makes: a weighted sum that is lower overall, paid in goal
+    distance and in distance from the bias regime.
+  - Before the fix it was the reverse: goal better, collision worse, total worse (§3.3).
+
+### 8.5 The task metric on Austin's held-out pairs
+
+`arms_austin_native.json` (the seek drive, scorer `austin`, and libcvc's `sim_world`, scorer
+`austin_native`): the same 1024 test pairs as §3.4–3.5, started in the held-out blocks and drawn
+with seed 777, so the pick's pairs are not reused. The arms are §2.4's, plus `constant_final`.
+`trained` is `untrained` on every seed (the picks are all step 0), so its rows are left out.
+
+**The seek drive** (the policy's own plant, 200 ticks):
+
+| metric | published | untrained | final | constant | constant_final |
+|---|---|---|---|---|---|
+| reach % | 6.2 [4.8, 7.7] | 6.4 [5.0, 8.0] | 5.3 [3.9, 6.7] | 6.2 [4.8, 7.8] | 4.5 [3.3, 5.9] |
+| min clearance m | 11.29 | 11.06 | 16.75 | 11.23 | 15.55 |
+| time to goal s (both arrived) | 4.32 | 4.41 | 5.29 | 4.36 | 5.85 |
+| end gap m | 227.0 | 224.7 | 262.7 | 228.3 | 254.2 |
+
+| metric | final − untrained | final − constant | final − constant_final | published − untrained |
+|---|---|---|---|---|
+| reach (points) | −1.2 [−1.8, −0.6]* | −1.0 [−1.6, −0.5]* | **+0.7 [+0.3, +1.2]*** | −0.2 [−0.5, +0.2] |
+| penetration ticks | 0.00 | 0.00 | 0.00 | 0.00 |
+| path m (both arrived) | +2.3 [−0.5, +5.3] | +1.7 [−0.7, +4.1] | −1.4 [−2.3, −0.5]* | −0.2 [−2.0, +1.4] |
+| min clearance m | +5.69 [+5.33, +6.06]* | +5.52 [+5.15, +5.89]* | **+1.19 [+1.02, +1.37]*** | +0.23 [−0.10, +0.50] |
+| time to goal s (both arrived) | +1.03 [+0.79, +1.24]* | +1.01 [+0.87, +1.16]* | **−0.77 [−0.96, −0.60]*** | −0.07 [−0.28, +0.10] |
+| end gap m | +37.9 [+32.4, +43.5]* | +34.4 [+26.9, +40.9]* | +8.5 [+5.3, +11.8]* | +2.2 [−1.5, +5.7] |
+
+**libcvc's navigator** (`sim_world`, the kinematic bicycle with the escape, 600 ticks):
+
+| metric | published | untrained | final | constant | constant_final |
+|---|---|---|---|---|---|
+| reach % | 12.0 [10.1, 14.1] | 12.0 [10.0, 14.0] | 10.3 [8.6, 12.1] | 11.7 [9.8, 13.7] | 8.9 [7.3, 10.6] |
+| min clearance m | 9.40 | 9.23 | 10.99 | 9.34 | 11.25 |
+
+| metric | final − untrained | final − constant | final − constant_final |
+|---|---|---|---|
+| reach (points) | −1.7 [−2.7, −0.7]* | −1.4 [−2.6, −0.3]* | **+1.4 [+0.6, +2.2]*** |
+| penetration ticks | −0.00 [−0.01, +0.00] | +0.00 [+0.00, +0.01] | +0.00 [−0.00, +0.00] |
+| min clearance m | +1.76 [+1.35, +2.17]* | +1.65 [+1.24, +2.08]* | −0.26 [−0.54, +0.02] |
+| time to goal s (both arrived) | +1.00 [+0.11, +1.95]* | +1.13 [+0.30, +2.02]* | **−1.80 [−2.54, −1.10]*** |
+
+- **Against a constant at its own mean, the trained net wins, for the first time.**
+  - On both plants it reaches more pairs than `constant_final`: +0.7 and +1.4 points.
+  - It arrives sooner: −0.8 s and −1.8 s.
+  - On its own plant it also keeps 1.2 m more clearance.
+  - This is the control that erased every gain in §3.4–3.6. The net now uses what it sees: its
+    coefficients vary with the situation, and that variation is worth something.
+- **Against the untrained net, it reaches fewer pairs.**
+  - −1.2 points on the seek drive, −1.7 on `sim_world`.
+  - In exchange it keeps 5.7 m (seek drive) and 1.8 m (`sim_world`) more clearance, and arrives
+    about 1 s later.
+  - The mean it moved to (stronger barrier, weaker goal spring, more damping) costs more reach
+    than the state dependence buys back.
+  - That is what the objective asks for on Austin (§8.3): `3·col`'s margin and temperature are
+    0.02 units, 6 m on Austin and 0.4 m in the city. So the collision term carries most of the
+    gradient, and the optimum keeps its distance.
+- No arm penetrates on either plant.
+- `published − untrained` is unchanged from §3.4–3.5: the published net is still the untrained
+  one.
+
+### 8.6 Held-out scenes and other plants
+
+**The procedural city** (`arms.json`, scorers `city` and `native`; 8 scenes × 64 agents, the
+transfer test of §3.6):
+
+| metric | published | untrained | final | constant | constant_final |
+|---|---|---|---|---|---|
+| reach % | 86.9 | 87.2 | 85.0 | 86.9 | 87.0 |
+| min clearance m | 7.82 | 7.80 | 7.95 | 7.81 | 7.87 |
+| time to goal s | 9.29 | 9.33 | 10.06 | 9.30 | 9.68 |
+
+| metric (torch) | final − untrained | final − constant | final − constant_final |
+|---|---|---|---|
+| reach (points) | −2.2 [−4.4, +0.0] | −1.9 [−4.3, +0.5] | −2.0 [−3.7, −0.5]* |
+| min clearance m | +0.15 [+0.11, +0.19]* | +0.14 [+0.10, +0.18]* | +0.08 [+0.05, +0.11]* |
+| time to goal s (both arrived) | +1.19 [+0.93, +1.47]* | +1.19 [+0.92, +1.47]* | +0.73 [+0.51, +0.97]* |
+| path m (both arrived) | −2.3 [−2.8, −1.8]* | −2.3 [−2.7, −1.8]* | −0.9 [−1.2, −0.7]* |
+
+- `sim_world` gives the same reach set (`native` in `arms.json`).
+- **On geometry in another frame, the net is more cautious than on Austin.** It raises α to 1.53
+  there, against 1.25 on Austin. It arrives later and slightly less often, on shorter paths.
+- **Here even `constant_final` reaches more.** Its constants are the net's Austin means, so this
+  is the state dependence failing to transfer to a frame 15× smaller, not the mean.
+
+**`arms-eval`'s task cases** (`report/seed*.arms.json.gz`; 20 paired seeds per run, pooled over
+the five runs):
+
+| case: metric | untrained | final | constant | constant_final | published | final − untrained |
+|---|---|---|---|---|---|---|
+| coef (ice-band city): reach | 0.162 | 0.136 | 0.162 | 0.041 | 0.160 | −0.026 [−0.035, −0.018]* |
+| coef: penetration | 1.427 | **0.114** | 1.428 | 1.377 | 1.386 | **−1.31 [−1.55, −1.09]*** |
+| coef: clearance | 0.321 | 0.710 | 0.320 | 0.332 | 0.324 | |
+| scorecard (city scenes): arrival | 0.871 | 0.836 | 0.869 | 0.832 | 0.869 | −0.034 [−0.047, −0.022]* |
+| scorecard: path ratio | 1.059 | 1.022 | 1.059 | 0.967 | 1.059 | |
+| scorecard: time to goal s | 9.07 | 9.76 | 9.05 | 10.10 | 9.05 | |
+
+- **On coef's ice-band city the trained net almost stops penetrating**: 0.11 against 1.38–1.43
+  for every other arm, `constant_final` included (−1.26 [−1.46, −1.07]).
+  - It keeps twice the clearance there and loses 2.6 points of reach.
+  - It reaches 9.5 points more than `constant_final`, whose weak goal spring (β 1.8–2.1 on the
+    probe) stalls on that plant.
+- **`scorecard_eval`'s own rows** (`scorecard/*.json`, one per checkpoint, 8 scenes × 64 agents):
+  - final arrivals 0.838–0.857, against 0.865–0.883 for the untrained nets;
+  - path ratio 1.00–1.04, against 1.06–1.08;
+  - no penetration anywhere.
+- No arm penetrates on the `city`, `native` or `scorecard` scorers.
+
+### 8.7 `learn-report`
+
+`report/report_trained.txt` and `report/report_final.txt`: `grl-snam learn-report` on the five
+histories, with each run's `arms-eval` table (`objective-sdf`, `coef`, `scorecard`; arms trained,
+untrained, final, constant, `constant_final`, published). It is run twice: once on the pick
+(`trained`), and once with `--trained final`.
+
+| family | the pick (`trained`) | `--trained final` |
+|---|---|---|
+| loss, along the run (last evaluation against step 0, CI over the 5 seeds) | `obj_loss` passes: +0.81 [+0.71, +0.89]; `obj_col` passes: +0.43 [+0.40, +0.46]; `obj_goal` (−0.36) and `obj_reg` (−1.31) fail; `fitness` (reach) fails: −0.8 points [−0.9, −0.6] | the same (the history's claims do not depend on the arm) |
+| loss, against the arms (`objective-sdf`, 5120 pairs) | every claim fails: the pick *is* the untrained net | loss passes against all five arms, `constant_final` included (−0.043 [−0.063, −0.022]); col passes against all five; goal fails against all five; reg fails against four and ties `constant_final` |
+| selection | on held-out data: passes; after step 0: fails (every pick is step 0) | the same |
+| task (`coef`, `scorecard`) | fails | `coef` penetration passes against all five arms; `coef` reach passes against `constant_final` only; `scorecard` arrival fails against all five; penetration is 0 for every arm, so nothing to beat |
+| total | 11 pass, 36 fail | 19 pass, 28 fail |
+
+### 8.8 Verdict, and what is next
+
+| criterion | before the fix (§3.9) | after the fix |
+|---|---|---|
+| the trainer descends its own loss | no: every step clipped; 3 of 5 seeds ended higher | **yes**, on every seed, training and held-out, with 13–16% of steps clipped |
+| 1. held-out per-term losses vs untrained and constant | **fails** | **passes on the total loss and the collision term**, against untrained, constant, published and a constant at the trained net's own mean; goal and reg get worse, the trade the objective makes |
+| 2. task metric, paired CIs | **null** on Austin; worse on the city | **fails against untrained**: fewer held-out goals on Austin (−1.2*, −1.7*) and in the city (−2.2, −3.4*), for more clearance (+5.7 m on Austin) and 92% less penetration on coef's ice-band city. **Beats a constant at its own mean** on Austin reach (+0.7*, +1.4*), where #172's picks only tied it |
+| 3. planted latent | not reached (§4) | not rerun (§4 unchanged) |
+| selection never on training loss | held | held; every pick is step 0, because held-out reach falls in the first 300 steps |
+
+- **The trainer is fixed.** It does what its objective asks, the same way on every seed, with a
+  bounded gradient. Its net uses what it sees: it beats a constant at its own mean on its
+  objective and on Austin's reach.
+- **The objective is not the task on Austin.** Its collision margin and softplus temperature are
+  0.02 units: 6 m on Austin, 0.4 m in the city. On Austin the collision term carries about 4× the
+  goal term's gradient (§8.3), and the optimum gives up reach for clearance. The held-out pick is
+  on reach, which the objective does not reward, so it picks step 0.
+- **What the rising held-out task curve needs next:**
+  - an objective that is the task in metres: the collision margin and temperature in world
+    units, so that Austin and the city ask for the same clearance, and a goal term that rewards
+    arrival;
+  - a pick on a held-out fitness the objective also serves, such as reach with a penetration
+    bound;
+  - then this measure again (§8.9). It now takes under an hour on this box: about 7 minutes of
+    training per seed on one core, and 28 minutes for `sdf_arms.py` with the city.
+- **Do not republish `grl-snam-weights` on these runs.** The final nets reach fewer held-out
+  Austin goals than the net that ships (−1.0 points against `constant`, which ties `published`).
+  The picks are the untrained nets.
+
+### 8.9 Files and commands
+
+| file (`learning-validation/fixed/`) | what |
+|---|---|
+| `gradient_source.json` | §8.1 |
+| `pilot/{base,w7,col,w7col}.history.jsonl.gz` | §8.2: before the fix, truncation only, collision gradient only, both |
+| `retrain/seed{0..4}.history.jsonl.gz` | §8.3, with `grad_norm.terms` every 10 steps |
+| `curves.json`, `curves.png` | §8.3 |
+| `objective.json` | §8.4 |
+| `arms_austin_native.json` | §8.5 (scorers `austin`, `austin_native`) |
+| `arms.json` | §8.5 (`austin`), §8.6 (`city`, `native`), and the heads' spread |
+| `scorecard/*.json` | §8.6, `scorecard_eval --json` per checkpoint |
+| `report/seed{0..4}.arms.json.gz` | `arms-eval` per run (§8.6, §8.7) |
+| `report/report_{trained,final}.{txt,json.gz}` | §8.7 |
+
+`SDF` and `PUB` as in §7, from the repository root with `PYTHONPATH=.`; `$s` = 0..4, each run in
+its own directory `runs/retrain/seed$s`.
+
+```bash
+# 8.1
+python experiments/learning_proof/gradient_source.py --sdf $SDF --out gradient_source.json
+
+# 8.2, seed 0, 1500 steps, one directory per variant; append nothing (both), --no-col-grad (truncation
+# only), --bptt-window 0 (collision gradient only) or --bptt-window 0 --no-col-grad (before the fix)
+grl-snam train $SDF -o coef_sdf.pt --steps 1500 --seed 0 --threads 1 --device cpu \
+  --history history.jsonl --checkpoint-every 100 --val-frac 0.25 --val-seed 0 --val-pairs 512 --val-ticks 200 \
+  --grad-terms-every 10
+
+# 8.3
+grl-snam train $SDF -o coef_sdf.pt --steps 4000 --seed $s --threads 1 --device cpu \
+  --history history.jsonl --checkpoint-every 100 --val-frac 0.25 --val-seed 0 --val-pairs 512 --val-ticks 200 \
+  --grad-terms-every 10
+python experiments/learning_proof/learning_curves.py runs/retrain/seed*/history.jsonl --json curves.json --png curves.png
+
+# 8.5, 8.6 (sim_world needs the grl-snam-cp312 closure, as §7)
+python experiments/learning_proof/sdf_arms.py --sdf $SDF --runs runs/retrain --published $PUB \
+  --out arms.json --constant-final
+python experiments/learning_proof/sdf_arms.py --sdf $SDF --runs runs/retrain --published $PUB \
+  --out arms_austin_native.json --no-city --austin-native --constant-final
+python experiments/learning_proof/arms_table.py arms_austin_native.json
+
+# 8.4
+python experiments/learning_proof/objective_arms.py --sdf $SDF --runs runs/retrain --published $PUB \
+  --constants arms.json --out objective.json
+
+# 8.6, scorecard_eval's rows: published, and trained$s, untrained$s, final$s (coef_sdf.pt) per seed
+python -m grl_snam.tools.scorecard_eval --checkpoint <arm.pt> --json <arm>.json
+
+# 8.7; CF = alpha,beta,gamma: the head means of the history's last checkpoint record
+R=runs/retrain/seed$s
+grl-snam arms-eval --cases objective-sdf,coef,scorecard --sdf $SDF --split-history $R/history.jsonl \
+  --arm trained=$R/coef_sdf.best_heldout.pt --arm untrained=$R/coef_sdf.step000000.pt \
+  --arm final=$R/coef_sdf.pt --arm constant=const:hist=$R/history.jsonl --arm constant_final=const:$CF \
+  --arm published=$PUB --label seed$s --out seed$s.arms.json
+grl-snam learn-report runs/retrain/seed*/history.jsonl --arms seed0.arms.json ... --arms seed4.arms.json \
+  --json report_trained.json
+grl-snam learn-report runs/retrain/seed*/history.jsonl --arms seed0.arms.json ... --arms seed4.arms.json \
+  --trained final --json report_final.json
 ```

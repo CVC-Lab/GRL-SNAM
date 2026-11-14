@@ -12,6 +12,8 @@ Arms:
 - ``constant_trained``: per training seed, a constant net at that seed's ``trained`` means on the
   same drive. ``trained`` against it asks whether the net uses what it sees, or only moved its
   mean.
+- ``constant_final``: the same at each seed's ``final`` means, the control for ``final`` (when
+  the pick is step 0, ``constant_trained`` controls the untrained net, not what training made).
 
 Scorers (every arm drives the same units, so comparisons are paired):
 
@@ -323,6 +325,9 @@ def comparisons(units, *, n_boot, seed):
         "final-untrained": ("final", "untrained"),
         "published-untrained": ("published", "untrained"),
     }
+    if "constant_final" in units:
+        pairs["final-constant"] = ("final", "constant")
+        pairs["final-constant_final"] = ("final", "constant_final")
     out = {"levels": {}, "diffs": {}}
     for metric in METRICS:
         out["levels"][metric] = {}
@@ -387,6 +392,9 @@ def main(argv=None):
     ap.add_argument("--native-ticks", type=int, default=600)
     ap.add_argument("--n-boot", type=int, default=10000)
     ap.add_argument("--boot-seed", type=int, default=0)
+    ap.add_argument(
+        "--constant-final", action="store_true", help="add constant_final (final's own means)"
+    )
     args = ap.parse_args(argv)
     torch.set_num_threads(1)
     t0 = time.time()
@@ -394,7 +402,11 @@ def main(argv=None):
     arms, seeds, picks, header = arms_from_runs(args.runs, args.published)
     # The constant arms: the published policy's mean coefficients on the Austin test drive, and
     # each trained seed's own.
-    first, _ = austin({"published": arms["published"], "trained": arms["trained"]}, args, header)
+    first, _ = austin(
+        {"published": arms["published"], "trained": arms["trained"], "final": arms["final"]},
+        args,
+        header,
+    )
 
     def means_of(u):
         return [float(np.mean(u[h])) for h in ("alpha", "beta", "gamma")]
@@ -403,10 +415,13 @@ def main(argv=None):
     arms["constant"] = [constant_coef_mlp(*means)]
     trained_means = [means_of(u) for u in first["trained"]]
     arms["constant_trained"] = [constant_coef_mlp(*m) for m in trained_means]
+    final_means = [means_of(u) for u in first["final"]]
+    if args.constant_final:
+        arms["constant_final"] = [constant_coef_mlp(*m) for m in final_means]
     stem = os.path.splitext(args.out)[0]
-    for name in ("constant", "constant_trained"):
-        for k, m in enumerate(arms[name]):
-            path = f"{stem}.{name}{k if name == 'constant_trained' else ''}.pt"
+    for name in ("constant", "constant_trained", "constant_final"):
+        for k, m in enumerate(arms.get(name, [])):
+            path = f"{stem}.{name}{k if name != 'constant' else ''}.pt"
             torch.save({"model_state_dict": m.state_dict(), "meta": {"kind": name}}, path)
     a_units, a_info = austin(arms, args, header)
     print(f"austin scored ({time.time() - t0:.0f}s)", flush=True)
@@ -416,6 +431,7 @@ def main(argv=None):
         "picks": picks,
         "constant": means,
         "constant_trained": trained_means,
+        "constant_final": final_means if args.constant_final else None,
         "args": vars(args),
         "scorers": {},
     }

@@ -54,6 +54,8 @@ def main(argv=None):
     c = json.load(open(args.constants))
     arms["constant"] = [constant_coef_mlp(*c["constant"])]
     arms["constant_trained"] = [constant_coef_mlp(*m) for m in c["constant_trained"]]
+    if c.get("constant_final"):
+        arms["constant_final"] = [constant_coef_mlp(*m) for m in c["constant_final"]]
     scene = sdf_eval.load_scene(args.sdf)
     meta = torch.load(args.published, map_location="cpu", weights_only=False)["meta"]
     pool = sdf_eval.free_pool(scene, meta["rr"])
@@ -69,6 +71,8 @@ def main(argv=None):
     out = {"seeds": seeds, "picks": picks, "levels": {}, "diffs": {}}
     pairs = [("trained", b) for b in ("untrained", "constant", "published", "constant_trained")]
     pairs += [("final", "untrained"), ("published", "untrained")]
+    if "constant_final" in arms:
+        pairs += [("final", "constant"), ("final", "constant_final")]
     for t in TERMS:
         out["levels"][t] = {a: level(stack(a, t)) for a in units}
         out["diffs"][t] = {f"{a}-{b}": paired(stack(a, t), stack(b, t)) for a, b in pairs}
