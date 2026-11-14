@@ -40,6 +40,7 @@ half-written last line is skipped rather than refused.
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import os
@@ -92,9 +93,11 @@ def flatten(rec: dict, prefix: str = "") -> dict[str, float]:
     return out
 
 
+@functools.cache
 def classify(name: str) -> tuple[str, str] | None:
     """``("heldout" | "train", term)`` for a loss-term series name, ``None`` for any other
-    (heads, gradient norms, the learning rate, ...)."""
+    (heads, gradient norms, the learning rate, ...). Cached: a run repeats its names on every
+    record."""
     kind, _, path = name.partition(".")
     parts = path.split(".") if path else []
     if not parts or "heads" in parts or "grad_norm" in parts or "planted" in parts:
@@ -387,7 +390,15 @@ class History:
         return out
 
     def checkpoints(self) -> list[Checkpoint]:
-        """The checkpoint table, in order, with the final pick marked ``selected``."""
+        """The checkpoint table, in order, with the final pick marked ``selected``. Built once
+        per run: a report asks for it dozens of times, and a run's records do not change (a
+        followed file that grew is read into a new History)."""
+        cache = getattr(self, "_checkpoints_cache", None)
+        if cache is None or cache[0] != len(self.records):
+            cache = self._checkpoints_cache = (len(self.records), self._checkpoint_table())
+        return list(cache[1])
+
+    def _checkpoint_table(self) -> list[Checkpoint]:
         rows: list[Checkpoint] = []
         for rec in self.records:
             kind = str(rec.get("kind", "record"))

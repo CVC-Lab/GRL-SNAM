@@ -1,0 +1,133 @@
+name: pages
+
+# GRL-SNAM's GitHub Pages site (https://cvc-lab.github.io/GRL-SNAM/): a static landing page, and
+# GRL-SNAM's Ariadne ports running in the browser on libcvc's ariglx-web (CPython 3.12, pycvc,
+# pycvc_gl and numpy in WebAssembly). The pattern is libcvc's deploy-pages.yml: build the host with
+# its recipe's own script, assemble the site, check it in a headless Chrome, and deploy it as a
+# Pages artifact (nothing is committed to a gh-pages branch).
+#
+#   1. Build ariglx-web from the pinned libcvc tag (LIBCVC_REF): the single-threaded build (wasm),
+#      since Pages sends no COOP/COEP headers, in the lean tier (no vtk-python). About 30 minutes,
+#      so it is cached by libcvc's commit and pages/build-ariglx-web.sh.
+#   2. Assemble the site (pages/assemble.py): the landing page (pages/site/), and learn/, which
+#      runs `grl-snam ariadne learn` on the learning check's retrain histories
+#      (docs/learning-validation/retrain/). Everything a page fetches is on the site's own origin.
+#   3. Load it in headless Chrome as Pages serves it (pages/smoke.mjs): learn must start, run its
+#      frames and make learn-report's claims in the page.
+#
+# Pull requests and pushes to main build and check the site. Deploying is by hand: Run workflow
+# with `deploy` checked. It needs Settings -> Pages -> Source = "GitHub Actions", which a CVC-Lab
+# admin sets.
+
+on:
+  pull_request:
+    paths:
+      - pages/**
+      - grl_snam/**
+      - docs/learning-validation/**
+      - .github/workflows/pages.yml
+  push:
+    branches: [main]
+    paths:
+      - pages/**
+      - grl_snam/**
+      - docs/learning-validation/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy the site to GitHub Pages once it passes"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The libcvc tag ariglx-web is built from: its recipe (cvcpkg/recipes/ariglx-web) and the
+  # pycvc_gl.ariadne Host the ports adopt. ariglx-web is not on cvcpkg.org, so it is built here.
+  LIBCVC_REF: v3.7.13
+
+jobs:
+  build:
+    name: build and check the site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out libcvc at ${{ env.LIBCVC_REF }}
+        uses: actions/checkout@v4
+        with:
+          repository: transfix/libcvc
+          ref: ${{ env.LIBCVC_REF }}
+          path: libcvc
+
+      - name: libcvc's commit
+        id: libcvc
+        run: echo "sha=$(git -C libcvc rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache ariglx-web
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ariglx-web
+          key: ariglx-web-wasm-lean-${{ steps.libcvc.outputs.sha }}-${{ hashFiles('pages/build-ariglx-web.sh') }}
+
+      - name: Build ariglx-web (wasm, lean) with its recipe's script
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash pages/build-ariglx-web.sh libcvc "$RUNNER_TEMP/ariglx-web-work" ariglx-web
+
+      - name: Assemble the site
+        run: python3 pages/assemble.py --host ariglx-web/share/ariglx-web --out _site
+
+      - name: Load the site in headless Chrome
+        run: |
+          command -v cvcpkg >/dev/null || {
+            curl -fsSL https://cvcpkg.org/install.sh | sh
+            export PATH="$HOME/.local/bin:$PATH"
+          }
+          # Node 22 for the smoke's fetch and WebSocket, from the catalog.
+          cvcpkg install nodejs22 --platform linux --prefix "$RUNNER_TEMP/node" \
+            --config release --link shared --no-fallback-to-source
+          chrome=$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)
+          "$chrome" --version
+          "$RUNNER_TEMP/node/bin/node" pages/smoke.mjs --site _site --chrome "$chrome" \
+            --base /GRL-SNAM/ --shots shots
+
+      - name: Upload the smoke's screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pages-smoke-shots
+          path: shots
+          if-no-files-found: ignore
+
+      - name: Upload the Pages artifact
+        if: github.event_name == 'workflow_dispatch' && inputs.deploy
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write # deploy the Pages artifact
+      id-token: write # the OIDC token actions/deploy-pages verifies the deploy with
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
