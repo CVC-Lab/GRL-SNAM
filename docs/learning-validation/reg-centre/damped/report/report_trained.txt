@@ -1,0 +1,66 @@
+PASS  loss:checkpoint.fitness: held-out fitness is higher at the last evaluation than at the first  +0.03906 [+0.03672, +0.04141] n=5
+PASS  loss:checkpoint.heldout.obj_loss: held-out obj_loss is lower at the last evaluation than at the first  +1.686 [+1.649, +1.715] n=5
+FAIL  loss:checkpoint.heldout.obj_goal: held-out obj_goal is lower at the last evaluation than at the first  -0.1404 [-0.1435, -0.1375] n=5
+PASS  loss:checkpoint.heldout.obj_col: held-out obj_col is lower at the last evaluation than at the first  +0.1401 [+0.1295, +0.1516] n=5
+PASS  loss:checkpoint.heldout.obj_reg: held-out obj_reg is lower at the last evaluation than at the first  +14.06 [+13.9, +14.29] n=5
+PASS  loss:objective-sdf:loss:trained-vs-untrained: held-out loss (objective-sdf) is lower for trained than for untrained (paired by held-out pair, 95% CI)  -1.7 [-1.773, -1.631] n=5120 over 5 runs
+FAIL  loss:objective-sdf:loss:trained-vs-final: held-out loss (objective-sdf) is lower for trained than for final (paired by held-out pair, 95% CI)  +0.02598 [+0.0108, +0.04254] n=5120 over 5 runs
+FAIL  loss:objective-sdf:loss:trained-vs-constant: held-out loss (objective-sdf) is lower for trained than for constant (paired by held-out pair, 95% CI)  -0.03042 [-0.09593, +0.01438] n=5120 over 5 runs
+PASS  loss:objective-sdf:loss:trained-vs-constant_final: held-out loss (objective-sdf) is lower for trained than for constant_final (paired by held-out pair, 95% CI)  -0.1793 [-0.2212, -0.1402] n=5120 over 5 runs
+PASS  loss:objective-sdf:loss:trained-vs-centre: held-out loss (objective-sdf) is lower for trained than for centre (paired by held-out pair, 95% CI)  -0.0422 [-0.06756, -0.01823] n=5120 over 5 runs
+PASS  loss:objective-sdf:loss:trained-vs-published: held-out loss (objective-sdf) is lower for trained than for published (paired by held-out pair, 95% CI)  -1.653 [-1.721, -1.588] n=5120 over 5 runs
+FAIL  loss:objective-sdf:goal:trained-vs-untrained: held-out goal (objective-sdf) is lower for trained than for untrained (paired by held-out pair, 95% CI)  +0.1608 [+0.1543, +0.1678] n=5120 over 5 runs
+FAIL  loss:objective-sdf:goal:trained-vs-final: held-out goal (objective-sdf) is lower for trained than for final (paired by held-out pair, 95% CI)  +0.01769 [+0.0124, +0.02271] n=5120 over 5 runs
+FAIL  loss:objective-sdf:goal:trained-vs-constant: held-out goal (objective-sdf) is lower for trained than for constant (paired by held-out pair, 95% CI)  +0.008901 [+0.005496, +0.01299] n=5120 over 5 runs
+FAIL  loss:objective-sdf:goal:trained-vs-constant_final: held-out goal (objective-sdf) is lower for trained than for constant_final (paired by held-out pair, 95% CI)  +0.02507 [+0.01873, +0.03089] n=5120 over 5 runs
+PASS  loss:objective-sdf:goal:trained-vs-centre: held-out goal (objective-sdf) is lower for trained than for centre (paired by held-out pair, 95% CI)  -0.03053 [-0.03832, -0.02315] n=5120 over 5 runs
+FAIL  loss:objective-sdf:goal:trained-vs-published: held-out goal (objective-sdf) is lower for trained than for published (paired by held-out pair, 95% CI)  +0.1596 [+0.1516, +0.1676] n=5120 over 5 runs
+PASS  loss:objective-sdf:col:trained-vs-untrained: held-out col (objective-sdf) is lower for trained than for untrained (paired by held-out pair, 95% CI)  -0.1526 [-0.1772, -0.1299] n=5120 over 5 runs
+FAIL  loss:objective-sdf:col:trained-vs-final: held-out col (objective-sdf) is lower for trained than for final (paired by held-out pair, 95% CI)  +0.00182 [-0.002955, +0.006807] n=5120 over 5 runs
+PASS  loss:objective-sdf:col:trained-vs-constant: held-out col (objective-sdf) is lower for trained than for constant (paired by held-out pair, 95% CI)  -0.01917 [-0.03998, -0.003015] n=5120 over 5 runs
+PASS  loss:objective-sdf:col:trained-vs-constant_final: held-out col (objective-sdf) is lower for trained than for constant_final (paired by held-out pair, 95% CI)  -0.07415 [-0.08712, -0.06163] n=5120 over 5 runs
+PASS  loss:objective-sdf:col:trained-vs-centre: held-out col (objective-sdf) is lower for trained than for centre (paired by held-out pair, 95% CI)  -0.01136 [-0.01976, -0.003289] n=5120 over 5 runs
+PASS  loss:objective-sdf:col:trained-vs-published: held-out col (objective-sdf) is lower for trained than for published (paired by held-out pair, 95% CI)  -0.14 [-0.1621, -0.1191] n=5120 over 5 runs
+PASS  loss:objective-sdf:reg:trained-vs-untrained: held-out reg (objective-sdf) is lower for trained than for untrained (paired by held-out pair, 95% CI)  -14.03 [-14.24, -13.86] n=5120 over 5 runs
+FAIL  loss:objective-sdf:reg:trained-vs-final: held-out reg (objective-sdf) is lower for trained than for final (paired by held-out pair, 95% CI)  +0.02828 [+0.001308, +0.05548] n=5120 over 5 runs
+FAIL  loss:objective-sdf:reg:trained-vs-constant: held-out reg (objective-sdf) is lower for trained than for constant (paired by held-out pair, 95% CI)  +0.1819 [+0.1432, +0.2269] n=5120 over 5 runs
+FAIL  loss:objective-sdf:reg:trained-vs-constant_final: held-out reg (objective-sdf) is lower for trained than for constant_final (paired by held-out pair, 95% CI)  +0.1806 [+0.1373, +0.229] n=5120 over 5 runs
+FAIL  loss:objective-sdf:reg:trained-vs-centre: held-out reg (objective-sdf) is lower for trained than for centre (paired by held-out pair, 95% CI)  +0.2243 [+0.1854, +0.27] n=5120 over 5 runs
+PASS  loss:objective-sdf:reg:trained-vs-published: held-out reg (objective-sdf) is lower for trained than for published (paired by held-out pair, 95% CI)  -13.93 [-13.97, -13.88] n=5120 over 5 runs
+PASS  selection:heldout: each run picked its checkpoint on held-out data
+PASS  selection:not-untrained: each run's pick comes after its first evaluation (the untrained policy)
+FAIL  task:coef:reach:trained-vs-untrained: coef reach is higher for trained than for untrained (paired seeds, 95% CI)  -0.003646 [-0.008958, +0.00151] n=100 over 5 runs
+FAIL  task:coef:reach:trained-vs-final: coef reach is higher for trained than for final (paired seeds, 95% CI)  -0.01385 [-0.01792, -0.009687] n=100 over 5 runs
+FAIL  task:coef:reach:trained-vs-constant: coef reach is higher for trained than for constant (paired seeds, 95% CI)  -0.03172 [-0.03875, -0.025] n=100 over 5 runs
+FAIL  task:coef:reach:trained-vs-constant_final: coef reach is higher for trained than for constant_final (paired seeds, 95% CI)  -0.03698 [-0.04375, -0.02969] n=100 over 5 runs
+FAIL  task:coef:reach:trained-vs-centre: coef reach is higher for trained than for centre (paired seeds, 95% CI)  -0.02891 [-0.03677, -0.02115] n=100 over 5 runs
+FAIL  task:coef:reach:trained-vs-published: coef reach is higher for trained than for published (paired seeds, 95% CI)  -0.002344 [-0.00875, +0.004479] n=100 over 5 runs
+PASS  task:coef:pen:trained-vs-untrained: coef pen is lower for trained than for untrained (paired seeds, 95% CI)  -1.375 [-1.63, -1.134] n=100 over 5 runs
+PASS  task:coef:pen:trained-vs-final: coef pen is lower for trained than for final (paired seeds, 95% CI)  -0.03432 [-0.05531, -0.01625] n=100 over 5 runs
+PASS  task:coef:pen:trained-vs-constant: coef pen is lower for trained than for constant (paired seeds, 95% CI)  -1.34 [-1.572, -1.112] n=100 over 5 runs
+PASS  task:coef:pen:trained-vs-constant_final: coef pen is lower for trained than for constant_final (paired seeds, 95% CI)  -1.379 [-1.62, -1.139] n=100 over 5 runs
+PASS  task:coef:pen:trained-vs-centre: coef pen is lower for trained than for centre (paired seeds, 95% CI)  -1.338 [-1.564, -1.114] n=100 over 5 runs
+PASS  task:coef:pen:trained-vs-published: coef pen is lower for trained than for published (paired seeds, 95% CI)  -1.333 [-1.57, -1.102] n=100 over 5 runs
+FAIL  task:scorecard:arrival_rate:trained-vs-untrained: scorecard arrival_rate is higher for trained than for untrained (paired seeds, 95% CI)  +0.005938 [-0.003281, +0.01438] n=100 over 5 runs
+FAIL  task:scorecard:arrival_rate:trained-vs-final: scorecard arrival_rate is higher for trained than for final (paired seeds, 95% CI)  +0.0004687 [-0.006719, +0.007188] n=100 over 5 runs
+FAIL  task:scorecard:arrival_rate:trained-vs-constant: scorecard arrival_rate is higher for trained than for constant (paired seeds, 95% CI)  -0.0007813 [-0.007656, +0.005781] n=100 over 5 runs
+FAIL  task:scorecard:arrival_rate:trained-vs-constant_final: scorecard arrival_rate is higher for trained than for constant_final (paired seeds, 95% CI)  -0.007812 [-0.01703, +0.001719] n=100 over 5 runs
+FAIL  task:scorecard:arrival_rate:trained-vs-centre: scorecard arrival_rate is higher for trained than for centre (paired seeds, 95% CI)  +0.004063 [-0.006875, +0.01484] n=100 over 5 runs
+FAIL  task:scorecard:arrival_rate:trained-vs-published: scorecard arrival_rate is higher for trained than for published (paired seeds, 95% CI)  +0.007969 [-0.0004687, +0.01609] n=100 over 5 runs
+FAIL  task:scorecard:mean_penetration_pct:trained-vs-untrained: scorecard mean_penetration_pct is lower for trained than for untrained (paired seeds, 95% CI)  +0 [+0, +0] n=100 over 5 runs
+FAIL  task:scorecard:mean_penetration_pct:trained-vs-final: scorecard mean_penetration_pct is lower for trained than for final (paired seeds, 95% CI)  +0 [+0, +0] n=100 over 5 runs
+FAIL  task:scorecard:mean_penetration_pct:trained-vs-constant: scorecard mean_penetration_pct is lower for trained than for constant (paired seeds, 95% CI)  +0 [+0, +0] n=100 over 5 runs
+FAIL  task:scorecard:mean_penetration_pct:trained-vs-constant_final: scorecard mean_penetration_pct is lower for trained than for constant_final (paired seeds, 95% CI)  +0 [+0, +0] n=100 over 5 runs
+FAIL  task:scorecard:mean_penetration_pct:trained-vs-centre: scorecard mean_penetration_pct is lower for trained than for centre (paired seeds, 95% CI)  +0 [+0, +0] n=100 over 5 runs
+FAIL  task:scorecard:mean_penetration_pct:trained-vs-published: scorecard mean_penetration_pct is lower for trained than for published (paired seeds, 95% CI)  +0 [+0, +0] n=100 over 5 runs
+
+24 pass, 31 fail
+untested: checkpoint.heldout.reach: no training twin: a metric, not a loss term
+untested: checkpoint.heldout.clean_reach: no training twin: a metric, not a loss term
+untested: checkpoint.heldout.pen_frac: no training twin: a metric, not a loss term
+untested: checkpoint.heldout.pen_ticks: no training twin: a metric, not a loss term
+untested: checkpoint.heldout.path_m: no training twin: a metric, not a loss term
+untested: checkpoint.heldout.min_clear_m: no training twin: a metric, not a loss term
+untested: checkpoint.heldout.gap_m: no training twin: a metric, not a loss term
+untested: checkpoint.heldout.time_to_goal_s: no training twin: a metric, not a loss term
+wrote runs/report/report_trained.json
