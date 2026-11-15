@@ -524,6 +524,7 @@ To confirm the logging end to end on the real data: one seed, two epochs, on `pl
 | file | what |
 |---|---|
 | `retrain/seed{0..4}.history.jsonl.gz` | the five training histories (`grl_snam.coef_train_history/v1`) |
+| `retrain/checkpoints/seed{0..4}/*.pt` | every checkpoint the histories name, 41 a seed (the Pages site's scrub page deploys them) |
 | `curves.json`, `curves.png` | §3.1, from the histories |
 | `objective.json` | §3.3 |
 | `arms.json` | §3.4, §3.6, §3.7: scorers `austin`, `city`, `native` |
