@@ -2,9 +2,9 @@
 the same arms, test pairs and paired bootstrap as ``sdf_arms.py``. The histories hold these terms
 for the trained runs only; this puts the untrained, constant and published arms beside them.
 
-Per pair: ``goal`` (squared end distance after the training horizon), ``col`` (the clearance
-softplus), ``reg`` (the pull toward the bias regime) and ``loss = goal + 3 col + 0.1 reg``, from
-the library's scorer (``grl_snam.learning.objective.sdf_terms``, which ``grl-snam arms-eval
+Per pair, in the runs' sim frame and with the runs' objective (``meta`` of the first seed's
+``coef_sdf.pt``): ``goal``, ``col`` (the clearance softplus), ``reg`` (the pull toward the bias
+regime) and ``loss = goal + 3 col + 0.1 reg``, from the library's scorer (``grl_snam.learning.objective.sdf_terms``, which ``grl-snam arms-eval
 --cases objective-sdf`` runs for one training seed's arms).
 
     python experiments/learning_proof/objective_arms.py --sdf nav_sdf.npz --runs runs/retrain \\
@@ -22,10 +22,9 @@ import numpy as np
 import torch
 
 from grl_snam.learning import objective
-from grl_snam.tools import sdf_eval
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sdf_arms import arms_from_runs, constant_coef_mlp  # noqa: E402
+from sdf_arms import arms_from_runs, austin_pairs, constant_coef_mlp, run_meta  # noqa: E402
 from stats import level, paired  # noqa: E402
 
 TERMS = ("loss", "goal", "col", "reg")
@@ -56,13 +55,8 @@ def main(argv=None):
     arms["constant_trained"] = [constant_coef_mlp(*m) for m in c["constant_trained"]]
     if c.get("constant_final"):
         arms["constant_final"] = [constant_coef_mlp(*m) for m in c["constant_final"]]
-    scene = sdf_eval.load_scene(args.sdf)
-    meta = torch.load(args.published, map_location="cpu", weights_only=False)["meta"]
-    pool = sdf_eval.free_pool(scene, meta["rr"])
-    _, held = sdf_eval.split_pool(
-        pool, scene.region_n, header["val_blocks"], header["heldout_blocks"]
-    )
-    s, g = sdf_eval.sample_pairs(scene, held, args.test_pairs, args.test_seed, rr=meta["rr"])
+    meta = run_meta(args.runs)
+    scene, s, g = austin_pairs(args, header, meta)
     units = {a: [per_pair(m, scene, s, g, meta) for m in ms] for a, ms in arms.items()}
 
     def stack(a, t):

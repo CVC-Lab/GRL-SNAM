@@ -69,8 +69,7 @@ def setup() -> None:
     ny, nx = occ0.shape
     sdf_npz = os.environ.get("GRL_SNAM_SDF", "")
     if sdf_npz and os.path.exists(sdf_npz):
-        d = np.load(sdf_npz)
-        phi, nxg, nyg = d["phi"], d["normal_x"], d["normal_y"]
+        phi, nxg, nyg = sdf_nav.load_sdf_planes(sdf_npz, scale)
     else:
         phi, nxg, nyg = sdf_nav.build_sdf(occ0, bounds, scale)
     field = sdf_nav.SDFField(phi, nxg, nyg, bounds, center, scale, device="cpu")

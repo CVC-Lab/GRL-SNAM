@@ -245,6 +245,19 @@ def build_sdf_cvc(
     return (out + (arr,)) if return_volume else out
 
 
+def load_sdf_planes(sdf_npz: str, scale: float | None = None):
+    """``(phi, normal_x, normal_y)`` of a ``nav_sdf.npz``, in the frame of ``scale`` sim units
+    per metre (a checkpoint's ``meta["scale"]``): ``phi`` times ``scale`` over the npz's own.
+    The geometry in metres is the same; ``None`` or the npz's own scale returns its planes as
+    they are."""
+    d = np.load(sdf_npz)
+    phi = d["phi"]
+    s0 = float(d["scale"])
+    if scale is not None and abs(float(scale) - s0) > 1e-6 * s0:
+        phi = (phi.astype(np.float64) * (float(scale) / s0)).astype(np.float32)
+    return phi, d["normal_x"], d["normal_y"]
+
+
 class SDFField:
     """A normalized SDF on a device; differentiable sampling at agent positions."""
 

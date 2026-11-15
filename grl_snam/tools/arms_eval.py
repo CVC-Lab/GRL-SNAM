@@ -28,7 +28,8 @@ its held-out units, so the loss family is tested against the same arms as the ta
 - ``objective-sdf``: ``grl-snam train``'s terms (loss, goal, col, reg) per held-out pair of
   ``--sdf``, ``--pairs`` pairs drawn with ``--pair-seed`` inside the run's held-out blocks
   (``--split-history``, the run's history, or ``--val-frac``/``--val-seed``/``--val-blocks``).
-  The rollout settings are the first ``.pt`` arm's ``meta``.
+  The rollout settings (sim frame, physics, objective) are the ``.pt`` arms' ``meta``, or
+  ``--meta-from ARM``'s, in which every arm is then scored.
 - ``objective-coef``: coef-train's terms (loss, goal, coll) per held-out start of the city on
   ``--grid``, ``--heldout-agents`` drawn with ``--heldout-seed``, ``--horizon`` steps of
   ``--rollout`` (surrogate or bicycle, with the trainer's ``--w-coll`` and window unless given).
@@ -132,25 +133,40 @@ def score_scorecard(
     return out
 
 
-def checkpoint_meta(arms: list[ArmSpec]) -> dict | None:
-    """The rollout settings of the ``.pt`` arms (``grl-snam train`` checkpoints carry them), or
-    ``None`` when no arm has them. Arms trained under different settings are refused."""
+def _settings(meta: dict) -> dict:
+    """What a checkpoint's ``meta`` says the objective-sdf rollout is: physics, sim frame and
+    objective (a checkpoint from before the 20 m frame and the task objective has neither)."""
+    got = {k: meta[k] for k in ("rr", "d_hat", "dt", "vmax", "horizon", "scale")}
+    obj = meta.get("objective") or {}
+    got.update({k: obj[k] for k in objective.SDF_OBJECTIVE_KEYS if k in obj})
+    got.setdefault("kind", "end-distance")
+    return got
+
+
+def checkpoint_meta(arms: list[ArmSpec], meta_from: str | None = None) -> dict | None:
+    """The ``meta`` that sets the objective-sdf rollout: the ``.pt`` arm ``meta_from``'s (the
+    other arms are scored in its frame and objective), else that of the ``.pt`` arms (``grl-snam
+    train`` checkpoints carry it), refusing arms trained under different settings. ``None`` when
+    no arm has one."""
     import torch
 
-    keys = ("rr", "d_hat", "dt", "vmax", "horizon")
     found = None
     for a in arms:
-        if a.kind != "pt":
+        if a.kind != "pt" or (meta_from is not None and a.name != meta_from):
             continue
         ck = torch.load(a.spec, map_location="cpu")
         meta = ck.get("meta") if isinstance(ck, dict) else None
         if not meta:
             continue
-        got = {k: meta[k] for k in keys}
         if found is None:
-            found = (a.name, got)
-        elif got != found[1]:
-            raise ValueError(f"arms {found[0]!r} and {a.name!r} were trained with other settings")
+            found = (a.name, meta)
+        elif _settings(meta) != _settings(found[1]):
+            raise ValueError(
+                f"arms {found[0]!r} and {a.name!r} were trained with other settings "
+                "(--meta-from ARM scores every arm in one arm's)"
+            )
+    if meta_from is not None and found is None:
+        raise ValueError(f"--meta-from {meta_from!r}: no such .pt arm with a meta")
     return None if found is None else found[1]
 
 
@@ -170,7 +186,7 @@ def score_objective_sdf(
     """``{term: {arm: {pair: value}}}``: ``grl-snam train``'s objective per held-out pair."""
     from grl_snam.tools import sdf_eval
 
-    scene = sdf_eval.load_scene(sdf)
+    scene = sdf_eval.load_scene(sdf, scale=meta["scale"] if meta else None)
     m = objective.sdf_meta(scene, meta)
     blocks, held = objective.sdf_split(
         split_history, val_frac=val_frac, val_seed=val_seed, val_blocks=val_blocks
@@ -186,7 +202,11 @@ def score_objective_sdf(
         notes["objective-sdf"] = [
             f"{pairs} held-out pairs, seed {pair_seed}",
             f"held-out blocks {held} of {blocks}x{blocks}",
-            "rollout " + ", ".join(f"{k} {v:g}" for k, v in m.items()),
+            "rollout "
+            + ", ".join(
+                f"{k} {v:g}" if not isinstance(v, str) else f"{k} {v}" for k, v in m.items()
+            ),
+            f"sim frame {1.0 / scene.scale:g} m per unit",
         ]
     return out
 
@@ -238,7 +258,8 @@ def evaluate_arms(arms: list[ArmSpec], seeds, cases=DEFAULT_CASES, notes=None, *
     """``{case: {metric: {arm: {unit: value}}}}`` for every arm on every unit. ``kw`` are the
     cases' settings: ``grid``, ``mu``, ``agents``, ``ticks`` (coef); ``scene_agents``,
     ``scene_steps``, ``scene_grid``, ``contact_r`` (scorecard); ``sdf``, ``split_history``,
-    ``val_frac``, ``val_seed``, ``val_blocks``, ``pairs``, ``pair_seed`` (objective-sdf);
+    ``val_frac``, ``val_seed``, ``val_blocks``, ``pairs``, ``pair_seed``, ``meta_from``
+    (objective-sdf);
     ``grid``, ``horizon``, ``heldout_agents``, ``heldout_seed``, ``rollout``, ``w_coll``,
     ``window`` (objective-coef). ``notes`` (a dict) receives each loss case's description."""
     bad = [c for c in cases if c not in CASES]
@@ -272,7 +293,7 @@ def evaluate_arms(arms: list[ArmSpec], seeds, cases=DEFAULT_CASES, notes=None, *
             values[case] = score_objective_sdf(
                 models,
                 sdf=kw["sdf"],
-                meta=checkpoint_meta(arms),
+                meta=checkpoint_meta(arms, kw.get("meta_from")),
                 split_history=kw.get("split_history"),
                 val_frac=kw.get("val_frac"),
                 val_seed=kw.get("val_seed", 0),
@@ -374,6 +395,11 @@ def main(argv=None) -> int:
     g.add_argument("--val-blocks", type=int, default=8, help="the run's --val-blocks (8)")
     g.add_argument("--pairs", type=int, default=1024, help="held-out pairs (1024)")
     g.add_argument("--pair-seed", type=int, default=777, help="their seed (777)")
+    g.add_argument(
+        "--meta-from",
+        help="the .pt arm whose checkpoint meta (sim frame, physics, objective) every arm is "
+        "scored in (default: the .pt arms' common meta; differing ones are refused)",
+    )
     g = ap.add_argument_group("objective-coef case (coef-train's objective, held-out starts)")
     g.add_argument("--heldout-seed", type=int, default=123, help="held-out starts' seed (123)")
     g.add_argument("--heldout-agents", type=int, default=200, help="held-out starts (200)")
@@ -416,6 +442,7 @@ def main(argv=None) -> int:
         val_blocks=args.val_blocks,
         pairs=args.pairs,
         pair_seed=args.pair_seed,
+        meta_from=args.meta_from,
         horizon=args.horizon,
         heldout_agents=args.heldout_agents,
         heldout_seed=args.heldout_seed,

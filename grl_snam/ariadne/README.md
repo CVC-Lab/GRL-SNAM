@@ -508,8 +508,9 @@ measured), every setting with its unit and range, the panels, and batch runs.
 
 What GRL-SNAM adds is `--grl-policy`:
 - **With it,** libcvc's navigator (GRL-SNAM's navigator, in C++) drives with the published policy
-  (`grl-snam-weights`, which needs torch to export it to `.cvcnav`), in the frame it was trained in
-  (1 unit = 300 m: `--nav-scale`).
+  (`grl-snam-weights`, which needs torch to export it to `.cvcnav`), in the frame its checkpoint
+  records (`meta["scale"]`, passed as `--nav-scale`: 1 unit = 300 m for the published policy; a
+  `grl-snam train` checkpoint since docs/learning-validation.md §9 is 20 m per unit).
 - **Without it,** `--controller navigator` uses libcvc's built-in policy.
 
 The published policy was trained on the point surrogate. On vehicles it does worse than a

@@ -79,7 +79,7 @@ def test_the_held_out_split_scores_every_checkpoint_and_keeps_the_pick(sdf_npz, 
     assert hdr["heldout_blocks"] == sdf_eval.block_split(4, 0.25, 0)
     cks = [r for r in recs if r["kind"] == "checkpoint"]
     for c in cks:
-        assert c["fitness"] == c["heldout"]["reach"]
+        assert c["fitness"] == c["heldout"]["clean_reach"]  # the default pick
         assert {
             "obj_loss",
             "obj_goal",
@@ -143,7 +143,11 @@ def test_the_seek_drive_arrives_in_the_open_and_stops_there(sdf_npz):
     assert 30.0 < d["path_m"][0] < 60.0
     assert d["alpha"][0] == pytest.approx(1.0, abs=0.2)
     s = sdf_eval.drive_summary(d, 0.06)
-    assert set(s) == {"reach", "pen_ticks", "path_m", "min_clear_m", "gap_m", "time_to_goal_s"}
+    assert set(s) == {
+        "reach", "clean_reach", "pen_frac", "pen_ticks", "path_m", "min_clear_m", "gap_m",
+        "time_to_goal_s",
+    }  # fmt: skip
+    assert s["clean_reach"] == s["reach"] and s["pen_frac"] == 0.0
     assert s["time_to_goal_s"] == pytest.approx(
         float(d["ticks_to_goal"][d["reached"]].mean()) * 0.06
     )

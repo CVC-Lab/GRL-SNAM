@@ -142,7 +142,11 @@ grl-snam train     path/to/austin_south/nav_sdf.npz -o coef_sdf.pt --steps 1500
 grl-snam capture multigoal path/to/austin_south coef_sdf.pt --minutes 3 -o drive.mp4
 ```
 
-`build-sdf`/`train` run on CPU in a few minutes (GPU auto-used if present).
+`build-sdf`/`train` run on CPU in a few minutes (GPU auto-used if present). `build-sdf` frames the
+map at ~10 units across its region (Austin: 300 m per unit); `train` reads it in a 20 m sim frame,
+the unit its physics constants mean, so the robot is its real size on any map (`--metres-per-unit`;
+[docs/learning-validation.md](docs/learning-validation.md) §9). The checkpoint's `meta["scale"]` is
+that frame, and the tools read the field in it.
 `capture` renders the real 3-D scene **offscreen** through VTK (the VolRover3 engine —
 not a screen grab) and draws a **live metrics HUD** on every frame: the network's
 predicted coefficients (α, β, γ), wall clearance, speed, escape mode, and building
@@ -223,8 +227,11 @@ grl-snam learn-report seed*/history.jsonl --arms seed0.objective.json --arms see
   or `objective-coef`) score each arm with the trainer's own loss terms, one unit per held-out
   unit, with no gradient and a forked torch RNG:
   - `objective-sdf`: `grl-snam train`'s loss, goal, col and reg per held-out pair (`--pairs`
-    drawn with `--pair-seed` inside the run's held-out blocks, `--split-history`). Their mean is
-    the `obj_<term>` the run's history logs.
+    drawn with `--pair-seed` inside the run's held-out blocks, `--split-history`), in the run's
+    sim frame and with its objective. Their mean is the `obj_<term>` the run's history logs.
+    Arms trained in other frames or objectives are refused, unless `--meta-from ARM` names the
+    arm whose checkpoint sets them (the published `coef_sdf.pt` is 300 m per unit; a run since
+    §9, 20 m).
   - `objective-coef`: coef-train's loss, goal and coll per held-out start (`--heldout-seed`,
     `--heldout-agents`, `--horizon`, `--grid`, `--rollout surrogate|bicycle`). Their mean is
     what the trainer's step record logs at a fixed net.
@@ -256,6 +263,13 @@ grl-snam learn-report seed*/history.jsonl --arms seed0.objective.json --arms see
   untrained, and −0.16 [−0.21, −0.12] against a constant at the trained net's own mean. The
   task does not: the trained nets reach fewer held-out goals than untrained (Austin
   −1.2 [−1.8, −0.6]), because on Austin that objective prefers clearance.
+
+  Deeper down, the sim was not in world units: Austin's `nav_sdf.npz` is 300 m per unit and the
+  physics constants mean 20 m, so the trainer drove a 270 m/s robot (the doc's §9). `grl-snam
+  train` now simulates it at its real size (`--metres-per-unit 20`), with an objective that is the
+  task (`--objective task`) and a pick on held-out reach without penetration. Rerun, held-out reach
+  rises on every seed (+0.7 points [+0.6, +0.9] along the run), but on independent test pairs the
+  gain is within the noise: +0.6 [−0.2, +1.4] against untrained.
 
 ### Live inside VolRover3
 

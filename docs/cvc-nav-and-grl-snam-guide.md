@@ -793,6 +793,14 @@ device path is `CVC_ENABLE_CUDA`-gated and auto-skips without a device.
   `pycvc` has no nav, so the suite passes on a tier-1-only machine without
   exercising a single C++ kernel. Run it with `-v` and confirm the tests actually
   ran before treating a pass as verification.
+- **Sim units are 20 m on the city, not on every npz.** The physics constants (`rr` 0.15,
+  `d_hat` 0.35, `vmax` 0.9, the 1.8 carrot, `carrot_step`'s 0.15 stall and 1.6 wall-follow) are
+  numbers in normalized units tuned at 20 m per unit. `grl-snam build-sdf` frames a map at ~10
+  units across its region (Austin's `nav_sdf.npz`: 300 m per unit), where the same numbers are a
+  270 m/s robot. A checkpoint's `meta["scale"]` is the frame it trained in; read an npz in it
+  (`grl_snam.tools.sdf_eval.load_scene(scale=)`, `sdf_nav.load_sdf_planes`). `grl-snam train`
+  trains in a 20 m frame (docs/learning-validation.md §9); the published `coef_sdf.pt` is
+  300 m per unit.
 - **`reach_tol` is in normalized units (0.8), not metres.** Both `Swarm` and
   `SdfNavigator` default `0.8`. Do not "fix" it to `0.15`; that changes the
   reach/park set on every run.

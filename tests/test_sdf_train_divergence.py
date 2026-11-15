@@ -49,8 +49,14 @@ def _steps(path):
     return [r for r in lh.read_history(path) if r["kind"] == "step"]
 
 
-def test_the_default_trainer_s_gradient_is_bounded_on_dense_geometry(dense_npz, tmp_path):
-    train_sdf(dense_npz, str(tmp_path / "a.pt"), history=str(tmp_path / "a.jsonl"), **RUN)
+@pytest.mark.parametrize(
+    "frame",
+    [{}, {"metres_per_unit": 0, "objective": "end-distance"}],
+    ids=["default", "section-8"],
+)
+def test_the_default_trainer_s_gradient_is_bounded_on_dense_geometry(dense_npz, tmp_path, frame):
+    """The default trainer, and §8's (Austin's own frame, the end-distance objective)."""
+    train_sdf(dense_npz, str(tmp_path / "a.pt"), history=str(tmp_path / "a.jsonl"), **frame, **RUN)
     steps = _steps(tmp_path / "a.jsonl")
     norms = [r["grad_norm"]["mean"] for r in steps]
     clipped = np.mean([r["grad_norm"]["clipped_frac"] for r in steps])
@@ -62,11 +68,12 @@ def test_the_default_trainer_s_gradient_is_bounded_on_dense_geometry(dense_npz, 
 
 
 def test_the_trainer_before_the_fix_still_explodes_there(dense_npz, tmp_path):
-    """``bptt_window=0, col_grad=False`` is the old trainer, kept to reproduce the published
-    weights; on the same draws its gradient is the exploding one."""
+    """``metres_per_unit=0, objective="end-distance", bptt_window=0, col_grad=False`` is the old
+    trainer, kept to reproduce the published weights; on the same draws in Austin's frame its
+    gradient is the exploding one."""
     train_sdf(
         dense_npz, str(tmp_path / "b.pt"), history=str(tmp_path / "b.jsonl"), bptt_window=0,
-        col_grad=False, grad_terms_every=1, **RUN,
+        col_grad=False, grad_terms_every=1, metres_per_unit=0, objective="end-distance", **RUN,
     )  # fmt: skip
     steps = _steps(tmp_path / "b.jsonl")
     assert np.median([r["grad_norm"]["mean"] for r in steps]) > 200.0
@@ -95,12 +102,15 @@ def test_window_and_col_grad_change_no_value_of_the_objective(dense_npz):
     starts, goals = sdf_eval.sample_pairs(scene, pool, 64, 1, rr=rr)
     kw = dict(rr=rr, d_hat=0.35, dt=0.06, vmax=0.9, horizon=28)
     model = (torch.manual_seed(0), sdf_nav.CoefMLP())[1]
-    ref = sdf_eval.objective_terms(model, scene, starts, goals, window=0, col_grad=False, **kw)
-    for window, col_grad in ((7, True), (3, False), (1, True)):
-        got = sdf_eval.objective_terms(
-            model, scene, starts, goals, window=window, col_grad=col_grad, **kw
+    for kind in ("end-distance", "task"):
+        ref = sdf_eval.objective_terms(
+            model, scene, starts, goals, window=0, col_grad=False, kind=kind, **kw
         )
-        assert got == pytest.approx(ref, rel=1e-6, abs=1e-7), (window, col_grad)
+        for window, col_grad in ((7, True), (3, False), (1, True)):
+            got = sdf_eval.objective_terms(
+                model, scene, starts, goals, window=window, col_grad=col_grad, kind=kind, **kw
+            )
+            assert got == pytest.approx(ref, rel=1e-6, abs=1e-7), (kind, window, col_grad)
     # The truncated, collision-aware gradient is finite and reaches all three heads.
     t, (al, be, ga) = sdf_eval.loss_terms(
         model, scene.field, starts, goals, window=7, col_grad=True, **kw

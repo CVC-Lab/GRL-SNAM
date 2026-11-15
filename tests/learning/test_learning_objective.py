@@ -84,10 +84,12 @@ def test_coef_terms_are_the_trainers_own_at_step_zero(rollout, fn, coef_scene):
         assert float(mine[t].mean()) == pytest.approx(logged[t], rel=1e-5, abs=1e-7), t
 
 
-def test_sdf_terms_mean_is_the_histories_objective(sdf_npz):
+@pytest.mark.parametrize("kind", ["end-distance", "task"])
+def test_sdf_terms_mean_is_the_histories_objective(sdf_npz, kind):
     scene = sdf_eval.load_scene(sdf_npz)
     m = O.sdf_meta(scene)
     assert m["rr"] == pytest.approx(0.03) and m["horizon"] == 28
+    m["kind"] = kind
     blocks, held = O.sdf_split(val_frac=0.25, val_seed=0, val_blocks=4)
     s, g = O.sdf_heldout_pairs(scene, blocks, held, 24, 7, rr=m["rr"])
     torch.manual_seed(1)
@@ -161,10 +163,13 @@ def test_arms_eval_objective_sdf_and_the_loss_claims(sdf_npz, sdf_run, tmp_path,
     )
     assert res["primary"] == list(O.SDF_TERMS) and t["meta"]["label"] == "seed0"
     assert all(t["direction"][m] == "down" for m in O.SDF_TERMS)
-    assert "seed 3" in res["flags"][0] and "rollout rr 0.03" in res["flags"][2]
-    # The untrained arm's terms are the step-0 net's on the same pairs.
-    scene = sdf_eval.load_scene(sdf_npz)
-    m = O.sdf_meta(scene, torch.load(sdf_run / "coef_sdf.pt")["meta"])
+    # The run's sim frame (20 m per unit: rr 3 m = 0.15) and its objective.
+    assert "seed 3" in res["flags"][0] and "rollout rr 0.15" in res["flags"][2]
+    assert "kind task" in res["flags"][2] and "sim frame 20 m per unit" in res["flags"][3]
+    # The untrained arm's terms are the step-0 net's on the same pairs, in the run's frame.
+    meta = torch.load(sdf_run / "coef_sdf.pt")["meta"]
+    scene = sdf_eval.load_scene(sdf_npz, scale=meta["scale"])
+    m = O.sdf_meta(scene, meta)
     s, g = O.sdf_heldout_pairs(scene, *O.sdf_split(hist), 24, 3, rr=m["rr"])
     step0 = A.load_arm_model(A.parse_arm(f"u={sdf_run / 'coef_sdf.step000000.pt'}"))
     want = O.sdf_terms(step0, scene, s, g, **m)["goal"]

@@ -1,0 +1,18 @@
+{
+ "what": "untrained net (retrain seed 0 step 0 of section 8), Austin's 1024 held-out test pairs (seed 777), reach by drive length",
+ "seek_drive_20m_frame": {
+  "200": 0.0,
+  "600": 0.281,
+  "1000": 0.286,
+  "2000": 0.286
+ },
+ "seek_drive_npz_frame": {
+  "200": 0.067
+ },
+ "sim_world_20m_frame": {
+  "600": 0.292,
+  "1500": 0.467,
+  "3000": 0.528
+ },
+ "note": "seek drive: nsub 3, reach_tol 0.05 npz units (15 m), no penetration at any length; sim_world: the kinematic bicycle with the carrot FSM's wall-follow escape"
+}

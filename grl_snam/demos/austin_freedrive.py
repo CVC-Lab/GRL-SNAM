@@ -23,7 +23,6 @@ from __future__ import annotations
 import copy
 import os
 
-import numpy as np
 import torch
 
 import grl_snam.sdf_nav as sdf_nav
@@ -71,8 +70,7 @@ def setup() -> None:
     sample, bounds = city.sample, city.bounds
     sdf_npz = os.environ.get("GRL_SNAM_SDF", "")
     if sdf_npz and os.path.exists(sdf_npz):
-        d = np.load(sdf_npz)
-        phi, nxg, nyg = d["phi"], d["normal_x"], d["normal_y"]
+        phi, nxg, nyg = sdf_nav.load_sdf_planes(sdf_npz, float(meta["scale"]))
     else:
         print("grl_snam austin_freedrive: rasterizing occupancy + building SDF...", flush=True)
         occ = city.occupancy(bounds, 512, 512, inflate_m=0.0)
