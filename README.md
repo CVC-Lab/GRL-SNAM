@@ -79,6 +79,7 @@ grl-snam --help
 | `grl-snam train SDF.npz` | self-supervised SDF-coefficient training |
 | `grl-snam arms-eval --arm NAME=PATH …` | trained, untrained and constant policies on paired held-out seeds |
 | `grl-snam learn-report HIST…` | did the learner learn? held-out claims, each pass or fail |
+| `grl-snam ariadne scrub HIST` | watch it learn: every checkpoint of a training run deployed, checkpoint k beside step 0 |
 | `grl-snam capture drive\|multigoal …` | drive the policy → mp4 offscreen, with a live HUD |
 | `grl-snam pipeline BUNDLE` | the whole chain: world model → SDF → train → video |
 | `grl-snam demo NAME` | run a demo live inside VolRover3 |
@@ -100,13 +101,24 @@ the learning instruments ([Did it learn?](#did-it-learn-held-out-losses-arms-and
 windows: the held-out curves and their marks, the heads, the checkpoints, the arms and
 `learn-report`'s claims. `grl-snam ariadne live austin-freedrive --plant kinematic --arms
 trained,untrained,constant` drives policies side by side, one sim_world each, with Stats and
-Ledger windows. `--log` records the run, and `grl-snam ariadne replay` plays it back. `grl-snam ariadne scrub
-HIST` deploys every checkpoint of a training run on one scenario and shows checkpoint k beside
-step 0. `live` and
-`fleet` take the `cars` template's settings (libcvc's
-`nav.*`, `nav.vehicle.*` and `nav_plant.*` keys, mapped onto GRL-SNAM's torch navigator where
-they mean the same thing), its worlds (Austin, another city, a generated world, a flat square),
-its plants, its panels and its headless log.
+Ledger windows. `--log` records the run, and `grl-snam ariadne replay` plays it back.
+
+`grl-snam ariadne scrub HIST` deploys every checkpoint of a training run on one scenario and
+shows checkpoint k beside step 0:
+- each checkpoint's deployed metric (reached, time, path, ticks penetrating, clearance, what was
+  left to the goal) against its step, as a chart and a table;
+- the held-out curve from the history;
+- the two runs over the episode, with the Stats and Ledger windows.
+
+The runs are cached. `scrub --view REPORT...` shows runs deployed before, without torch.
+
+`live` and `fleet` take the `cars` template's settings (libcvc's `nav.*`, `nav.vehicle.*` and
+`nav_plant.*` keys, mapped onto GRL-SNAM's torch navigator where they mean the same thing), its
+worlds (Austin, another city, a generated world, a flat square), its plants, its panels and its
+headless log.
+
+`learn` and `scrub` also run in a browser, on libcvc's `ariglx-web`. The site in
+[pages/](pages/README.md) has a page for each, built from the learning check's runs.
 
 `grl-snam ariadne cars` runs libcvc's multi-car template (`pycvc_gl.cars`, pycvc-gl 3.7.12+). A
 controller of your own drives N Ackermann cars:
@@ -263,6 +275,17 @@ grl-snam learn-report seed*/history.jsonl --arms seed0.objective.json --arms see
   untrained, and −0.16 [−0.21, −0.12] against a constant at the trained net's own mean. The
   task does not: the trained nets reach fewer held-out goals than untrained (Austin
   −1.2 [−1.8, −0.6]), because on Austin that objective prefers clearance.
+
+  To watch a run checkpoint by checkpoint, deploy every checkpoint it saved with `grl-snam
+  ariadne scrub`. The learning check's checkpoints are the `grl-snam-learning-checkpoints` package
+  on cvcpkg.org: both retrains, 41 a seed. On the first retrain, no checkpoint reaches the goal,
+  and the outcomes are not ordered by training step.
+
+  ```bash
+  cvcpkg install grl-snam-learning-checkpoints --prefix <prefix>
+  grl-snam ariadne scrub docs/learning-validation/retrain/seed0.history.jsonl.gz \
+    --blobs <prefix>/share/grl-snam-learning-checkpoints/retrain/seed0
+  ```
 
   Deeper down, the sim was not in world units: Austin's `nav_sdf.npz` is 300 m per unit and the
   physics constants mean 20 m, so the trainer drove a 270 m/s robot (the doc's §9). `grl-snam
