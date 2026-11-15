@@ -212,10 +212,18 @@ which drove none). Same self-supervised recipe — the field is differentiable
 Build the SDF, then train:
 
 ```bash
-python scripts/build_sdf.py <bundle> --source edt      # grl-snam's exact footprint EDT (default)
-#                                     --source cvc      # OR CVC's mesh-exact 3-D SDF (pycvc.sdf, SDF_V2)
-python scripts/train_sdf.py <bundle>/nav_sdf.npz -o checkpoints/coef_sdf.pt --steps 1500
+grl-snam build-sdf <bundle> --source edt      # grl-snam's exact footprint EDT (default)
+#                           --source cvc      # OR CVC's mesh-exact 3-D SDF (pycvc.sdf, SDF_V2)
+grl-snam train <bundle>/nav_sdf.npz -o checkpoints/coef_sdf.pt --steps 1500
 ```
+
+**Units.** `build-sdf` frames the field the same way as above (`scale = 10 / (2R)`; Austin's
+`nav_sdf.npz` is 300 m per unit), but the SDF trainer does not drive in that frame. Its physics
+constants (robot radius, barrier band `d_hat` 0.35, top speed 0.9, the 1.8 seek carrot) mean a
+20 m unit, so `grl-snam train` reads the field at 20 m per unit (`--metres-per-unit`, default 20)
+and the robot is its real size: 3 m, 18 m/s, a 7 m barrier band. Read in the npz's own frame,
+Austin's robot was a 270 m/s one ([learning-validation.md](learning-validation.md) §9). Pairs
+are still drawn in the npz's frame, and the checkpoint's `meta["scale"]` is the 20 m frame.
 
 `--source cvc` uses the CVC compute layer and returns a full **3-D** volume (sliced
 to the ground plane for 2-D nav) — the natural substrate for extending GRL-SNAM to
@@ -279,9 +287,9 @@ specific map. The two are complementary.
 | Online adaptation | `HistSecantController`, `OnlineFinetuner` (`grl_snam.adaptation`) |
 | Geometry ingestion (circles) | [`scripts/extract_obstacles.py`](../scripts/extract_obstacles.py) |
 | Self-supervised trainer (circles) | [`scripts/train_on_geometry.py`](../scripts/train_on_geometry.py) |
-| **SDF obstacle model** (city-grade) | [`sdf_nav.py`](../sdf_nav.py) — EDT + cvc::sdf builders, `SDFField`, `sdf_rollout`, `CoefMLP` |
-| SDF field builder (`edt`/`cvc`) | [`scripts/build_sdf.py`](../scripts/build_sdf.py) |
-| SDF trainer | [`scripts/train_sdf.py`](../scripts/train_sdf.py) |
+| **SDF obstacle model** (city-grade) | [`grl_snam/sdf_nav.py`](../grl_snam/sdf_nav.py) — EDT + cvc::sdf builders, `SDFField`, `sdf_rollout`, `CoefMLP` |
+| SDF field builder (`edt`/`cvc`) | `grl-snam build-sdf` ([`grl_snam/tools/sdf.py`](../grl_snam/tools/sdf.py)) |
+| SDF trainer | `grl-snam train` ([`grl_snam/tools/train.py`](../grl_snam/tools/train.py); objective and held-out scoring in [`grl_snam/tools/sdf_eval.py`](../grl_snam/tools/sdf_eval.py)) |
 | Live demo (native sparse-obstacle regime) | [`examples/volrover_grl_snam_planner.py`](../examples/volrover_grl_snam_planner.py) |
 | Live demo (stagewise, real Austin) | [`examples/volrover_grl_snam_austin_learned.py`](../examples/volrover_grl_snam_austin_learned.py) |
 | Scene helpers (terrain/glTF/occupancy/route) | `pycvc_gl.scenes` |
