@@ -55,6 +55,7 @@ from grl_snam.ext_rollout import field_as
 
 __all__ = [
     "GymTwin",
+    "arrival_loss",
     "clearance_loss",
     "constant_policy",
     "drive_gym",
@@ -248,11 +249,13 @@ class GymTwin:
         delta, acc = self.control(state, coefs, goal_n, ext_force)
         return self.plant_tick(state, delta, acc), delta, acc
 
-    def rollout(self, policy: Callable[[torch.Tensor], torch.Tensor], state, T: int):
+    def rollout(self, policy: Callable[[torch.Tensor], torch.Tensor], state, T: int, goal=None):
         """``T`` ticks driven by ``policy(features) -> coefs [B, 3]``. Returns the states
-        ``[T + 1, B, 14]`` and the commands ``[T, B, 2]`` (steering, acceleration)."""
+        ``[T + 1, B, 14]`` and the commands ``[T, B, 2]`` (steering, acceleration). ``goal``
+        (``[B, 2]``, world metres) is each row's goal, the agents' own by default; rows may be
+        states from different ticks or episodes, each with its goal."""
         states, cmds = [state], []
-        goal_n = self.goal_norm()
+        goal_n = self.goal_norm() if goal is None else self.to_norm(goal)
         for _ in range(T):
             coefs = policy(self.features(state, goal_n))
             state, delta, acc = self.step(state, coefs, goal_n)
@@ -262,11 +265,30 @@ class GymTwin:
 
 
 # ---- losses ----
-def progress_loss(twin: GymTwin, states: torch.Tensor) -> torch.Tensor:
+def progress_loss(twin: GymTwin, states: torch.Tensor, goal=None) -> torch.Tensor:
     """The mean distance (m) left to each agent's goal over the rollout's ticks after the first,
-    less the reach: what the gym's progress reward pays for, made smooth."""
-    d = (states[1:, :, :2] - twin.goal[None]).norm(dim=-1)
+    less the reach: what the gym's progress reward pays for, made smooth. It rewards closing
+    fast and says nothing about stopping; :func:`arrival_loss` pays for arriving."""
+    g = twin.goal if goal is None else goal
+    d = (states[1:, :, :2] - g[None]).norm(dim=-1)
     return F.softplus(d - twin.reach).mean()
+
+
+def arrival_loss(
+    twin: GymTwin, states: torch.Tensor, goal=None, *, w_stop: float = 0.5, w_path: float = 0.05
+) -> torch.Tensor:
+    """What arriving is: ending the rollout inside the reach, stopped. Per row, the distance (m)
+    outside the reach at the last tick, plus ``w_stop`` x the speed (m/s) left there in
+    proportion to how far inside the reach it is (a smooth step of 1 m), plus ``w_path`` x the
+    mean distance outside the reach over the ticks, so a rollout that has not arrived still
+    learns to close."""
+    g = twin.goal if goal is None else goal
+    d = (states[:, :, :2] - g[None]).norm(dim=-1)  # [T + 1, B]
+    out_T = F.softplus(d[-1] - twin.reach)
+    inside_T = torch.sigmoid(twin.reach - d[-1])
+    speed_T = states[-1, :, 3].abs()
+    path = F.softplus(d[1:] - twin.reach).mean(0)
+    return (out_T + w_stop * inside_T * speed_T + w_path * path).mean()
 
 
 def clearance_loss(twin: GymTwin, states: torch.Tensor, margin_m: float = 2.0) -> torch.Tensor:
@@ -278,15 +300,18 @@ def clearance_loss(twin: GymTwin, states: torch.Tensor, margin_m: float = 2.0) -
 
 
 # ---- the gym as judge ----
-def drive_gym(gym, twin: GymTwin, policy, ticks: int, *, stop_when_done: bool = True):
+def drive_gym(gym, twin: GymTwin, policy, ticks: int, *, stop_when_done: bool = True, states=None):
     """Drive the gym itself for ``ticks`` ticks with the twin's controller and ``policy``: each tick,
     the agents' state from the gym, the drive's commands from the twin, sent as the gym's
-    ``step(steer, accel)``. Returns the last ``step`` result and the per-tick observations."""
+    ``step(steer, accel)``. Returns the last ``step`` result and the per-tick observations; with a
+    list as ``states``, each tick's agents' state before its step is appended to it."""
     obs_log = []
     out = None
     with torch.no_grad():
         for _ in range(ticks):
             s = twin.state(gym)
+            if states is not None:
+                states.append(s)
             coefs = policy(twin.features(s))
             delta, acc = twin.control(s, coefs)
             out = gym.step(delta.double().cpu().numpy(), acc.double().cpu().numpy())

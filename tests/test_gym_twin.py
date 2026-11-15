@@ -36,6 +36,7 @@ if "jolt" not in pycvc.physics_backends() or not pycvc.physics_backend_info("jol
 
 from grl_snam.gym_twin import (  # noqa: E402
     GymTwin,
+    arrival_loss,
     clearance_loss,
     constant_policy,
     drive_gym,
@@ -167,6 +168,26 @@ def test_the_gym_judges_a_policy():
     d1 = np.hypot(o["goal_x"] - o["x"], o["goal_y"] - o["y"])
     assert len(log) > 0
     assert bool((d1 < d0 - 20.0).all()), (d0, d1)
+
+
+def test_arrival_pays_for_stopping_inside_the_reach():
+    # Two hand-made rollouts to the same goal: one ends inside the reach and stopped, the other
+    # drives through it at speed. Only the first has arrived.
+    g = _gym()
+    t = GymTwin(g)
+    goal = torch.tensor([[0.0, 0.0]], dtype=torch.float64)
+    T = 10
+    stop = torch.zeros(T + 1, 1, 14, dtype=torch.float64)
+    through = torch.zeros(T + 1, 1, 14, dtype=torch.float64)
+    for k in range(T + 1):
+        stop[k, 0, 0] = -20.0 + 20.0 * min(1.0, k / 8)  # reaches the goal and stays, vx -> 0
+        stop[k, 0, 3] = max(0.0, 10.0 - 1.25 * k)
+        through[k, 0, 0] = -20.0 + 3.0 * k  # passes the goal at 10 m/s
+        through[k, 0, 3] = 10.0
+    assert arrival_loss(t, stop, goal) < arrival_loss(t, through, goal)
+    x = through.clone().requires_grad_(True)
+    (gx,) = torch.autograd.grad(arrival_loss(t, x, goal), x)
+    assert torch.isfinite(gx).all()
 
 
 def test_other_models_are_refused():
