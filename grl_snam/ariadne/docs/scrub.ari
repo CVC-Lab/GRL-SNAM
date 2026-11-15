@@ -5,7 +5,8 @@
 #   python -m grl_snam.ariadne scrub run/history.jsonl
 #   python -m grl_snam.ariadne scrub --view scrub.json ...   # runs deployed before, read back
 #
-# - Scrub: the history (a Run combo when the view has several), the scenario, and the checkpoint: a combo, a slider, previous / next, or a
+# - Scrub: the data set and the history (Set and Run combos when the view has several), the
+#   scenario, and the checkpoint: a combo, a slider, previous / next, or a
 #   click on either chart picks it (scrub.k). A deployed metric (Metric picks it) against the
 #   checkpoint's step, with step 0's as a dashed line and a cursor at the checkpoint; the same as
 #   a table, one row per checkpoint.
@@ -68,6 +69,7 @@ init: |
     (state-set "ledger.book" "dU")
     (state-set "scrub.metric_name" "path_m")
     (state-set "scrub.run_count" "1")
+    (state-set "scrub.set_count" "1")
     (state-set "nav_plant.vehicle" "kinematic")
     (state-set "run.world" "data")
     (state-set "run.uri" "cvcpkg://cy-pca/scene-austin-south-small")
@@ -102,6 +104,11 @@ windows:
     pos: [16, 30]
     size: [520, 640]
     children:
+      - combo: Set
+        bind: scrub.set_choice
+        options: (string.split (state-get "scrub.set_labels") "\n")
+        visible_when: (> (int (state-get "scrub.set_count")) 1)
+        tooltip: "the data set: the same run and step in another one"
       - combo: Run
         bind: scrub.run_choice
         options: (string.split (state-get "scrub.run_labels") "\n")

@@ -12,7 +12,8 @@ name: pages
 #   2. pages/assemble.py writes the site: the landing page (pages/site/), learn/, which runs
 #      `grl-snam ariadne learn` on the learning check's retrain histories
 #      (docs/learning-validation/retrain/), and scrub/, which runs `grl-snam ariadne scrub
-#      --view` on the retrain's checkpoints deployed here, natively, on libcvc's generated world
+#      --view` on the checkpoints of two of the learning check's data sets (retrain, and
+#      fixed/retrain), deployed here, natively, on libcvc's generated world
 #      (the page views runs; deploying a .pt checkpoint needs torch and libcvc's sim_world, so
 #      grl_snam's cvcpkg closure; the checkpoints come from the cvcpkg data package
 #      grl-snam-learning-checkpoints; the runs are cached by what they depend on); with
@@ -101,7 +102,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: scrub-runs
-          key: scrub-runs-v1-${{ hashFiles('grl_snam/**', 'docs/learning-validation/retrain/**', 'cvcpkg/recipes/grl-snam-learning-checkpoints/**') }}
+          key: scrub-runs-v2-${{ hashFiles('grl_snam/**', 'docs/learning-validation/retrain/**', 'docs/learning-validation/fixed/retrain/**', 'cvcpkg/recipes/grl-snam-learning-checkpoints/**') }}
 
       - name: Assemble the site, and the learn and scrub pages alone
         env:
@@ -113,18 +114,19 @@ jobs:
             curl -fsSL https://cvcpkg.org/install.sh | sh
             export PATH="$HOME/.local/bin:$PATH"
           }
-          # The retrain's saved policies are not in the repository: the cvcpkg data package
+          # The learning check's saved policies are not in the repository: the cvcpkg data package
           # grl-snam-learning-checkpoints (cvcpkg/recipes/grl-snam-learning-checkpoints) has them,
           # each checked against the committed histories' blobs by sha256 when it was packed.
           cvcpkg install grl-snam-learning-checkpoints --prefix "$RUNNER_TEMP/checkpoints" \
             --platform any --config release --link shared --no-fallback-to-source
           python3 pages/assemble.py --host ariglx-web/share/ariglx-web --out _site \
             --scrub --python "$PREFIX/bin/python3.12" --scrub-cache scrub-runs \
-            --checkpoints "$RUNNER_TEMP/checkpoints/share/grl-snam-learning-checkpoints/retrain"
+            --checkpoints "$RUNNER_TEMP/checkpoints/share/grl-snam-learning-checkpoints"
           python3 pages/assemble.py --host ariglx-web/share/ariglx-web --learn-only \
             --out _other_site/demos/learn
           python3 pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-only \
-            --out _other_site/demos/scrub --scrub-reports scrub-runs/*.scrub.json
+            --out _other_site/demos/scrub \
+            --scrub-reports scrub-runs/retrain/*.scrub.json scrub-runs/fixed/retrain/*.scrub.json
 
       - name: Load them in headless Chrome
         run: |

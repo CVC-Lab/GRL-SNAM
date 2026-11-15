@@ -412,6 +412,35 @@ def test_view_only_runs_side_by_side(deployed, tmp_path):
 
 
 @needs_host
+def test_view_only_data_sets_side_by_side(deployed, tmp_path):
+    """Two data sets with a run of the same name: a Set combo; picking the other set shows its
+    run of that name at the same training step."""
+    a = _moved(deployed, tmp_path / "a", "seed1.history.jsonl")
+    b = _moved(deployed, tmp_path / "b", "seed1.history.jsonl")
+    for path, name in ((a, "retrain"), (b, "fixed/retrain")):
+        rep = json.loads(path.read_text())
+        rep["set"] = name
+        path.write_text(json.dumps(rep))
+    seen = {}
+    code, hosts = _run(["scrub", "--view", str(a), str(b), "--headless", "--frames", "8"], {
+        2: lambda h: h.emit("scrub_next"),
+        4: lambda h: seen.update(first=h.get("scrub.title"), step=h.get("scrub.step")),
+        5: lambda h: h.set("scrub.set_choice", "fixed/retrain"),
+        7: lambda h: seen.update(second=h.get("scrub.title"), step2=h.get("scrub.step")),
+    })  # fmt: skip
+    assert code == 0
+    host = hosts[0]
+    assert host.get("scrub.set_count") == "2" and host.get("scrub.set_labels") == (
+        "retrain\nfixed/retrain"
+    )
+    assert host.get("scrub.run_labels") == "seed1" and host.get("scrub.run_count") == "1"
+    assert seen["first"].startswith("retrain/seed1:") and seen["second"].startswith(
+        "fixed/retrain/seed1:"
+    )
+    assert seen["step"] == seen["step2"] == "6"  # Next from the pick (4), kept across the sets
+
+
+@needs_host
 def test_view_only_refusals(deployed, tmp_path, capsys):
     report = _moved(deployed, tmp_path / "page")
     assert _main(["scrub", str(deployed["hist"]), "--view", str(report), "--headless"]) == 2
@@ -456,4 +485,5 @@ def test_assemble_deploys_a_scrub_page(deployed, tmp_path):
     rep = json.loads(report.read_text())
     assert rep["scenario"]["ticks"] == 40 and len(rep["checkpoints"]) == 4
     assert all((report.parent / c["cache"]).is_file() for c in rep["checkpoints"])
+    assert all(c["cache"].endswith(".lean.npz") for c in rep["checkpoints"])  # the page's are lean
     assert _main(["scrub", "--view", str(report), "--headless", "--frames", "2"]) == 0

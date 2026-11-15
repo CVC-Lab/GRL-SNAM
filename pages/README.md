@@ -34,7 +34,7 @@ cvcpkg install grl-snam-learning-checkpoints --prefix "$PREFIX" --platform any -
   --link shared --no-fallback-to-source
 python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-only \
   --out _site/scrub --python "$PREFIX/bin/python3.12" [--scrub-cache DIR] \
-  [--scrub-histories H...] [--checkpoints DIR] [--scrub-world generated|flat|data]
+  [--scrub-sets SET...] [--checkpoints DIR] [--scrub-world generated|flat|data]
 
 # check them where your site serves them (Node 22; Chrome or Chromium)
 node grl-snam/pages/smoke.mjs --site _site --base /your-site/ --learn learn/ --scrub scrub/ \
@@ -57,20 +57,25 @@ step 0. Deploying a `.pt` checkpoint needs torch and libcvc's sim_world, so the 
 runs are deployed when the site is built, and the page runs `scrub --view`, which only reads
 them (the reports, `grl_snam.scrub/v1`, and each checkpoint's run log, `grl_snam.run_log/v1`).
 
-- **The runs.** `--scrub-histories` (default: the retrain's five, as learn's) are deployed with
-  `--python` (default: the Python running assemble), each history's saved policies found in
-  `--checkpoints`/<run>/ (<run> is the history's name without `.history.jsonl[.gz]`). A cvcpkg
-  prefix's `bin/python3.12` gets its `lib/` on the loader path.
+- **The data sets.** `--scrub-sets` (default `retrain fixed/retrain`) names the learning check's
+  data sets: directories under `docs/learning-validation/` whose `*.history.jsonl.gz` are their
+  runs. `--scrub-histories H...` deploys those histories instead, as one set
+  (`--scrub-set-name`).
+- **The runs.** Each is deployed with `--python` (default: the Python running assemble), as
+  `scrub HISTORY --headless --lean --data-set SET --report`, its saved policies found in
+  `--checkpoints`/<set>/<run>/ (else `--checkpoints`/<run>/; <run> is the history's name without
+  `.history.jsonl[.gz]`). A cvcpkg prefix's `bin/python3.12` gets its `lib/` on the loader path.
+  `--scrub-cache DIR` keeps the run logs for the next build: a checkpoint already deployed on the
+  same scenario is read back. `--scrub-reports R.json...` takes runs deployed before and deploys
+  nothing (no torch).
 - **The saved policies** are not in the repository (`.gitignore` keeps `*.pt` out). They are the
   cvcpkg data package `grl-snam-learning-checkpoints`
   ([its recipe](../cvcpkg/recipes/grl-snam-learning-checkpoints/PROVENANCE.md)): every checkpoint
   of the learning check's two retrains, `retrain/seed{0..4}/` and `fixed/retrain/seed{0..4}/`,
   41 a seed, 410 `.pt` files, 7.3 MB packed. Its recipe commits their sha256 (`SHA256SUMS`), and
   its build stages them from the training runs' directories and refuses any that differ, so the
-  package holds the files the committed histories name. `--checkpoints` defaults to its
-  `retrain/` in `--python`'s prefix; pages.yml installs it in a prefix of its own and names it. `--scrub-cache DIR` keeps the run
-  logs for the next build: a checkpoint already deployed on the same scenario is read back.
-  `--scrub-reports R.json...` takes runs deployed before and deploys nothing (no torch).
+  package holds the files the committed histories name. `--checkpoints` defaults to the package
+  in `--python`'s prefix; pages.yml installs it in a prefix of its own and names it.
 - **The world.** `--scrub-world generated` (the default) is libcvc's generator on scrub.ari's
   `world.*` keys. The page builds the same world again from the report, with nothing to fetch,
   provided its libcvc is the deploy's (ariglx-web's tag, `LIBCVC_REF`, and the catalog's
@@ -78,13 +83,21 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's run log, `grl_snam
   Austin, but Austin's bundle is 228 MB, cvcpkg.org sends no CORS for github.io, and nothing cuts
   it down yet, so a `data` world's page shows the windows alone. On `flat` ground every
   checkpoint drives the same line.
-- **The page.** `scrub/data/<run>/` holds each report (its paths made the file names beside
-  it), the history and the run logs: about 8 MB a run (already compressed), 41 MB for the five.
-  It opens on the first run's pick, from above (`--camera orbit`), with the Scrub, Episode and
-  Stats windows (`--windows`); the Run combo picks another run, and the Windows menu has
-  Training, Ledger and Simulation.
-- Once scrub runs, the page's stderr has `grl-snam: scrub: started in N s`, a line for each
-  checkpoint it shows (`scrub: seed0: checkpoint 22 of 41: step 2100, the pick; ...`), then
+- **The page.** `scrub/data/<set>/<run>/` holds each report (its paths made the file names
+  beside it), the history and the run logs. The logs are lean (`--lean`: single precision, the
+  cars template's derived fields left out; about 40% smaller, read back the same): about
+  4.9 MB a run, 25 MB a five-seed set. It opens on the first set's first run, at its pick,
+  from above (`--camera orbit`), with the Scrub, Episode and Stats windows (`--windows`). The
+  Set combo picks a data set and shows its run of the same name at the same step; the Run combo
+  picks a run in the set; the Windows menu has Training, Ledger and Simulation.
+- **Every run is preloaded.** The page's loader fetches its files before the program starts,
+  and ariglx-web v3.7.13 has no supported fetch after that (non-blocking downloads in the browser
+  are libcvc's data roadmap D4, not done), so a set cannot be loaded when it is picked. Each
+  five-seed set adds about 25 MB to the first visit: the page is 80 MB gzip with two sets, and a
+  third (the world-units retrain) would make it about 105 MB.
+- Once scrub runs, the page's stderr has `grl-snam: scrub: started in N s`, the runs and data
+  sets (`scrub: 10 runs in 2 data sets (retrain, fixed/retrain)`), a line for each checkpoint it
+  shows (`scrub: retrain/seed0: checkpoint 22 of 41: step 2100, the pick; ...`), then
   `grl-snam: scrub: running`.
 
 ## Locally
@@ -115,8 +128,8 @@ To look at it, serve the site's parent at `/GRL-SNAM/` (for example a directory 
   from its own origin, and cvcpkg.org sends no CORS headers for github.io.
 - **Size.** A first visit to the learn page downloads about 34 MB gzip (28 MB of it
   `ariglx.wasm`), which the browser then caches. learn takes about 20 s to start in the page.
-  The scrub page is about 72 MB: its own copy of the host, and 41 MB of run logs. Each page
-  carries its own host, so a visit to both downloads `ariglx.wasm` twice.
+  The scrub page is about 80 MB: its own copy of the host, and 52 MB of run logs (two data
+  sets, lean). Each page carries its own host, so a visit to both downloads `ariglx.wasm` twice.
   Gzipped histories ship as they are (the retrain's five: 1.1 MB, 5.4 MB unzipped); learn's
   reader unzips them in the page, whether or not the server marks them `Content-Encoding: gzip`.
 - **Charts.** libcvc v3.7.13 has no `chart:` widget (3.7.14), so learn's windows show text.

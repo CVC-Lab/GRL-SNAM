@@ -56,6 +56,24 @@ def test_a_run_log_round_trips_and_reads_as_the_cars_templates(tmp_path):
     assert all(np.array_equal(back.arrays[k], log.arrays[k], equal_nan=True) for k in log.arrays)
 
 
+def test_a_lean_run_log_is_smaller_and_reads_the_same(tmp_path):
+    """A lean log leaves out the cars template's derived fields and stores single precision; read
+    back, it has every field again, equal to single precision."""
+    import zipfile
+
+    log = RunLog.from_run(_Run())
+    path = log.save(tmp_path / "lean.npz", lean=True)
+    with zipfile.ZipFile(path) as z:
+        stored = {n[: -len(".npy")] for n in z.namelist()}
+    assert not stored & set(runlog.LEAN_DROPS) and {"x", "tel_steer", "t"} <= stored
+    back = RunLog.load(path)
+    assert back.meta["lean"] is True and sorted(back.arrays) == sorted(log.arrays)
+    assert back.arrays["x"].dtype == np.float32 and back.arrays["t"].dtype == np.float64
+    for k, v in log.arrays.items():
+        assert np.allclose(back.arrays[k], v, rtol=1e-6, atol=1e-6, equal_nan=True), k
+    assert back.at(3, 1)["pose"] == pytest.approx(log.at(3, 1)["pose"])
+
+
 def test_reading_a_tick():
     log = RunLog.from_run(_Run())
     assert len(log) == 4 and log.dt == 0.05 and log.duration == pytest.approx(0.2)
