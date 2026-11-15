@@ -257,6 +257,13 @@ grl-snam learn-report seed*/history.jsonl --arms seed0.objective.json --arms see
   task does not: the trained nets reach fewer held-out goals than untrained (Austin
   −1.2 [−1.8, −0.6]), because on Austin that objective prefers clearance.
 
+  Deeper down, the sim was not in world units: Austin's `nav_sdf.npz` is 300 m per unit and the
+  physics constants mean 20 m, so the trainer drove a 270 m/s robot (the doc's §9). `grl-snam
+  train` now simulates it at its real size (`--metres-per-unit 20`), with an objective that is the
+  task (`--objective task`) and a pick on held-out reach without penetration. Rerun, held-out reach
+  rises on every seed (+0.7 points [+0.6, +0.9] along the run), but on independent test pairs the
+  gain is within the noise: +0.6 [−0.2, +1.4] against untrained.
+
 ### Live inside VolRover3
 
 ```bash
