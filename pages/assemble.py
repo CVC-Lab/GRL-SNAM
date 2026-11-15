@@ -42,7 +42,11 @@ pycvc-gl 3.7.12+, the same libcvc as ``--host``'s, since the page rebuilds the g
 with its own generator; a cvcpkg prefix's python gets its ``lib/`` on the loader path). Each of
 ``--scrub-histories`` (default: the retrain's, as learn's) is deployed with ``grl-snam ariadne
 scrub HISTORY --headless --report``, its saved policies found in ``--checkpoints``/<run>/ (<run>
-the history's name without ``.history.jsonl[.gz]``), on ``--scrub-world`` (default generated:
+the history's name without ``.history.jsonl[.gz]``). They are not in the repository: the
+``grl-snam-learning-checkpoints`` cvcpkg package has the learning check's (its retrain/ and
+fixed/retrain/, each file checked against the histories' blobs by sha256 when it was packed;
+cvcpkg/recipes/grl-snam-learning-checkpoints), and by default they are its retrain/, installed
+in ``--python``'s prefix. They are deployed on ``--scrub-world`` (default generated:
 libcvc's generator from scrub.ari's world.* keys, which the page builds again from the report
 with no data to fetch; Austin's bundle is 228 MB and cvcpkg.org sends no CORS for github.io, so a
 data world's page shows the windows alone). ``--scrub-cache`` keeps the run logs between builds
@@ -70,8 +74,10 @@ REPO = Path(__file__).resolve().parent.parent
 SITE_SRC = REPO / "pages" / "site"
 RETRAIN = REPO / "docs" / "learning-validation" / "retrain"
 HISTORIES = sorted(RETRAIN.glob("seed*.history.jsonl.gz"))
-#: The retrain's saved policies, <run>/coef_sdf.step*.pt, for the scrub page.
-CHECKPOINTS = RETRAIN / "checkpoints"
+#: The cvcpkg package with the learning check's saved policies, and the part of it that holds the
+#: retrain's (<run>/coef_sdf.step*.pt), the scrub page's default.
+CHECKPOINTS_PACKAGE = "grl-snam-learning-checkpoints"
+CHECKPOINTS_PART = "retrain"
 SCRUB_SCHEMA = "grl_snam.scrub/v1"
 #: How the scrub page opens: the world seen from above, and the windows that leave it in view
 #: (Training, Ledger and Simulation are in its Windows menu).
@@ -144,6 +150,18 @@ def _python_env(python: str) -> dict:
     if any(lib.glob("libcvc.so*")) and str(lib) not in have:
         env["LD_LIBRARY_PATH"] = os.pathsep.join([*have, str(lib)])
     return env
+
+
+def default_checkpoints(python: str) -> Path:
+    """The retrain's saved policies in the cvcpkg prefix ``python`` is in (``<prefix>/bin/python``):
+    the grl-snam-learning-checkpoints package's retrain/. Exits saying how to install it when it
+    is not there."""
+    prefix = Path(python).resolve().parent.parent
+    path = prefix / "share" / CHECKPOINTS_PACKAGE / CHECKPOINTS_PART
+    if not path.is_dir():
+        sys.exit(f"assemble: no saved policies at {path}: cvcpkg install {CHECKPOINTS_PACKAGE} "
+                 f"--prefix {prefix}, or name them with --checkpoints")  # fmt: skip
+    return path
 
 
 def deploy_scrub(histories, checkpoints: Path, python: str, cache: Path, world: str,
@@ -307,9 +325,10 @@ def main(argv=None) -> int:
                     help="write the scrub page alone at --out, not the whole site")  # fmt: skip
     ap.add_argument("--scrub-histories", nargs="+", type=Path, default=HISTORIES, metavar="H",
                     help="the histories whose checkpoints it deploys (default: the retrain's)")  # fmt: skip
-    ap.add_argument("--checkpoints", type=Path, default=CHECKPOINTS, metavar="DIR",
+    ap.add_argument("--checkpoints", type=Path, default=None, metavar="DIR",
                     help="the saved policies: DIR/<run>/ for each history (default: the "
-                         "retrain's, docs/learning-validation/retrain/checkpoints)")  # fmt: skip
+                         f"{CHECKPOINTS_PACKAGE} package's {CHECKPOINTS_PART}/, in --python's "
+                         "prefix)")  # fmt: skip
     ap.add_argument(
         "--python",
         default=sys.executable,
@@ -335,7 +354,8 @@ def main(argv=None) -> int:
         if reports is None:
             cache = a.scrub_cache or Path(tmp := tempfile.mkdtemp(prefix="grl-snam-scrub-"))
             cache.mkdir(parents=True, exist_ok=True)
-            reports = deploy_scrub(a.scrub_histories, a.checkpoints, a.python, cache,
+            checkpoints = a.checkpoints or default_checkpoints(a.python)
+            reports = deploy_scrub(a.scrub_histories, checkpoints, a.python, cache,
                                    a.scrub_world, a.scrub_ticks)  # fmt: skip
     if a.out.exists():
         shutil.rmtree(a.out)

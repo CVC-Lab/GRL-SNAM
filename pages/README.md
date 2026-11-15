@@ -28,7 +28,10 @@ python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --learn-on
   --out _site/learn [--histories H.jsonl[.gz]...] [--arms ARMS.json]
 
 # the scrub page, self-contained: its runs deployed here, natively, by grl_snam's closure
-# (cvcpkg's grl-snam-cp312: torch and pycvc-gl, as pages.yml installs it), ~10 min for the five
+# (cvcpkg's grl-snam-cp312: torch and pycvc-gl, as pages.yml installs it) on the retrain's saved
+# policies (cvcpkg's grl-snam-learning-checkpoints), ~10 min for the five
+cvcpkg install grl-snam-learning-checkpoints --prefix "$PREFIX" --platform any --config release \
+  --link shared --no-fallback-to-source
 python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-only \
   --out _site/scrub --python "$PREFIX/bin/python3.12" [--scrub-cache DIR] \
   [--scrub-histories H...] [--checkpoints DIR] [--scrub-world generated|flat|data]
@@ -56,9 +59,16 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's run log, `grl_snam
 
 - **The runs.** `--scrub-histories` (default: the retrain's five, as learn's) are deployed with
   `--python` (default: the Python running assemble), each history's saved policies found in
-  `--checkpoints`/<run>/ (<run> is the history's name without `.history.jsonl[.gz]`; default
-  `docs/learning-validation/retrain/checkpoints/`, the retrain's 41 a seed, 4.9 MB). A cvcpkg
-  prefix's `bin/python3.12` gets its `lib/` on the loader path. `--scrub-cache DIR` keeps the run
+  `--checkpoints`/<run>/ (<run> is the history's name without `.history.jsonl[.gz]`). A cvcpkg
+  prefix's `bin/python3.12` gets its `lib/` on the loader path.
+- **The saved policies** are not in the repository (`.gitignore` keeps `*.pt` out). They are the
+  cvcpkg data package `grl-snam-learning-checkpoints`
+  ([its recipe](../cvcpkg/recipes/grl-snam-learning-checkpoints/PROVENANCE.md)): every checkpoint
+  of the learning check's two retrains, `retrain/seed{0..4}/` and `fixed/retrain/seed{0..4}/`,
+  41 a seed, 410 `.pt` files, 7.3 MB packed. Its recipe commits their sha256 (`SHA256SUMS`), and
+  its build stages them from the training runs' directories and refuses any that differ, so the
+  package holds the files the committed histories name. `--checkpoints` defaults to its
+  `retrain/` in `--python`'s prefix; pages.yml installs it in a prefix of its own and names it. `--scrub-cache DIR` keeps the run
   logs for the next build: a checkpoint already deployed on the same scenario is read back.
   `--scrub-reports R.json...` takes runs deployed before and deploys nothing (no torch).
 - **The world.** `--scrub-world generated` (the default) is libcvc's generator on scrub.ari's

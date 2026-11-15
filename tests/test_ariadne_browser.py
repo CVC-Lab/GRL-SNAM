@@ -269,3 +269,16 @@ def test_assemble_refuses_what_the_scrub_page_cannot_show(tmp_path, site):
     with pytest.raises(SystemExit, match="no saved policies"):
         assemble.main(["--host", host, "--out", str(tmp_path / "v"), "--scrub-only",
                        "--checkpoints", str(tmp_path / "none")])  # fmt: skip
+
+
+def test_the_scrub_page_finds_the_checkpoints_package_beside_its_python(tmp_path):
+    """--checkpoints defaults to grl-snam-learning-checkpoints' retrain/ in --python's prefix."""
+    assemble = _pages_module("assemble")
+    python = tmp_path / "prefix" / "bin" / "python3.12"
+    python.parent.mkdir(parents=True)
+    python.write_text("")
+    with pytest.raises(SystemExit, match="cvcpkg install grl-snam-learning-checkpoints"):
+        assemble.default_checkpoints(str(python))
+    part = tmp_path / "prefix" / "share" / "grl-snam-learning-checkpoints" / "retrain"
+    part.mkdir(parents=True)
+    assert assemble.default_checkpoints(str(python)) == part
