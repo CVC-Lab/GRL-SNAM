@@ -211,7 +211,7 @@ try {
   }
 
   // scrub/: the runs deployed at build time, viewed. Its stderr says how many runs and data sets
-  // it has ("scrub: 10 runs in 2 data sets (retrain, fixed/retrain)"), names the checkpoint it
+  // it has ("scrub: 15 runs in 3 data sets (retrain, fixed/retrain, world-units/retrain)"), names the checkpoint it
   // shows ("scrub: retrain/seed0: checkpoint 22 of 41: step 2100, the pick; ...") and says when
   // there is no 3-D world ("scrub: no 3-D world: ...").
   if (SCRUB) {

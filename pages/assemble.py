@@ -19,11 +19,12 @@ installs. The site:
       ariadne.config.json             src main.py, every file above in its preload, the args
     scrub/                            with --scrub: grl-snam ariadne scrub --view, on ariglx-web:
       (the host, main.py and grl_snam_web.zip, as learn/'s)
-      data/<run>/scrub.json           a run's scrub report (grl_snam.scrub/v1), its paths made
-                                      the file names beside it
-      data/<run>/<history>            the run's learning history
-      data/<run>/<sha>-<hash>.npz     each checkpoint's run log (grl_snam.run_log/v1)
-      ariadne.config.json             ["scrub", "--view", "data/<run>/scrub.json", ...]
+      data/<set>/<run>.scrub.zip      a run's bundle, stored: its scrub report (scrub.json,
+                                      grl_snam.scrub/v1, its paths the names inside), its
+                                      learning history and each checkpoint's run log (lean
+                                      grl_snam.run_log/v1); the page's loader takes at most
+                                      512 files, and a run is 43
+      ariadne.config.json             ["scrub", "--view", "data/<set>/<run>.scrub.zip", ...]
 
 ``--learn-only`` writes the learn page alone, self-contained, at ``--out`` (for another site to
 serve, at any path). Everything the page fetches is beside it, on the site's own origin.
@@ -39,20 +40,22 @@ since learn would refuse it in the page.
 The page only views runs: deploying a checkpoint needs torch (a ``.pt``) and libcvc's sim_world,
 so it is done here, natively, by ``--python`` (a Python with grl_snam's closure: torch and
 pycvc-gl 3.7.12+, the same libcvc as ``--host``'s, since the page rebuilds the generated world
-with its own generator; a cvcpkg prefix's python gets its ``lib/`` on the loader path). Each of
-``--scrub-sets`` (default ``retrain fixed/retrain``) names the learning check's data sets: each is
-a directory under docs/learning-validation/ whose ``*.history.jsonl.gz`` are its runs (or
-``--scrub-histories``, one set named ``--scrub-set-name``). Each run is deployed with
-``grl-snam ariadne scrub HISTORY --headless --lean --data-set SET --report``, its saved policies
-found in ``--checkpoints``/<set>/<run>/ (else ``--checkpoints``/<run>/; <run> is the history's
-name without ``.history.jsonl[.gz]``). They are not in the repository: the
-``grl-snam-learning-checkpoints`` cvcpkg package has the learning check's under the same names
-(its retrain/ and fixed/retrain/, each file checked against the histories' blobs by sha256 when it
-was packed; cvcpkg/recipes/grl-snam-learning-checkpoints), and by default ``--checkpoints`` is
-that package in ``--python``'s prefix. The page's Set combo picks a set, its Run combo a run of it.
-Every run's logs are preloaded (the page's loader has no fetch after start; libcvc's data roadmap
-D4), about 5 MB a run lean, so each five-seed set adds about 25 MB to the first visit. They are
-deployed on ``--scrub-world`` (default generated:
+with its own generator; a cvcpkg prefix's python gets its ``lib/`` on the loader path).
+
+``--scrub-sets`` (default ``retrain fixed/retrain world-units/retrain``) names the learning
+check's data sets: each is a directory under docs/learning-validation/ whose
+``*.history.jsonl.gz`` are its runs (or ``--scrub-histories``, one set named
+``--scrub-set-name``). Each run is deployed with ``grl-snam ariadne scrub HISTORY --headless
+--lean --data-set SET --report``, its saved policies found in ``--checkpoints``/<set>/<run>/ (else
+``--checkpoints``/<run>/; <run> is the history's name without ``.history.jsonl[.gz]``). They are
+not in the repository: the ``grl-snam-learning-checkpoints`` cvcpkg package has the learning
+check's under the same names (retrain/, fixed/retrain/ and world-units/retrain/, each file checked
+against the histories' blobs by sha256 when it was packed; cvcpkg/recipes/
+grl-snam-learning-checkpoints), and by default ``--checkpoints`` is that package in ``--python``'s
+prefix. The page's Set combo picks a set, its Run combo a run of it. Every run's logs are
+preloaded (the page's loader has no fetch after start; libcvc's data roadmap D4), about 5 MB a run
+lean, so each five-seed set adds about 25 MB to the first visit. They are deployed on
+``--scrub-world`` (default generated:
 libcvc's generator from scrub.ari's world.* keys, which the page builds again from the report
 with no data to fetch; Austin's bundle is 228 MB and cvcpkg.org sends no CORS for github.io, so a
 data world's page shows the windows alone). ``--scrub-cache`` keeps the run logs between builds
@@ -85,7 +88,7 @@ CHECKPOINTS_PACKAGE = "grl-snam-learning-checkpoints"
 LEARNING = REPO / "docs" / "learning-validation"
 #: The learning check's data sets the scrub page shows: directories under LEARNING whose
 #: *.history.jsonl.gz are their runs, and the package's directories of the same names.
-SCRUB_SETS = ("retrain", "fixed/retrain")
+SCRUB_SETS = ("retrain", "fixed/retrain", "world-units/retrain")
 SCRUB_SCHEMA = "grl_snam.scrub/v1"
 #: How the scrub page opens: the world seen from above, and the windows that leave it in view
 #: (Training, Ledger and Simulation are in its Windows menu).
@@ -235,9 +238,11 @@ def _found(report: Path, name) -> Path | None:
 
 
 def scrub_page(host: Path, page: Path, reports) -> dict:
-    """The scrub page at ``page`` (made here): the host, the launcher, the package, each report
-    with its history and run logs in data/<set>/<run>/ (data/<run>/ in no set; the report's paths
-    made their file names), and the page config, which views them."""
+    """The scrub page at ``page`` (made here): the host, the launcher, the package, a bundle per
+    run, data/<set>/<run>.scrub.zip (data/<run>.scrub.zip in no set): one zip with its report
+    (scrub.json, its paths made the names inside), its history and its run logs, stored. The page's
+    loader fetches at most 512 files, and a run is 43; scrub --view reads the bundles. The page
+    config views them."""
     reports = [Path(r) for r in reports]
     if not reports:
         sys.exit("assemble: no scrub reports to show")
@@ -254,21 +259,26 @@ def scrub_page(host: Path, page: Path, reports) -> dict:
         if name in names:
             sys.exit(f"assemble: two scrub reports are of run {name}")
         names.append(name)
-        out = page / "data" / name
-        out.mkdir(parents=True)
-        shutil.copy2(hist, out / hist.name)
+        files = {hist.name: hist}
         rep["history"] = hist.name
         for c in rep.get("checkpoints") or []:
             log = _found(r, c.get("cache"))
             if log is None:
                 sys.exit(f"assemble: {r}: step {c.get('step')}'s run log is not there")
-            shutil.copy2(log, out / log.name)
+            files[log.name] = log
             c["cache"], c["blob"] = log.name, Path(str(c.get("blob", ""))).name
-            preload.append(f"data/{name}/{log.name}")
             logs += 1
-        (out / "scrub.json").write_text(json.dumps(rep, indent=1) + "\n")
-        args.append(f"data/{name}/scrub.json")
-        preload += [f"data/{name}/scrub.json", f"data/{name}/{hist.name}"]
+        bundle = page / "data" / f"{name}.scrub.zip"
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(bundle, "w", zipfile.ZIP_STORED) as z:
+            entries = [("scrub.json", (json.dumps(rep, indent=1) + "\n").encode())]
+            entries += [(k, f.read_bytes()) for k, f in sorted(files.items())]
+            for entry, data in entries:
+                info = zipfile.ZipInfo(entry, FIXED_TIME)
+                info.external_attr = 0o644 << 16
+                z.writestr(info, data)
+        args.append(f"data/{name}.scrub.zip")
+        preload.append(f"data/{name}.scrub.zip")
     config = {
         "title": "GRL-SNAM: watch it learn",
         "src": "main.py",

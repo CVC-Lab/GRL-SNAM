@@ -480,10 +480,17 @@ def test_assemble_deploys_a_scrub_page(deployed, tmp_path):
                           "--python", sys.executable, "--scrub-world", "flat",
                           "--scrub-ticks", "40"]) == 0  # fmt: skip
     config = json.loads((page / "ariadne.config.json").read_text())
-    report = page / config["args"][2]
-    assert config["args"][:3] == ["scrub", "--view", "data/coef_train_history/scrub.json"]
-    rep = json.loads(report.read_text())
+    bundle = page / config["args"][2]
+    assert config["args"][:3] == ["scrub", "--view", "data/coef_train_history.scrub.zip"]
+    import zipfile
+
+    with zipfile.ZipFile(bundle) as z:
+        rep, names = json.loads(z.read("scrub.json")), set(z.namelist())
     assert rep["scenario"]["ticks"] == 40 and len(rep["checkpoints"]) == 4
-    assert all((report.parent / c["cache"]).is_file() for c in rep["checkpoints"])
+    assert all(c["cache"] in names for c in rep["checkpoints"])
     assert all(c["cache"].endswith(".lean.npz") for c in rep["checkpoints"])  # the page's are lean
-    assert _main(["scrub", "--view", str(report), "--headless", "--frames", "2"]) == 0
+    # The view reads the bundle as it is (the logs from inside it), and shows what the deploy did.
+    code, hosts = _run(["scrub", "--view", str(bundle), "--headless", "--frames", "3"])
+    assert code == 0
+    assert hosts[0].get("scrub.now").startswith("checkpoint 3 of 4: step 4, the pick")
+    assert [r["arm"] for r in hosts[0].get_tree("arms.stats")] == ["step 0", "step 4"]

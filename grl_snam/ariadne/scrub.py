@@ -38,7 +38,8 @@ learning check's ``retrain``, ``fixed/retrain``, ...), and ``--lean`` caches lea
 each checkpoint lists and the history each report names, and deploys nothing, so it needs neither
 torch nor the policies, and no sim_world steps. A file a report names is found as given, then
 relative to the report, then by its file name beside the report, so a report travels with its
-files (the Pages site's scrub page). It does not hash the scenario again: the libcvc in use, the
+files. A report may also be a run's bundle, one zip with the report, the history and the logs
+(the Pages site's scrub page ships those). It does not hash the scenario again: the libcvc in use, the
 world and the files' places may differ from the ones that deployed. With several reports a Run
 combo picks one, and a Set combo their data set when they come from several: a set picked shows
 its run of the same name at the same training step, so the sets compare side by side. Their
@@ -55,11 +56,13 @@ scrubber deploys on libcvc's sim_world), or when a report or a file it names is 
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -360,7 +363,10 @@ class Deployed:
             self._read[i] = self._read.pop(i)  # the most recent last
             return self._read[i]
         lg = self._files[i]
-        lg = lg if isinstance(lg, RunLog) else RunLog.load(lg)
+        if isinstance(lg, _Member):
+            lg = RunLog.load(io.BytesIO(lg.read()))
+        elif not isinstance(lg, RunLog):
+            lg = RunLog.load(lg)
         self._read[i] = lg
         while len(self._read) > KEEP_LOGS:
             del self._read[next(j for j in self._read if j != 0)]
@@ -398,23 +404,58 @@ def _stem(history) -> str:
     return base
 
 
+#: The report inside a run's bundle: one zip with it, the history and the run logs, the report's
+#: paths the names inside (pages/assemble.py writes them, since a page's loader takes at most 512
+#: files).
+BUNDLE_REPORT = "scrub.json"
+
+
+class _Member:
+    """A file inside a zip, read when asked for."""
+
+    def __init__(self, archive, name):
+        self.archive, self.name = str(archive), name
+
+    def read(self) -> bytes:
+        with zipfile.ZipFile(self.archive) as z:
+            return z.read(self.name)
+
+
 def load_report(path) -> Deployed:
     """The runs a report (``--report``'s) lists, to view: its history and every checkpoint's run
-    log found (:func:`find_file`), nothing read yet but the report. Raises ValueError when it is
-    not a scrub report or a file it names is not there, OSError when it cannot be read."""
-    rep = json.loads(Path(path).read_text())
+    log found (:func:`find_file`), nothing read yet but the report. ``path`` may also be a run's
+    bundle (:data:`BUNDLE_REPORT`), whose logs are read from it when shown. Raises ValueError when
+    it is not a scrub report or a file it names is not there, OSError when it cannot be read."""
+    bundle = zipfile.is_zipfile(path)
+    if bundle:
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+            text = z.read(BUNDLE_REPORT).decode() if BUNDLE_REPORT in names else "{}"
+    else:
+        text = Path(path).read_text()
+    rep = json.loads(text)
     if not isinstance(rep, dict) or rep.get("schema") != REPORT_SCHEMA:
         schema = rep.get("schema") if isinstance(rep, dict) else None
         raise ValueError(f"{path} is {schema!r}, not a scrub report ({REPORT_SCHEMA})")
-    hist = find_file(path, rep.get("history"))
+
+    def found(name):
+        if not bundle:
+            return find_file(path, name)
+        return _Member(path, name) if name in names else None
+
+    hist = found(rep.get("history"))
     if hist is None:
         raise ValueError(f"{path}: its history {rep.get('history')!r} is not there")
+    if bundle:  # the history reader reads a file: the bundle's, written out
+        out = Path(tempfile.mkdtemp(prefix="grl-snam-scrub-")) / Path(rep["history"]).name
+        out.write_bytes(hist.read())
+        hist = out
     cks = rep.get("checkpoints") or []
     if not cks:
         raise ValueError(f"{path}: no checkpoints")
     rows, metrics, logs = [], [], []
     for c in cks:
-        f = find_file(path, c.get("cache"))
+        f = found(c.get("cache"))
         if f is None:
             raise ValueError(
                 f"{path}: step {c.get('step')}'s run log {c.get('cache')!r} is not there"

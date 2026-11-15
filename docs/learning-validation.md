@@ -1444,6 +1444,7 @@ trained`; `coef`; `scorecard`).
 | `pilot/{fresh,margin_pen,legs}.history.jsonl.gz` | §9.3, seed 0 |
 | `pilot/budget.json`, `pilot/ceiling.json` | §9.3: reach by drive length; the 36-constant sweep |
 | `retrain/seed{0..4}.history.jsonl.gz` | §9.4, with `grad_norm.terms` every 10 steps |
+| (cvcpkg) `grl-snam-learning-checkpoints` | §9.4's checkpoints, 41 a seed (since 1.0.0+cvc.2): `share/grl-snam-learning-checkpoints/world-units/retrain/seed{0..4}/` (`grl-snam ariadne scrub world-units/retrain/seed$s.history.jsonl.gz --blobs <that>/seed$s`) |
 | `curves.json`, `curves.png` | §9.4 |
 | `objective.json` | §9.5 |
 | `arms_austin_native.json` | §9.6 (scorers `austin`, `austin_native`) |
