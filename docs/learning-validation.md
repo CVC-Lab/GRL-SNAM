@@ -528,6 +528,7 @@ To confirm the logging end to end on the real data: one seed, two epochs, on `pl
 | file | what |
 |---|---|
 | `retrain/seed{0..4}.history.jsonl.gz` | the five training histories (`grl_snam.coef_train_history/v1`) |
+| (cvcpkg) `grl-snam-learning-checkpoints` | every checkpoint the histories name, 41 a seed: `share/grl-snam-learning-checkpoints/retrain/seed{0..4}/`, each checked by sha256 against the file the history was written with |
 | `curves.json`, `curves.png` | §3.1, from the histories |
 | `objective.json` | §3.3 |
 | `arms.json` | §3.4, §3.6, §3.7: scorers `austin`, `city`, `native` |
@@ -569,6 +570,11 @@ python experiments/learning_proof/learning_curves.py runs/retrain/seed*/history.
 # the claims, on the committed histories (gzipped histories read as they are)
 grl-snam learn-report docs/learning-validation/retrain/seed*.history.jsonl.gz
 grl-snam ariadne learn docs/learning-validation/retrain/seed*.history.jsonl.gz
+
+# every checkpoint of a run, deployed (checkpoint k beside step 0): the checkpoints from cvcpkg.org
+cvcpkg install grl-snam-learning-checkpoints --prefix <prefix>
+grl-snam ariadne scrub docs/learning-validation/retrain/seed0.history.jsonl.gz \
+  --blobs <prefix>/share/grl-snam-learning-checkpoints/retrain/seed0
 
 # 3.4, 3.6, 3.7 (writes arms.constant.pt / arms.constant_trained<k>.pt beside arms.json)
 python experiments/learning_proof/sdf_arms.py --sdf $SDF --runs runs/retrain --published $PUB --out arms.json
@@ -995,6 +1001,7 @@ untrained, final, constant, `constant_final`, published). It is run twice: once 
 | `gradient_source.json` | §8.1 |
 | `pilot/{base,w7,col,w7col}.history.jsonl.gz` | §8.2: before the fix, truncation only, collision gradient only, both |
 | `retrain/seed{0..4}.history.jsonl.gz` | §8.3, with `grad_norm.terms` every 10 steps |
+| (cvcpkg) `grl-snam-learning-checkpoints` | §8.3's checkpoints, 41 a seed: `share/grl-snam-learning-checkpoints/fixed/retrain/seed{0..4}/` (`grl-snam ariadne scrub fixed/retrain/seed$s.history.jsonl.gz --blobs <that>/seed$s`) |
 | `curves.json`, `curves.png` | §8.3 |
 | `objective.json` | §8.4 |
 | `arms_austin_native.json` | §8.5 (scorers `austin`, `austin_native`) |

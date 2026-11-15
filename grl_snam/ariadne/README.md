@@ -39,6 +39,9 @@ Every port takes `--offscreen` (GL, no window), `--headless` (no GL: the readout
     `vehicle-humvee` (`share/cvc-scenes/shared/Humvee.glb`) or the bundle's own copy.
 - The published policy (`grl-snam-weights`) for `live austin-freedrive` / `austin-learned`; `fleet`
   uses it when installed.
+- `scrub` deploys on libcvc's sim_world, so it needs `pycvc_gl.cars`, and torch for `.pt`
+  checkpoints. `scrub --view` needs neither. The learning check's checkpoints (every one its
+  retrains saved) are the `grl-snam-learning-checkpoints` package.
 
 ```bash
 cvcpkg install grl-snam-cp312 scene-austin-south vehicle-humvee grl-snam-weights --prefix <prefix>
@@ -528,7 +531,20 @@ checkpoint reaches the goal, and there are two outcomes:
   checkpoint.
 
 Nothing orders the outcomes by training step. That is the null of `docs/learning-validation.md`,
-seen checkpoint by checkpoint.
+seen checkpoint by checkpoint. To see it yourself, with the retrain's checkpoints from cvcpkg.org:
+
+```bash
+cvcpkg install grl-snam-learning-checkpoints --prefix <prefix>
+P=<prefix>/share/grl-snam-learning-checkpoints
+python -m grl_snam.ariadne scrub docs/learning-validation/retrain/seed0.history.jsonl.gz --blobs $P/retrain/seed0
+python -m grl_snam.ariadne scrub docs/learning-validation/fixed/retrain/seed0.history.jsonl.gz \
+  --blobs $P/fixed/retrain/seed0                      # the retrain after the fix (§8)
+```
+
+**In a browser.** The Pages site's scrub page is `scrub --view` on the five retrain seeds,
+deployed when the site is built on libcvc's generated world (`pages/README.md`). It needs no
+download beyond the page. There, too, none of the 205 checkpoints reaches the goal: each ends
+272 to 353 m short, and the outcomes are not ordered by training step.
 
 ### `cars`: N Ackermann cars driven by your own controller
 
