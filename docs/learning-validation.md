@@ -10,6 +10,10 @@ describe the trainer before that fix.
 it at its real size with an objective that is the task, and runs the measure again.** The held-out
 task curve now rises on every seed, by less than the test pairs can resolve.
 
+**§10 recentres the objective's reg term on constants chosen on training pairs (`--reg-centre`).**
+Held-out reach rises by 4 or 12 points, every seed. On Austin that is the centre's gain; on
+held-out city scenes the undamped-centre net beats every constant, its centre included.
+
 ## 0. The answer
 
 **A null, and on held-out scenes a negative.**
@@ -1503,4 +1507,240 @@ grl-snam learn-report runs/retrain/seed*/history.jsonl --arms seed0.arms.json ..
   --json report_trained.json
 grl-snam learn-report runs/retrain/seed*/history.jsonl --arms seed0.arms.json ... --arms seed4.arms.json \
   --trained final --json report_final.json
+```
+
+## 10. Addendum, 2026-11-14: recentring the reg term
+
+Measured 2026-11-14 at 4fa39c1 (`feat/sdf-reg-recentre`, on §9's trainer at e70c930), on Joe's
+"try recentring the reg term and rerun the measure". Every number has its file in
+[`learning-validation/reg-centre/`](learning-validation/reg-centre/) and its command in §10.7.
+
+### 10.0 The answer
+
+**Recentring the reg term carries the net to better coefficients, and held-out reach rises on
+every seed: by 4 points toward a damped centre, by 12 toward an undamped one. On Austin the gain
+is the centre's: a constant at the net's own mean ties it, and a constant at the centre reaches
+more. On held-out city scenes the undamped-centre net beats every constant, its centre included.**
+
+- **The centre** (§10.1). The `reg` term pulled the heads to (1, 3, 4), the net's bias. A
+  constant sweep on 1024 training-split pairs (not §9's test pairs) finds:
+  - (1, 3, 4) reaches 28.1%;
+  - the best of the grid fixed before any results, **(1, 0.75, 1)**, reaches 32.8%;
+  - reach keeps rising as damping goes to zero: **(1, 0.375, 0.0001)** reaches 58.0%, with no
+    penetration and 2.5× the path. An undamped agent slides past buildings on momentum, the only
+    escape the seek drive has.
+
+  Both centres are measured: "damped" and "undamped".
+- **The retrain** (§10.3), five seeds each.
+  - No step clips, and no held-out drive penetrates.
+  - Held-out clean reach rises on every seed: damped 26.2–26.6% → 30.5–30.9% (`learn-report`
+    +3.9 points [+3.7, +4.1]); undamped → 39.8–40.4% (+12.3 [+11.8, +12.9]).
+  - Every pick is after step 0.
+- **Austin, against untrained** (§10.4):
+
+  | plant | damped | undamped |
+  |---|---|---|
+  | seek drive | **+4.8 [+3.4, +6.3]*** | **+14.9 [+12.8, +17.1]*** |
+  | `sim_world` | +1.6 [−0.1, +3.4] | **+4.3 [+2.5, +6.1]*** |
+
+- **On Austin it is the centre's gain, not learning beyond a constant.**
+  - On the seek drive a constant at the net's own mean ties it: +0.2 (damped), −0.4 (undamped).
+  - A constant at the centre reaches more than the trained net: −1.1* and −13.1*.
+  - The objective holds the net back from the centre. Undamped nets keep γ at 0.17–0.25 on the
+    drive (centre 0.0001): over the objective's 1.7 s windows from rest, damping still pays.
+- **On held-out city scenes the undamped-centre net uses what it sees** (§10.5):
+  - +4.4 [+2.3, +6.4]* points against untrained;
+  - +4.3 [+0.9, +8.6]* against a constant at its own (Austin) mean;
+  - +1.7 [+0.0, +3.5]* against the centre constant;
+  - `scorecard_eval` arrival passes against every arm, the centre included (+1.6 [+0.7, +2.5]).
+
+  It sets its coefficients for scenes it never trained on. The damped-centre net gains +1.9* on
+  the city and ties the constants.
+- **coef's ice-band city**: both nets almost stop penetrating (0.05–0.07 against 1.4 for every
+  constant). They tie untrained on reach and lose to the constants.
+- **Not the default.** `--reg-centre` is opt-in; the defaults are §9's.
+  - The undamped regime changes the robot: arrivals' paths are 56% longer on the seek drive and
+    14% on `sim_world`, with 0.8 m less clearance on `sim_world`.
+  - Whether a centre becomes the default is a decision for Joe. No republish.
+
+### 10.1 The centre: constant nets on training pairs
+
+`experiments/learning_proof/constant_sweep.py`: a constant net per (α, β, γ) on 1024 pairs
+started outside the held-out blocks (seed 4242), on the seek drive in the 20 m frame (1000
+ticks). The rule, fixed in the script before any results: the highest clean reach, ties broken by
+the smaller end gap. The first grid was α ∈ {1, 2, 4, 8}, β ∈ {0.75, 1.5, 3}, γ ∈ {1, 2, 4}. Its
+best sat on the γ = 1 edge, so it was extended toward less damping three times (`sweep/*.json`).
+
+| (α, β, γ) | clean reach | path m | time to goal s | end gap m | min clearance m |
+|---|---|---|---|---|---|
+| (1, 3, 4), the bias | 28.1% | 247 | 24.5 | 228 | 2.50 |
+| (1, 0.75, 1), the first grid's best: **damped** | 32.8% | 281 | 26.1 | 208 | 2.62 |
+| (4, 1.5, 1) | 32.8% | 286 | 25.0 | 209 | 3.42 |
+| (1, 0.375, 0.5) | 39.0% | 335 | 28.9 | 185 | 2.70 |
+| (1, 0.375, 0.125) | 49.8% | 475 | 30.7 | 146 | 2.61 |
+| (1, 0.375, 0.0001), the overall best: **undamped** | 58.0% | 624 | 32.9 | 114 | 2.57 |
+
+- **Damping decides it.** Across 93 constants, reach rises as γ falls at every α and β.
+- **At low damping β of 0.375–0.75 does best, and α matters little.**
+- **No constant penetrates.**
+- **Time to goal for arrivals grows slowly (24.5 → 32.9 s); path length grows fast.** An
+  underdamped agent overshoots, slides along walls and leaves traps on its momentum, where a
+  damped one stops.
+
+### 10.2 The change
+
+- **`grl-snam train --reg-centre A,B,G`** (the task objective only): the (α, β, γ) the `reg`
+  term pulls toward.
+  - The net still starts at its bias (1, 3, 4); only the pull moves.
+  - Absent, the centre is (1, 3, 4), as before.
+  - It is recorded in `meta["objective"]["reg_centre"]`, and `objective-sdf` scoring uses it.
+- **`sdf_arms.py --constant-at NAME=A,B,G`** (and `objective_arms.py`): a constant arm at the
+  centre (`centre` below), compared with `trained` and `final`. `arms-eval` gets it as
+  `--arm centre=const:A,B,G`.
+- **`experiments/learning_proof/constant_sweep.py`**, as in §10.1.
+- **Test:** `tests/test_sdf_train_frame.py::test_the_reg_term_pulls_toward_its_centre`.
+
+### 10.3 The retrain
+
+§9.4's recipe, with `--reg-centre`.
+
+![learning curves, undamped centre](learning-validation/reg-centre/undamped/curves.png)
+
+| centre | seed | pick | training loss, first → last 100 | held-out loss, 0 → 500 → 4000 | held-out clean reach %, 0 → pick → 4000 | held-out min clearance m, 0 → 4000 | time to goal s, 0 → 4000 | (α, β, γ) on the probe at 4000 | α spread at 4000 |
+|---|---|---|---|---|---|---|---|---|---|
+| damped | 0 | 1800 | 2.83 → 1.08 | 2.22 → 0.62 → 0.49 | 26.4 → 30.7 → 30.1 | 2.95 → 3.22 | 23.4 → 24.3 | (0.87, 0.90, 0.94) | 0.52 |
+| damped | 1 | 1500 | 2.83 → 1.03 | 2.20 → 0.55 → 0.51 | 26.6 → 30.5 → 30.1 | 2.95 → 3.20 | 23.4 → 24.3 | (0.84, 0.93, 0.97) | 0.34 |
+| damped | 2 | 2400 | 3.01 → 1.03 | 2.22 → 0.58 → 0.52 | 26.2 → 30.9 → 30.5 | 2.97 → 3.19 | 23.2 → 24.4 | (0.89, 0.92, 0.95) | 0.32 |
+| damped | 3 | 3400 | 2.94 → 1.03 | 2.18 → 0.58 → 0.49 | 26.6 → 30.5 → 30.5 | 2.95 → 3.23 | 23.3 → 24.5 | (0.92, 0.93, 0.96) | 0.39 |
+| damped | 4 | 2400 | 2.53 → 1.07 | 2.11 → 0.66 → 0.49 | 26.2 → 30.7 → 30.3 | 2.98 → 3.22 | 23.4 → 24.5 | (0.94, 0.92, 0.99) | 0.37 |
+| undamped | 0 | 3000 | 3.54 → 1.02 | 3.11 → 0.63 → 0.61 | 26.4 → 40.4 → 39.3 | 2.95 → 3.39 | 23.4 → 27.3 | (0.07, 0.67, 0.03) | 0.18 |
+| undamped | 1 | 4000 | 3.56 → 0.99 | 3.09 → 0.57 → 0.61 | 26.6 → 39.8 → 39.8 | 2.95 → 3.32 | 23.4 → 27.0 | (0.09, 0.71, 0.04) | 0.19 |
+| undamped | 2 | 3600 | 3.81 → 1.02 | 3.11 → 0.61 → 0.59 | 26.2 → 39.8 → 37.9 | 2.97 → 3.32 | 23.2 → 26.4 | (0.55, 0.70, 0.05) | 0.43 |
+| undamped | 3 | 2900 | 3.70 → 1.03 | 3.04 → 0.62 → 0.52 | 26.6 → 39.8 → 38.3 | 2.95 → 3.34 | 23.3 → 26.0 | (0.57, 0.70, 0.05) | 0.41 |
+| undamped | 4 | 1200 | 3.25 → 1.02 | 3.00 → 0.63 → 0.54 | 26.2 → 40.0 → 38.1 | 2.98 → 3.39 | 23.4 → 26.3 | (0.70, 0.68, 0.04) | 0.40 |
+
+- **Held-out reach rises within ~1000 steps, then holds.** The rise is the heads moving to the
+  centre; the held-out loss's fall is mostly the `reg` term's.
+- **The objective resists the centre.**
+  - The held-out goal term gets worse as reach gets better: 0.09 → 0.23–0.24 (damped),
+    → 0.29–0.35 (undamped). From rest, a weak spring and little damping make less progress in
+    the objective's 1.7 s, though they arrive more often in 60 s.
+  - So the undamped nets settle at γ ≈ 0.03–0.05 on the probe and 0.17–0.25 on the Austin
+    drive, not at the centre's 0.0001.
+- **The nets vary their heads with what they see:** α's spread on the probe is 0.18–0.52, against
+  0.01–0.03 at step 0.
+- No step clips (worst pre-clip norm 4.9–37.5), and no held-out drive penetrates.
+
+### 10.4 The task on Austin's held-out pairs
+
+`<centre>/arms_austin_native.json`: §9.6's 1024 test pairs, every arm in the 20 m frame. `centre`
+is the constant at the reg centre; `constant_trained` is at each pick's own mean on this drive.
+
+| reach % | untrained | trained | final | constant_trained | centre |
+|---|---|---|---|---|---|
+| seek drive, damped | 28.6 | 33.4 | 33.7 | 33.2 | 34.6 |
+| seek drive, undamped | 28.6 | 43.5 | 43.3 | 44.0 | 56.6 |
+| `sim_world`, damped | 53.1 | 54.7 | 55.7 | 53.8 | 55.5 |
+| `sim_world`, undamped | 53.1 | 57.4 | 57.0 | 56.4 | 56.2 |
+
+| reach (points) | trained − untrained | trained − constant_trained | trained − centre | final − constant_final |
+|---|---|---|---|---|
+| seek drive, damped | **+4.8 [+3.4, +6.3]*** | +0.2 [−0.6, +1.1] | −1.1 [−2.1, −0.3]* | +0.4 [−0.5, +1.3] |
+| seek drive, undamped | **+14.9 [+12.8, +17.1]*** | −0.4 [−1.8, +0.8] | −13.1 [−15.5, −10.8]* | −0.8 [−2.2, +0.6] |
+| `sim_world`, damped | +1.6 [−0.1, +3.4] | +0.9 [−0.6, +2.6] | −0.7 [−2.7, +1.3] | **+1.9 [+0.2, +3.5]*** |
+| `sim_world`, undamped | **+4.3 [+2.5, +6.1]*** | +1.0 [−0.6, +2.5] | +1.2 [−0.8, +3.1] | +0.6 [−1.1, +2.3] |
+
+Per seed, trained − untrained on the seek drive: +4.8, +5.0, +4.7, +4.9, +4.8 (damped) and +14.6,
++14.9, +14.9, +15.8, +14.4 (undamped).
+
+- **No arm penetrates** on either plant.
+- **The price.**
+  - Seek drive: +0.4 s (damped) and +0.9 s (undamped) to arrive, and +4 m and +9 m of path.
+  - `sim_world` (undamped): −0.8 m of clearance and +29 m of path.
+- **On the seek drive the gain is the mean the centre pulls to.** The centre constant itself
+  beats the trained nets.
+- **On `sim_world`** the damped final nets beat a constant at their own mean (+1.9*); the
+  undamped picks gain +4.3* over untrained and tie the centre.
+
+### 10.5 Held-out scenes and other plants
+
+**The procedural city** (`<centre>/arms.json`, 8 scenes × 64 agents):
+
+| reach (points) | trained − untrained | trained − constant_trained | trained − centre | final − centre |
+|---|---|---|---|---|
+| damped | +1.9 [+0.2, +3.7]* | −0.4 [−1.6, +0.7] | +0.4 [−0.9, +1.8] | +0.7 [−0.9, +2.3] |
+| undamped | **+4.4 [+2.3, +6.4]*** | **+4.3 [+0.9, +8.6]*** | **+1.7 [+0.0, +3.5]*** | **+2.2 [+0.5, +4.0]*** |
+
+- Undamped reach is 91.6% (picks) and 92.0% (final), against 87.2% for untrained and 87.3% for
+  `constant_trained`. A constant at the Austin means does not transfer to the city; the net does.
+- `sim_world` gives the same reach set (`native`).
+
+**`arms-eval`'s task cases** (20 paired seeds per run, pooled over five runs):
+
+| case: metric | untrained | trained | final | constant_final | centre |
+|---|---|---|---|---|---|
+| coef: reach, damped | 0.162 | 0.158 | 0.172 | 0.195 | 0.187 |
+| coef: penetration, damped | 1.427 | **0.052** | 0.087 | 1.432 | 1.390 |
+| coef: reach, undamped | 0.162 | 0.163 | 0.172 | 0.203 | 0.197 |
+| coef: penetration, undamped | 1.427 | **0.072** | 0.090 | 1.591 | 1.373 |
+| scorecard: arrival, damped | 0.871 | 0.877 | 0.876 | 0.885 | 0.873 |
+| scorecard: arrival, undamped | 0.871 | **0.911** | **0.910** | 0.607 | 0.895 |
+
+- **coef's ice-band city.** Both nets cut penetration ~20× against every arm (−1.38* and −1.36*
+  against untrained). They reach 2.9 and 3.5 points less than the centre constant, which drives
+  through the ice band.
+- **`scorecard_eval`'s city scenes.** The undamped nets arrive more often than every arm: +4.0
+  [+3.2, +4.9] points against untrained, +1.6 [+0.7, +2.5] against the centre. The constant at
+  their own probe mean collapses to 0.61.
+
+### 10.6 `learn-report`, and the verdict
+
+| family | damped (pick / final) | undamped (pick / final) |
+|---|---|---|
+| loss, along the run | `fitness` +3.9 points [+3.7, +4.1], `obj_loss` and `obj_col` pass | `fitness` +12.3 [+11.8, +12.9], `obj_loss` and `obj_col` pass |
+| loss, against the arms | passes against untrained, `constant_final`, `centre` and published; fails against final and `constant` (the pick's probe mean) | passes against untrained, `constant`, `constant_final` and published; fails against final and `centre` (+0.031, n.s.) |
+| selection | both pass | both pass |
+| task | coef penetration passes against every arm; coef reach and scorecard fail | coef penetration passes against every arm; **scorecard arrival passes against every arm**; coef reach fails |
+| total | 24 / 31 of 55 | 28 / 31 of 55 |
+
+- **The rising held-out task curve is there, on every seed, and it is large.** It comes from
+  where the reg term points, not from the objective. On Austin the nets end between their bias
+  and their centre, and a constant at their mean does as well.
+- **Where the scenes differ, state dependence pays.** The undamped-centre net beats every
+  constant on the city scorers, the reg centre included. That is learning a constant cannot
+  match, on held-out geometry.
+- **The objective and the task still disagree on damping.**
+  - The goal term (progress in 1.7 s from rest) prefers damping; reach over 60 s prefers none.
+  - Closing that gap means measuring progress over the drive's own horizon: persistent legs
+    with a progress term per leg, not per window. That is the next lever, on a box with free cores.
+- **Defaults are unchanged.** Recentring is a flag. The undamped regime arrives more often and
+  stays penetration-free on every scorer here, but it drives a different robot (longer paths,
+  less clearance on `sim_world`). Making either centre the default, and republishing, are Joe's
+  calls.
+
+### 10.7 Files and commands
+
+| file (`learning-validation/reg-centre/`) | what |
+|---|---|
+| `sweep/sweep_train{,_g05,_low,_zero}.json` | §10.1, the 93 constants on training pairs |
+| `{damped,undamped}/retrain/seed{0..4}.history.jsonl.gz` | §10.3 |
+| `{damped,undamped}/curves.{json,png}` | §10.3 |
+| `{damped,undamped}/arms_austin_native.json`, `arms.json` | §10.4, §10.5 |
+| `{damped,undamped}/objective.json` | the held-out objective's terms, every arm |
+| `{damped,undamped}/scorecard/*.json`, `report/*` | §10.5, §10.6 |
+
+As §9.10, with `C` = `1,0.75,1` (damped) or `1,0.375,0.0001` (undamped):
+
+```bash
+# 10.1 (the first grid; the extensions add --alpha/--beta/--gamma as in sweep/*.json's args)
+python experiments/learning_proof/constant_sweep.py --sdf $SDF --split-history runs/retrain/seed0/history.jsonl \
+  --split train --out sweep_train.json
+
+# 10.3
+grl-snam train $SDF -o coef_sdf.pt --steps 4000 --seed $s --threads 1 --device cpu \
+  --history history.jsonl --checkpoint-every 100 --val-frac 0.25 --val-seed 0 --val-pairs 512 \
+  --grad-terms-every 10 --reg-centre $C
+
+# 10.4, 10.5: §9.10's sdf_arms.py and objective_arms.py lines with --constant-at centre=$C, and
+# arms-eval with --arm centre=const:$C
 ```

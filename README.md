@@ -292,7 +292,10 @@ grl-snam learn-report seed*/history.jsonl --arms seed0.objective.json --arms see
   train` now simulates it at its real size (`--metres-per-unit 20`), with an objective that is the
   task (`--objective task`) and a pick on held-out reach without penetration. Rerun, held-out reach
   rises on every seed (+0.7 points [+0.6, +0.9] along the run), but on independent test pairs the
-  gain is within the noise: +0.6 [−0.2, +1.4] against untrained.
+  gain is within the noise: +0.6 [−0.2, +1.4] against untrained. Recentring the objective's reg term on a
+  constant chosen on training pairs (`--reg-centre`, §10) raises held-out reach by 4–15 points;
+  on Austin a constant at the net's mean matches it, while on held-out city scenes the net beats
+  every constant.
 
 ### Live inside VolRover3
 

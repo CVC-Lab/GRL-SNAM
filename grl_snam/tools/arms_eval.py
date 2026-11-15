@@ -143,6 +143,14 @@ def _settings(meta: dict) -> dict:
     return got
 
 
+def _fmt(v) -> str:
+    if isinstance(v, str):
+        return v
+    if isinstance(v, (list, tuple)):
+        return "(" + ", ".join(f"{x:g}" for x in v) + ")"
+    return f"{v:g}"
+
+
 def checkpoint_meta(arms: list[ArmSpec], meta_from: str | None = None) -> dict | None:
     """The ``meta`` that sets the objective-sdf rollout: the ``.pt`` arm ``meta_from``'s (the
     other arms are scored in its frame and objective), else that of the ``.pt`` arms (``grl-snam
@@ -202,10 +210,7 @@ def score_objective_sdf(
         notes["objective-sdf"] = [
             f"{pairs} held-out pairs, seed {pair_seed}",
             f"held-out blocks {held} of {blocks}x{blocks}",
-            "rollout "
-            + ", ".join(
-                f"{k} {v:g}" if not isinstance(v, str) else f"{k} {v}" for k, v in m.items()
-            ),
+            "rollout " + ", ".join(f"{k} {_fmt(v)}" for k, v in m.items()),
             f"sim frame {1.0 / scene.scale:g} m per unit",
         ]
     return out

@@ -258,6 +258,19 @@ def austin_material_evaluate(args) -> None:
 
 
 # ── training ─────────────────────────────────────────────────────────────────
+def _floats3(text, flag):
+    """``"A,B,G"`` -> ``(a, b, g)``; ``None`` stays ``None``."""
+    if text is None:
+        return None
+    try:
+        got = tuple(float(x) for x in text.split(","))
+    except ValueError:
+        got = ()
+    if len(got) != 3:
+        raise click.BadParameter("three numbers, ALPHA,BETA,GAMMA", param_hint=flag)
+    return got
+
+
 @main.command()
 @click.argument("sdf_npz", type=click.Path(exists=True, dir_okay=False))
 @click.option("-o", "--out", default="coef_sdf.pt", show_default=True)
@@ -335,6 +348,12 @@ def austin_material_evaluate(args) -> None:
     "with no penetration tick)",
 )
 @click.option(
+    "--reg-centre",
+    default=None,
+    help="--objective task: ALPHA,BETA,GAMMA the reg term pulls toward (default 1,3,4, the net's "
+    "bias regime)",
+)
+@click.option(
     "--leg-ticks",
     default=None,
     type=int,
@@ -365,6 +384,7 @@ def train(
     col_margin_m: float,
     col_temp_m: float,
     pick: str,
+    reg_centre,
     leg_ticks,
 ) -> None:
     """Self-supervised training of the SDF navigation coefficients from a nav_sdf.npz.
@@ -380,7 +400,7 @@ def train(
         val_blocks=val_blocks, val_pairs=val_pairs, val_ticks=val_ticks, bptt_window=bptt_window,
         col_grad=col_grad, grad_terms_every=grad_terms_every, metres_per_unit=metres_per_unit,
         objective=objective, col_margin_m=col_margin_m, col_temp_m=col_temp_m, pick=pick,
-        leg_ticks=leg_ticks,
+        leg_ticks=leg_ticks, reg_centre=_floats3(reg_centre, "--reg-centre"),
     )  # fmt: skip
 
 

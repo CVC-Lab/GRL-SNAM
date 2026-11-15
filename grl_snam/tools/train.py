@@ -27,6 +27,9 @@ sim frame of ``metres_per_unit`` metres per unit (docs/learning-validation.md §
   and is redrawn when it arrives or after ``leg_ticks`` ticks. The objective's windows then see
   the whole of a 300-600 m leg, stalls behind buildings included, where a fresh draw sees its
   first 30 m. ``0``: fresh pairs every step, from rest (``end-distance`` always).
+- ``reg_centre`` (``task`` only; default the net's bias regime ``(1, 3, 4)``): the
+  ``(alpha, beta, gamma)`` the ``reg`` term pulls toward. The net still starts at its bias; only
+  the pull moves (docs/learning-validation.md §10).
 - ``pick`` ``clean-reach`` (default): the held-out pick is the share of held-out pairs reached
   with no penetration tick, a fitness the objective also serves; ``reach`` is the pick before §9.
 
@@ -118,6 +121,7 @@ def train_sdf(
     col_temp_m: float = 0.4,
     pick: str = "clean-reach",
     leg_ticks: int | None = None,
+    reg_centre: tuple[float, float, float] | None = None,
 ) -> str:
     """Train the SDF coefficient net on ``sdf_npz`` and save a checkpoint ``.pt``
     (state dict + physics ``meta``) plus a ``_result.json``. Returns the checkpoint path.
@@ -188,11 +192,15 @@ def train_sdf(
         leg_ticks = 1000 if objective == "task" else 0
     if leg_ticks > 0 and objective != "task":
         raise ValueError("leg_ticks is the task objective's")
+    if reg_centre is not None and objective != "task":
+        raise ValueError("reg_centre is the task objective's")
     if objective == "task":
         obj.update(
             carrot_m=36.0, col_margin_m=col_margin_m, col_temp_m=col_temp_m,
             reach_tol_m=round(reach_tol / npz_scale, 6),
         )  # fmt: skip
+        if reg_centre is not None:  # absent: the bias regime (1, 3, 4), as before
+            obj["reg_centre"] = [float(x) for x in reg_centre]
     meta = {
         "scale": scale,
         "center": center,

@@ -14,6 +14,8 @@ Arms:
   mean.
 - ``constant_final``: the same at each seed's ``final`` means, the control for ``final`` (when
   the pick is step 0, ``constant_trained`` controls the untrained net, not what training made).
+- ``--constant-at NAME=A,B,G`` (repeatable): a constant net at given coefficients, for example the
+  ``--reg-centre`` the runs were trained toward; ``trained`` and ``final`` are compared with it.
 
 Every arm drives in the runs' sim frame, with the runs' physics (``meta`` of the first seed's
 ``coef_sdf.pt``: ``scale``, ``rr``, ``d_hat``, ``dt``, ``vmax``, ``nsub``), the published policy
@@ -333,7 +335,7 @@ def stack(runs, key):
     return np.stack([np.asarray(u[key], np.float64) for u in runs])
 
 
-def comparisons(units, *, n_boot, seed):
+def comparisons(units, *, n_boot, seed, extra=()):
     """Per metric, each arm's level and the paired differences the check asks for."""
     pairs = {
         "trained-untrained": ("trained", "untrained"),
@@ -346,6 +348,9 @@ def comparisons(units, *, n_boot, seed):
     if "constant_final" in units:
         pairs["final-constant"] = ("final", "constant")
         pairs["final-constant_final"] = ("final", "constant_final")
+    for name in extra:
+        pairs[f"trained-{name}"] = ("trained", name)
+        pairs[f"final-{name}"] = ("final", name)
     out = {"levels": {}, "diffs": {}}
     for metric in METRICS:
         out["levels"][metric] = {}
@@ -364,6 +369,18 @@ def comparisons(units, *, n_boot, seed):
             out["diffs"][metric][label] = paired(
                 np.nan_to_num(xa), np.nan_to_num(xb), valid, n_boot=n_boot, seed=seed
             )
+    return out
+
+
+def parse_constant_at(specs) -> dict:
+    """``["NAME=A,B,G", ...]`` -> ``{NAME: (a, b, g)}``."""
+    out = {}
+    for spec in specs:
+        name, _, abg = spec.partition("=")
+        vals = tuple(float(x) for x in abg.split(","))
+        if not name or len(vals) != 3:
+            raise SystemExit(f"--constant-at {spec!r}: NAME=ALPHA,BETA,GAMMA")
+        out[name] = vals
     return out
 
 
@@ -413,6 +430,10 @@ def main(argv=None):
     ap.add_argument(
         "--constant-final", action="store_true", help="add constant_final (final's own means)"
     )
+    ap.add_argument(
+        "--constant-at", action="append", default=[], metavar="NAME=A,B,G",
+        help="add a constant arm at these coefficients (repeatable)",
+    )  # fmt: skip
     args = ap.parse_args(argv)
     torch.set_num_threads(1)
     t0 = time.time()
@@ -436,6 +457,9 @@ def main(argv=None):
     final_means = [means_of(u) for u in first["final"]]
     if args.constant_final:
         arms["constant_final"] = [constant_coef_mlp(*m) for m in final_means]
+    at = parse_constant_at(args.constant_at)
+    for name, abg in at.items():
+        arms[name] = [constant_coef_mlp(*abg)]
     stem = os.path.splitext(args.out)[0]
     for name in ("constant", "constant_trained", "constant_final"):
         for k, m in enumerate(arms.get(name, [])):
@@ -450,10 +474,13 @@ def main(argv=None):
         "constant": means,
         "constant_trained": trained_means,
         "constant_final": final_means if args.constant_final else None,
+        "constant_at": at,
         "args": vars(args),
         "scorers": {},
     }
-    result["scorers"]["austin"] = comparisons(a_units, n_boot=args.n_boot, seed=args.boot_seed)
+    result["scorers"]["austin"] = comparisons(
+        a_units, n_boot=args.n_boot, seed=args.boot_seed, extra=at
+    )
     result["scorers"]["austin"]["heads"] = heads_spread(a_units, a_info["block"])
     npz = {
         f"austin.{a}.{k}.{i}": np.asarray(u[k])
@@ -465,7 +492,7 @@ def main(argv=None):
         an_units = austin_native(arms, args, header)
         print(f"austin native scored ({time.time() - t0:.0f}s)", flush=True)
         result["scorers"]["austin_native"] = comparisons(
-            an_units, n_boot=args.n_boot, seed=args.boot_seed
+            an_units, n_boot=args.n_boot, seed=args.boot_seed, extra=at
         )
         npz.update(
             {
@@ -478,7 +505,9 @@ def main(argv=None):
     if not args.no_city:
         c_units, n_units, scene_of = city(arms, args)
         print(f"city scored ({time.time() - t0:.0f}s)", flush=True)
-        result["scorers"]["city"] = comparisons(c_units, n_boot=args.n_boot, seed=args.boot_seed)
+        result["scorers"]["city"] = comparisons(
+            c_units, n_boot=args.n_boot, seed=args.boot_seed, extra=at
+        )
         result["scorers"]["city"]["heads"] = heads_spread(c_units, scene_of)
         npz.update(
             {
@@ -490,7 +519,7 @@ def main(argv=None):
         )
         if n_units is not None:
             result["scorers"]["native"] = comparisons(
-                n_units, n_boot=args.n_boot, seed=args.boot_seed
+                n_units, n_boot=args.n_boot, seed=args.boot_seed, extra=at
             )
             npz.update(
                 {

@@ -103,7 +103,7 @@ def sdf_split(
 
 #: A checkpoint's ``meta["objective"]`` keys that :func:`sdf_terms` takes (``window`` and
 #: ``col_grad`` change no value; a checkpoint from before §9 has neither ``kind`` nor the rest).
-SDF_OBJECTIVE_KEYS = ("kind", "carrot_m", "col_margin_m", "col_temp_m", "reach_tol_m")
+SDF_OBJECTIVE_KEYS = ("kind", "carrot_m", "col_margin_m", "col_temp_m", "reach_tol_m", "reg_centre")
 
 
 def sdf_meta(scene, ckpt_meta: Mapping | None = None) -> dict:

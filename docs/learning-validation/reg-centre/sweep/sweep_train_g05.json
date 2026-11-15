@@ -1,0 +1,198 @@
+{
+ "args": {
+  "sdf": "<prefix>/share/cvc-scenes/austin_south/nav_sdf.npz",
+  "split_history": "runs/section9/retrain/seed0/history.jsonl",
+  "split": "train",
+  "pairs": 1024,
+  "pair_seed": 4242,
+  "metres_per_unit": 20.0,
+  "ticks": 1000,
+  "reach_tol": 0.05,
+  "alpha": [
+   1.0,
+   2.0,
+   4.0,
+   8.0
+  ],
+  "beta": [
+   0.375,
+   0.75,
+   1.5
+  ],
+  "gamma": [
+   0.5
+  ],
+  "jobs": 12
+ },
+ "rows": [
+  {
+   "reach": 0.3896484375,
+   "clean_reach": 0.3896484375,
+   "pen_frac": 0.0,
+   "pen_ticks": 0.0,
+   "path_m": 334.5701904296875,
+   "min_clear_m": 2.704129457473755,
+   "gap_m": 184.92767333984375,
+   "time_to_goal_s": 28.88796992481203,
+   "alpha": 1.0,
+   "beta": 0.375,
+   "gamma": 0.5
+  },
+  {
+   "reach": 0.376953125,
+   "clean_reach": 0.376953125,
+   "pen_frac": 0.0,
+   "pen_ticks": 0.0,
+   "path_m": 327.24542236328125,
+   "min_clear_m": 2.5739049911499023,
+   "gap_m": 189.0734405517578,
+   "time_to_goal_s": 26.526217616580308,
+   "alpha": 1.0,
+   "beta": 0.75,
+   "gamma": 0.5
+  },
+  {
+   "reach": 0.34765625,
+   "clean_reach": 0.34765625,
+   "pen_frac": 0.0,
+   "pen_ticks": 0.0,
+   "path_m": 313.9548034667969,
+   "min_clear_m": 2.4901397228240967,
+   "gap_m": 203.22509765625,
+   "time_to_goal_s": 25.201516853932585,
+   "alpha": 1.0,
+   "beta": 1.5,
+   "gamma": 0.5
+  },
+  {
+   "reach": 0.3642578125,
+   "clean_reach": 0.3642578125,
+   "pen_frac": 0.0,
+   "pen_ticks": 0.0,
+   "path_m": 324.77288818359375,
+   "min_clear_m": 3.280810832977295,
+   "gap_m": 193.62635803222656,
+   "time_to_goal_s": 28.39608579088472,
+   "alpha": 2.0,
+   "beta": 0.375,
+   "gamma": 0.5
+  },
+  {
+   "reach": 0.37890625,
+   "clean_reach": 0.37890625,
+   "pen_frac": 0.0,
+   "pen_ticks": 0.0,
+   "path_m": 330.60040283203125,
+   "min_clear_m": 2.9791810512542725,
+   "gap_m": 190.30502319335938,
+   "time_to_goal_s": 26.447164948453608,
+   "alpha": 2.0,
+   "beta": 0.75,
+   "gamma": 0.5
+  },
+  {
+   "reach": 0.357421875,
+   "clean_reach": 0.357421875,
+   "pen_frac": 0.0,
+   "pen_ticks": 0.0,
+   "path_m": 312.1239318847656,
+   "min_clear_m": 2.7644400596618652,
+   "gap_m": 198.43994140625,
+   "time_to_goal_s": 25.1444262295082,
+   "alpha": 2.0,
+   "beta": 1.5,
+   "gamma": 0.5
+  },
+  {
+   "reach": 0.3642578125,
+   "clean_reach": 0.3642578125,
+   "pen_frac": 0.0,
+   "pen_ticks": 0.0,
+   "path_m": 324.51763916015625,
+   "min_clear_m": 4.053024768829346,
+   "gap_m": 194.17086791992188,
+   "time_to_goal_s": 28.70058981233244,
+   "alpha": 4.0,
+   "beta": 0.375,
+   "gamma": 0.5
+  },
+  {
+   "reach": 0.36328125,
+   "clean_reach": 0.36328125,
+   "pen_frac": 0.0,
+   "pen_ticks": 0.0,
+   "path_m": 326.4583740234375,
+   "min_clear_m": 3.6950817108154297,
+   "gap_m": 193.88262939453125,
+   "time_to_goal_s": 26.35112903225806,
+   "alpha": 4.0,
+   "beta": 0.75,
+   "gamma": 0.5
+  },
+  {
+   "reach": 0.3515625,
+   "clean_reach": 0.3515625,
+   "pen_frac": 0.0,
+   "pen_ticks": 0.0,
+   "path_m": 321.72247314453125,
+   "min_clear_m": 3.3510210514068604,
+   "gap_m": 199.56582641601562,
+   "time_to_goal_s": 25.20033333333333,
+   "alpha": 4.0,
+   "beta": 1.5,
+   "gamma": 0.5
+  },
+  {
+   "reach": 0.357421875,
+   "clean_reach": 0.357421875,
+   "pen_frac": 0.0,
+   "pen_ticks": 0.0,
+   "path_m": 319.25311279296875,
+   "min_clear_m": 4.851470947265625,
+   "gap_m": 200.2693328857422,
+   "time_to_goal_s": 28.74377049180328,
+   "alpha": 8.0,
+   "beta": 0.375,
+   "gamma": 0.5
+  },
+  {
+   "reach": 0.3564453125,
+   "clean_reach": 0.3564453125,
+   "pen_frac": 0.0,
+   "pen_ticks": 0.0,
+   "path_m": 323.788818359375,
+   "min_clear_m": 4.530620574951172,
+   "gap_m": 197.45230102539062,
+   "time_to_goal_s": 26.510630136986304,
+   "alpha": 8.0,
+   "beta": 0.75,
+   "gamma": 0.5
+  },
+  {
+   "reach": 0.34765625,
+   "clean_reach": 0.34765625,
+   "pen_frac": 0.0,
+   "pen_ticks": 0.0,
+   "path_m": 318.605224609375,
+   "min_clear_m": 4.153006076812744,
+   "gap_m": 201.06805419921875,
+   "time_to_goal_s": 25.1941011235955,
+   "alpha": 8.0,
+   "beta": 1.5,
+   "gamma": 0.5
+  }
+ ],
+ "best": {
+  "reach": 0.3896484375,
+  "clean_reach": 0.3896484375,
+  "pen_frac": 0.0,
+  "pen_ticks": 0.0,
+  "path_m": 334.5701904296875,
+  "min_clear_m": 2.704129457473755,
+  "gap_m": 184.92767333984375,
+  "time_to_goal_s": 28.88796992481203,
+  "alpha": 1.0,
+  "beta": 0.375,
+  "gamma": 0.5
+ }
+}

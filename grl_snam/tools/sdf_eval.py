@@ -225,9 +225,11 @@ def loss_terms(
     per_pair=False,
     v0=None,
     state=None,
+    reg_centre=(1.0, 3.0, 4.0),
 ):
     """``grl-snam train``'s objective on ``(starts, goals)``, as tensors: ``goal``, ``col``,
-    ``reg`` (the pull toward the bias regime, ``(beta-3)^2 + (gamma-4)^2 + (alpha-1)^2``) and
+    ``reg`` (the pull toward a centre, ``(alpha-a)^2 + (beta-b)^2 + (gamma-c)^2``; the bias regime
+    ``(1, 3, 4)`` unless ``task``'s ``reg_centre`` says otherwise) and
     ``loss = goal + 3 col + 0.1 reg``. Two objectives (``kind``):
 
     - ``task`` (docs/learning-validation.md §9): the deployed seek drive's rule each step (the
@@ -239,7 +241,7 @@ def loss_terms(
       the goal. 0 is arrival, or every step at full speed toward it. Each window's progress
       carries that window's gradient. ``col`` is ``softplus((m - c) / tau)`` of the rollout's
       minimum clearance ``c``, with ``m = col_margin_m`` and ``tau = col_temp_m``. ``reg`` is
-      averaged over the steps.
+      averaged over the steps, around ``reg_centre`` ``(alpha, beta, gamma)``.
     - ``end-distance`` (before §9): the coefficients once, at the start, toward the goal itself;
       ``goal`` the squared distance left after ``horizon`` steps, ``col`` the softplus with
       margin and temperature 0.02 units (6 m on Austin's npz, 0.4 m in a 20 m frame).
@@ -262,7 +264,7 @@ def loss_terms(
             model, field, starts, goals, rr=rr, d_hat=d_hat, dt=dt, vmax=vmax, horizon=horizon,
             window=window, col_grad=col_grad, carrot_m=carrot_m, col_margin_m=col_margin_m,
             col_temp_m=col_temp_m, reach_tol_m=reach_tol_m, per_pair=per_pair, v0=v0,
-            state=state,
+            state=state, reg_centre=reg_centre,
         )  # fmt: skip
     if kind != "end-distance":
         raise ValueError(f"unknown objective {kind!r} (objectives: {', '.join(OBJECTIVES)})")
@@ -302,8 +304,10 @@ def loss_terms(
 def _task_terms(
     model, field, starts, goals, *, rr, d_hat, dt, vmax, horizon, window, col_grad, carrot_m,
     col_margin_m, col_temp_m, reach_tol_m, per_pair, v0=None, state=None,
+    reg_centre=(1.0, 3.0, 4.0),
 ):  # fmt: skip
     """:func:`loss_terms`'s ``task`` objective."""
+    ca, cb, cg = (float(x) for x in reg_centre)
     S = field.S
     tol, m, tau, carrot = reach_tol_m * S, col_margin_m * S, col_temp_m * S, carrot_m * S
 
@@ -331,7 +335,7 @@ def _task_terms(
                 clr_grad=col_grad,
             )  # fmt: skip
             clr = cl if clr is None else torch.minimum(clr, cl)
-            reg = reg + (be - 3.0) ** 2 + (ga - 4.0) ** 2 + (al - 1.0) ** 2
+            reg = reg + (be - cb) ** 2 + (ga - cg) ** 2 + (al - ca) ** 2
         prog = prog + (r_in - left(o))
     if state is not None:
         state.update(o=o.detach(), v=v.detach())
