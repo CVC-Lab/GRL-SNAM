@@ -55,6 +55,9 @@ def main(argv=None):
     arms["constant_trained"] = [constant_coef_mlp(*m) for m in c["constant_trained"]]
     if c.get("constant_final"):
         arms["constant_final"] = [constant_coef_mlp(*m) for m in c["constant_final"]]
+    at = c.get("constant_at") or {}
+    for name, abg in at.items():
+        arms[name] = [constant_coef_mlp(*abg)]
     meta = run_meta(args.runs)
     scene, s, g = austin_pairs(args, header, meta)
     units = {a: [per_pair(m, scene, s, g, meta) for m in ms] for a, ms in arms.items()}
@@ -67,6 +70,7 @@ def main(argv=None):
     pairs += [("final", "untrained"), ("published", "untrained")]
     if "constant_final" in arms:
         pairs += [("final", "constant"), ("final", "constant_final")]
+    pairs += [(a, name) for name in at for a in ("trained", "final")]
     for t in TERMS:
         out["levels"][t] = {a: level(stack(a, t)) for a in units}
         out["diffs"][t] = {f"{a}-{b}": paired(stack(a, t), stack(b, t)) for a, b in pairs}

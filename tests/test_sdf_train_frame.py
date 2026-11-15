@@ -190,3 +190,26 @@ def test_a_leg_continues_across_steps_until_it_arrives_or_times_out(frames, tmp_
         train_sdf(
             frames[300.0], str(tmp_path / "x.pt"), objective="end-distance", leg_ticks=8, **RUN
         )
+
+
+def test_the_reg_term_pulls_toward_its_centre(frames, tmp_path):
+    """``reg_centre``: the reg term is the squared distance of the heads from it, (1, 3, 4) by
+    default; a constant net at the centre pays nothing."""
+    scene = sdf_eval.load_scene(frames[300.0], scale=1.0 / 20.0)
+    S = scene.scale
+    s, g = sdf_eval.heldout_pairs(scene, 4, [1, 6, 11], 16, 3, rr=3.0 * S)
+    kw = dict(rr=3.0 * S, d_hat=0.35, dt=0.06, vmax=0.9, horizon=8, kind="task")
+    at = _constant(1.0, 0.75, 1.0)
+    old = sdf_eval.objective_terms(at, scene, s, g, **kw)["reg"]
+    new = sdf_eval.objective_terms(at, scene, s, g, reg_centre=(1.0, 0.75, 1.0), **kw)["reg"]
+    assert old == pytest.approx((0.75 - 3.0) ** 2 + (1.0 - 4.0) ** 2, rel=1e-4)
+    assert new == pytest.approx(0.0, abs=1e-8)
+    train_sdf(frames[20.0], str(tmp_path / "r.pt"), reg_centre=(1.0, 0.75, 1.0), **RUN)
+    assert _meta(tmp_path / "r.pt")["objective"]["reg_centre"] == [1.0, 0.75, 1.0]
+    train_sdf(frames[20.0], str(tmp_path / "d.pt"), **RUN)
+    assert "reg_centre" not in _meta(tmp_path / "d.pt")["objective"]  # the bias regime, as before
+    with pytest.raises(ValueError, match="task objective"):
+        train_sdf(
+            frames[20.0], str(tmp_path / "x.pt"), objective="end-distance",
+            reg_centre=(1.0, 0.75, 1.0), **RUN,
+        )  # fmt: skip
