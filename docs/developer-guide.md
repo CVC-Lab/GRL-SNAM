@@ -240,6 +240,13 @@ GRL-SNAM/
    `--keep-best` (writes `<out>.best.cvcnav`, the highest reach on held-out starts,
    `--heldout-seed`, the untrained policy included). See `grl_snam/learning_history.py`.
 
+   To see what each saved checkpoint does when it drives, `grl-snam ariadne scrub HISTORY`
+   deploys every one of them on one scenario (libcvc's sim_world) and shows checkpoint k beside
+   step 0, with each one's deployed metrics against its step. The runs are cached, and `--view`
+   shows them again without torch.
+   [grl_snam/ariadne/README.md](../grl_snam/ariadne/README.md#scrub-watch-it-learn) has the
+   details.
+
 ### 5.3 Evaluation (`eval_coef_energy.py`)
 
 1. **Load checkpoint**: restore trained `CoefEnergyNet`
