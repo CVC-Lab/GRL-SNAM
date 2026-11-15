@@ -506,12 +506,21 @@ directory's, and blobs that are not there are listed and skipped.
 - **Headless,** it deploys and reports: `--report R.json` writes every checkpoint's metrics
   and run log (`grl_snam.scrub/v1`), the scenario, and what deployed it (the GRL-SNAM commit,
   libcvc's version). `--blobs DIR` finds the saved policies there first (by file name), and
-  `--cache DIR` caches the run logs there instead of `<history>.scrub/`.
+  `--cache DIR` caches the run logs there instead of `<history>.scrub/`. `--data-set NAME` puts
+  the run's data set in the report (the learning check's `retrain`, `fixed/retrain`,
+  `world-units/retrain`), and `--lean` caches lean run logs (single precision, the cars
+  template's derived fields left out: about 40% smaller, read back the same), as the Pages site
+  does.
 - **View only:** `--view R.json ...` shows runs deployed before and deploys nothing, so it needs
   neither torch nor the policies, and no sim_world steps. It reads the reports, the run log each
   checkpoint lists (read when first shown) and the history each names, found as given, relative
-  to the report, or by file name beside it, so a report travels with its files. It does not hash
-  the scenario again. With several reports a Run combo picks one (their worlds must be the same).
+  to the report, or by file name beside it, so a report travels with its files. A report may also
+  be a run's bundle: one zip with the report (`scrub.json`), the history and the logs, which the
+  view reads from it (the Pages site ships those; `pages/assemble.py` writes them). It does not
+  hash the scenario again. With several reports a Run combo picks one (their worlds must be the same),
+  and a Set combo their data set when the reports name several. Picking another set shows its run
+  of the same name at the same training step, so the learning check's retrains compare side by
+  side.
   The world is rebuilt from the report: a generated world from its generator settings (the
   view says when this libcvc's differs from the deploy's). With `--no-world`, a city that is not
   on the machine in a browser, or a pycvc_gl without `pycvc_gl.cars`, it shows the windows
@@ -541,10 +550,11 @@ python -m grl_snam.ariadne scrub docs/learning-validation/fixed/retrain/seed0.hi
   --blobs $P/fixed/retrain/seed0                      # the retrain after the fix (§8)
 ```
 
-**In a browser.** The Pages site's scrub page is `scrub --view` on the five retrain seeds,
-deployed when the site is built on libcvc's generated world (`pages/README.md`). It needs no
-download beyond the page. There, too, none of the 205 checkpoints reaches the goal: each ends
-272 to 353 m short, and the outcomes are not ordered by training step.
+**In a browser.** The Pages site's scrub page is `scrub --view` on the learning check's three
+retrains (`retrain`, `fixed/retrain`, `world-units/retrain`; the Set combo picks one), five seeds
+each, deployed when the site is built on libcvc's generated world (`pages/README.md`). It needs no
+download beyond the page. There, too, none of the 615 checkpoints reaches the goal (each ends 231
+to 353 m short), and in no set are the outcomes ordered by training step.
 
 ### `cars`: N Ackermann cars driven by your own controller
 

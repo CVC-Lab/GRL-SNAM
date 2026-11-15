@@ -210,9 +210,10 @@ try {
     await page.close();
   }
 
-  // scrub/: the runs deployed at build time, viewed. Its stderr names the checkpoint it shows
-  // ("scrub: seed0: checkpoint 22 of 41: step 2100, the pick; ...") and says when there is no
-  // 3-D world ("scrub: no 3-D world: ...").
+  // scrub/: the runs deployed at build time, viewed. Its stderr says how many runs and data sets
+  // it has ("scrub: 15 runs in 3 data sets (retrain, fixed/retrain, world-units/retrain)"), names the checkpoint it
+  // shows ("scrub: retrain/seed0: checkpoint 22 of 41: step 2100, the pick; ...") and says when
+  // there is no 3-D world ("scrub: no 3-D world: ...").
   if (SCRUB) {
     const t0 = Date.now();
     const page = await openPage(`${ORIGIN}${BASE}${SCRUB}`);
@@ -228,10 +229,12 @@ try {
     const shown = v.log.map(l => /^scrub: (.+?): checkpoint (\d+) of (\d+): step ([^,;\s]+)/.exec(l))
                        .filter(Boolean).pop();
     const world = v.log.find(l => /^scrub: (no 3-D world|the windows alone|this world is not)/.test(l));
+    const sets = (v.log.find(l => /^scrub: \d+ runs in \d+ data sets/.test(l)) || '').slice(7);
     record('scrub shows a checkpoint of the runs deployed at build time',
-           shown !== undefined && Number(shown[3]) > 1,
+           shown !== undefined && Number(shown[3]) > 1 && sets !== '',
            shown ? `${shown[1]}: checkpoint ${shown[2]} of ${shown[3]}, step ${shown[4]}; ` +
-                   (world || 'the 3-D world drawn') : 'no "scrub: ...: checkpoint k of n" line');
+                   `${sets}; ${world || 'the 3-D world drawn'}`
+                 : 'no "scrub: ...: checkpoint k of n" line');
     await new Promise(r => setTimeout(r, 5000));
     const later = await watch(page, () => true);
     record('scrub is still running 5 s later, with no CSP violation',

@@ -199,7 +199,7 @@ def test_the_learn_page_alone_with_histories_of_your_choice(tmp_path, site):
                        "--histories", str(plain), str(zipped)])  # fmt: skip
 
 
-def _scrub_report(root: Path, name: str = "seed7") -> Path:
+def _scrub_report(root: Path, name: str = "seed7", set_name: str | None = None) -> Path:
     """A scrub report (grl_snam.scrub/v1) whose history and two run logs are elsewhere, named by
     absolute paths, as `grl-snam ariadne scrub --report` writes it."""
     runs = root / "deployed"
@@ -215,25 +215,38 @@ def _scrub_report(root: Path, name: str = "seed7") -> Path:
         cks.append({"step": step, "blob": f"/somewhere/coef_sdf.step{step:06d}.pt",
                     "cache": str(log), "metrics": {"path_m": 1.0 + step}})  # fmt: skip
     report = root / f"{name}.scrub.json"
-    report.write_text(json.dumps({"schema": "grl_snam.scrub/v1", "history": str(hist), "run": -1,
-                                  "scenario": {"run": {"world": "generated"}}, "checkpoints": cks}))  # fmt: skip
+    rep = {"schema": "grl_snam.scrub/v1", "history": str(hist), "run": -1,
+           "scenario": {"run": {"world": "generated"}}, "checkpoints": cks}  # fmt: skip
+    if set_name is not None:
+        rep["set"] = set_name
+    report.write_text(json.dumps(rep))
     return report
 
 
+def _bundle(path: Path):
+    """A run's bundle: its report and the names inside."""
+    with zipfile.ZipFile(path) as z:
+        assert all(i.compress_type == zipfile.ZIP_STORED for i in z.infolist())
+        return json.loads(z.read("scrub.json")), sorted(z.namelist())
+
+
 def test_the_scrub_page_carries_its_runs_beside_it(tmp_path, site):
-    """--scrub-only --scrub-reports: each report with its history and run logs in data/<run>/,
-    its paths made their file names, and the page's config views them (no deploy)."""
+    """--scrub-only --scrub-reports: a bundle per run, data/<run>.scrub.zip, with its report (its
+    paths made the names inside), its history and its run logs; the page's config views them."""
     assemble = _pages_module("assemble")
     reports = [_scrub_report(tmp_path / "a", "seed7"), _scrub_report(tmp_path / "b", "seed8")]
     out = tmp_path / "other" / "scrub"
     assert assemble.main(["--host", str(site / "learn"), "--out", str(out), "--scrub-only",
                           "--scrub-reports", *map(str, reports)]) == 0  # fmt: skip
     config = json.loads((out / "ariadne.config.json").read_text())
-    assert config["args"][:4] == ["scrub", "--view", "data/seed7/scrub.json",
-                                  "data/seed8/scrub.json"]  # fmt: skip
+    assert config["args"][:4] == ["scrub", "--view", "data/seed7.scrub.zip",
+                                  "data/seed8.scrub.zip"]  # fmt: skip
     assert config["args"][4:] == assemble.SCRUB_VIEW
-    assert all((out / f).is_file() for f in config["preload"]) and len(config["preload"]) == 9
-    rep = json.loads((out / "data/seed7/scrub.json").read_text())
+    assert config["preload"] == ["grl_snam_web.zip", "data/seed7.scrub.zip", "data/seed8.scrub.zip"]
+    assert all((out / f).is_file() for f in config["preload"])
+    rep, names = _bundle(out / "data/seed7.scrub.zip")
+    assert names == sorted(["scrub.json", "seed7.history.jsonl.gz",
+                            *(f"{s:016x}-abcd.npz" for s in (0, 100))])  # fmt: skip
     assert rep["history"] == "seed7.history.jsonl.gz"
     assert [c["cache"] for c in rep["checkpoints"]] == [f"{s:016x}-abcd.npz" for s in (0, 100)]
     assert rep["checkpoints"][1]["blob"] == "coef_sdf.step000100.pt"  # no machine's paths
@@ -246,7 +259,7 @@ def test_the_site_with_the_scrub_page(tmp_path, site):
     assert assemble.main(["--host", str(site / "learn"), "--out", str(out), "--scrub",
                           "--scrub-reports", str(_scrub_report(tmp_path))]) == 0  # fmt: skip
     assert (out / "learn" / "ariadne.config.json").is_file()
-    assert (out / "scrub" / "data" / "seed7" / "scrub.json").is_file()
+    assert (out / "scrub" / "data" / "seed7.scrub.zip").is_file()
     html = (out / "index.html").read_text()
     assert 'href="scrub/"' in html and (out / "img" / "scrub.jpg").is_file()
 
@@ -279,6 +292,34 @@ def test_the_scrub_page_finds_the_checkpoints_package_beside_its_python(tmp_path
     python.write_text("")
     with pytest.raises(SystemExit, match="cvcpkg install grl-snam-learning-checkpoints"):
         assemble.default_checkpoints(str(python))
-    part = tmp_path / "prefix" / "share" / "grl-snam-learning-checkpoints" / "retrain"
-    part.mkdir(parents=True)
-    assert assemble.default_checkpoints(str(python)) == part
+    root = tmp_path / "prefix" / "share" / "grl-snam-learning-checkpoints"
+    root.mkdir(parents=True)
+    assert assemble.default_checkpoints(str(python)) == root
+
+
+def test_the_scrub_page_carries_several_data_sets(tmp_path, site):
+    """Runs of the same name in two data sets: data/<set>/<run>.scrub.zip, viewed together."""
+    assemble = _pages_module("assemble")
+    reports = [_scrub_report(tmp_path / "a", "seed7", "retrain"),
+               _scrub_report(tmp_path / "b", "seed7", "fixed/retrain")]  # fmt: skip
+    out = tmp_path / "scrub"
+    assert assemble.main(["--host", str(site / "learn"), "--out", str(out), "--scrub-only",
+                          "--scrub-reports", *map(str, reports)]) == 0  # fmt: skip
+    config = json.loads((out / "ariadne.config.json").read_text())
+    assert config["args"][1:4] == ["--view", "data/retrain/seed7.scrub.zip",
+                                   "data/fixed/retrain/seed7.scrub.zip"]  # fmt: skip
+    assert all((out / f).is_file() for f in config["preload"])
+    assert _bundle(out / "data/fixed/retrain/seed7.scrub.zip")[0]["set"] == "fixed/retrain"
+    with pytest.raises(SystemExit, match="two scrub reports are of run retrain/seed7"):
+        assemble.main(["--host", str(site / "learn"), "--out", str(tmp_path / "x"),
+                       "--scrub-only", "--scrub-reports", str(reports[0]), str(reports[0])])  # fmt: skip
+
+
+def test_the_learning_checks_data_sets(tmp_path):
+    assemble = _pages_module("assemble")
+    assert [h.name for h in assemble.set_histories("fixed/retrain")] == [
+        f"seed{s}.history.jsonl.gz" for s in range(5)
+    ]
+    for bad in ("../retrain", "/tmp", "none"):
+        with pytest.raises(SystemExit):
+            assemble.set_histories(bad)

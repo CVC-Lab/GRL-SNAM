@@ -5,7 +5,8 @@ recipe:
   upstream_version: "1.0.0"
   # BUMP cvc_revision on ANY change to the staged bytes (SHA256SUMS, PROVENANCE.md or a
   # checkpoint): a same-revision re-push silently no-ops against the published artifact.
-  cvc_revision: 1
+  # 1: retrain/ and fixed/retrain/ (410). 2: world-units/retrain/ added (615).
+  cvc_revision: 2
   kind: data
   maintainer: "cvcpkg group"
   maintainer_email: "info@cvcpkg.org"
@@ -14,9 +15,10 @@ recipe:
   tags: [data, grl-snam, checkpoints, nav, learning]
   description: >-
     The learning check's saved policies (docs/learning-validation.md in GRL-SNAM): every
-    checkpoint of its two five-seed SDF retrains, 41 a seed (steps 0 to 4000), as torch
+    checkpoint of its three five-seed SDF retrains, 41 a seed (steps 0 to 4000), as torch
     checkpoints (coef_sdf.step*.pt for grl_snam / sdf_nav.CoefMLP). retrain/ is §2.3's run,
-    fixed/retrain/ §8.3's (after the C2 fix). Each is the file the committed learning history
+    fixed/retrain/ §8.3's (after the C2 fix), world-units/retrain/ §9.4's (the sim in world
+    units, an objective that is the task). Each is the file the committed learning history
     names as its blob, byte for byte (SHA256SUMS). grl-snam ariadne scrub deploys them; the
     GRL-SNAM Pages site's scrub page is built from them. Installs to
     share/grl-snam-learning-checkpoints/.

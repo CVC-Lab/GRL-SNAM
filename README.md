@@ -278,8 +278,8 @@ grl-snam learn-report seed*/history.jsonl --arms seed0.objective.json --arms see
 
   To watch a run checkpoint by checkpoint, deploy every checkpoint it saved with `grl-snam
   ariadne scrub`. The learning check's checkpoints are the `grl-snam-learning-checkpoints` package
-  on cvcpkg.org: both retrains, 41 a seed. On the first retrain, no checkpoint reaches the goal,
-  and the outcomes are not ordered by training step.
+  on cvcpkg.org: its three retrains, 41 a seed. On the first retrain, no checkpoint reaches the
+  goal, and the outcomes are not ordered by training step.
 
   ```bash
   cvcpkg install grl-snam-learning-checkpoints --prefix <prefix>

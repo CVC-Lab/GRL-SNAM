@@ -1,6 +1,6 @@
 # grl-snam-learning-checkpoints: provenance
 
-Every checkpoint of the learning check's two SDF retrains (GRL-SNAM's
+Every checkpoint of the learning check's three SDF retrains (GRL-SNAM's
 `docs/learning-validation.md`), 41 a seed, five seeds each, as torch checkpoints
 (`coef_sdf.stepNNNNNN.pt`, load with `grl_snam` / `sdf_nav.CoefMLP`):
 
@@ -8,6 +8,7 @@ Every checkpoint of the learning check's two SDF retrains (GRL-SNAM's
 |---|---|---|
 | `retrain/seed{0..4}/` | §2.3, the retrain that did not descend its own loss | before the C2 fix (today's `--bptt-window 0 --no-col-grad`) |
 | `fixed/retrain/seed{0..4}/` | §8.3, the retrain after the fix | `--grad-terms-every 10` |
+| `world-units/retrain/seed{0..4}/` | §9.4, the sim in world units with an objective that is the task (since revision 2) | `--grad-terms-every 10`, §9's defaults (`--metres-per-unit 20 --objective task --leg-ticks 1000 --pick clean-reach --val-ticks 1000`) |
 
 Each is from `grl-snam train <austin_south/nav_sdf.npz> -o coef_sdf.pt --steps 4000 --seed $s
 --threads 1 --device cpu --history history.jsonl --checkpoint-every 100 --val-frac 0.25
@@ -27,6 +28,11 @@ sha256; the histories are committed in GRL-SNAM, with these sha256 (of the `.jso
 | `fixed/retrain/seed2.history.jsonl.gz` | `2fcc577fb9c649d59fe57219791f1716b736c59ebd50d2a2bc75e965da840210` |
 | `fixed/retrain/seed3.history.jsonl.gz` | `675ec5da31d52fadf68affee2e10ba6df5939275d282b775d5eea75dad5a3ad3` |
 | `fixed/retrain/seed4.history.jsonl.gz` | `84fdf18526080609314027c8d34f5bf6138f1b02c83c76dcbc15e7f38dcb442f` |
+| `world-units/retrain/seed0.history.jsonl.gz` | `c14d14a950c3cd90b8871dc952acc293ac7244992f86d6f3aa9ea6807c26247f` |
+| `world-units/retrain/seed1.history.jsonl.gz` | `db31e72427832d83d9280b08b43c1e5b2e00bcecde95ff64a3c61613700e8282` |
+| `world-units/retrain/seed2.history.jsonl.gz` | `c34ca74df32e32568f82edd51bbebb2941d95d4ce98d1124be000dc4a2da2544` |
+| `world-units/retrain/seed3.history.jsonl.gz` | `20062bb6f05088e73b516b14dc4bb9ef090446b4a2eb475572655b4614df62c2` |
+| `world-units/retrain/seed4.history.jsonl.gz` | `c61ccf06a79f250b956b5851630c06bbfda47e0facefdcdfb0386be494044a0a` |
 
 Deploy every checkpoint of a run (`grl-snam ariadne scrub`; the Pages site's scrub page is built
 this way by `pages/assemble.py --scrub`):

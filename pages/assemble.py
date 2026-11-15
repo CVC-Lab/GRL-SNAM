@@ -3,7 +3,7 @@
 
     python pages/assemble.py --host HOST --out _site [--histories H...] [--arms TABLE]
     python pages/assemble.py --host HOST --out DIR --learn-only [--histories H...] [--arms TABLE]
-    python pages/assemble.py --host HOST --out _site --scrub --python PY [--checkpoints DIR] ...
+    python pages/assemble.py --host HOST --out _site --scrub --python PY [--scrub-sets SET...] ...
     python pages/assemble.py --host HOST --out DIR --scrub-only --scrub-reports R.json...
 
 ``--host`` is libcvc's ariglx-web, the ``share/ariglx-web`` directory pages/build-ariglx-web.sh
@@ -19,11 +19,12 @@ installs. The site:
       ariadne.config.json             src main.py, every file above in its preload, the args
     scrub/                            with --scrub: grl-snam ariadne scrub --view, on ariglx-web:
       (the host, main.py and grl_snam_web.zip, as learn/'s)
-      data/<run>/scrub.json           a run's scrub report (grl_snam.scrub/v1), its paths made
-                                      the file names beside it
-      data/<run>/<history>            the run's learning history
-      data/<run>/<sha>-<hash>.npz     each checkpoint's run log (grl_snam.run_log/v1)
-      ariadne.config.json             ["scrub", "--view", "data/<run>/scrub.json", ...]
+      data/<set>/<run>.scrub.zip      a run's bundle, stored: its scrub report (scrub.json,
+                                      grl_snam.scrub/v1, its paths the names inside), its
+                                      learning history and each checkpoint's run log (lean
+                                      grl_snam.run_log/v1); the page's loader takes at most
+                                      512 files, and a run is 43
+      ariadne.config.json             ["scrub", "--view", "data/<set>/<run>.scrub.zip", ...]
 
 ``--learn-only`` writes the learn page alone, self-contained, at ``--out`` (for another site to
 serve, at any path). Everything the page fetches is beside it, on the site's own origin.
@@ -39,14 +40,22 @@ since learn would refuse it in the page.
 The page only views runs: deploying a checkpoint needs torch (a ``.pt``) and libcvc's sim_world,
 so it is done here, natively, by ``--python`` (a Python with grl_snam's closure: torch and
 pycvc-gl 3.7.12+, the same libcvc as ``--host``'s, since the page rebuilds the generated world
-with its own generator; a cvcpkg prefix's python gets its ``lib/`` on the loader path). Each of
-``--scrub-histories`` (default: the retrain's, as learn's) is deployed with ``grl-snam ariadne
-scrub HISTORY --headless --report``, its saved policies found in ``--checkpoints``/<run>/ (<run>
-the history's name without ``.history.jsonl[.gz]``). They are not in the repository: the
-``grl-snam-learning-checkpoints`` cvcpkg package has the learning check's (its retrain/ and
-fixed/retrain/, each file checked against the histories' blobs by sha256 when it was packed;
-cvcpkg/recipes/grl-snam-learning-checkpoints), and by default they are its retrain/, installed
-in ``--python``'s prefix. They are deployed on ``--scrub-world`` (default generated:
+with its own generator; a cvcpkg prefix's python gets its ``lib/`` on the loader path).
+
+``--scrub-sets`` (default ``retrain fixed/retrain world-units/retrain``) names the learning
+check's data sets: each is a directory under docs/learning-validation/ whose
+``*.history.jsonl.gz`` are its runs (or ``--scrub-histories``, one set named
+``--scrub-set-name``). Each run is deployed with ``grl-snam ariadne scrub HISTORY --headless
+--lean --data-set SET --report``, its saved policies found in ``--checkpoints``/<set>/<run>/ (else
+``--checkpoints``/<run>/; <run> is the history's name without ``.history.jsonl[.gz]``). They are
+not in the repository: the ``grl-snam-learning-checkpoints`` cvcpkg package has the learning
+check's under the same names (retrain/, fixed/retrain/ and world-units/retrain/, each file checked
+against the histories' blobs by sha256 when it was packed; cvcpkg/recipes/
+grl-snam-learning-checkpoints), and by default ``--checkpoints`` is that package in ``--python``'s
+prefix. The page's Set combo picks a set, its Run combo a run of it. Every run's logs are
+preloaded (the page's loader has no fetch after start; libcvc's data roadmap D4), about 5 MB a run
+lean, so each five-seed set adds about 25 MB to the first visit. They are deployed on
+``--scrub-world`` (default generated:
 libcvc's generator from scrub.ari's world.* keys, which the page builds again from the report
 with no data to fetch; Austin's bundle is 228 MB and cvcpkg.org sends no CORS for github.io, so a
 data world's page shows the windows alone). ``--scrub-cache`` keeps the run logs between builds
@@ -74,10 +83,12 @@ REPO = Path(__file__).resolve().parent.parent
 SITE_SRC = REPO / "pages" / "site"
 RETRAIN = REPO / "docs" / "learning-validation" / "retrain"
 HISTORIES = sorted(RETRAIN.glob("seed*.history.jsonl.gz"))
-#: The cvcpkg package with the learning check's saved policies, and the part of it that holds the
-#: retrain's (<run>/coef_sdf.step*.pt), the scrub page's default.
+#: The cvcpkg package with the learning check's saved policies (<set>/<run>/coef_sdf.step*.pt).
 CHECKPOINTS_PACKAGE = "grl-snam-learning-checkpoints"
-CHECKPOINTS_PART = "retrain"
+LEARNING = REPO / "docs" / "learning-validation"
+#: The learning check's data sets the scrub page shows: directories under LEARNING whose
+#: *.history.jsonl.gz are their runs, and the package's directories of the same names.
+SCRUB_SETS = ("retrain", "fixed/retrain", "world-units/retrain")
 SCRUB_SCHEMA = "grl_snam.scrub/v1"
 #: How the scrub page opens: the world seen from above, and the windows that leave it in view
 #: (Training, Ledger and Simulation are in its Windows menu).
@@ -153,39 +164,64 @@ def _python_env(python: str) -> dict:
 
 
 def default_checkpoints(python: str) -> Path:
-    """The retrain's saved policies in the cvcpkg prefix ``python`` is in (``<prefix>/bin/python``):
-    the grl-snam-learning-checkpoints package's retrain/. Exits saying how to install it when it
-    is not there."""
+    """The learning check's saved policies in the cvcpkg prefix ``python`` is in
+    (``<prefix>/bin/python``): the grl-snam-learning-checkpoints package. Exits saying how to
+    install it when it is not there."""
     prefix = Path(python).resolve().parent.parent
-    path = prefix / "share" / CHECKPOINTS_PACKAGE / CHECKPOINTS_PART
+    path = prefix / "share" / CHECKPOINTS_PACKAGE
     if not path.is_dir():
         sys.exit(f"assemble: no saved policies at {path}: cvcpkg install {CHECKPOINTS_PACKAGE} "
                  f"--prefix {prefix}, or name them with --checkpoints")  # fmt: skip
     return path
 
 
-def deploy_scrub(histories, checkpoints: Path, python: str, cache: Path, world: str,
+def set_histories(name: str) -> list[Path]:
+    """The runs of the learning check's data set ``name``: its directory's histories."""
+    if not name or Path(name).is_absolute() or ".." in Path(name).parts:
+        sys.exit(f"assemble: {name!r} is not a data set under {LEARNING}")
+    found = sorted((LEARNING / name).glob("*.history.jsonl.gz"))
+    if not found:
+        sys.exit(f"assemble: no histories in {LEARNING / name} (data set {name!r})")
+    return found
+
+
+def run_key(set_name: str, run: str) -> str:
+    """A run's name across data sets: ``retrain/seed0``, or ``seed0`` in no set."""
+    return f"{set_name}/{run}" if set_name else run
+
+
+def deploy_scrub(sets, checkpoints: Path, python: str, cache: Path, world: str,
                  ticks: int) -> list[Path]:  # fmt: skip
-    """Each history's checkpoints deployed natively (``grl-snam ariadne scrub --headless
-    --report``): their reports, in ``cache``/<run>.scrub.json, the run logs in ``cache``/<run>/."""
-    histories = [Path(h) for h in histories]
-    names = [run_name(h) for h in histories]
-    if len(set(names)) != len(names):
-        sys.exit(f"assemble: two histories share a run name ({', '.join(names)})")
-    reports = []
-    for h, name in zip(histories, names, strict=True):
-        blobs = checkpoints / name
-        if not blobs.is_dir():
-            sys.exit(f"assemble: no saved policies for {h.name}: {blobs} is not a directory")
-        report = cache / f"{name}.scrub.json"
-        cmd = [python, "-s", "-m", "grl_snam.ariadne", "scrub", str(h.resolve()), "--blobs",
-               str(blobs.resolve()), "--cache", str((cache / name).resolve()), "--headless",
-               "--world", world, "--ticks", str(ticks), "--report", str(report.resolve())]  # fmt: skip
-        print(f"assemble: scrub: deploying {h.name}'s checkpoints on {world} ({blobs})", flush=True)
-        r = subprocess.run(cmd, env=_python_env(python), cwd=REPO, check=False)
-        if r.returncode != 0 or not report.is_file():
-            sys.exit(f"assemble: scrub on {h.name} failed (exit {r.returncode})")
-        reports.append(report)
+    """Each data set's runs deployed natively (``grl-snam ariadne scrub --headless --lean
+    --report``): ``sets`` is ``[(name, histories)]``; the reports in ``cache``/<set>/<run>.scrub.json,
+    the run logs in ``cache``/<set>/<run>/."""
+    keys, reports = [], []
+    for set_name, histories in sets:
+        for h in map(Path, histories):
+            key = run_key(set_name, run_name(h))
+            if key in keys:
+                sys.exit(f"assemble: two histories are run {key}")
+            keys.append(key)
+            blobs = next((d for d in (checkpoints / key, checkpoints / run_name(h)) if d.is_dir()),
+                         None)  # fmt: skip
+            if blobs is None:
+                sys.exit(f"assemble: no saved policies for {key}: {checkpoints / key} is not a "
+                         "directory")  # fmt: skip
+            report = cache / f"{key}.scrub.json"
+            cmd = [python, "-s", "-m", "grl_snam.ariadne", "scrub", str(h.resolve()), "--blobs",
+                   str(blobs.resolve()), "--cache", str((cache / key).resolve()), "--headless",
+                   "--lean", "--world", world, "--ticks", str(ticks), "--report",
+                   str(report.resolve())]  # fmt: skip
+            if set_name:
+                cmd += ["--data-set", set_name]
+            print(
+                f"assemble: scrub: deploying {key}'s checkpoints on {world} ({blobs})", flush=True
+            )
+            report.parent.mkdir(parents=True, exist_ok=True)
+            r = subprocess.run(cmd, env=_python_env(python), cwd=REPO, check=False)
+            if r.returncode != 0 or not report.is_file():
+                sys.exit(f"assemble: scrub on {key} failed (exit {r.returncode})")
+            reports.append(report)
     return reports
 
 
@@ -202,9 +238,11 @@ def _found(report: Path, name) -> Path | None:
 
 
 def scrub_page(host: Path, page: Path, reports) -> dict:
-    """The scrub page at ``page`` (made here): the host, the launcher, the package, each report
-    with its history and run logs in data/<run>/ (the report's paths made their file names), and
-    the page config, which views them."""
+    """The scrub page at ``page`` (made here): the host, the launcher, the package, a bundle per
+    run, data/<set>/<run>.scrub.zip (data/<run>.scrub.zip in no set): one zip with its report
+    (scrub.json, its paths made the names inside), its history and its run logs, stored. The page's
+    loader fetches at most 512 files, and a run is 43; scrub --view reads the bundles. The page
+    config views them."""
     reports = [Path(r) for r in reports]
     if not reports:
         sys.exit("assemble: no scrub reports to show")
@@ -217,25 +255,30 @@ def scrub_page(host: Path, page: Path, reports) -> dict:
         hist = _found(r, rep.get("history"))
         if hist is None:
             sys.exit(f"assemble: {r}: its history {rep.get('history')!r} is not there")
-        name = run_name(hist)
+        name = run_key(str(rep.get("set") or ""), run_name(hist))
         if name in names:
-            sys.exit(f"assemble: two scrub reports are of runs named {name}")
+            sys.exit(f"assemble: two scrub reports are of run {name}")
         names.append(name)
-        out = page / "data" / name
-        out.mkdir(parents=True)
-        shutil.copy2(hist, out / hist.name)
+        files = {hist.name: hist}
         rep["history"] = hist.name
         for c in rep.get("checkpoints") or []:
             log = _found(r, c.get("cache"))
             if log is None:
                 sys.exit(f"assemble: {r}: step {c.get('step')}'s run log is not there")
-            shutil.copy2(log, out / log.name)
+            files[log.name] = log
             c["cache"], c["blob"] = log.name, Path(str(c.get("blob", ""))).name
-            preload.append(f"data/{name}/{log.name}")
             logs += 1
-        (out / "scrub.json").write_text(json.dumps(rep, indent=1) + "\n")
-        args.append(f"data/{name}/scrub.json")
-        preload += [f"data/{name}/scrub.json", f"data/{name}/{hist.name}"]
+        bundle = page / "data" / f"{name}.scrub.zip"
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(bundle, "w", zipfile.ZIP_STORED) as z:
+            entries = [("scrub.json", (json.dumps(rep, indent=1) + "\n").encode())]
+            entries += [(k, f.read_bytes()) for k, f in sorted(files.items())]
+            for entry, data in entries:
+                info = zipfile.ZipInfo(entry, FIXED_TIME)
+                info.external_attr = 0o644 << 16
+                z.writestr(info, data)
+        args.append(f"data/{name}.scrub.zip")
+        preload.append(f"data/{name}.scrub.zip")
     config = {
         "title": "GRL-SNAM: watch it learn",
         "src": "main.py",
@@ -244,7 +287,9 @@ def scrub_page(host: Path, page: Path, reports) -> dict:
         "args": args + SCRUB_VIEW,
     }
     (page / "ariadne.config.json").write_text(json.dumps(config, indent=2) + "\n")
-    print(f"assemble: {page}: grl_snam_web.zip ({n} files), {len(names)} runs, {logs} run logs")
+    sets = len({x.rpartition("/")[0] for x in names})
+    print(f"assemble: {page}: grl_snam_web.zip ({n} files), {len(names)} runs in {sets} data "
+          f"sets, {logs} run logs")  # fmt: skip
     return config
 
 
@@ -323,12 +368,20 @@ def main(argv=None) -> int:
                     help="add the checkpoint scrubber's page, scrub/ (deployed here)")  # fmt: skip
     ap.add_argument("--scrub-only", action="store_true",
                     help="write the scrub page alone at --out, not the whole site")  # fmt: skip
-    ap.add_argument("--scrub-histories", nargs="+", type=Path, default=HISTORIES, metavar="H",
-                    help="the histories whose checkpoints it deploys (default: the retrain's)")  # fmt: skip
+    ap.add_argument("--scrub-sets", nargs="+", default=list(SCRUB_SETS), metavar="SET",
+                    help="the learning check's data sets it deploys, directories under "
+                         f"docs/learning-validation/ (default: {' '.join(SCRUB_SETS)})")  # fmt: skip
+    ap.add_argument("--scrub-histories", nargs="+", type=Path, default=None, metavar="H",
+                    help="deploy these histories instead, as one data set (--scrub-set-name)")  # fmt: skip
+    ap.add_argument(
+        "--scrub-set-name",
+        default="",
+        metavar="NAME",
+        help="the data set --scrub-histories are (default: none)",
+    )
     ap.add_argument("--checkpoints", type=Path, default=None, metavar="DIR",
-                    help="the saved policies: DIR/<run>/ for each history (default: the "
-                         f"{CHECKPOINTS_PACKAGE} package's {CHECKPOINTS_PART}/, in --python's "
-                         "prefix)")  # fmt: skip
+                    help="the saved policies: DIR/<set>/<run>/ (or DIR/<run>/) for each history "
+                         f"(default: the {CHECKPOINTS_PACKAGE} package in --python's prefix)")  # fmt: skip
     ap.add_argument(
         "--python",
         default=sys.executable,
@@ -355,7 +408,9 @@ def main(argv=None) -> int:
             cache = a.scrub_cache or Path(tmp := tempfile.mkdtemp(prefix="grl-snam-scrub-"))
             cache.mkdir(parents=True, exist_ok=True)
             checkpoints = a.checkpoints or default_checkpoints(a.python)
-            reports = deploy_scrub(a.scrub_histories, checkpoints, a.python, cache,
+            sets = ([(a.scrub_set_name, a.scrub_histories)] if a.scrub_histories else
+                    [(name, set_histories(name)) for name in a.scrub_sets])  # fmt: skip
+            reports = deploy_scrub(sets, checkpoints, a.python, cache,
                                    a.scrub_world, a.scrub_ticks)  # fmt: skip
     if a.out.exists():
         shutil.rmtree(a.out)

@@ -23,7 +23,9 @@ ariadne replay run.npz`` plays it back. The format is ``grl_snam.run_log/v1``, o
   - ``run`` and ``world_keys``: the state-tree keys that rebuild the world;
   - ``settings``;
   - ``provenance``: the GRL-SNAM version (and its checkout's commit when it runs from one),
-    libcvc's version, and each training history's path and sha256 when the run names them.
+    libcvc's version, and each training history's path and sha256 when the run names them;
+  - ``lean``: true in a lean log (:meth:`RunLog.save`), whose floats are single precision and
+    which leaves out the cars template's fields that are derived from the rest.
 
 :class:`RunLog` writes and reads it. :meth:`RunLog.from_run` takes anything with ``arrays()``
 and ``meta()`` (``grl_snam.ariadne._arms.ArmsRun``), and :meth:`RunLog.at` gives an arm's values
@@ -91,6 +93,12 @@ def provenance(history: str | Sequence[str] | None = None) -> dict:
     return out
 
 
+#: The cars template's fields a lean log leaves out (:meth:`RunLog.save`), all of which
+#: :func:`cars_fields` derives from the rest.
+LEAN_DROPS = ("vx", "vy", "steer", "goal_dist", "reached",
+              *(f"coef_{n}" for n in CARS_COEFS))  # fmt: skip
+
+
 def cars_fields(arrays: Mapping) -> dict:
     """The cars template's log fields that ``arrays`` (a run's) lacks, derived from what it has."""
     out = {}
@@ -129,22 +137,38 @@ class RunLog:
         m = {**source.meta(), **meta, "schema": SCHEMA, "provenance": provenance(history)}
         return cls(arrays, m)
 
-    def save(self, path) -> str:
+    def save(self, path, *, lean: bool = False) -> str:
+        """Write the log to ``path``. ``lean`` writes a smaller one, to show rather than to analyse:
+        floats in single precision (but ``t``), and none of the cars template's fields that
+        :func:`cars_fields` derives, which :meth:`load` derives again (``meta`` says ``lean``)."""
         path = str(path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(path, meta=json.dumps(self.meta, default=_jsonable), **self.arrays)
+        arrays, meta = self.arrays, self.meta
+        if lean:
+            derived = set(cars_fields({k: v for k, v in arrays.items() if k not in LEAN_DROPS}))
+            arrays = {
+                k: (v.astype(np.float32) if v.dtype == np.float64 and k != "t" else v)
+                for k, v in arrays.items()
+                if k not in derived
+            }
+            meta = {**meta, "lean": True}
+        np.savez_compressed(path, meta=json.dumps(meta, default=_jsonable), **arrays)
         return path
 
     @classmethod
     def load(cls, path) -> RunLog:
-        """The log at ``path``. Raises ValueError when it is not a run log."""
+        """The log at ``path`` (a lean one with the cars template's fields derived again). Raises
+        ValueError when it is not a run log."""
         with np.load(path, allow_pickle=False) as z:
             if "meta" not in z.files:
                 raise ValueError(f"{path}: not a run log (no meta)")
             meta = json.loads(str(z["meta"]))
             if meta.get("schema") != SCHEMA:
                 raise ValueError(f"{path}: not a run log ({SCHEMA}): schema {meta.get('schema')!r}")
-            return cls({k: z[k] for k in z.files}, meta)
+            arrays = {k: z[k] for k in z.files}
+        if meta.get("lean"):
+            arrays.update(cars_fields(arrays))
+        return cls(arrays, meta)
 
     # ── reading ──
 
