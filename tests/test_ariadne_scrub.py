@@ -6,14 +6,19 @@ metric chart, and side-by-side run logs. The rest deploy a copy of the coef-trai
 writes, on the flat square on nav's kinematic plant (no download, no grl-snam-weights), and skip
 without pycvc_gl's Python host and its multi-car template. They check that a checkpoint deployed
 twice gives the same run, that checkpoint 0 deployed is the untrained arm of ``live --arms``, that
-the cache is read back, and the view's controls.
+the cache is read back, and the view's controls. The view-only mode (``--view``) reads the
+deploy's report back, moved elsewhere and without torch, and pages/assemble.py deploys a scrub
+page.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +27,7 @@ import pytest
 from grl_snam.ariadne import scrub
 from grl_snam.learning import load
 
+REPO = Path(__file__).resolve().parent.parent
 FIXTURE = Path(__file__).parent / "fixtures" / "learning_history" / "coef_train_history.jsonl"
 #: Each checkpoint's policy: step 0 a seeded CoefMLP (the untrained net), then constants.
 CONSTANTS = {2: (1.0, 4.0, 3.0), 4: (1.0, 6.0, 2.0), 6: (0.5, 8.0, 1.5)}
@@ -106,6 +112,56 @@ def test_two_runs_side_by_side():
     assert both.arrays["x"].tolist() == [[0, 10], [1, 11]]
     assert both.arrays["leg_goal"].tolist() == [[3.0, 4.0]]
     assert [(a["name"], a["slot"]) for a in both.meta["arms"]] == [("step 0", 0), ("step 9", 1)]
+
+
+def test_a_report_finds_its_files(tmp_path, monkeypatch):
+    """As given, relative to the report, from the working directory, else by name beside it."""
+    (tmp_path / "rep" / "logs").mkdir(parents=True)
+    report = tmp_path / "rep" / "scrub.json"
+    for f in ("logs/a.npz", "b.npz"):
+        (tmp_path / "rep" / f).write_bytes(b"x")
+    monkeypatch.chdir(tmp_path)
+    assert scrub.find_file(report, "logs/a.npz") == tmp_path / "rep" / "logs" / "a.npz"
+    assert scrub.find_file(report, str(tmp_path / "rep" / "b.npz")) == tmp_path / "rep" / "b.npz"
+    assert scrub.find_file(report, "/gone/elsewhere/b.npz") == tmp_path / "rep" / "b.npz"
+    assert scrub.find_file(report, "rep/b.npz") == tmp_path / "rep" / "b.npz"  # the cwd's
+    assert scrub.find_file(report, "c.npz") is None and scrub.find_file(report, None) is None
+
+
+def _log(path, x0):
+    from grl_snam.learning.runlog import SCHEMA, RunLog
+
+    t = np.arange(1, 4) * 0.05
+    RunLog({"t": t, "x": np.full((3, 1), float(x0))}, {"schema": SCHEMA, "arms": []}).save(path)
+    return path
+
+
+def test_a_deployed_run_reads_each_log_when_shown(tmp_path, monkeypatch):
+    monkeypatch.setattr(scrub, "KEEP_LOGS", 2)
+    logs = [_log(tmp_path / f"{i}.npz", i) for i in range(4)]
+    rows = [{"step": float(i), "selected": i == 2} for i in range(4)]
+    d = scrub.Deployed(tmp_path / "seed3.history.jsonl.gz", -1, rows, [{}] * 4, {}, logs)
+    assert d.name == "seed3" and d.pick == 2 and d._read == {}
+    assert float(d.log(1).arrays["x"][0, 0]) == 1.0
+    d.log(0), d.log(2), d.log(3)
+    assert sorted(d._read) == [0, 3]  # at most KEEP_LOGS, step 0's always
+    assert d.log(0) is d.log(0)
+
+
+def test_load_report_refuses_what_it_cannot_show(tmp_path):
+    bad = tmp_path / "arms.json"
+    bad.write_text(json.dumps({"schema": "grl_snam.arms/v1"}))
+    with pytest.raises(ValueError, match="not a scrub report"):
+        scrub.load_report(bad)
+    rep = tmp_path / "scrub.json"
+    rep.write_text(json.dumps({"schema": scrub.REPORT_SCHEMA, "history": "gone.jsonl"}))
+    with pytest.raises(ValueError, match="history 'gone.jsonl' is not there"):
+        scrub.load_report(rep)
+    shutil.copy(FIXTURE, tmp_path / FIXTURE.name)
+    rep.write_text(json.dumps({"schema": scrub.REPORT_SCHEMA, "history": FIXTURE.name,
+                               "checkpoints": [{"step": 0, "cache": "gone.npz"}]}))  # fmt: skip
+    with pytest.raises(ValueError, match="step 0's run log 'gone.npz' is not there"):
+        scrub.load_report(rep)
 
 
 # ── deployed ───────────────────────────────────────────────────────────────────────────────────
@@ -283,3 +339,121 @@ def test_refusals(tmp_path, capsys):
     assert _main(["scrub", str(tmp_path / "none.jsonl"), "--headless"]) == 2
     err = capsys.readouterr().err
     assert "names a saved policy" in err and "sim_world" in err and "none.jsonl" in err
+
+
+def _moved(deployed, dest: Path, history_name=None) -> Path:
+    """The deploy's report, its history and run logs copied to ``dest``, the report naming them
+    by paths that are not there (so it finds them beside itself)."""
+    dest.mkdir(parents=True)
+    rep = json.loads(json.dumps(deployed["report"]))
+    hist = dest / (history_name or Path(rep["history"]).name)
+    shutil.copy(rep["history"], hist)
+    rep["history"] = f"/gone/{hist.name}"
+    for c in rep["checkpoints"]:
+        shutil.copy(c["cache"], dest / Path(c["cache"]).name)
+        c["cache"] = f"/gone/{Path(c['cache']).name}"
+    out = dest / "scrub.json"
+    out.write_text(json.dumps(rep))
+    return out
+
+
+@needs_host
+def test_view_only_shows_what_the_deploy_showed(deployed, tmp_path):
+    """The view of the report, moved, is the deploy's view: the table, the pick, the Stats."""
+    report = _moved(deployed, tmp_path / "page")
+    code, hosts = _run(["scrub", "--view", str(report), "--headless", "--frames", "3"])
+    assert code == 0
+    host, first = hosts[0], deployed["host"]
+
+    def tree(h, key):  # but the wall time: another test deploys a checkpoint again
+        return [{k: v for k, v in r.items() if k != "ms"} for r in h.get_tree(key)]
+
+    for key in ("scrub.table", "arms.stats", "ledger.coef"):
+        assert tree(host, key) == tree(first, key), key
+    assert host.get("scrub.now") == first.get("scrub.now")
+    assert host.get("scrub.title").startswith("coef_train_history: 4 checkpoints, steps 0 to 6")
+    assert host.get("scrub.made").startswith("deployed with GRL-SNAM ")
+
+
+@needs_host
+def test_view_only_needs_no_torch(deployed, tmp_path):
+    report = _moved(deployed, tmp_path / "page")
+    code = ("import sys; sys.modules['torch'] = None\n"  # import torch fails
+            "from grl_snam.ariadne.__main__ import main\n"
+            f"sys.exit(main(['scrub', '--view', {str(report)!r}, '--headless', '--frames', '2']))")  # fmt: skip
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(REPO), os.environ.get("PYTHONPATH", "")]),
+    }
+    r = subprocess.run([sys.executable, "-s", "-c", code], cwd=tmp_path, env=env,
+                       capture_output=True, text=True, timeout=300)  # fmt: skip
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert "checkpoint 3 of 4: step 4, the pick" in r.stderr
+
+
+@needs_host
+def test_view_only_runs_side_by_side(deployed, tmp_path):
+    """Two reports: a Run combo picks one; the view opens on the first's pick."""
+    a = _moved(deployed, tmp_path / "a", "seed1.history.jsonl")
+    b = _moved(deployed, tmp_path / "b", "seed2.history.jsonl")
+    seen = {}
+    code, hosts = _run(["scrub", "--view", str(a), str(b), "--headless", "--frames", "6",
+                        "--windows", "scrub,episode"], {
+        2: lambda h: seen.__setitem__("first", h.get("scrub.title")),
+        3: lambda h: h.set("scrub.run_choice", "seed2"),
+        5: lambda h: seen.__setitem__("second", h.get("scrub.title")),
+    })  # fmt: skip
+    assert code == 0
+    host = hosts[0]
+    assert host.get("scrub.run_count") == "2" and host.get("scrub.run_labels") == "seed1\nseed2"
+    assert seen["first"].startswith("seed1:") and seen["second"].startswith("seed2:")
+    assert host.get("scrub.now").startswith("checkpoint 3 of 4: step 4, the pick")
+    assert (host.get("tree.scrub.open"), host.get("tree.training.open")) == ("1", "0")
+
+
+@needs_host
+def test_view_only_refusals(deployed, tmp_path, capsys):
+    report = _moved(deployed, tmp_path / "page")
+    assert _main(["scrub", str(deployed["hist"]), "--view", str(report), "--headless"]) == 2
+    assert _main(["scrub", "--headless"]) == 2
+    assert _main(["scrub", "--view", str(tmp_path / "none.json"), "--headless"]) == 2
+    other = json.loads(report.read_text())
+    other["scenario"]["run"]["world"] = "generated"
+    (tmp_path / "page" / "other.json").write_text(json.dumps(other))
+    assert _main(["scrub", "--view", str(report), str(tmp_path / "page" / "other.json"),
+                  "--headless"]) == 2  # fmt: skip
+    err = capsys.readouterr().err
+    assert "not both" in err and "none.json" in err and "different worlds" in err
+
+
+def _assemble():
+    path = REPO / "pages" / "assemble.py"
+    spec = importlib.util.spec_from_file_location("pages_assemble", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@needs_host
+def test_assemble_deploys_a_scrub_page(deployed, tmp_path):
+    """pages/assemble.py --scrub-only deploys a history's checkpoints (found in
+    --checkpoints/<run>/) with this Python, and the page's own report views them."""
+    assemble = _assemble()
+    host = tmp_path / "ariglx-web"
+    host.mkdir()
+    for name in assemble.HOST_FILES:
+        (host / name).write_text(f"stand-in {name}\n")
+    blobs = tmp_path / "checkpoints" / "coef_train_history"
+    shutil.copytree(deployed["root"] / "run", blobs)
+    page = tmp_path / "site" / "scrub"
+    assert assemble.main(["--host", str(host), "--out", str(page), "--scrub-only",
+                          "--scrub-histories", str(FIXTURE), "--checkpoints", str(blobs.parent),
+                          "--python", sys.executable, "--scrub-world", "flat",
+                          "--scrub-ticks", "40"]) == 0  # fmt: skip
+    config = json.loads((page / "ariadne.config.json").read_text())
+    report = page / config["args"][2]
+    assert config["args"][:3] == ["scrub", "--view", "data/coef_train_history/scrub.json"]
+    rep = json.loads(report.read_text())
+    assert rep["scenario"]["ticks"] == 40 and len(rep["checkpoints"]) == 4
+    assert all((report.parent / c["cache"]).is_file() for c in rep["checkpoints"])
+    assert _main(["scrub", "--view", str(report), "--headless", "--frames", "2"]) == 0

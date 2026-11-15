@@ -3,6 +3,7 @@
     python -m grl_snam.ariadne scrub run/history.jsonl                          # Austin, kinematic
     python -m grl_snam.ariadne scrub run/history.jsonl --world flat --ticks 600
     python -m grl_snam.ariadne scrub run/history.jsonl --headless --report scrub.json
+    python -m grl_snam.ariadne scrub --view scrub.json [more.json ...]       # view only
 
 A learning history (:mod:`grl_snam.learning.history`) names the policy each checkpoint saved, its
 ``blob`` (a ``.cvcnav`` or a ``.pt``; a relative path is the history's directory's). The scrubber
@@ -27,8 +28,24 @@ The view (``docs/scrub.ari``):
 - **A held-out curve** from the history, with the learn port's marks.
 
 Both charts carry a cursor at checkpoint k. ``--report R.json`` writes every checkpoint's metrics
-(``grl_snam.scrub/v1``). The exit code is 0, and 2 when the history names no saved policy or the
-plant is torch (the scrubber deploys on libcvc's sim_world).
+(``grl_snam.scrub/v1``), its run log's file and the scenario. ``--blobs DIR`` looks for the saved
+policies there (by file name) before beside the history, and ``--cache DIR`` caches the run logs
+there in place of ``<history>.scrub/``.
+
+**View only.** ``--view R.json ...`` shows runs already deployed: it reads the reports, the run log
+each checkpoint lists and the history each report names, and deploys nothing, so it needs neither
+torch nor the policies, and no sim_world steps. A file a report names is found as given, then
+relative to the report, then by its file name beside the report, so a report travels with its
+files (the Pages site's scrub page). It does not hash the scenario again: the libcvc in use, the
+world and the files' places may differ from the ones that deployed. With several reports a Run
+combo picks one; their worlds must be the same. The world is rebuilt from the report's ``run`` and
+``world`` keys (a generated world from its generator settings, which the deploy's libcvc made:
+another libcvc's may differ, and the view says so); ``--no-world``, a city that is not on this
+machine in a browser, or a pycvc_gl without the multi-car template, shows the windows alone (no
+3-D world). A run log is read when its checkpoint is first shown.
+
+The exit code is 0, and 2 when the history names no saved policy or the plant is torch (the
+scrubber deploys on libcvc's sim_world), or when a report or a file it names is not there.
 """
 
 from __future__ import annotations
@@ -36,6 +53,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -47,6 +65,10 @@ from grl_snam.ariadne import _arms, _cars, _host
 REPORT_SCHEMA = "grl_snam.scrub/v1"
 #: Bumped when the scrubber's runs would change, so older caches are not read.
 SCRUB_VERSION = 1
+#: docs/scrub.ari's windows, by id.
+WINDOWS = ("scrub", "training", "episode", "sim_transport", "arms_stats", "arms_ledger")
+#: The run logs a view keeps read at once (step 0's is always kept).
+KEEP_LOGS = 8
 #: The deployed metrics, from each run's last tick: name -> (label, run log array, digits).
 METRICS = {
     "reached": ("reached the goal", "stats_reached", 0),
@@ -60,8 +82,26 @@ METRICS = {
 
 
 def _args(p):
-    p.add_argument("history", help="a learning history (.jsonl or .jsonl.gz) whose checkpoints "
-                                   "name their saved policy (blob)")  # fmt: skip
+    p.add_argument("history", nargs="?", default=None,
+                   help="a learning history (.jsonl or .jsonl.gz) whose checkpoints name their "
+                        "saved policy (blob)")  # fmt: skip
+    p.add_argument("--view", nargs="+", default=None, metavar="REPORT",
+                   help="view only: runs already deployed, as these reports (--report's) list "
+                        "them; deploys nothing")  # fmt: skip
+    p.add_argument(
+        "--blobs",
+        default=None,
+        help="a directory to find the saved policies in (by file name) first",
+    )
+    p.add_argument(
+        "--cache", default=None, help="cache the run logs here (default <history>.scrub)"
+    )
+    p.add_argument("--no-world", action="store_true", help="the windows alone: no 3-D world")
+    p.add_argument("--camera", choices=("follow", "orbit"), default=None,
+                   help="follow checkpoint k's ghost (the default), or orbit the world")  # fmt: skip
+    p.add_argument("--windows", default=None, metavar="ID,...",
+                   help="the windows open at the start (default all: " + ",".join(WINDOWS)
+                        + "); the others are in the Windows menu")  # fmt: skip
     p.add_argument("--run", type=int, default=-1, help="which run in the file (default the last)")
     p.add_argument("--plant", default=None, help="nav_plant.vehicle (default kinematic)")
     p.add_argument("--ticks", type=int, default=1200, help="each checkpoint's ticks (0.05 s each)")
@@ -84,25 +124,28 @@ def _refuse(msg) -> int:
 # ── the checkpoints and the scenario (no host) ─────────────────────────────────────────────────
 
 
-def resolve_blob(history, blob: str) -> Path | None:
-    """The file ``blob`` names: as given when absolute, else beside the history, else from the
-    working directory, else its file name beside the history. None when none exists."""
+def resolve_blob(history, blob: str, blobs=None) -> Path | None:
+    """The file ``blob`` names: its file name in ``blobs`` (a directory) when given and there,
+    else as given when absolute, else beside the history, else from the working directory, else
+    its file name beside the history. None when none exists."""
     p = Path(blob)
     here = Path(history).resolve().parent
-    for c in ([p] if p.is_absolute() else [here / p, Path.cwd() / p, here / p.name]):
+    first = [Path(blobs) / p.name] if blobs else []
+    for c in first + ([p] if p.is_absolute() else [here / p, Path.cwd() / p, here / p.name]):
         if c.is_file():
             return c.resolve()
     return None
 
 
-def checkpoints(history, h) -> tuple[list[dict], list[str]]:
+def checkpoints(history, h, blobs=None) -> tuple[list[dict], list[str]]:
     """Run ``h``'s checkpoints that saved a policy, in order: ``{step, blob, kind, best,
-    selected, fitness}`` (``blob`` the file), and the blobs named that are not there."""
+    selected, fitness}`` (``blob`` the file), and the blobs named that are not there. ``blobs``
+    is a directory to look in first (:func:`resolve_blob`)."""
     rows, missing = [], []
     for c in h.checkpoints():
         if not c.blob:
             continue
-        path = resolve_blob(history, c.blob)
+        path = resolve_blob(history, c.blob, blobs)
         if path is None:
             missing.append(c.blob)
             continue
@@ -119,8 +162,9 @@ def scenario_hash(scenario: dict) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
-def cache_path(history, blob_sha: str, shash: str) -> Path:
-    return Path(f"{history}.scrub") / f"{blob_sha[:16]}-{shash}.npz"
+def cache_path(history, blob_sha: str, shash: str, cache=None) -> Path:
+    """Where a checkpoint's run log is cached: ``cache`` (a directory), else ``<history>.scrub``."""
+    return Path(cache or f"{history}.scrub") / f"{blob_sha[:16]}-{shash}.npz"
 
 
 def metrics_of(log) -> dict:
@@ -212,8 +256,9 @@ def run_checkpoint(host, world, plant, row, scenario, shash, history, work):
                            scenario_hash=shash)  # fmt: skip
 
 
-def deploy_all(host, world, plant, rows, scenario, history, *, log=print):
-    """Every checkpoint's run log, from the cache or deployed now (and cached)."""
+def deploy_all(host, world, plant, rows, scenario, history, *, cache=None, log=print):
+    """Every checkpoint's run log, from the cache (``cache``, else ``<history>.scrub``) or deployed
+    now (and cached)."""
     from grl_snam.learning.runlog import RunLog
 
     shash = scenario_hash(scenario)
@@ -221,7 +266,7 @@ def deploy_all(host, world, plant, rows, scenario, history, *, log=print):
     out = []
     for i, row in enumerate(rows):
         sha = _arms._sha256(row["blob"])
-        path = cache_path(history, sha, shash)
+        path = cache_path(history, sha, shash, cache)
         try:
             lg = RunLog.load(path)
             how = "cached"
@@ -238,36 +283,189 @@ def deploy_all(host, world, plant, rows, scenario, history, *, log=print):
     return out
 
 
+# ── the report, and runs read back ─────────────────────────────────────────────────────────────
+
+
+def find_file(report, name) -> Path | None:
+    """The file a report names: as given when absolute, else relative to the report, else from the
+    working directory, else its file name beside the report. None when none exists."""
+    if not name:
+        return None
+    p = Path(name)
+    here = Path(report).resolve().parent
+    for c in [p] if p.is_absolute() else [here / p, Path.cwd() / p]:
+        if c.is_file():
+            return c
+    return here / p.name if (here / p.name).is_file() else None
+
+
+def write_report(path, history, run, rows, metrics, scenario, provenance=None) -> dict:
+    """``--report``'s JSON (``grl_snam.scrub/v1``): the history, the scenario and its hash, what
+    deployed it (``provenance``: the GRL-SNAM commit, libcvc's version), and every checkpoint's
+    row (its run log is ``cache``) with its metrics."""
+    prov = {k: v for k, v in (provenance or {}).items() if k != "history"}
+    rep = {"schema": REPORT_SCHEMA, "history": str(history), "run": run, "scenario": scenario,
+           "scenario_hash": scenario_hash(scenario), "provenance": prov,
+           "checkpoints": [{**r, "metrics": m} for r, m in zip(rows, metrics, strict=True)]}  # fmt: skip
+    Path(path).write_text(json.dumps(rep, indent=1, default=str))
+    return rep
+
+
+class Deployed:
+    """One history's checkpoints, deployed on one scenario: their rows and metrics, the scenario,
+    the history (read when first asked for) and each checkpoint's run log (a :class:`RunLog`, or
+    a file read when first shown; :data:`KEEP_LOGS` are kept read)."""
+
+    def __init__(self, history, run, rows, metrics, scenario, logs, *, h=None, provenance=None):
+        from grl_snam.ariadne import learn
+
+        self.history, self.run, self.rows, self.metrics = history, run, rows, metrics
+        self.scenario, self.provenance, self._h = scenario, provenance or {}, h
+        self._files = list(logs)
+        self._read: dict[int, object] = {}
+        self.name = learn.run_label(self.h, 0) if h is not None else _stem(history)
+
+    @property
+    def h(self):
+        if self._h is None:
+            from grl_snam.learning import load
+
+            self._h = load(str(self.history))[self.run]
+        return self._h
+
+    @property
+    def pick(self) -> int:
+        """The history's pick (its selected checkpoint), else the last."""
+        return next((i for i, r in enumerate(self.rows) if r["selected"]), len(self.rows) - 1)
+
+    def log(self, i: int):
+        from grl_snam.learning.runlog import RunLog
+
+        if i in self._read:
+            self._read[i] = self._read.pop(i)  # the most recent last
+            return self._read[i]
+        lg = self._files[i]
+        lg = lg if isinstance(lg, RunLog) else RunLog.load(lg)
+        self._read[i] = lg
+        while len(self._read) > KEEP_LOGS:
+            del self._read[next(j for j in self._read if j != 0)]
+        return lg
+
+    def title(self) -> str:
+        r = self.rows
+        return f"{self.name}: {len(r)} checkpoints, steps {r[0]['step']:g} to {r[-1]['step']:g}"
+
+    def scenario_text(self) -> str:
+        sc = self.scenario
+        kind = (sc.get("run") or {}).get("world") or "data"
+        (sx, sy), (gx, gy) = sc["start"], sc["goal"]
+        return (f"{kind} on {sc.get('plant', '?')}, {sc.get('ticks')} ticks from ({sx:.0f}, {sy:.0f}) "
+                f"to ({gx:.0f}, {gy:.0f}), seed {sc.get('seed')}")  # fmt: skip
+
+    def made_text(self) -> str:
+        p = self.provenance
+        if not p:
+            return ""
+        made = p.get("grl_snam_commit") or ""
+        made = f"GRL-SNAM {made[:10]}" if made else f"GRL-SNAM {p.get('grl_snam', '?')}"
+        return f"deployed with {made}, libcvc {p.get('libcvc') or '?'}"
+
+
+def _stem(history) -> str:
+    base = Path(str(history)).name
+    for ext in (".gz", ".jsonl", ".json", ".history"):
+        base = base[: -len(ext)] if base.endswith(ext) else base
+    return base
+
+
+def load_report(path) -> Deployed:
+    """The runs a report (``--report``'s) lists, to view: its history and every checkpoint's run
+    log found (:func:`find_file`), nothing read yet but the report. Raises ValueError when it is
+    not a scrub report or a file it names is not there, OSError when it cannot be read."""
+    rep = json.loads(Path(path).read_text())
+    if not isinstance(rep, dict) or rep.get("schema") != REPORT_SCHEMA:
+        schema = rep.get("schema") if isinstance(rep, dict) else None
+        raise ValueError(f"{path} is {schema!r}, not a scrub report ({REPORT_SCHEMA})")
+    hist = find_file(path, rep.get("history"))
+    if hist is None:
+        raise ValueError(f"{path}: its history {rep.get('history')!r} is not there")
+    cks = rep.get("checkpoints") or []
+    if not cks:
+        raise ValueError(f"{path}: no checkpoints")
+    rows, metrics, logs = [], [], []
+    for c in cks:
+        f = find_file(path, c.get("cache"))
+        if f is None:
+            raise ValueError(
+                f"{path}: step {c.get('step')}'s run log {c.get('cache')!r} is not there"
+            )
+        rows.append({k: v for k, v in c.items() if k != "metrics"})
+        got = c.get("metrics") or {}
+        metrics.append({n: float(got[n]) if got.get(n) is not None else math.nan for n in METRICS})
+        logs.append(f)
+    return Deployed(hist, int(rep.get("run", -1)), rows, metrics, rep.get("scenario") or {}, logs,
+                    provenance=rep.get("provenance"))  # fmt: skip
+
+
 # ── the view ───────────────────────────────────────────────────────────────────────────────────
 
 
 class ScrubView:
     """Checkpoint k beside step 0: the controls that pick k, the metric and training charts, the
-    table, and the two runs over the episode (the replay's play head, tables and ghosts)."""
+    table, and the two runs over the episode (the replay's play head, tables and ghosts). ``runs``
+    are :class:`Deployed` s (a Run combo picks one when there are several), ``world`` the world to
+    draw them on (None: the windows alone)."""
 
-    def __init__(self, host, h, rows, logs, world, k):
-        from grl_snam.ariadne import learn
+    def __init__(self, host, runs, world, k=None):
         from grl_snam.ariadne.replay import PlayHead
 
-        self.host, self.h, self.rows, self.logs, self.world = host, h, rows, logs, world
-        self.metrics = [metrics_of(lg) for lg in logs]
+        self.host, self.runs, self.world = host, list(runs), world
         self.charts = hasattr(host, "set_plot")
-        self.labels = [f"step {r['step']:g}" + (" (pick)" if r["selected"] else "")
-                       for r in rows]  # fmt: skip
-        self.k, self._shown, self._pos, self._choice, self._metric = -1, None, None, None, None
-        self._curve = None
         self.st = {"nodes": [], "tracks": [[], []], "camera": None, "modeled": None,
                    "charts": None}  # fmt: skip
-        names = learn.heldout_names([h])
-        host.set_many({"labels": "\n".join(self.labels), "curve_names": "\n".join(names)},
+        names = [r.name for r in self.runs]
+        names = [f"{n} ({i})" if names.count(n) > 1 else n for i, n in enumerate(names)]
+        self.run_names = names
+        host.set_many({"run_labels": "\n".join(names), "run_count": str(len(names))},
                       prefix="scrub")  # fmt: skip
-        if names and host.get("scrub.curve_name", "") not in names:
-            host.set("scrub.curve_name", names[0])
-        self.head = PlayHead(host, logs[0].duration, logs[0].dt)
+        self.head = PlayHead(host, self.runs[0].log(0).duration, self.runs[0].log(0).dt)
         host.on("scrub_prev", lambda: self.pick(self.k - 1))
         host.on("scrub_next", lambda: self.pick(self.k + 1))
         host.on("scrub_pick", self.pick_step)
-        self.pick(k)
+        self.use(0, k)
+
+    # the runs and the checkpoint
+
+    @property
+    def rows(self):
+        return self.r.rows
+
+    @property
+    def metrics(self):
+        return self.r.metrics
+
+    def use(self, i: int, k=None) -> None:
+        """Show run ``i``: its checkpoint ``k`` (default its pick) beside its step 0."""
+        from grl_snam.ariadne import learn
+
+        host = self.host
+        self.i, self.r = i, self.runs[i]
+        self.labels = [f"step {r['step']:g}" + (" (pick)" if r["selected"] else "")
+                       for r in self.rows]  # fmt: skip
+        self.k, self._shown, self._pos, self._choice = -1, None, None, None
+        self._metric = self._curve = None
+        names = learn.heldout_names([self.r.h])
+        host.set_many({"labels": "\n".join(self.labels), "curve_names": "\n".join(names),
+                       "run_choice": self.run_names[i], "title": self.r.title(),
+                       "scenario": self.r.scenario_text(), "made": self.r.made_text()},
+                      prefix="scrub")  # fmt: skip
+        self._run = host.get("scrub.run_choice", "")
+        if names and host.get("scrub.curve_name", "") not in names:
+            host.set("scrub.curve_name", names[0])
+        first = self.r.log(0)
+        self.head.duration, self.head.dt = max(float(first.duration), 1e-6), float(first.dt)
+        self.head.t = min(self.head.t, self.head.duration)
+        self.pick(self.r.pick if k is None else k)
 
     def pick(self, k: int) -> None:
         self.k = min(max(int(k), 0), len(self.rows) - 1)
@@ -279,8 +477,12 @@ class ScrubView:
             self.pick(int(np.argmin([abs(r["step"] - s) for r in self.rows])))
 
     def _controls(self) -> None:
-        """Whichever control moved since the last frame picks k; then all of them show it."""
+        """Whichever control moved since the last frame picks the run or k; then all of them show
+        it."""
         host, n = self.host, len(self.rows)
+        run = host.get("scrub.run_choice", "")
+        if run != self._run and run in self.run_names:
+            self.use(self.run_names.index(run))
         pos, choice = host.get_float("scrub.pos", 0.0), host.get("scrub.choice", "")
         if self._pos is not None and abs(pos - self._pos) > 1e-6:
             self.pick(round(pos * (n - 1)))
@@ -299,14 +501,15 @@ class ScrubView:
                  f"step {r['step']:g}"]  # fmt: skip
         if names[0] == names[1]:
             names[1] += " "  # the same checkpoint twice: two arms all the same
-        self.both = stack([self.logs[0], self.logs[self.k]], names)
+        self.both = stack([self.r.log(0), self.r.log(self.k)], names)
         self.arms = arms_of(self.both)
         host.set_many({"names": "\n".join(names)}, prefix="arms")
         for key in ("view.arm", "ledger.agent"):
             host.set(key, names[1])
         flags = ", the pick" if r["selected"] else (", a held-out best" if r["best"] else "")
-        host.set("scrub.now", f"checkpoint {self.k + 1} of {len(self.rows)}: step {r['step']:g}"
-                              f"{flags}; {Path(r['blob']).name}")  # fmt: skip
+        now = (f"checkpoint {self.k + 1} of {len(self.rows)}: step {r['step']:g}{flags}; "
+               f"{Path(r['blob']).name}")  # fmt: skip
+        host.set("scrub.now", now)
         host.set("scrub.step", f"{r['step']:g}")
         host.set("play.title", f"{names[0]} (blue) and {names[1]} (orange), {self.both.duration:.1f}"
                                " s each")  # fmt: skip
@@ -314,6 +517,7 @@ class ScrubView:
         self.st["tracks"] = [[], []]
         self.st["charts"] = None
         self._shown = self.k
+        print(f"scrub: {self.r.name}: {now}", file=sys.stderr, flush=True)
 
     def frame(self, dt) -> None:
         from grl_snam.ariadne.live import publish_charts, publish_tables, update_ghosts
@@ -364,34 +568,110 @@ class ScrubView:
         if not name:
             host.set("scrub.curve_text", "the history has no held-out curve")
             return
-        series, markers, log_y, text = learn.loss_chart([self.h], name)
+        series, markers, log_y, text = learn.loss_chart([self.r.h], name)
         host.set("scrub.curve_text", text)
         host.set("scrub.curve_log", "1" if log_y else "0")
         if self.charts:
             host.set_plot("scrub.curve", series, markers=markers)
 
 
-def main(argv=None) -> int:
+def _run_view(host, args, runs, world) -> int:
+    """The view's frames: until closed, ``--frames`` of them, or one when headless. The windows
+    ``--windows`` does not name start closed (``tree.<id>.open``)."""
+    if args.camera:
+        host.set("view.camera", args.camera)
+    if args.windows is not None:
+        keep = {w.strip() for w in args.windows.split(",")}
+        for w in WINDOWS:
+            host.set(f"tree.{w}.open", "1" if w in keep else "0")
+    view = ScrubView(host, runs, world, args.at)
+    once = host.mode == "headless" and not args.frames
+
+    @host.on_frame
+    def _frame(dt):
+        view.frame(dt)
+        if once:
+            host.request_close()
+
+    return _host.finish(host, args)
+
+
+def view_main(args) -> int:
+    """``--view``: the runs the reports list, read back; nothing deployed."""
+    try:
+        runs = [load_report(p) for p in args.view]
+    except (OSError, ValueError) as e:
+        return _refuse(str(e))
+    worlds = [(r.scenario.get("run"), r.scenario.get("world_keys")) for r in runs]
+    if not args.no_world and any(w != worlds[0] for w in worlds[1:]):
+        return _refuse("the reports were deployed on different worlds: view them one at a time, "
+                       "or with --no-world")  # fmt: skip
+    sc = runs[0].scenario
+    run_keys = {k: v for k, v in (sc.get("run") or {}).items() if v not in (None, "")}
+    kind = run_keys.get("world", "data")
+    drawn = args.mode != "headless" and not args.no_world and _cars.HAS_CARS
+    note = (
+        ""
+        if drawn or args.mode == "headless"
+        else (
+            "the windows alone: --no-world"
+            if args.no_world
+            else f"no 3-D world: it needs {_cars.INSTALL}"
+        )
+    )
+    if drawn and kind == "data" and _host.BROWSER and not os.path.isdir(str(run_keys.get("uri"))):
+        drawn, note = (
+            False,
+            "no 3-D world: the run's city is not in this page",
+        )  # cvcpkg.org: no CORS
+    host = _host.open_host("scrub.ari", "scrub", args, load=False)
+    city = drawn and kind == "data"
+    _host.load_document(host, "scrub.ari", city=city, worlds=city)
+    host.set_many(run_keys, prefix="run")
+    host.set_many({k: v for k, v in (sc.get("world_keys") or {}).items() if v not in (None, "")},
+                  prefix="world")  # fmt: skip
+    world = None
+    if drawn:
+        C = _cars.C
+        world = C.make_world(host, kind)
+        C.show_world(host, kind, str(_host.DOCS / "scrub.ari"))
+        C.draw_world(host, {"world": world})
+        sx, sy = sc["start"]
+        host.lab.add_markers("start", [(sx, sy, world.z(sx, sy) + 1.0)], color=(0.15, 0.85, 0.25))
+        if json.dumps(world.info, sort_keys=True, default=str) != json.dumps(
+            sc.get("world"), sort_keys=True, default=str
+        ):
+            note = ("this world is not quite the one deployed on (another libcvc's generator?): "
+                    "the ghosts may cross what is drawn")  # fmt: skip
+    elif _cars.HAS_CARS and args.mode != "headless":
+        _cars.C.show_world(host, "flat", str(_host.DOCS / "scrub.ari"))  # the city node, emptied
+    if note:
+        print(f"scrub: {note}", file=sys.stderr)
+    host.set("scrub.world_note", note)
+    return _run_view(host, args, runs, world)
+
+
+def deploy_main(args) -> int:
+    """A history's checkpoints, deployed (or read from the cache), then the view."""
     if not _cars.HAS_CARS:
         return _refuse(f"needs {_cars.INSTALL}")
     from grl_snam.ariadne import live
     from grl_snam.learning import load
     from grl_snam.learning.runlog import libcvc_version
 
-    args = _host.parse(argv, _args)
     try:
         runs = load(args.history)
         h = runs[args.run]
     except (OSError, ValueError, IndexError) as e:
         return _refuse(f"{args.history}: {e}")
-    rows, missing = checkpoints(args.history, h)
+    rows, missing = checkpoints(args.history, h, args.blobs)
     if missing:
         print(f"scrub: {len(missing)} saved policies are not there (first: {missing[0]})",
               file=sys.stderr)  # fmt: skip
     if not rows:
         return _refuse(f"{args.history}: no checkpoint names a saved policy (blob) that is there")
     C = _cars.C
-    drawn = args.mode != "headless"
+    drawn = args.mode != "headless" and not args.no_world
     host = _host.open_host("scrub.ari", "scrub", args, load=False)
     _host.load_document(host, "scrub.ari", worlds=True)
     flags = {"nav_plant.vehicle": args.plant}
@@ -419,35 +699,31 @@ def main(argv=None) -> int:
                 "ticks": int(args.ticks), "plant": plant, "scale": float(scale), "dt": C.DT,
                 "overrides": sorted(args.set or []), "params": args.params,
                 "libcvc": libcvc_version()}  # fmt: skip
-    logs = deploy_all(host, world, plant, rows, scenario, args.history)
+    logs = deploy_all(host, world, plant, rows, scenario, args.history, cache=args.cache)
     metrics = [metrics_of(lg) for lg in logs]
+    prov = logs[0].meta.get("provenance")
     if args.report:
-        Path(args.report).write_text(json.dumps({
-            "schema": REPORT_SCHEMA, "history": str(args.history), "run": args.run,
-            "scenario": scenario, "scenario_hash": scenario_hash(scenario),
-            "checkpoints": [{**r, "metrics": m} for r, m in zip(rows, metrics, strict=True)],
-        }, indent=1, default=str))  # fmt: skip
+        write_report(args.report, args.history, args.run, rows, metrics, scenario, prov)
         print(f"scrub: {len(rows)} checkpoints to {args.report}")
-    k = (
-        args.at
-        if args.at is not None
-        else next((i for i, r in enumerate(rows) if r["selected"]), len(rows) - 1)
-    )
-    host.set("scrub.title", f"{Path(args.history).name}: {len(rows)} checkpoints, steps "
-                            f"{rows[0]['step']:g} to {rows[-1]['step']:g}")  # fmt: skip
-    host.set("scrub.scenario", f"{kind} on {plant}, {args.ticks} ticks from ({start[0]:.0f}, "
-                               f"{start[1]:.0f}) to ({goal[0]:.0f}, {goal[1]:.0f}), seed {args.seed}")  # fmt: skip
     if drawn:
         host.lab.add_markers("start", [(start[0], start[1], world.z(*start) + 1.0)],
                              color=(0.15, 0.85, 0.25))  # fmt: skip
-    view = ScrubView(host, h, rows, logs, world if drawn else None, k)
-    host.on_frame(view.frame)
-    host.run(fps=30, frames=args.frames or None)
-    if args.png and drawn:
-        host.snapshot(args.png)
-    code = host.exit_code()
-    host.close()
-    return code
+    deployed = Deployed(args.history, args.run, rows, metrics, scenario, logs, h=h, provenance=prov)
+    return _run_view(host, args, [deployed], world if drawn else None)
+
+
+def main(argv=None) -> int:
+    try:
+        args = _host.parse(argv, _args)
+    except RuntimeError as e:
+        return _refuse(str(e))
+    if args.view and args.history:
+        return _refuse("name a history to deploy, or --view reports, not both")
+    if args.view:
+        return view_main(args)
+    if not args.history:
+        return _refuse("name a learning history to deploy, or --view reports deployed before")
+    return deploy_main(args)
 
 
 if __name__ == "__main__":

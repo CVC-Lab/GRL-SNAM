@@ -117,6 +117,9 @@ def site(tmp_path_factory):
 
 def test_the_site_has_the_landing_page_and_learn(site):
     assert (site / "index.html").is_file() and (site / "style.css").is_file()
+    # No scrub page (no --scrub): no card for it, no picture.
+    assert 'href="scrub/"' not in (site / "index.html").read_text()
+    assert not (site / "scrub").exists() and not (site / "img" / "scrub.jpg").exists()
     assert (site / "img" / "curves.png").is_file() and (site / ".nojekyll").is_file()
     learn = site / "learn"
     for name in ("index.html", "ariglx.wasm", "python312.zip", "main.py", "grl_snam_web.zip"):
@@ -194,3 +197,75 @@ def test_the_learn_page_alone_with_histories_of_your_choice(tmp_path, site):
     with pytest.raises(SystemExit, match="share a name"):
         assemble.main(["--host", str(host), "--out", str(tmp_path / "y"), "--learn-only",
                        "--histories", str(plain), str(zipped)])  # fmt: skip
+
+
+def _scrub_report(root: Path, name: str = "seed7") -> Path:
+    """A scrub report (grl_snam.scrub/v1) whose history and two run logs are elsewhere, named by
+    absolute paths, as `grl-snam ariadne scrub --report` writes it."""
+    runs = root / "deployed"
+    runs.mkdir(parents=True)
+    hist = runs / f"{name}.history.jsonl.gz"
+    hist.write_bytes(
+        (REPO / "docs/learning-validation/retrain/seed0.history.jsonl.gz").read_bytes()
+    )
+    cks = []
+    for step in (0, 100):
+        log = runs / f"{step:016x}-abcd.npz"
+        log.write_bytes(b"stand-in run log")
+        cks.append({"step": step, "blob": f"/somewhere/coef_sdf.step{step:06d}.pt",
+                    "cache": str(log), "metrics": {"path_m": 1.0 + step}})  # fmt: skip
+    report = root / f"{name}.scrub.json"
+    report.write_text(json.dumps({"schema": "grl_snam.scrub/v1", "history": str(hist), "run": -1,
+                                  "scenario": {"run": {"world": "generated"}}, "checkpoints": cks}))  # fmt: skip
+    return report
+
+
+def test_the_scrub_page_carries_its_runs_beside_it(tmp_path, site):
+    """--scrub-only --scrub-reports: each report with its history and run logs in data/<run>/,
+    its paths made their file names, and the page's config views them (no deploy)."""
+    assemble = _pages_module("assemble")
+    reports = [_scrub_report(tmp_path / "a", "seed7"), _scrub_report(tmp_path / "b", "seed8")]
+    out = tmp_path / "other" / "scrub"
+    assert assemble.main(["--host", str(site / "learn"), "--out", str(out), "--scrub-only",
+                          "--scrub-reports", *map(str, reports)]) == 0  # fmt: skip
+    config = json.loads((out / "ariadne.config.json").read_text())
+    assert config["args"][:4] == ["scrub", "--view", "data/seed7/scrub.json",
+                                  "data/seed8/scrub.json"]  # fmt: skip
+    assert config["args"][4:] == assemble.SCRUB_VIEW
+    assert all((out / f).is_file() for f in config["preload"]) and len(config["preload"]) == 9
+    rep = json.loads((out / "data/seed7/scrub.json").read_text())
+    assert rep["history"] == "seed7.history.jsonl.gz"
+    assert [c["cache"] for c in rep["checkpoints"]] == [f"{s:016x}-abcd.npz" for s in (0, 100)]
+    assert rep["checkpoints"][1]["blob"] == "coef_sdf.step000100.pt"  # no machine's paths
+    assert (out / "main.py").is_file() and not (out / "learn").exists()
+
+
+def test_the_site_with_the_scrub_page(tmp_path, site):
+    assemble = _pages_module("assemble")
+    out = tmp_path / "_site"
+    assert assemble.main(["--host", str(site / "learn"), "--out", str(out), "--scrub",
+                          "--scrub-reports", str(_scrub_report(tmp_path))]) == 0  # fmt: skip
+    assert (out / "learn" / "ariadne.config.json").is_file()
+    assert (out / "scrub" / "data" / "seed7" / "scrub.json").is_file()
+    html = (out / "index.html").read_text()
+    assert 'href="scrub/"' in html and (out / "img" / "scrub.jpg").is_file()
+
+
+def test_assemble_refuses_what_the_scrub_page_cannot_show(tmp_path, site):
+    assemble = _pages_module("assemble")
+    host = str(site / "learn")
+    with pytest.raises(SystemExit, match="not both"):
+        assemble.main(
+            ["--host", host, "--out", str(tmp_path / "x"), "--learn-only", "--scrub-only"]
+        )
+    with pytest.raises(SystemExit, match="not a scrub report"):
+        assemble.main(["--host", host, "--out", str(tmp_path / "y"), "--scrub-only",
+                       "--scrub-reports", str(REPO / "docs/learning-validation/arms.json")])  # fmt: skip
+    report = _scrub_report(tmp_path / "z")
+    next((tmp_path / "z" / "deployed").glob("*.npz")).unlink()
+    with pytest.raises(SystemExit, match="run log is not there"):
+        assemble.main(["--host", host, "--out", str(tmp_path / "w"), "--scrub-only",
+                       "--scrub-reports", str(report)])  # fmt: skip
+    with pytest.raises(SystemExit, match="no saved policies"):
+        assemble.main(["--host", host, "--out", str(tmp_path / "v"), "--scrub-only",
+                       "--checkpoints", str(tmp_path / "none")])  # fmt: skip

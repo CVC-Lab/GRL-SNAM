@@ -2,7 +2,7 @@
 // on libcvc's src/arigl/web/test/arigl_web_smoke.mjs, whose server and DevTools driver it follows.
 //
 //   node pages/smoke.mjs --site _site --chrome <chrome or chromium> [--base /GRL-SNAM/] [--shots DIR]
-//        [--learn learn/] [--no-landing]
+//        [--learn learn/] [--no-learn] [--scrub scrub/] [--no-landing]
 //
 // It serves the site at --base (the project site's path on github.io) on 127.0.0.1, with an
 // ordinary site's headers: no COOP/COEP, as GitHub Pages sends none (the single-threaded ariglx-web
@@ -14,7 +14,10 @@
 //   - the learn page (--learn, the path under --base; learn/ by default): grl-snam ariadne learn
 //     must start in the page (main.py says so on stderr), its frames must run, and the learn-report
 //     it makes in the page (?arg=--report, read back from the page's file system) must hold
-//     claims; no Python traceback, no CSP violation.
+//     claims; no Python traceback, no CSP violation (--no-learn skips it);
+//   - the scrub page (--scrub, the path under --base; none unless given): grl-snam ariadne scrub
+//     --view must start in the page, show a checkpoint of the runs it was given (its stderr says
+//     which) and run its frames, and still run 5 s later; no traceback, no CSP violation.
 //
 // --shots writes each page as DIR/<name>.png. Exit status 0 when every case passes.
 
@@ -30,12 +33,12 @@ const opt = (name, dflt) => {
   return i >= 0 ? argv[i + 1] : dflt;
 };
 const SITE = opt('--site'), CHROME = opt('--chrome'), SHOTS = opt('--shots');
-const BASE = opt('--base', '/GRL-SNAM/'), LEARN = opt('--learn', 'learn/');
-const LANDING = !argv.includes('--no-landing');
-if (!SITE || !CHROME || !BASE.startsWith('/') || !BASE.endsWith('/') || !LEARN.endsWith('/') ||
-    LEARN.startsWith('/')) {
+const BASE = opt('--base', '/GRL-SNAM/'), LEARN = opt('--learn', 'learn/'), SCRUB = opt('--scrub');
+const LANDING = !argv.includes('--no-landing'), DO_LEARN = !argv.includes('--no-learn');
+const sub = p => p === undefined || (p.endsWith('/') && !p.startsWith('/'));
+if (!SITE || !CHROME || !BASE.startsWith('/') || !BASE.endsWith('/') || !sub(LEARN) || !sub(SCRUB)) {
   console.error('usage: smoke.mjs --site DIR --chrome PATH [--base /PATH/] [--shots DIR] ' +
-                '[--learn PATH/] [--no-landing]');
+                '[--learn PATH/] [--no-learn] [--scrub PATH/] [--no-landing]');
   process.exit(2);
 }
 const TIMEOUT_MS = Number(process.env.GRL_SNAM_SMOKE_TIMEOUT_MS || 600000);
@@ -45,7 +48,8 @@ const CSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src
 const TYPES = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
                '.wasm': 'application/wasm', '.json': 'application/json', '.ari': 'text/plain',
                '.py': 'text/plain', '.zip': 'application/zip', '.png': 'image/png',
-               '.jsonl': 'text/plain', '.md': 'text/markdown'};
+               '.jpg': 'image/jpeg', '.jsonl': 'text/plain', '.md': 'text/markdown',
+               '.npz': 'application/octet-stream'};
 
 function fileFor(urlPath) {
   const p = decodeURIComponent(urlPath);
@@ -172,37 +176,72 @@ try {
     await landing.close();
   }
 
-  // learn/, writing its report into the page's file system (the page's own directory, since
-  // main.py runs the port there; the page writes each file at its URL path).
-  const t0 = Date.now();
-  const page = await openPage(`${ORIGIN}${BASE}${LEARN}?arg=--report&arg=report.json`);
-  const v = await watch(page, v => v.log.some(l => /^grl-snam: learn: running/.test(l)));
-  const secs = ((Date.now() - t0) / 1000).toFixed(1);
-  const started = v.log.find(l => /^grl-snam: learn: started in/.test(l)) || '';
-  const tb = v.log.findIndex(l => /^Traceback/.test(l));
-  const running = v.state === 'running' && v.log.some(l => /^grl-snam: learn: running/.test(l));
-  record(`learn starts in the page and runs its frames (${secs} s; ${started})`,
-         running && tb < 0,
-         running && tb < 0 ? '' : `state ${v.state}: ${v.status || ''}\n      ` +
-           v.log.slice(tb >= 0 ? tb : -25).join('\n      '));
-  // Its frames keep running: an exception in a frame hook would close the document.
-  await new Promise(r => setTimeout(r, 5000));
-  const later = await watch(page, () => true);
-  record('learn is still running 5 s later, with no CSP violation',
-         later.state === 'running' && later.csp.length === 0 &&
-           !later.log.some(l => /^Traceback/.test(l)),
-         `state ${later.state}; csp ${later.csp.join(', ')}; warnings ${later.warnings.length}`);
-  const report = await page.evaluate(
-      `(() => { try { return FS.readFile(${JSON.stringify(BASE + LEARN + 'report.json')}, ` +
-      `{encoding: 'utf8'}); } catch (e) { return 'ERROR ' + e; } })()`);
-  let summary = null;
-  try { summary = JSON.parse(report).summary; } catch (e) {}
-  record('learn-report, made in the page, holds claims',
-         summary !== null && summary.pass + summary.fail > 0,
-         summary ? `pass ${summary.pass}, fail ${summary.fail}` : String(report).slice(0, 300));
-  if (later.warnings.length) console.log('      warnings: ' + later.warnings.slice(0, 5).join(' | '));
-  if (SHOTS) await page.screenshot(path.join(SHOTS, 'learn.png'));
-  await page.close();
+  if (DO_LEARN) {
+    // learn/, writing its report into the page's file system (the page's own directory, since
+    // main.py runs the port there; the page writes each file at its URL path).
+    const t0 = Date.now();
+    const page = await openPage(`${ORIGIN}${BASE}${LEARN}?arg=--report&arg=report.json`);
+    const v = await watch(page, v => v.log.some(l => /^grl-snam: learn: running/.test(l)));
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    const started = v.log.find(l => /^grl-snam: learn: started in/.test(l)) || '';
+    const tb = v.log.findIndex(l => /^Traceback/.test(l));
+    const running = v.state === 'running' && v.log.some(l => /^grl-snam: learn: running/.test(l));
+    record(`learn starts in the page and runs its frames (${secs} s; ${started})`,
+           running && tb < 0,
+           running && tb < 0 ? '' : `state ${v.state}: ${v.status || ''}\n      ` +
+             v.log.slice(tb >= 0 ? tb : -25).join('\n      '));
+    // Its frames keep running: an exception in a frame hook would close the document.
+    await new Promise(r => setTimeout(r, 5000));
+    const later = await watch(page, () => true);
+    record('learn is still running 5 s later, with no CSP violation',
+           later.state === 'running' && later.csp.length === 0 &&
+             !later.log.some(l => /^Traceback/.test(l)),
+           `state ${later.state}; csp ${later.csp.join(', ')}; warnings ${later.warnings.length}`);
+    const report = await page.evaluate(
+        `(() => { try { return FS.readFile(${JSON.stringify(BASE + LEARN + 'report.json')}, ` +
+        `{encoding: 'utf8'}); } catch (e) { return 'ERROR ' + e; } })()`);
+    let summary = null;
+    try { summary = JSON.parse(report).summary; } catch (e) {}
+    record('learn-report, made in the page, holds claims',
+           summary !== null && summary.pass + summary.fail > 0,
+           summary ? `pass ${summary.pass}, fail ${summary.fail}` : String(report).slice(0, 300));
+    if (later.warnings.length) console.log('      warnings: ' + later.warnings.slice(0, 5).join(' | '));
+    if (SHOTS) await page.screenshot(path.join(SHOTS, 'learn.png'));
+    await page.close();
+  }
+
+  // scrub/: the runs deployed at build time, viewed. Its stderr names the checkpoint it shows
+  // ("scrub: seed0: checkpoint 22 of 41: step 2100, the pick; ...") and says when there is no
+  // 3-D world ("scrub: no 3-D world: ...").
+  if (SCRUB) {
+    const t0 = Date.now();
+    const page = await openPage(`${ORIGIN}${BASE}${SCRUB}`);
+    const v = await watch(page, v => v.log.some(l => /^grl-snam: scrub: running/.test(l)));
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    const started = v.log.find(l => /^grl-snam: scrub: started in/.test(l)) || '';
+    const tb = v.log.findIndex(l => /^Traceback/.test(l));
+    const running = v.state === 'running' && v.log.some(l => /^grl-snam: scrub: running/.test(l));
+    record(`scrub starts in the page and runs its frames (${secs} s; ${started})`,
+           running && tb < 0,
+           running && tb < 0 ? '' : `state ${v.state}: ${v.status || ''}\n      ` +
+             v.log.slice(tb >= 0 ? tb : -25).join('\n      '));
+    const shown = v.log.map(l => /^scrub: (.+?): checkpoint (\d+) of (\d+): step ([^,;\s]+)/.exec(l))
+                       .filter(Boolean).pop();
+    const world = v.log.find(l => /^scrub: (no 3-D world|the windows alone|this world is not)/.test(l));
+    record('scrub shows a checkpoint of the runs deployed at build time',
+           shown !== undefined && Number(shown[3]) > 1,
+           shown ? `${shown[1]}: checkpoint ${shown[2]} of ${shown[3]}, step ${shown[4]}; ` +
+                   (world || 'the 3-D world drawn') : 'no "scrub: ...: checkpoint k of n" line');
+    await new Promise(r => setTimeout(r, 5000));
+    const later = await watch(page, () => true);
+    record('scrub is still running 5 s later, with no CSP violation',
+           later.state === 'running' && later.csp.length === 0 &&
+             !later.log.some(l => /^Traceback/.test(l)),
+           `state ${later.state}; csp ${later.csp.join(', ')}; warnings ${later.warnings.length}`);
+    if (later.warnings.length) console.log('      warnings: ' + later.warnings.slice(0, 5).join(' | '));
+    if (SHOTS) await page.screenshot(path.join(SHOTS, 'scrub.png'));
+    await page.close();
+  }
 } catch (e) {
   console.error(e);
   failed = true;
