@@ -83,8 +83,12 @@ torch 2.14 CPU, float64.
    its limit (`a_max`) and steers at the goal, whatever the coefficients. They act only near walls
    (alpha's barrier) and when closing on the goal (beta's pull, gamma's damping), so a rollout
    teaches the policy only where it reaches one of those.
-4. **Training** (`experiments/gym_twin/train_gate.py`): **fails on its first run.** A CoefMLP
-   trained through the twin drives worse in the gym than its untrained init.
+4. **Training.** The first design (`experiments/gym_twin/train_gate.py`) **fails**. The second
+   (`experiments/gym_twin/train_gate2.py`) **passes on all three training seeds** against the
+   untrained init and the constant coefficients, and ties nav@1 (below).
+
+   **The first design.** A CoefMLP trained through the twin drives worse in the gym than its
+   untrained init.
    - The run (2026-11-14, `--iters 150`, the script's other defaults):
      - 3 Humvees on `dynamic4w`, on flat 160 m squares with 8 box obstacles;
      - training: 6 world layouts (seeds 0-5), episode seeds from 0, a random 0-120 gym ticks
@@ -117,18 +121,90 @@ torch 2.14 CPU, float64.
    likely effect is less braking on the approach, which costs arrivals over 600 ticks. That
    mechanism is not measured yet.
 
-   **What to change before the next run:**
-   - start rollouts where the coefficients act (near walls and goals);
-   - a loss that pays for arriving and stopping, not for closing fast;
-   - longer horizons over the approach;
-   - judge on held-out seeds during training, so the curve shows what each step did.
+   **The second design** (`train_gate2.py`, 2026-11-15) changes exactly those four things:
+   - **Where rollouts start.** Each iteration drives a training episode in the gym with the
+     current policy (400 ticks) and records every tick's state. Rollouts start from the recorded
+     states where the coefficients act: within 8 m of a wall, or within 30 m of the goal and not
+     yet there. Four per agent are batched, each with its agent's goal (`GymTwin.rollout`'s
+     `goal`). Over the run that gave 147 wall starts, 1,049 approach starts and 4 random ones.
+   - **The loss** is `arrival_loss`: the distance outside the reach at the end of the rollout,
+     plus the speed left there in proportion to how far inside the reach it is, plus a small pull
+     while outside it; and the clearance barrier.
+   - **The horizon** is 90 ticks (5.4 s), long enough to brake to a stop from the approach.
+   - **A curve:** every 25 iterations the policy is judged in the gym on a probe set (layouts
+     200-201 × seeds 7000-7002), disjoint from the final set.
+
+   The worlds are denser, so walls are met: 18 boxes on 120 m squares. Training uses layouts 0-7;
+   the final judging uses layouts 100-103 × seeds 5000-5009, 600 ticks each. The libcvc build was
+   transfix/libcvc#1275 (the 0.06 s tick; physics at 100 Hz). Torch seed 0, 100 iterations, 58
+   minutes on one core.
+
+   98 of the 100 iterations had a gradient (the first design had 36 of 150), and the clearance
+   term engaged in 48. The probe curve (distance left after 600 ticks, mean over 6 episodes):
+
+   | iteration | 0 | 25 | 50 | 75 | 100 |
+   |---|---|---|---|---|---|
+   | left (m) | 20.1 | 15.2 | 8.2 | 8.3 | 8.2 |
+
+   Judged in the gym on the 40 held-out episodes:
+
+   | arm | distance left (m) | progress (m) | arrived |
+   |---|---|---|---|
+   | nav@1 | 3.49 [2.99, 4.06] | 41.4 [35.4, 47.5] | 1.000 |
+   | constant (1, 3, 4) | 5.57 [4.37, 6.93] | 39.4 [33.6, 45.1] | 1.000 |
+   | untrained CoefMLP | 5.19 [4.19, 6.28] | 39.7 [33.9, 45.5] | 1.000 |
+   | trained through the twin | 2.96 [2.78, 3.15] | 42.0 [35.7, 48.3] | 1.000 |
+
+   Paired over the 40 episodes:
+
+   | | distance left (m) | progress (m) |
+   |---|---|---|
+   | trained − untrained | −2.23 [−3.26, −1.26] | +2.23 [+1.26, +3.27] |
+   | trained − constant | −2.61 [−3.89, −1.46] | +2.61 [+1.46, +3.90] |
+   | trained − nav@1 | −0.53 [−1.06, −0.06] | +0.53 [+0.06, +1.06] |
+
+   No arm collided.
+
+   **What the pass is, and is not:**
+   - **The gain is in stopping, not in getting there.** Every arm arrived in every episode, so
+     arrival is at its ceiling on these worlds and tells the arms apart not at all. The trained
+     policy ends inside the 3 m reach on average (2.96 m) and with a narrow interval; the
+     untrained init stops about 2 m further out. That is what the stop term pays for.
+   - **It ties nav@1.** Only seed 0 ends ahead of it (below). nav@1 is the gym's navigator,
+     with its carrot FSM and parking, not this control law.
+
+   **Over three training seeds** (torch seeds 0, 1, 2; the same worlds, the same 40 held-out
+   episodes), distance left at the end, paired:
+
+   | seed | trained − untrained (m) | trained − constant (m) | trained − nav@1 (m) | probe left at 0 → 100 (m) |
+   |---|---|---|---|---|
+   | 0 | −2.23 [−3.26, −1.26] | −2.61 [−3.89, −1.46] | −0.53 [−1.06, −0.06] | 20.1 → 8.2 |
+   | 1 | −1.83 [−2.90, −0.85] | −1.80 [−2.86, −0.84] | +0.28 [−0.29, +0.86] | 20.0 → 7.0 |
+   | 2 | −1.68 [−2.72, −0.75] | −1.92 [−3.04, −0.91] | +0.16 [−0.42, +0.78] | 20.5 → 5.3 |
+
+   - Every seed beats its untrained init and the constant coefficients, with intervals clear of
+     zero: by 1.9 m on average, 1.7 m in the worst seed.
+   - Against nav@1, one seed is ahead and two are tied.
+   - 98, 99 and 98 of 100 iterations had a gradient.
+   - The probe curves rise on every seed, but not steadily: seed 2 dipped at iteration 50 before
+     recovering. Each run took 52-58 minutes on one core.
+   - **Judged through the twin's controller** (`drive_gym`), not nav@1 with the policy exported to
+     `.cvcnav`.
+   - **Easy worlds:** flat, so the twin's plant is the gym's (gate 1), and the policy never
+     collided; the hard cases (grade, contact, crowding) are not in this set.
 
 ## Running the training gate
 
 ```bash
 PYTHONPATH=<libcvc build>/bindings/pycvc:. \
+  python experiments/gym_twin/train_gate2.py --iters 100 --probe-every 25 --torch-seed 0 --out gate2.json
+# the first design, as it ran:
+PYTHONPATH=<libcvc build>/bindings/pycvc:. \
   python experiments/gym_twin/train_gate.py --iters 150 --out gate.json
 ```
+
+About 35 s an iteration on one core (`OMP_NUM_THREADS=1`), most of it the 90-tick float64 rollout
+and its backward pass.
 
 It writes per-episode measures, summaries and paired differences, with
 `grl_snam.learning.stats`' bootstrap. The worlds are flat squares with box obstacles, one layout
