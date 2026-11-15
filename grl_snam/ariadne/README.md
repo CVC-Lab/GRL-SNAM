@@ -181,6 +181,51 @@ accelerates at the plant's limit straight at its goal. The published policy sits
 CoefMLP's bias (`docs/learning-validation.md`), so on Austin the rows part after tens of
 seconds: `--set view.speed=4` gets there in 300 frames.
 
+#### Traces: a session recorded and replayed exactly
+
+```bash
+python -m grl_snam.ariadne live austin-freedrive --plant kinematic --arms trained,untrained,constant \
+    --record-trace session.trace
+python -m grl_snam.ariadne live austin-freedrive --replay-trace session.trace
+python -m grl_snam.ariadne live austin-freedrive --replay-trace session.trace --arms trained=other.cvcnav,untrained,constant
+```
+
+This is the Laboratory's live/replay harness (R49). It uses libcvc's input trace,
+`cvc.input_trace/v1` (libcvc's `docs/INPUT_TRACE.md`, transfix/libcvc#1168). That needs a pycvc
+after 3.7.14; with an older one, the flags say so.
+- **What is recorded:** the session's inputs.
+  - The starting state: the world, the start and goal, the settings, and the policies' sha256.
+    The arms, the seed and the frame go in the header's `meta`.
+  - Every write to the `nav`, `nav_plant`, `run` and `world` keys (a slider, `--set`), stamped
+    with the world clock's tick.
+  - Each Retarget, as nav's own `nav.retarget` event.
+  - The state's hash after each frame.
+
+  A recording steps on the app's world clock (a 0.01 s quantum, the navigator every 5 quanta),
+  so every input carries the tick that consumed it. Without `--arms` it records one arm, the
+  trained policy.
+- **What a replay does:** it rebuilds the worlds from the trace and puts the clock in replay
+  mode. It writes the recorded settings at their ticks, applies the events, and compares every
+  hash.
+  - Headless, it runs to the end and prints whether the replay matches and, if not, the tick
+    where it departs. The exit code is 1 when the replay departs with the recorded policies.
+  - In a window, it plays at the sim speed. The Trace window shows the hashes compared, and has
+    a Position slider and Restart. `sim_world` has no save and restore, so a seek back rebuilds
+    the worlds and runs again from tick 0.
+- **`--arms` on a replay** runs other policies on the same inputs. The run is the recording's
+  until the first tick where the policies' coefficients differ. The replay says where it
+  departs, and exits 0.
+- **A one-arm trace** is libcvc's own: `cvc trace verify session.trace` replays it headlessly.
+  With several arms the hash is over every arm's world, which only this port replays.
+- **v1 covers the kinematic plant.** libcvc refuses to describe a world on a vehicle plant: Jolt
+  is deterministic only within one binary.
+
+`tests/test_lab_acceptance.py` holds the Laboratory's acceptance tests 5 and 6 (§9):
+- one Retarget moves every arm's goal on the same tick, and the Stats rows differ;
+- the replay gives byte-identical poses and the same final hash;
+- with another build of a policy, the run matches until the first tick where the coefficients
+  differ.
+
 ### `fog`: the fog-of-war stories
 
 ```bash

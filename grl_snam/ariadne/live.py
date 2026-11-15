@@ -48,6 +48,9 @@ What each demo takes:
   says what each bare name is, and what the windows show). ``--log`` then writes a run log
   (:mod:`grl_snam.learning.runlog`) that ``grl-snam ariadne replay`` plays back. The torch path
   refuses arms (:data:`TORCH_ARMS`).
+- **Traces** (``--record-trace S.trace``, ``--replay-trace S.trace [--arms ...]``, on the kinematic
+  plant): the session's inputs recorded by the world clock's tick and replayed exactly, or with
+  other policies to see where they part (:mod:`grl_snam.ariadne._trace`).
 
 The learned demos need ``grl-snam-weights``, as ``grl-snam demo`` does. ``lab`` stays a VolRover3
 demo. Needs pycvc-gl 3.7.12+ (libcvc's pycvc_gl.cars); with an older one it says what to install.
@@ -63,7 +66,7 @@ import sys
 
 import numpy as np
 
-from grl_snam.ariadne import _arms, _cars, _host
+from grl_snam.ariadne import _arms, _cars, _host, _trace
 
 DEMOS = {
     "austin-freedrive": ("grl_snam.demos.austin_freedrive", "the learned SDF navigator, no route"),
@@ -119,6 +122,13 @@ def _args(p):
     p.add_argument("--retarget-at", default=None, metavar="S,S,...",
                    help="with --arms: a Retarget at each of these sim times (s), as the button "
                         "does (to arms.goal, e.g. --set arms.goal=120,-40, else a drawn goal)")  # fmt: skip
+    p.add_argument("--record-trace", default=None, metavar="S.trace",
+                   help="austin-freedrive on the kinematic plant: record the session's inputs "
+                        "(cvc.input_trace/v1) to replay it exactly; without --arms, one arm, the "
+                        "trained policy")  # fmt: skip
+    p.add_argument("--replay-trace", default=None, metavar="S.trace",
+                   help="replay a recorded session tick for tick (its arms, or --arms: other "
+                        "policies on the same inputs)")  # fmt: skip
     if _cars.HAS_CARS:
         _cars.C.add_args(p)
 
@@ -169,11 +179,36 @@ def main(argv=None) -> int:
     if planner and args.log:
         return _refuse("austin-planner has no navigator state to log (" + REASONS[demo] + ")")
     arms = None
-    if args.arms or args.arm:
+    retarget_at = []
+    traced = args.record_trace or args.replay_trace
+    if traced:
+        if args.record_trace and args.replay_trace:
+            return _refuse("--record-trace or --replay-trace, not both")
+        if demo not in ANYWHERE:
+            return _refuse(f"traces are austin-freedrive's, on a plant: {demo}: {REASONS[demo]}")
+        if not _trace.HAS_TRACE:
+            return _refuse(f"traces need {_trace.INSTALL}")
+    trace = header = tmeta = None
+    if args.replay_trace:
+        try:
+            trace, header, tmeta = _trace.read(args.replay_trace)
+        except (RuntimeError, OSError, ValueError) as e:
+            return _refuse(f"--replay-trace {args.replay_trace}: {e}")
+        if not tmeta.get("arms"):
+            return _refuse(f"--replay-trace {args.replay_trace}: not a grl-snam live session "
+                           "(its header names no arms)")  # fmt: skip
+    if args.arms or args.arm or traced:
         if demo not in ANYWHERE:
             return _refuse(f"--arms is austin-freedrive's, on a plant: {demo}: {REASONS[demo]}")
         try:
-            arms = _arms.parse_arms(args.arms, args.arm)
+            if args.arms or args.arm:
+                arms = _arms.parse_arms(args.arms, args.arm)
+            elif trace is not None:  # the recorded arms, as they were resolved
+                fields = set(_arms.Arm.__dataclass_fields__) - {"path", "sha256", "key"}
+                arms = [_arms.Arm(**{k: v for k, v in a.items() if k in fields})
+                        for a in tmeta["arms"]]  # fmt: skip
+            else:
+                arms = _arms.parse_arms("trained")
             retarget_at = sorted(float(t) for t in (args.retarget_at or "").split(",") if t.strip())
         except ValueError as e:
             return _refuse(f"--arms: {e}")
@@ -183,6 +218,10 @@ def main(argv=None) -> int:
     if bundle and not args.uri:  # a local city, loaded (from there, no download) when it is used
         flags.update({"run.uri": str(bundle), "run.data_path": ""})
     C.apply_settings(host, args, flags)
+    player = None
+    if trace is not None:  # the recorded settings over the document's, the clock in replay mode
+        player = _trace.Player(host, trace, header, tmeta)
+        player.rewind()
     kind = host.get("run.world", "data") or "data"
     plant = host.get("nav_plant.vehicle", "torch") or "torch"
     if demo not in ANYWHERE and (kind != "data" or args.uri):
@@ -200,7 +239,7 @@ def main(argv=None) -> int:
         world = C.make_world(host, kind)
         C.show_world(host, kind, str(_host.DOCS / "live.ari"))
     if arms is not None:
-        return run_arms(host, args, world, plant, kind, arms, retarget_at)
+        return run_arms(host, args, world, plant, kind, arms, retarget_at, replay=player)
     if plant != "torch":
         return run_on_plant(host, args, world, plant, kind)
     return run_demo(host, args, demo, world, kind)
@@ -468,10 +507,14 @@ def belief_rasters(host, world, cars, s):
 # ── austin-freedrive's arms, side by side ──────────────────────────────────────────────────────
 
 
-def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
+def run_arms(host, args, world, plant, kind, arms, retarget_at=(), replay=None) -> int:
     """Each arm in its own libcvc sim_world on ``plant``, from the demo's start to its goal, all
     stepped tick for tick together (:mod:`grl_snam.ariadne._arms`): their ghosts, the Retarget,
-    the Stats and Ledger windows, the HUD and the rasters around the arm the camera follows."""
+    the Stats and Ledger windows, the HUD and the rasters around the arm the camera follows.
+
+    With ``--record-trace`` the session's inputs are recorded (:class:`~grl_snam.ariadne._trace.
+    Recorder`); with ``replay`` (a :class:`~grl_snam.ariadne._trace.Player`, rewound) a trace's
+    are played back, and the worlds step as the trace's clock says."""
     import tempfile
 
     import pycvc
@@ -479,39 +522,75 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
     from grl_snam.demos._common import SimPacer
 
     C = _cars.C
-    start, goal = start_and_goal(world, kind, host.get("run.uri"))
+    meta = replay.meta if replay is not None else {}
+    seed = int(meta.get("seed", args.seed))
+    if replay is not None and meta.get("start") and meta.get("goal"):
+        start, goal = tuple(meta["start"]), tuple(meta["goal"])
+    else:
+        start, goal = start_and_goal(world, kind, host.get("run.uri"))
     try:
-        scale = _arms.resolve(arms, tempfile.mkdtemp(prefix="grl-snam-arms-"), seed=args.seed)
+        scale = _arms.resolve(arms, tempfile.mkdtemp(prefix="grl-snam-arms-"), seed=seed)
     except (RuntimeError, ValueError, OSError) as e:
         host.close()
         return _refuse(f"--arms: {e}")
-    fleet = make_fleet(world, plant, arms, start, goal, seed=args.seed, scale=scale,
-                       app=host.app, prefix=host.prefix)  # fmt: skip
-    run = _arms.ArmsRun(arms, start=start, goal=goal, seed=args.seed, dt=C.DT, scale=scale,
-                        world=world.info, plant=plant)  # fmt: skip
+    if replay is not None:
+        scale = float(meta.get("scale", scale))
+    S = {}  # the worlds and the run, which a seek backwards in a replay builds again
 
-    def arm_stats():  # every arm's collector, from where it stands, to the current goal
-        begin_stats(fleet, arms, world.kind, args.seed)
+    def build():
+        S["fleet"] = make_fleet(world, plant, arms, start, goal, seed=seed, scale=scale,
+                                app=host.app, prefix=host.prefix)  # fmt: skip
+        S["run"] = _arms.ArmsRun(arms, start=start, goal=goal, seed=seed, dt=C.DT, scale=scale,
+                                 world=world.info, plant=plant)  # fmt: skip
+        begin_stats(S["fleet"], arms, world.kind, seed)
 
-    arm_stats()
-    rng = np.random.default_rng(args.seed + 1)
-    radius = 0.5 * float(fleet[0].width[0])
+    build()
+    rec = None
+    if args.record_trace:
+        try:
+            rec = _trace.Recorder(host, S["fleet"], arms, args.record_trace,
+                                  world_id=f"grl-snam:{kind}", seed=seed, dt=C.DT,
+                                  meta=trace_meta(arms, start, goal, seed, plant, scale, world))  # fmt: skip
+        except RuntimeError as e:
+            host.close()
+            return _refuse(f"--record-trace: {e}")
+    recorded = [a.get("sha256") for a in meta.get("arms", [])]
+    same = replay is not None and recorded == [a.sha256 for a in arms]
+    if replay is not None and not same:
+        print("live: the replay's arms run other policies than the recorded ones: the trace shows "
+              "where the trajectories part", file=sys.stderr)  # fmt: skip
+    rng = np.random.default_rng(seed + 1)
+    radius = 0.5 * float(S["fleet"][0].width[0])
     st = {"pending": None, "due": list(retarget_at), "nodes": [], "tracks": [[] for _ in arms],
           "world": world, "camera": None, "follow": None, "coef": {},
           "series": {"clearance": [], "speed": []}, "error": None, "pacer": SimPacer(),
-          "d0": None, "modeled": None}  # fmt: skip
+          "d0": None, "modeled": None, "quanta": 0.0, "seek": None, "unknown": set()}  # fmt: skip
     drawn = host.mode != "headless"
     charts = hasattr(host, "set_plot")
-    host.set_many({"on": "1", "live": "1", "names": "\n".join(a.name for a in arms), "status": "",
-                   "plant": plant, "scale": f"{scale:.6g}", "seed": str(args.seed)}, prefix="arms")  # fmt: skip
+    host.set_many({"on": "1", "live": "0" if replay is not None else "1",
+                   "names": "\n".join(a.name for a in arms), "status": "", "plant": plant,
+                   "scale": f"{scale:.6g}", "seed": str(seed)}, prefix="arms")  # fmt: skip
     for key in ("view.arm", "ledger.agent"):
         if host.get(key, "") not in [a.name for a in arms]:
             host.set(key, arms[0].name)
+    how = " (recording)" if rec else (" (a replay)" if replay is not None else "")
     host.set("demo.title", f"austin-freedrive on {plant}: {len(arms)} arms, "
-                           f"{', '.join(a.name for a in arms)}")  # fmt: skip
+                           f"{', '.join(a.name for a in arms)}{how}")  # fmt: skip
+
+    def goal_moved(to):
+        """The bookkeeping of a goal that every arm's world now has: the cars', each arm's
+        collector armed again (a new leg), the run's legs and the status."""
+        run = S["run"]
+        for cars in S["fleet"]:
+            cars.goals[0] = to
+        begin_stats(S["fleet"], arms, world.kind, seed)
+        run.retarget(to)
+        host.set("arms.status", f"leg {len(run.legs)}: every arm to ({to[0]:.0f}, {to[1]:.0f}), "
+                                f"from tick {run.tick}")  # fmt: skip
 
     def retarget(to=None):
         """Every arm's goal moves to ``to`` (else a drawn one) before the next tick."""
+        fleet = S["fleet"]
         pos = [(c.state().x[0], c.state().y[0]) for c in fleet]
         if to is None:
             to = _arms.draw_goal(world, rng, pos, 2.0 * radius)
@@ -520,40 +599,121 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
             if why:
                 host.set("arms.status", f"not there: {why}")
                 return
+        c0 = fleet[0]
+        gx_n, gy_n = (to[0] - c0.cx) * c0.scale, (to[1] - c0.cy) * c0.scale
+        if rec is not None:
+            rec.retarget(gx_n, gy_n)
+            # The goal the worlds have (a float32 in nav's frame), in metres, as a replay of the
+            # trace's event works it out: the two runs keep the same goal, bit for bit.
+            gx_n, gy_n = float(np.float32(gx_n)), float(np.float32(gy_n))
+            to = (gx_n / c0.scale + c0.cx, gy_n / c0.scale + c0.cy)
+        else:
+            for cars in fleet:
+                pycvc.nav_sim_world_retarget(cars.sim, 0, gx_n, gy_n)
+        goal_moved(to)
+
+    def on_event(e, args_):
+        """A played-back event: nav's own go to every arm's world (a retarget moves every arm's
+        goal); a host's own this port does not know is named once."""
+        fleet = S["fleet"]
+        if not e.name.startswith("nav."):
+            if e.name not in st["unknown"]:
+                st["unknown"].add(e.name)
+                print(f"live: the trace's event {e.name} is not nav's: left out", file=sys.stderr)
+            return
         for cars in fleet:
-            cars.goals[0] = to
-            pycvc.nav_sim_world_retarget(cars.sim, 0, (to[0] - cars.cx) * cars.scale,
-                                         (to[1] - cars.cy) * cars.scale)  # fmt: skip
-        arm_stats()
-        run.retarget(to)
-        host.set("arms.status", f"leg {len(run.legs)}: every arm to ({to[0]:.0f}, {to[1]:.0f}), "
-                                f"from tick {run.tick}")  # fmt: skip
+            pycvc.nav_trace_apply_event(cars.sim, e)
+        if e.name == "nav.retarget":
+            gx, gy = args_["goal"]
+            c0 = fleet[0]
+            goal_moved((gx / c0.scale + c0.cx, gy / c0.scale + c0.cy))
+
+    def step_once():  # one navigator step of every arm, each pulling the tree's settings first
+        for cars in S["fleet"]:
+            cars.pull()
+        tick_arms(S["fleet"], S["run"])
 
     def press():  # the Retarget button: to arms.goal when it names a point, else a drawn one
         st["pending"] = _arms.parse_point(host.get("arms.goal")) or "draw"
 
+    def restart():  # a replay from its start again: the worlds rebuilt, the trace rewound
+        st["seek"] = 0
+
     host.on("arms_retarget", press)
     host.on("arms_seek", lambda: None)  # a click on a chart: a live run has no play head to move
+    host.on("trace_restart", restart)
+    if rec is not None or replay is not None:
+        host.set_many({"on": "1", "mode": "replay" if replay is not None else "record",
+                       "file": str(args.replay_trace or args.record_trace)}, prefix="trace")  # fmt: skip
     if drawn:
         C.draw_world(host, st)
         host.lab.add_markers("start", [(start[0], start[1], world.z(*start) + 1.0)],
                              color=(0.15, 0.85, 0.25))  # fmt: skip
 
+    def replay_frame(dt):
+        """The trace's quanta this frame: all of them headless, else the wall time at the sim
+        speed; a seek runs them from where the replay is, or from tick 0 when it goes back."""
+        total = max(replay.end_tick - replay.start_tick, 1)
+        pos = host.get_float("play.pos", math.nan)
+        if math.isfinite(pos) and st.get("pos") is not None and abs(pos - st["pos"]) > 1e-6:
+            st["seek"] = replay.start_tick + round(pos * total)
+        if st["seek"] is not None:
+            target, st["seek"] = st["seek"], None
+            if target < replay.tick():  # back: sim_world has no restore, so from tick 0 again
+                replay.rewind()
+                build()
+                st["tracks"] = [[] for _ in arms]
+            while replay.tick() < target and not replay.done():
+                replay.quantum(on_event, step_once, lambda: _trace.session_hash(S["fleet"]))
+        elif host.mode == "headless" and not host.get_bool("view.paused"):
+            while not replay.done():
+                replay.quantum(on_event, step_once, lambda: _trace.session_hash(S["fleet"]))
+        elif not host.get_bool("view.paused"):
+            st["quanta"] += dt * max(host.get_float("view.speed", 1.0), 0.0) / _trace.QUANTUM
+            while st["quanta"] >= 1.0 and not replay.done():
+                replay.quantum(on_event, step_once, lambda: _trace.session_hash(S["fleet"]))
+                st["quanta"] -= 1.0
+        done = (replay.tick() - replay.start_tick) / total
+        host.set("play.pos", round(min(done, 1.0), 6))
+        st["pos"] = host.get_float("play.pos", 0.0)
+        first = replay.first_divergence()
+        host.set("trace.status", f"tick {replay.tick()} of {replay.end_tick}, "
+                 f"{replay.compared} hashes compared, "
+                 + ("all matched" if first is None else f"departs at tick {first}"))  # fmt: skip
+        if replay.done() and host.mode == "headless" and not host.get_bool("view.paused"):
+            host.request_close()
+
     @host.on_frame
     def tick(dt):
         try:
-            if st["pending"] is not None:  # between ticks: every arm's goal moves at once
-                to, st["pending"] = st["pending"], None
-                retarget(None if to == "draw" else to)
-            for cars in fleet:
-                cars.pull()
-            if not host.get_bool("view.paused"):
+            fleet, run = S["fleet"], S["run"]
+            if replay is not None:
+                replay_frame(dt)
+                fleet, run = S["fleet"], S["run"]
+            elif rec is not None:
+                if st["pending"] is not None:  # at the frame's start: the clock has not moved
+                    to, st["pending"] = st["pending"], None
+                    retarget(None if to == "draw" else to)
+                if st["due"] and run.tick * C.DT >= st["due"][0] - 1e-9:
+                    st["due"].pop(0)
+                    retarget(_arms.parse_point(host.get("arms.goal")))
                 speed = max(host.get_float("view.speed", 1.0), 0.0)
-                for _ in range(st["pacer"].ticks(dt, C.DT, speed)):
-                    if st["due"] and run.tick * C.DT >= st["due"][0] - 1e-9:
-                        st["due"].pop(0)
-                        retarget(_arms.parse_point(host.get("arms.goal")))
-                    tick_arms(fleet, run)
+                paused = host.get_bool("view.paused")
+                rec.frame(0.0 if paused else dt * speed, step_once)
+                host.set("trace.status", f"recording: tick {rec.clock.tick()}, {run.tick} steps")
+            else:
+                if st["pending"] is not None:  # between ticks: every arm's goal moves at once
+                    to, st["pending"] = st["pending"], None
+                    retarget(None if to == "draw" else to)
+                for cars in fleet:
+                    cars.pull()
+                if not host.get_bool("view.paused"):
+                    speed = max(host.get_float("view.speed", 1.0), 0.0)
+                    for _ in range(st["pacer"].ticks(dt, C.DT, speed)):
+                        if st["due"] and run.tick * C.DT >= st["due"][0] - 1e-9:
+                            st["due"].pop(0)
+                            retarget(_arms.parse_point(host.get("arms.goal")))
+                        tick_arms(fleet, run)
             fleet[0].publish()
             publish_arms(host, run, fleet, st, charts)
             if drawn:
@@ -571,8 +731,13 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
             host.request_close()
 
     host.run(fps=30, frames=args.frames or None)
+    run = S["run"]
     if args.png and drawn:
         host.snapshot(args.png)
+    if rec is not None and st["error"] is None:
+        final = rec.finish()
+        print(f"live: the session's inputs, {rec.clock.tick()} ticks, to {rec.path} (final "
+              f"{final[:19]}...)")  # fmt: skip
     if args.log:
         out = run.save(args.log, history=args.history or None, error=st["error"],
                        arrivals=run.arrivals, **world_meta(host))  # fmt: skip
@@ -583,8 +748,32 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=()) -> int:
               f"{row['ms']} ms/tick, reached {row['reached']}")  # fmt: skip
     code = host.exit_code()
     host.close()
+    if replay is not None and st["error"] is None:
+        first = replay.first_divergence()
+        if first is None and replay.done() and not replay.matched():  # the end's hash missing
+            first = replay.end_tick
+        if first is None:
+            print(f"live: the replay matches the trace: {replay.compared} hashes, "
+                  f"{len(run)} steps")  # fmt: skip
+        else:
+            print(f"live: the replay departs from the trace at tick {first}"
+                  + ("" if same else " (other policies than the recorded ones)"))  # fmt: skip
+            if same:
+                st["error"] = f"the replay departs from the trace at tick {first}"
     return C.exit_code(code, error=st["error"], arrivals=run.arrivals,
                        min_arrivals=args.min_arrivals, who="live")  # fmt: skip
+
+
+def trace_meta(arms, start, goal, seed, plant, scale, world) -> dict:
+    """What a trace's header keeps for the port beside libcvc's own: the arms (each one's spec
+    and its ``.cvcnav``'s sha256), the start, the goal, the seed, the plant, the frame, the
+    world's description and the GRL-SNAM build."""
+    from grl_snam.learning.runlog import provenance
+
+    return {"demo": "austin-freedrive", "arms": [a.describe() for a in arms], "seed": int(seed),
+            "start": [float(start[0]), float(start[1])], "goal": [float(goal[0]), float(goal[1])],
+            "plant": plant, "scale": float(scale), "world": world.info,
+            "provenance": provenance()}  # fmt: skip
 
 
 def make_fleet(world, plant, arms, start, goal, *, seed=0, scale=_arms.POLICY_SCALE, app=None,

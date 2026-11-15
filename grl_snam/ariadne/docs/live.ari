@@ -14,6 +14,8 @@
 #   world.* (the terrain generator);
 # - the scene: the city this document names (data: below), or a generated world, and the demo's
 #   vehicle, under a soft afternoon light;
+# - Trace: with --record-trace or --replay-trace only (trace.on): the file, the ticks and the
+#   hashes compared; in a replay a Position slider and Restart (a seek back runs from tick 0);
 # - Stats and Ledger (stats_panels.ari, beside this file): with --arms only (arms.on), one row per
 #   arm, the Retarget, and each arm's coefficients, U terms, books and plant ledger, with charts
 #   on a host with chart: (libcvc 3.7.14; text rows without it):
@@ -65,6 +67,7 @@ init: |
     (state-set "world.terrain" "fbm")
     (state-set "world.city" "districts")
     (state-set "arms.on" "0")
+    (state-set "trace.on" "0")
     (state-set "arms.goal" "")
     (state-set "ledger.book" "dU"))
 
@@ -146,6 +149,28 @@ windows:
     args: { cost: "the wall barrier's reach (on a plant: the belief)" }
     pos: [740, 30]
     size: [420, 300]
+
+  - window: Trace
+    id: trace
+    pos: [368, 714]
+    size: [360, 150]
+    visible_when: (= (state-get "trace.on") "1")
+    children:
+      - text: ""
+        bind: trace.file
+      - text: ""
+        bind: trace.status
+      - type: group
+        visible_when: (= (state-get "trace.mode") "replay")
+        children:
+          - slider_float: Position
+            bind: play.pos
+            lo: 0
+            hi: 1
+            fmt: "%.3f"
+            tooltip: "a seek back runs the worlds again from tick 0 (sim_world has no restore)"
+          - button: Restart
+            on: trace_restart
 
   - include: arms_stats
     pos: [1172, 30]
