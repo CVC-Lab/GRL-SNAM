@@ -9,13 +9,19 @@ name: pages
 #      libcvc's own deploy-pages.yml builds its gallery: the recipe's script, the single-threaded
 #      build (wasm), since GitHub Pages sends no COOP/COEP headers, in the lean tier (no
 #      vtk-python). About 30 minutes, so it is cached by libcvc's commit and the script.
-#   2. pages/assemble.py writes the site: the landing page (pages/site/) and learn/, which runs
+#   2. pages/assemble.py writes the site: the landing page (pages/site/), learn/, which runs
 #      `grl-snam ariadne learn` on the learning check's retrain histories
-#      (docs/learning-validation/retrain/); with --learn-only, the learn page alone, for another
-#      site. Everything a page fetches is on the site's own origin.
+#      (docs/learning-validation/retrain/), and scrub/, which runs `grl-snam ariadne scrub
+#      --view` on the retrain's checkpoints deployed here, natively, on libcvc's generated world
+#      (the page views runs; deploying a .pt checkpoint needs torch and libcvc's sim_world, so
+#      grl_snam's cvcpkg closure; the checkpoints come from the cvcpkg data package
+#      grl-snam-learning-checkpoints; the runs are cached by what they depend on); with
+#      --learn-only or --scrub-only, one page alone, for another site. Everything a page fetches
+#      is on the site's own origin.
 #   3. pages/smoke.mjs loads it in headless Chrome as Pages serves it: learn must start, run its
-#      frames and make learn-report's claims in the page. It runs on the whole site under
-#      /GRL-SNAM/, and on the learn page alone at another path, as another site serves it.
+#      frames and make learn-report's claims in the page, and scrub must start, show a checkpoint
+#      and run its frames. It runs on the whole site under /GRL-SNAM/, and on the two pages alone
+#      at another path, as another site serves them.
 
 on:
   pull_request:
@@ -23,6 +29,7 @@ on:
       - pages/**
       - grl_snam/**
       - docs/learning-validation/**
+      - cvcpkg/recipes/grl-snam-learning-checkpoints/**
       - .github/workflows/pages.yml
   push:
     branches: [main]
@@ -30,6 +37,7 @@ on:
       - pages/**
       - grl_snam/**
       - docs/learning-validation/**
+      - cvcpkg/recipes/grl-snam-learning-checkpoints/**
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -78,11 +86,45 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: bash pages/build-ariglx-web.sh libcvc "$RUNNER_TEMP/ariglx-web-work" ariglx-web
 
-      - name: Assemble the site, and the learn page alone
+      # The scrub page's runs: each retrain checkpoint deployed with `grl-snam ariadne scrub`,
+      # which needs torch and libcvc's sim_world, so grl_snam's own closure (as ci.yml installs
+      # it). libcvc's generator draws the world again in the page, so its pycvc-gl must be the
+      # libcvc ariglx-web is built from (the catalog's newest: 3.7.13; the page says when not).
+      - name: Install grl_snam's closure via cvcpkg (to deploy the scrub page's runs)
+        id: deps
+        uses: transfix/libcvc-deps/.github/actions/cvcpkg-install@master
+        with:
+          recipe: cvcpkg/recipes/grl-snam-cp312
+          build_type: Release
+
+      - name: Cache the scrub page's runs
+        uses: actions/cache@v4
+        with:
+          path: scrub-runs
+          key: scrub-runs-v1-${{ hashFiles('grl_snam/**', 'docs/learning-validation/retrain/**', 'cvcpkg/recipes/grl-snam-learning-checkpoints/**') }}
+
+      - name: Assemble the site, and the learn and scrub pages alone
+        env:
+          PREFIX: ${{ steps.deps.outputs.path }}
         run: |
-          python3 pages/assemble.py --host ariglx-web/share/ariglx-web --out _site
+          set -euo pipefail
+          test -n "$PREFIX" || { echo "::error::no grl-snam-cp312 closure"; exit 1; }
+          command -v cvcpkg >/dev/null || {
+            curl -fsSL https://cvcpkg.org/install.sh | sh
+            export PATH="$HOME/.local/bin:$PATH"
+          }
+          # The retrain's saved policies are not in the repository: the cvcpkg data package
+          # grl-snam-learning-checkpoints (cvcpkg/recipes/grl-snam-learning-checkpoints) has them,
+          # each checked against the committed histories' blobs by sha256 when it was packed.
+          cvcpkg install grl-snam-learning-checkpoints --prefix "$RUNNER_TEMP/checkpoints" \
+            --platform any --config release --link shared --no-fallback-to-source
+          python3 pages/assemble.py --host ariglx-web/share/ariglx-web --out _site \
+            --scrub --python "$PREFIX/bin/python3.12" --scrub-cache scrub-runs \
+            --checkpoints "$RUNNER_TEMP/checkpoints/share/grl-snam-learning-checkpoints/retrain"
           python3 pages/assemble.py --host ariglx-web/share/ariglx-web --learn-only \
             --out _other_site/demos/learn
+          python3 pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-only \
+            --out _other_site/demos/scrub --scrub-reports scrub-runs/*.scrub.json
 
       - name: Load them in headless Chrome
         run: |
@@ -96,10 +138,12 @@ jobs:
           node="$RUNNER_TEMP/node/bin/node"
           chrome=$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)
           "$chrome" --version
-          "$node" pages/smoke.mjs --site _site --chrome "$chrome" --base /GRL-SNAM/ --shots shots
-          # The learn page alone, as another site serves it: under its own path, no landing page.
+          "$node" pages/smoke.mjs --site _site --chrome "$chrome" --base /GRL-SNAM/ \
+            --scrub scrub/ --shots shots
+          # The learn and scrub pages alone, as another site serves them: under its own path, no
+          # landing page.
           "$node" pages/smoke.mjs --site _other_site --chrome "$chrome" --base /other-site/ \
-            --learn demos/learn/ --no-landing --shots shots/learn-only
+            --learn demos/learn/ --scrub demos/scrub/ --no-landing --shots shots/alone
 
       - name: Upload the smoke's screenshots
         if: always()

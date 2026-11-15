@@ -431,6 +431,7 @@ python -m grl_snam.ariadne replay run.npz --at 26 --paused --camera orbit --offs
 python -m grl_snam.ariadne scrub run/history.jsonl                           # Austin, kinematic
 python -m grl_snam.ariadne scrub run/history.jsonl --world flat --ticks 600
 python -m grl_snam.ariadne scrub run/history.jsonl --headless --report scrub.json
+python -m grl_snam.ariadne scrub --view scrub.json [more.json ...]          # deployed before
 ```
 
 `scrub` deploys every checkpoint of a training run. The learning history names the policy each
@@ -455,9 +456,23 @@ directory's, and blobs that are not there are listed and skipped.
 - **The training curve** is a held-out curve from the history, with the `learn` port's marks.
   Both charts carry a cursor at checkpoint k.
 - **Headless,** it deploys and reports: `--report R.json` writes every checkpoint's metrics
-  (`grl_snam.scrub/v1`).
-- **The exit code** is 0, and 2 when the history names no saved policy that is there, or the
-  plant is torch.
+  and run log (`grl_snam.scrub/v1`), the scenario, and what deployed it (the GRL-SNAM commit,
+  libcvc's version). `--blobs DIR` finds the saved policies there first (by file name), and
+  `--cache DIR` caches the run logs there instead of `<history>.scrub/`.
+- **View only:** `--view R.json ...` shows runs deployed before and deploys nothing, so it needs
+  neither torch nor the policies, and no sim_world steps. It reads the reports, the run log each
+  checkpoint lists (read when first shown) and the history each names, found as given, relative
+  to the report, or by file name beside it, so a report travels with its files. It does not hash
+  the scenario again. With several reports a Run combo picks one (their worlds must be the same).
+  The world is rebuilt from the report: a generated world from its generator settings (the
+  view says when this libcvc's differs from the deploy's). With `--no-world`, a city that is not
+  on the machine in a browser, or a pycvc_gl without `pycvc_gl.cars`, it shows the windows
+  alone. The Pages site's scrub page is this mode (`pages/README.md`).
+- **`--windows ID,...`** opens only those windows (`scrub`, `training`, `episode`,
+  `sim_transport`, `arms_stats`, `arms_ledger`); the Windows menu has the rest. `--camera
+  orbit` looks at the world from above instead of following checkpoint k.
+- **The exit code** is 0, and 2 when the history names no saved policy that is there, the plant
+  is torch, or a report or a file it names is not there.
 
 On the learning check's retrain (seed 0, 41 checkpoints, Austin, kinematic, 60 s each), no
 checkpoint reaches the goal, and there are two outcomes:
