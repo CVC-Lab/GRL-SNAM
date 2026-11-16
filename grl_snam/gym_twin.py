@@ -38,8 +38,9 @@ The gym stays the judge: a policy trained through the twin is scored by driving 
 * **The plant arm.** On a vehicle plant nav@1 commands through libcvc's plant arm: the latency
   and the vehicle's braking in the stopping governor, braking down to ``-a_brake``, the steering
   actuator's slew and lock, the vehicle's own envelope and footprint, and the park brake at the
-  goal. ``GymTwin(gym, plant_arm=True)`` has it, from ``plants()``' ``plan`` (libcvc's
-  ``entity_plan``); the default is the control law alone, as before.
+  goal; where the navigator stops at its goals (``stop_at_goal``), the stop. ``GymTwin(gym,
+  plant_arm=True)`` has it, from ``plants()``' ``plan`` (libcvc's ``entity_plan``) and
+  ``fields()["navigator"]``; the default is the control law alone, as before.
 
 :func:`tick_residuals` measures the last four on any world: the twin's tick against the gym's for
 the same commands.
@@ -102,8 +103,11 @@ class GymTwin:
     cornering limit), wheelbase and footprint discs in place of the navigator's, and with the
     latency, ``a_brake``, the steering lock and the actuator's slew (:class:`sdf_nav.PlantArm`);
     a parked agent brakes to a stop (:meth:`control`'s ``parked``). It reads them from
-    ``plants()``' ``plan`` (libcvc's ``entity_plan``) and refuses a gym without one. The default
-    is the deployed control law alone.
+    ``plants()``' ``plan`` (libcvc's ``entity_plan``) and refuses a gym without one. Where the
+    gym's navigator stops at its goals (``fields()["navigator"]["stop_at_goal"]``, libcvc's
+    ``sim_world::config::stop_at_goal``), the twin's drive does too (``bike_control``'s
+    ``stop_at``): each agent's speed toward its goal is held to the speed it stops there from.
+    The default is the deployed control law alone.
     """
 
     def __init__(self, gym, *, dtype=torch.float64, device="cpu", plant_arm: bool = False):
@@ -179,6 +183,9 @@ class GymTwin:
         )
         self.plant_arm = bool(plant_arm)
         self.arm = None
+        # With the plant arm, nav@1's drive as the gym runs it: it stops at its goals when the
+        # navigator does (older libcvc reports no stop_at_goal: none).
+        self.stop_at_goal = self.plant_arm and bool(nav.get("stop_at_goal", False))
         if self.plant_arm:
             self._read_plan(plants)
         obs = gym.observe()
@@ -309,15 +316,32 @@ class GymTwin:
         return (self.to_norm(state[:, :2]) - goal_n).norm(dim=-1) < self.reach * self.S
 
     # ---- the controller ----
-    def control(self, state, coefs, goal_n=None, ext_force=None, *, parked=None, ext_steer=True):
+    def control(
+        self,
+        state,
+        coefs,
+        goal_n=None,
+        ext_force=None,
+        *,
+        parked=None,
+        ext_steer=True,
+        stop_n=None,
+    ):
         """The drive's commands from ``state`` and coefficients ``coefs [B, 3]`` (alpha, beta,
         gamma): the steering's angle (rad) and the acceleration along the heading (m/s^2).
-        ``ext_force`` (``[B, 2]``, nav's frame) joins the drive's force, and its steering with
-        ``ext_steer``. With the plant arm, the command the plant takes, and ``parked`` (``[B]``
-        bool) brakes those rows to a stop within the tick, at most at ``a_brake``, as nav@1 parks
-        an agent at its goal; the steering stays the drive's."""
+        ``goal_n`` is the point the drive steers for (its carrot; nav's frame), the agents' goals
+        by default. ``ext_force`` (``[B, 2]``, nav's frame) joins the drive's force, and its
+        steering with ``ext_steer``. With the plant arm, the command the plant takes, and
+        ``parked`` (``[B]`` bool) brakes those rows to a stop within the tick, at most at
+        ``a_brake``, as nav@1 parks an agent at its goal; the steering stays the drive's. Where the
+        navigator stops at its goals (``stop_at_goal``), ``stop_n`` (nav's frame) is each row's
+        goal, the agents' own by default."""
         o = self.to_norm(state[:, :2])
         goal_n = self.goal_norm() if goal_n is None else goal_n
+        if self.stop_at_goal:
+            stop_n = self.goal_norm() if stop_n is None else stop_n
+        else:
+            stop_n = None
         sp = state[:, 3] * self.S
         delta, a_n, _, _ = sdf_nav.bike_control(
             self.field,
@@ -332,6 +356,7 @@ class GymTwin:
             ext_steer=ext_steer,
             plant=self.arm,
             steer_now=state[:, _DELTA] if self.arm is not None else None,
+            stop_at=stop_n,
             **self.veh,
         )
         if self.arm is not None and parked is not None:
@@ -346,9 +371,9 @@ class GymTwin:
         goal_n = self.goal_norm() if goal_n is None else goal_n
         return sdf_nav.coef_feats(self.field, self.to_norm(state[:, :2]), goal_n)
 
-    def step(self, state, coefs, goal_n=None, ext_force=None, *, parked=None):
+    def step(self, state, coefs, goal_n=None, ext_force=None, *, parked=None, stop_n=None):
         """One tick: the drive's commands, then the plant. Returns ``(state, delta, accel)``."""
-        delta, acc = self.control(state, coefs, goal_n, ext_force, parked=parked)
+        delta, acc = self.control(state, coefs, goal_n, ext_force, parked=parked, stop_n=stop_n)
         return self.plant_tick(state, delta, acc), delta, acc
 
     def rollout(
@@ -372,7 +397,7 @@ class GymTwin:
             parked = torch.zeros(state.shape[0], dtype=torch.bool, device=state.device)
         for _ in range(T):
             coefs = policy(self.features(state, goal_n))
-            state, delta, acc = self.step(state, coefs, goal_n, parked=parked)
+            state, delta, acc = self.step(state, coefs, goal_n, parked=parked, stop_n=goal_n)
             if self.plant_arm:
                 parked = parked | self.arrived(state.detach(), goal_n)
             states.append(state)

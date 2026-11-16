@@ -137,20 +137,23 @@ def test_gate3_gradients_are_finite_and_match_finite_differences(plant_arm):
     # The coefficients act where the drive is not at its limits: closing on a goal at speed
     # (beta's pull, gamma's damping), or near a wall (alpha's barrier). In open ground far from the
     # goal the drive accelerates at its limit and steers at the goal whatever they are, so their
-    # gradient there is zero, truly. Here: at speed, a goal 15 m ahead; no wall in reach. With the
-    # plant arm, through its governors and the steering's slew too (the rollout stops short of
-    # the goal, so not through the park brake).
+    # gradient there is zero, truly. Here: at speed, a goal 15 m ahead; no wall in reach.
+    # With the plant arm, through its governors and the steering's slew too. Where the gym's nav@1
+    # stops at its goals (stop_at_goal), that stopping speed, not the goal's pull, brakes an
+    # approach above ~5 m/s, so beta and gamma act only below it: there, a goal 6 m ahead of an
+    # agent at ~3.5 m/s (the rollout may park it, which the gradient goes through as a brake).
     g = _gym()
     if plant_arm:
         _needs_plan(g)
     t = GymTwin(g, plant_arm=plant_arm)
-    drive_gym(g, t, constant_policy(DEFAULT), 80)
+    ticks, ahead, v_min = (30, 6.0, 2.0) if plant_arm else (80, 15.0, 5.0)
+    drive_gym(g, t, constant_policy(DEFAULT), ticks)
     o = g.observe()
     for k in range(2):
-        g.set_goal(int(o["id"][k]), float(o["x"][k]) + 15.0, float(o["y"][k]) + 3.0)
+        g.set_goal(int(o["id"][k]), float(o["x"][k]) + ahead, float(o["y"][k]) + 0.2 * ahead)
     t = GymTwin(g, plant_arm=plant_arm)
     s0 = t.state(g)
-    assert bool((s0[:, 3] > 5.0).all())
+    assert bool((s0[:, 3] > v_min).all())
 
     def loss(c):
         states, _ = t.rollout(lambda f: c.expand(f.shape[0], 3), s0, 12)
@@ -210,9 +213,9 @@ def _needs_plan(g):
 
 def _nav_gym(goals_x=(15.0, 30.0, 45.0), start_x=-70.0):
     """Three Humvees on dynamic4w that nav@1 drives, from x = start_x to goals 85-115 m east,
-    toward the square's east edge (its wall for the stopping governor). They arrive one by one,
-    at speed: nav@1 parks each as it passes within the reach of its goal, and it brakes to a stop
-    some metres on, while the others drive on."""
+    toward the square's east edge (its wall for the stopping governor). They arrive one by one and
+    park while the others drive on: at rest at the goal where nav@1 stops at its goals
+    (``stop_at_goal``), and some metres past it, braking from speed, where it does not."""
     n = len(goals_x)
     agents = [
         {
@@ -249,8 +252,9 @@ def plant_arm_departures(
       the actuator's slew, so their steering is ``parked_steer``, apart.
 
     Also the agent-ticks' counts and the largest departures outside parking. It ends
-    ``hold_ticks`` after every agent is parked and stopped (nav@1 parks one that passes its goal
-    at speed, beyond the gym's own arrival), or after ``ticks``."""
+    ``hold_ticks`` after every agent is parked and stopped, or after ``ticks``: past the gym's
+    own end of the episode, and on a libcvc whose nav@1 does not stop at its goals (which parks
+    one as it passes its goal at speed, so the gym's arrival is never met)."""
     nan = np.full(twins[0].n, np.nan)
     t0 = twins[0]
     rows = {k: {"steer": [], "accel": []} for k in range(len(twins))}
@@ -280,7 +284,7 @@ def plant_arm_departures(
                 rows[k]["accel"].append((a - ga).abs().numpy())
             where.append((dist > en_route_m).numpy())
             park.append(parked.numpy())
-            if out[2] or out[3]:
+            if out[3]:  # truncated; a terminated episode steps on while its agents come to rest
                 break
     far, pk = np.stack(where, 0), np.stack(park, 0)
     en, arr = far & ~pk, ~far & ~pk

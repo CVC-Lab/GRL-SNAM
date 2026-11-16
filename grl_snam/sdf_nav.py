@@ -536,6 +536,7 @@ def bike_control(
     ext_steer=True,
     plant: PlantArm | None = None,
     steer_now=None,
+    stop_at=None,
 ):
     """The controller half of :func:`bicycle_rollout`: one step of ``dt`` (one substep there).
 
@@ -555,6 +556,12 @@ def bike_control(
     actuator's angle; ``None`` leaves the rate off). The acceleration returned is the one that
     reaches ``sp_next``, the speed kept within ``[sp_min, vmax]``. ``None`` (the default) is the
     kinematic arm, unchanged.
+
+    ``stop_at`` (``[B, 2]``, normalized) is libcvc's ``veh_params::stop_at``: the point each row
+    comes to rest at (its goal). The speed toward it is held to the speed from which the vehicle
+    stops there, braking at ``a_max`` (on the plant arm after the latency, at the gentler of
+    ``a_brake`` and ``a_max``), over the component of the motion that closes on it; the creep
+    floor never exceeds it. ``None`` (the default) is none.
     """
     hdt = dt
     sp0 = sp
@@ -735,6 +742,24 @@ def bike_control(
         torch.full_like(v_stop, vmax),
     )
     v_lim = torch.minimum(torch.full_like(v_corner, vmax), torch.minimum(v_corner, v_stop_dir))
+    if stop_at is not None:
+        # The stop point: the speed toward it from which the vehicle stops there, braking as
+        # v_stop plans to, over the component of the motion that closes on it.
+        _to = stop_at - o
+        _dsg = torch.sqrt((_to * _to).sum(-1) + 1e-24)  # its gradient stays finite at the point
+        if plant is not None:
+            v_arrive = torch.sqrt(_ab * _ab * _tau * _tau + 2.0 * _ab * _dsg + 1e-24) - _ab * _tau
+        else:
+            v_arrive = torch.sqrt(2.0 * a_max_e * _dsg + 1e-24)
+        closing = torch.where(
+            _dsg > 1e-6,
+            (_to * head).sum(-1) / _dsg.clamp_min(1e-6) * motion_sign,
+            torch.ones_like(_dsg),
+        ).clamp(0.0, 1.0)
+        v_arrive_dir = torch.where(
+            closing > 0.05, v_arrive / closing.clamp_min(0.05), torch.full_like(v_arrive, vmax)
+        )
+        v_lim = torch.minimum(v_lim, v_arrive_dir)
 
     # Maneuvering creep: turning requires motion. When a hard steer is
     # commanded, keep a small speed floor so the vehicle can rotate
@@ -752,6 +777,8 @@ def bike_control(
     )
     if plant is not None:  # the plant arm creeps only as fast as it can stop
         v_floor = torch.minimum(v_floor, v_stop_dir)
+    if stop_at is not None:  # nor past its stop point
+        v_floor = torch.minimum(v_floor, v_arrive_dir)
     v_lim = torch.maximum(v_lim, v_floor)
 
     # While turning around, hold a creep speed so th' = sp/L tan(delta)

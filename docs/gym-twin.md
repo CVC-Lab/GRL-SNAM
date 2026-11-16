@@ -53,7 +53,7 @@ drive_gym(gym, twin, mlp_policy(model), ticks=600)   # the gym judges it
 | **Contact** | The gym's chassis collide in Jolt. The four-wheel twin has no contact port (`dyn_contact` couples to the single-track model only), so a rollout into a wall is not the gym's. The drive's barrier and `clearance_loss` keep rollouts off walls |
 | **Grade** | The gym's four-wheel model runs `grade_force`, which has no torch twin. The twin turns it off, so it is exact on flat ground only |
 | **The controller** | The gym's navigator (nav@1) runs its carrot FSM, planner and governors around this control law. The twin takes the goal as given and the coefficients from the policy. Judged in the gym, a policy drives through the twin's controller (`drive_gym`), not nav@1 |
-| **The plant arm** | On a vehicle plant, nav@1's drive gives its command through libcvc's plant arm (`plant_drive`), after the control law. `GymTwin(gym, plant_arm=True)` has it (gate 5); the default is the control law alone, as the training gates ran |
+| **The plant arm** | On a vehicle plant, nav@1's drive gives its command through libcvc's plant arm (`plant_drive`), after the control law, and (from transfix/libcvc#1297) stops at its goals. `GymTwin(gym, plant_arm=True)` has both (gate 5); the default is the control law alone, as the training gates ran |
 | **Other plants** | The bicycle and the single-track model are refused for now |
 
 ## Gates
@@ -80,6 +80,12 @@ torch 2.14 CPU, float64.
    rollout's loss in the coefficients, at speed with a goal 15 m ahead. Beta's and gamma's
    gradients are nonzero and match central differences to 1e-6 relative; alpha's is zero, with
    no wall in reach. **Passes**, with the plant arm (gate 5) and without.
+
+   Where nav@1 stops at its goals (transfix/libcvc#1297), the plant-arm case starts at ~3.5 m/s
+   with the goal 6 m ahead. Above ~5 m/s that stop, not the goal's pull, sets the braking on
+   the approach, and beta's and gamma's gradients there are exactly zero. A training design that
+   learns from approaches (the second one below) would see fewer gradients through the plant arm
+   than through the control law alone; not measured.
 
    In open ground far from the goal all three gradients are exactly zero. The drive accelerates at
    its limit (`a_max`) and steers at the goal, whatever the coefficients. They act only near walls
@@ -204,38 +210,45 @@ torch 2.14 CPU, float64.
 
    The run: three Humvees on `dynamic4w` on the flat 160 m square, from x = −70 m to goals 85,
    100 and 115 m east, toward the square's east edge. It ends 20 ticks after all three are parked
-   and stopped (253 ticks). The agent-ticks are split three ways:
-   - **en route**: more than 60 m from the goal, not parked (317);
-   - **arriving**: within 60 m, not parked (190);
-   - **parked** (252): these are compared on the acceleration (the park brake). The steering is
+   and stopped. The agent-ticks are split three ways:
+   - **en route**: more than 60 m from the goal, not parked;
+   - **arriving**: within 60 m, not parked;
+   - **parked**: these are compared on the acceleration (the park brake). The steering is
      counted apart, for the reason below.
 
-   Measured 2026-11-15 against libcvc's branch with the plan (transfix/libcvc#1286, on
-   #1284 and #1275):
+   Measured 2026-11-15 on two libcvc builds, both on #1275 and #1284. With transfix/libcvc#1297
+   (on #1286), nav@1 comes to rest at its goals (`stop_at_goal`), and the twin's drive does too
+   (`bike_control`'s `stop_at`). With #1286 alone, it does not. Departing agent-ticks:
 
-   | twin | en route | arriving | parked (acceleration) | parked (steering) | largest outside parking: steering (rad) / acceleration (m/s²) |
-   |---|---|---|---|---|---|
-   | the control law alone (the default) | 0.9 % (3) | 10.5 % (20) | 99.2 % (250) | 55.6 % | 0.0084 / 6.4 |
-   | `plant_arm=True` | 0 % | 0.5 % (1) | 0 % | 55.6 % | 4·10⁻⁷ / 0.65 |
+   | libcvc | twin | en route | arriving | parked (acceleration) | parked (steering) | largest outside parking: steering (rad) / acceleration (m/s²) |
+   |---|---|---|---|---|---|---|
+   | #1297 (n = 317 / 311 / 185) | the control law alone (the default) | 0.9 % | 77.8 % | 98.4 % | 84.3 % | 0.0084 / 6.3 |
+   | | `plant_arm=True` | 0 % | 0 % | 0 % | 83.2 % | 6·10⁻⁷ / 4·10⁻⁵ |
+   | #1286 (n = 317 / 190 / 252) | the control law alone | 0.9 % | 10.5 % | 99.2 % | 55.6 % | 0.0084 / 6.4 |
+   | | `plant_arm=True` | 0 % | 0.5 % (1) | 0 % | 55.6 % | 4·10⁻⁷ / 0.65 |
 
    **Passes.** What the control law alone misses:
    - en route, the first ticks' steering, which the actuator's slew holds to 0.021 rad a tick
      (0.35 rad/s);
-   - arriving, braking past `a_max`: down to −6 m/s² (`a_brake`) where the law stops at −2, when
-     the stopping governor (with the latency and the footprint) binds against the edge;
+   - arriving, the stop at the goal (#1297) and braking past `a_max`: down to −6 m/s²
+     (`a_brake`) where the law stops at −2, when the stopping governor (with the latency and the
+     footprint) binds against the edge;
    - parked, the park brake.
 
-   The one arriving tick that still departs (0.65 m/s²) is the first tick the stopping governor
-   binds against the edge. From the next tick on, the two agree to 10⁻⁴ m/s²; the cause is not
-   found. The parked steering departs with or without the plant arm, and no twin in double can
-   remove it: nav@1 holds a parked agent's carrot 2 cm ahead of it. Pure pursuit's angle there
-   is float rounding times 2 L / 2 cm (~330), so the gym's float steering and the twin's double
-   one differ by up to the actuator's slew.
+   On #1286 one arriving tick departed (0.65 m/s²): the first tick the stopping governor bound
+   against the edge. From the next tick on, the two agreed to 10⁻⁴ m/s²; the cause was not found.
+   On #1297 the agents slow for their goals before they come near the edge, and it does not occur.
 
-   **nav@1 overshoots its goals here.** It arrives at 15–17 m/s: the goal's pull brakes it only
-   in the last ~20 m, at `a_max`. It is parked as it passes within the 3 m reach, and the park
-   brake stops it 9–13 m past the goal. The gym's own arrival test is then never met, so the
-   episode does not end; this gate stops it instead.
+   The parked steering departs with or without the plant arm, and no twin in double can remove it.
+   nav@1 holds a parked agent's carrot 2 cm ahead of it. Pure pursuit's angle there is float
+   rounding times 2 L / 2 cm (~330), so the gym's float steering and the twin's double one differ
+   by up to the actuator's slew.
+
+   **Before #1297, nav@1 overshot its goals.** It arrived at 15–17 m/s here (the goal's pull
+   brakes only within about 1.3 v of the goal, at `a_max`). It was parked as it passed within the
+   3 m reach, and the park brake stopped it 9–13 m past the goal. The gym's own arrival test was
+   then never met, so the episode did not end, which is why this gate ends itself. With #1297
+   each agent enters its reach at ~3.3 m/s and comes to rest ~2 m short of its goal, inside it.
 
    A twin rollout parks too (`test_the_plant_arm_parks_a_rollout_at_its_goal`): from the tick
    that ends within the reach of its goal, a row brakes to a stop, at most at `a_brake`.
