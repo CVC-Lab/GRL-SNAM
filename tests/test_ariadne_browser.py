@@ -323,3 +323,21 @@ def test_the_learning_checks_data_sets(tmp_path):
     for bad in ("../retrain", "/tmp", "none"):
         with pytest.raises(SystemExit):
             assemble.set_histories(bad)
+
+
+def test_the_scrub_page_refuses_runs_deployed_on_another_libcvc(tmp_path, site):
+    """--expect-libcvc: the page draws libcvc's generated world with its own libcvc, so runs
+    deployed on another (or on one the report does not name) are refused."""
+    assemble = _pages_module("assemble")
+    report = _scrub_report(tmp_path / "a")
+    rep = json.loads(report.read_text())
+    rep["provenance"] = {"libcvc": "4.0.0"}
+    report.write_text(json.dumps(rep))
+    args = ["--host", str(site / "learn"), "--scrub-only", "--scrub-reports", str(report)]
+    assert assemble.main([*args, "--out", str(tmp_path / "ok"), "--expect-libcvc", "v4.0.0"]) == 0
+    with pytest.raises(SystemExit, match=r"the page's libcvc is 3\.7\.13, but runs were deployed"):
+        assemble.main([*args, "--out", str(tmp_path / "no"), "--expect-libcvc", "3.7.13"])
+    other = _scrub_report(tmp_path / "b", "seed8")  # names no libcvc
+    with pytest.raises(SystemExit, match="unknown"):
+        assemble.main(["--host", str(site / "learn"), "--scrub-only", "--out", str(tmp_path / "x"),
+                       "--scrub-reports", str(other), "--expect-libcvc", "4.0.0"])  # fmt: skip
