@@ -35,6 +35,11 @@ The gym stays the judge: a policy trained through the twin is scored by driving 
 * **The controller.** The gym's navigator (nav@1) runs its carrot FSM, planner and governors
   around this control law. The twin takes goals and coefficients as given: the goal is the
   agent's, and the coefficients are the policy's.
+* **The plant arm.** On a vehicle plant nav@1 commands through libcvc's plant arm: the latency
+  and the vehicle's braking in the stopping governor, braking down to ``-a_brake``, the steering
+  actuator's slew and lock, the vehicle's own envelope and footprint, and the park brake at the
+  goal. ``GymTwin(gym, plant_arm=True)`` has it, from ``plants()``' ``plan`` (libcvc's
+  ``entity_plan``); the default is the control law alone, as before.
 
 :func:`tick_residuals` measures the last four on any world: the twin's tick against the gym's for
 the same commands.
@@ -50,7 +55,7 @@ import torch
 import torch.nn.functional as F
 
 from grl_snam import sdf_nav
-from grl_snam.dyn4 import Dyn4Params, PlantLimits, dyn4_plant
+from grl_snam.dyn4 import ORDER, Dyn4Params, PlantLimits, dyn4_plant
 from grl_snam.ext_rollout import field_as
 
 __all__ = [
@@ -65,6 +70,20 @@ __all__ = [
 ]
 
 _DYN4_FIELDS = {f.name for f in dataclasses.fields(Dyn4Params)}
+_DELTA = ORDER.index("delta")  # the steering actuator's angle in the model's state
+# What the plant arm plans with that belongs to the vehicle, not to its state now.
+_PLAN_VEHICLE = (
+    "a_max",
+    "vmax",
+    "a_lat",
+    "wheelbase",
+    "max_steer",
+    "steer_rate",
+    "latency",
+    "a_brake",
+    "footprint",
+    "body_rr",
+)
 
 
 def _grid_tensor(a, dtype, device) -> torch.Tensor:
@@ -77,9 +96,17 @@ class GymTwin:
     Build it after ``gym.reset(...)`` (or at any tick) with ``GymTwin(gym)``. It reads the gym once;
     :meth:`state` reads the agents' state again, so one twin serves the whole episode while the
     world and the agents' vehicles stay the same.
+
+    ``plant_arm=True`` gives the command as nav@1's plant arm gives it to the plant (libcvc's
+    ``plant_drive``): the drive plans with the vehicle's own envelope (``a_max``, ``vmax``, the
+    cornering limit), wheelbase and footprint discs in place of the navigator's, and with the
+    latency, ``a_brake``, the steering lock and the actuator's slew (:class:`sdf_nav.PlantArm`);
+    a parked agent brakes to a stop (:meth:`control`'s ``parked``). It reads them from
+    ``plants()``' ``plan`` (libcvc's ``entity_plan``) and refuses a gym without one. The default
+    is the deployed control law alone.
     """
 
-    def __init__(self, gym, *, dtype=torch.float64, device="cpu"):
+    def __init__(self, gym, *, dtype=torch.float64, device="cpu", plant_arm: bool = False):
         self.dtype = dtype
         self.device = torch.device(device)
         f = gym.fields()
@@ -150,6 +177,10 @@ class GymTwin:
             k_steer=float(nav["k_steer"]),
             allow_reverse=bool(nav["allow_reverse"]),
         )
+        self.plant_arm = bool(plant_arm)
+        self.arm = None
+        if self.plant_arm:
+            self._read_plan(plants)
         obs = gym.observe()
         self.goal = torch.stack(
             [
@@ -158,6 +189,51 @@ class GymTwin:
             ],
             -1,
         ).to(self.device)
+
+    def _read_plan(self, plants):
+        """The plant arm's limits from ``plants()``' ``plan``, in nav's units, into ``self.veh``
+        and ``self.arm``."""
+        plans = [p.get("plan") for p in plants]
+        if any(pl is None or not pl["known"] for pl in plans):
+            raise ValueError(
+                "GymTwin(plant_arm=True): the gym reports no plan (libcvc's entity_plan, "
+                "plants()' plan)"
+            )
+        if any(pl["modulated"] for pl in plans):
+            raise ValueError(
+                "GymTwin(plant_arm=True): the plant's measured state modulates the drive "
+                "(plant_modulation), which the twin has no port of"
+            )
+        first = plans[0]
+        for pl in plans[1:]:
+            if any(pl[k] != first[k] for k in _PLAN_VEHICLE) or not np.array_equal(
+                pl["body_offsets"], first["body_offsets"]
+            ):
+                raise ValueError("GymTwin(plant_arm=True): every agent must plan the same vehicle")
+        S = self.S
+        self.plan = {k: first[k] for k in _PLAN_VEHICLE}
+        self.plan["body_offsets"] = tuple(float(b) for b in first["body_offsets"])
+        self.veh.update(
+            vmax=float(first["vmax"]) * S,
+            a_max=float(first["a_max"]) * S,
+            a_lat_max=float(first["a_lat"]) * S,
+            L=float(first["wheelbase"]) * S,
+        )
+        if first["footprint"]:
+            # libcvc's sim_world: sim_world::kPlantDiscs discs from tail to nose, the summed
+            # barrier at 1 / kPlantDiscs.
+            offs = self.plan["body_offsets"]
+            self.veh.update(
+                body_offsets=[o * S for o in offs],
+                body_rr=float(first["body_rr"]) * S,
+                body_gain=1.0 / len(offs),
+            )
+        self.arm = sdf_nav.PlantArm(
+            latency=float(first["latency"]),
+            a_brake=float(first["a_brake"]) * S,
+            steer_rate=float(first["steer_rate"]),
+            max_steer=float(first["max_steer"]),
+        )
 
     # ---- frames ----
     @property
@@ -219,24 +295,50 @@ class GymTwin:
         )
         return self.plant_tick(state, steer.to(self.device), acc.to(self.device))
 
+    def parked(self, gym) -> torch.Tensor:
+        """Which agents the gym's next tick parks (``plants()``' ``plan``), ``[B]`` bool: nav@1's
+        drive brakes them to a stop."""
+        return torch.tensor(
+            [bool(p["plan"]["parked"]) for p in gym.plants()], dtype=torch.bool, device=self.device
+        )
+
+    def arrived(self, state, goal_n=None) -> torch.Tensor:
+        """Which rows' rear axles are within the navigator's reach of their goals, ``[B]`` bool:
+        where nav@1 parks an agent at the end of a tick."""
+        goal_n = self.goal_norm() if goal_n is None else goal_n
+        return (self.to_norm(state[:, :2]) - goal_n).norm(dim=-1) < self.reach * self.S
+
     # ---- the controller ----
-    def control(self, state, coefs, goal_n=None, ext_force=None):
+    def control(self, state, coefs, goal_n=None, ext_force=None, *, parked=None, ext_steer=True):
         """The drive's commands from ``state`` and coefficients ``coefs [B, 3]`` (alpha, beta,
-        gamma): the steering's angle (rad) and the acceleration along the heading (m/s^2)."""
+        gamma): the steering's angle (rad) and the acceleration along the heading (m/s^2).
+        ``ext_force`` (``[B, 2]``, nav's frame) joins the drive's force, and its steering with
+        ``ext_steer``. With the plant arm, the command the plant takes, and ``parked`` (``[B]``
+        bool) brakes those rows to a stop within the tick, at most at ``a_brake``, as nav@1 parks
+        an agent at its goal; the steering stays the drive's."""
         o = self.to_norm(state[:, :2])
         goal_n = self.goal_norm() if goal_n is None else goal_n
+        sp = state[:, 3] * self.S
         delta, a_n, _, _ = sdf_nav.bike_control(
             self.field,
             o,
             state[:, 2],
-            state[:, 3] * self.S,
+            sp,
             goal_n,
             coefs[:, 0],
             coefs[:, 1],
             coefs[:, 2],
             ext_force_fn=None if ext_force is None else (lambda _o, _f=ext_force: _f),
+            ext_steer=ext_steer,
+            plant=self.arm,
+            steer_now=state[:, _DELTA] if self.arm is not None else None,
             **self.veh,
         )
+        if self.arm is not None and parked is not None:
+            a_max = self.veh["a_max"]
+            a_b = self.arm.a_brake if self.arm.a_brake > 0.0 else a_max
+            brake = torch.clamp(-sp / self.veh["dt"], -a_b, a_max)
+            a_n = torch.where(parked.to(a_n.device), brake, a_n)
         return delta, a_n / self.S
 
     def features(self, state, goal_n=None) -> torch.Tensor:
@@ -244,21 +346,35 @@ class GymTwin:
         goal_n = self.goal_norm() if goal_n is None else goal_n
         return sdf_nav.coef_feats(self.field, self.to_norm(state[:, :2]), goal_n)
 
-    def step(self, state, coefs, goal_n=None, ext_force=None):
+    def step(self, state, coefs, goal_n=None, ext_force=None, *, parked=None):
         """One tick: the drive's commands, then the plant. Returns ``(state, delta, accel)``."""
-        delta, acc = self.control(state, coefs, goal_n, ext_force)
+        delta, acc = self.control(state, coefs, goal_n, ext_force, parked=parked)
         return self.plant_tick(state, delta, acc), delta, acc
 
-    def rollout(self, policy: Callable[[torch.Tensor], torch.Tensor], state, T: int, goal=None):
+    def rollout(
+        self,
+        policy: Callable[[torch.Tensor], torch.Tensor],
+        state,
+        T: int,
+        goal=None,
+        *,
+        parked=None,
+    ):
         """``T`` ticks driven by ``policy(features) -> coefs [B, 3]``. Returns the states
         ``[T + 1, B, 14]`` and the commands ``[T, B, 2]`` (steering, acceleration). ``goal``
         (``[B, 2]``, world metres) is each row's goal, the agents' own by default; rows may be
-        states from different ticks or episodes, each with its goal."""
+        states from different ticks or episodes, each with its goal. With the plant arm a row
+        parks as nav@1 parks an agent: from the tick that ends within the reach of its goal on,
+        it brakes to a stop; ``parked`` (``[B]`` bool) is which rows start parked (none)."""
         states, cmds = [state], []
         goal_n = self.goal_norm() if goal is None else self.to_norm(goal)
+        if self.plant_arm and parked is None:
+            parked = torch.zeros(state.shape[0], dtype=torch.bool, device=state.device)
         for _ in range(T):
             coefs = policy(self.features(state, goal_n))
-            state, delta, acc = self.step(state, coefs, goal_n)
+            state, delta, acc = self.step(state, coefs, goal_n, parked=parked)
+            if self.plant_arm:
+                parked = parked | self.arrived(state.detach(), goal_n)
             states.append(state)
             cmds.append(torch.stack([delta, acc], -1))
         return torch.stack(states, 0), torch.stack(cmds, 0)
@@ -304,16 +420,21 @@ def drive_gym(gym, twin: GymTwin, policy, ticks: int, *, stop_when_done: bool = 
     """Drive the gym itself for ``ticks`` ticks with the twin's controller and ``policy``: each tick,
     the agents' state from the gym, the drive's commands from the twin, sent as the gym's
     ``step(steer, accel)``. Returns the last ``step`` result and the per-tick observations; with a
-    list as ``states``, each tick's agents' state before its step is appended to it."""
+    list as ``states``, each tick's agents' state before its step is appended to it. With the
+    plant arm the twin parks an agent as nav@1 would, from the tick it ends within its reach (the
+    gym parks none it is commanding)."""
     obs_log = []
     out = None
+    parked = torch.zeros(twin.n, dtype=torch.bool, device=twin.device)
     with torch.no_grad():
-        for _ in range(ticks):
+        for k in range(ticks):
             s = twin.state(gym)
             if states is not None:
                 states.append(s)
+            if twin.plant_arm and k > 0:  # where the last tick ended
+                parked = parked | twin.arrived(s)
             coefs = policy(twin.features(s))
-            delta, acc = twin.control(s, coefs)
+            delta, acc = twin.control(s, coefs, parked=parked if twin.plant_arm else None)
             out = gym.step(delta.double().cpu().numpy(), acc.double().cpu().numpy())
             obs_log.append(out[0])
             if stop_when_done and (out[2] or out[3]):
@@ -327,11 +448,14 @@ def tick_residuals(gym, twin: GymTwin, policy, ticks: int):
     twin's plant reaches from the gym's state less where the gym's plant went, and whether the
     gym's plant collided. Arrays ``[ticks, B]``."""
     pos, head, spd, hit = [], [], [], []
+    parked = torch.zeros(twin.n, dtype=torch.bool, device=twin.device)
     with torch.no_grad():
-        for _ in range(ticks):
+        for k in range(ticks):
             s0 = twin.state(gym)
+            if twin.plant_arm and k > 0:
+                parked = parked | twin.arrived(s0)
             coefs = policy(twin.features(s0))
-            s1, delta, acc = twin.step(s0, coefs)
+            s1, delta, acc = twin.step(s0, coefs, parked=parked if twin.plant_arm else None)
             out = gym.step(delta.double().cpu().numpy(), acc.double().cpu().numpy())
             g1 = twin.state(gym)
             pos.append((s1[:, :2] - g1[:, :2]).norm(dim=-1).cpu().numpy())

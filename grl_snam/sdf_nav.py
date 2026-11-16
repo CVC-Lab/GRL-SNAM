@@ -29,6 +29,7 @@ Scale: like the base surrogate, work in a ~10-unit normalized regime
 
 from __future__ import annotations
 
+import dataclasses
 import math
 
 import numpy as np
@@ -466,6 +467,41 @@ def sdf_rollout(
     return o, v, minclr
 
 
+def _min_limit(a, b):
+    """The lower of a float limit and a limit that may be a tensor (a grip-scaled ``a_max``)."""
+    return torch.clamp(b, max=a) if torch.is_tensor(b) else min(a, b)
+
+
+def _max_limit(a, b):
+    """The higher of a float limit and a limit that may be a tensor."""
+    return torch.clamp(b, min=a) if torch.is_tensor(b) else max(a, b)
+
+
+@dataclasses.dataclass(frozen=True)
+class PlantArm:
+    """libcvc's plant arm (``cvc::nav::plant_drive``, drive.h): what the deployed drive respects
+    when a vehicle plant, not the kinematic bicycle, takes its command (doc 31 D14). Nav's units:
+    ``a_brake`` is normalized / s^2, the rest are seconds and radians. A zero leaves that limit
+    off, as in libcvc. libcvc's gym gives a vehicle's in ``plants()``' ``plan``
+    (:class:`grl_snam.gym_twin.GymTwin` reads them).
+
+    * ``latency`` (s): the stopping governor takes off the distance the vehicle covers before it
+      responds;
+    * ``a_brake``: the braking it achieves. The stopping governor plans with the gentler of it
+      and ``a_max``, and the command may brake down to ``-a_brake`` to keep under the speed limit;
+    * ``steer_rate`` (rad/s): the steering command stays within ``steer_rate x dt`` of the
+      actuator's angle now (``bike_control``'s ``steer_now``);
+    * ``max_steer`` (rad): the plant's steering lock, when tighter than ``delta_max``.
+
+    The per-vehicle envelope (``a_max``, ``vmax``, the cornering limit) and footprint are
+    ``bike_control``'s own arguments."""
+
+    latency: float = 0.0
+    a_brake: float = 0.0
+    steer_rate: float = 0.0
+    max_steer: float = 0.0
+
+
 def bike_control(
     field: SDFField,
     o,
@@ -498,6 +534,8 @@ def bike_control(
     friction=None,
     ext_force_fn=None,
     ext_steer=True,
+    plant: PlantArm | None = None,
+    steer_now=None,
 ):
     """The controller half of :func:`bicycle_rollout`: one step of ``dt`` (one substep there).
 
@@ -508,13 +546,34 @@ def bike_control(
     clamped (the kinematic plant's next speed); and the binding clearance. A dynamic plant
     (:func:`grl_snam.dyn_bike.dyn_plant`, :func:`grl_snam.dyn4.dyn4_plant`) takes ``(delta_cmd,
     a_cmd)``. The arguments are :func:`bicycle_rollout`'s, ``dt`` being the step.
+
+    ``plant`` (a :class:`PlantArm`) is libcvc's plant arm (``veh_params::plant``): the command
+    a vehicle plant takes, held through the step, with the governors that know the plant. The
+    stopping speed takes off the latency's distance and plans with ``a_brake``, braking may go
+    down to ``-a_brake``, and the creep floor never exceeds the stopping speed. The steering
+    stays within the lock and within ``steer_rate x dt`` of ``steer_now`` ``[B]`` (the
+    actuator's angle; ``None`` leaves the rate off). The acceleration returned is the one that
+    reaches ``sp_next``, the speed kept within ``[sp_min, vmax]``. ``None`` (the default) is the
+    kinematic arm, unchanged.
     """
     hdt = dt
+    sp0 = sp
     # Inner-wheel lock: see ``track_width`` in bicycle_rollout. ``None`` leaves both constants
     # exactly as passed.
     if track_width is not None:
         delta_max = math.atan(L / (L / math.tan(delta_max) + 0.5 * float(track_width)))
+    if plant is not None and 0.0 < plant.max_steer < delta_max:
+        delta_max = plant.max_steer  # the plant's steering lock
     tan_dmax = math.tan(delta_max)
+    # The plant arm's steering command stays within the actuator's reach this step.
+    if plant is not None and plant.steer_rate > 0.0 and steer_now is not None:
+        _reach = plant.steer_rate * dt
+
+        def within_reach(dl):
+            return torch.minimum(torch.maximum(dl, steer_now - _reach), steer_now + _reach)
+
+    else:
+        within_reach = None
     head = torch.stack([torch.cos(th), torch.sin(th)], -1)  # [B,2]
     left = torch.stack([-torch.sin(th), torch.cos(th)], -1)  # [B,2]
 
@@ -622,6 +681,8 @@ def bike_control(
         _steer = _steer + F_ext
     delta = delta + k_steer * torch.tanh((_steer * left).sum(-1))
     delta = delta.clamp(-delta_max, delta_max)
+    if within_reach is not None:
+        delta = within_reach(delta)
 
     # corner speed limit from the lateral-acceleration cap.
     kappa = torch.tan(delta).abs() / L
@@ -652,6 +713,12 @@ def bike_control(
         # for any live value, and the legacy branch above keeps its
         # exact op sequence so stored traces are unaffected.
         v_stop = torch.sqrt(2.0 * a_max_e * _slack + 1e-24)
+    if plant is not None:
+        # The plant arm: the speed from which the vehicle, covering |v| latency before it
+        # responds and then braking at a_brake, stops within the slack: v tau + v^2 / 2a = ds.
+        _tau = plant.latency
+        _ab = a_max_e if plant.a_brake <= 0.0 else _min_limit(plant.a_brake, a_max_e)
+        v_stop = torch.sqrt(_ab * _ab * _tau * _tau + 2.0 * _ab * _slack + 1e-24) - _ab * _tau
     # Into-wall component of the MOTION direction (reversing flips
     # it): a vehicle backing away from a wall is not approaching it.
     motion_sign = torch.where(sp >= 0.0, torch.ones_like(sp), -torch.ones_like(sp))
@@ -683,6 +750,8 @@ def bike_control(
     v_floor = torch.where(
         hard_steer & can_move, torch.full_like(v_lim, 0.08), torch.zeros_like(v_lim)
     )
+    if plant is not None:  # the plant arm creeps only as fast as it can stop
+        v_floor = torch.minimum(v_floor, v_stop_dir)
     v_lim = torch.maximum(v_lim, v_floor)
 
     # While turning around, hold a creep speed so th' = sp/L tan(delta)
@@ -733,11 +802,21 @@ def bike_control(
     # transiently while shedding speed; the steering clamp below
     # keeps the lateral invariant exact during exactly that window
     # (the vehicle carves a wider arc while braking, as a car does).
-    a_long = torch.clamp(torch.minimum(a_long, (v_lim - sp) / hdt), -a_max_e, a_max_e)
+    # The plant arm may brake as hard as the vehicle can to keep under v_lim (its stopping speed
+    # plans with the gentler of a_brake and a_max, so this is the margin).
+    a_stop = a_max_e
+    if plant is not None and plant.a_brake > 0.0:
+        a_stop = _max_limit(plant.a_brake, a_max_e)
+    a_long = torch.clamp(torch.minimum(a_long, (v_lim - sp) / hdt), -a_stop, a_max_e)
     sp_min = -0.25 * vmax if allow_reverse else 0.0
     sp = (sp + hdt * a_long).clamp(torch.full_like(sp, sp_min), torch.full_like(sp, vmax))
     d_cap = torch.atan(a_lat_e * L / sp.square().clamp_min(1e-9))
     delta = torch.clamp(delta, -d_cap, d_cap)
+    if plant is not None:
+        if within_reach is not None:
+            delta = within_reach(delta)
+        # The acceleration that reaches sp_next: the speed stays within [sp_min, vmax].
+        return delta, (sp - sp0) / hdt, sp, d
     return delta, a_long, sp, d
 
 
