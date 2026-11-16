@@ -17,7 +17,8 @@
 //     claims; no Python traceback, no CSP violation (--no-learn skips it);
 //   - the scrub page (--scrub, the path under --base; none unless given): grl-snam ariadne scrub
 //     --view must start in the page, show a checkpoint of the runs it was given (its stderr says
-//     which) and run its frames, and still run 5 s later; no traceback, no CSP violation.
+//     which), draw the world they were deployed on (it says when its own libcvc built another),
+//     run its frames, and still run 5 s later; no traceback, no CSP violation.
 //
 // --shots writes each page as DIR/<name>.png. Exit status 0 when every case passes.
 
@@ -235,6 +236,11 @@ try {
            shown ? `${shown[1]}: checkpoint ${shown[2]} of ${shown[3]}, step ${shown[4]}; ` +
                    `${sets}; ${world || 'the 3-D world drawn'}`
                  : 'no "scrub: ...: checkpoint k of n" line');
+    // The page builds libcvc's generated world again with its own libcvc: the runs' world must be
+    // the one it draws (scrub --view compares the world it built with the report's).
+    const differs = v.log.find(l => /^scrub: this world is not quite the one deployed on/.test(l));
+    record('scrub draws the world its runs were deployed on', differs === undefined,
+           differs || '');
     await new Promise(r => setTimeout(r, 5000));
     const later = await watch(page, () => true);
     record('scrub is still running 5 s later, with no CSP violation',

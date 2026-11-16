@@ -27,13 +27,15 @@ bash grl-snam/pages/build-ariglx-web.sh libcvc "$RUNNER_TEMP/ariglx-web-work" ar
 python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --learn-only \
   --out _site/learn [--histories H.jsonl[.gz]...] [--arms ARMS.json]
 
-# the scrub page, self-contained: its runs deployed here, natively, by grl_snam's closure
-# (cvcpkg's grl-snam-cp312: torch and pycvc-gl, as pages.yml installs it) on the retrain's saved
-# policies (cvcpkg's grl-snam-learning-checkpoints), ~10 min for the five
+# the scrub page, self-contained: its runs deployed here, natively, by a closure whose libcvc is
+# the one ariglx-web is built from (V: LIBCVC_REF without the v), on the learning check's saved
+# policies (cvcpkg's grl-snam-learning-checkpoints); ~10 min a five-seed set
+cvcpkg install python312 numpy-cp312 torch-cp312 "libcvc==$V" "cvcgl==$V" "pycvc-cp312==$V" \
+  "pycvc-gl-cp312==$V" --platform linux --prefix "$PREFIX" --config release --link shared
 cvcpkg install grl-snam-learning-checkpoints --prefix "$PREFIX" --platform any --config release \
   --link shared --no-fallback-to-source
 python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-only \
-  --out _site/scrub --python "$PREFIX/bin/python3.12" [--scrub-cache DIR] \
+  --out _site/scrub --python "$PREFIX/bin/python3.12" --expect-libcvc "$V" [--scrub-cache DIR] \
   [--scrub-sets SET...] [--checkpoints DIR] [--scrub-world generated|flat|data]
 
 # check them where your site serves them (Node 22; Chrome or Chromium)
@@ -78,8 +80,10 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's run log, `grl_snam
   in `--python`'s prefix; pages.yml installs it in a prefix of its own and names it.
 - **The world.** `--scrub-world generated` (the default) is libcvc's generator on scrub.ari's
   `world.*` keys. The page builds the same world again from the report, with nothing to fetch,
-  provided its libcvc is the deploy's (ariglx-web's tag, `LIBCVC_REF`, and the catalog's
-  pycvc-gl are both 3.7.13; the page says when the world differs). The policies were trained on
+  provided its libcvc is the deploy's. pages.yml pins the deploy's libcvc family (libcvc, cvcgl,
+  pycvc, pycvc-gl) to `LIBCVC_REF`'s version, the tag ariglx-web is built from;
+  `--expect-libcvc` refuses runs whose report names another libcvc; and the page says when the
+  world it built differs from the deploy's, which fails the smoke. The policies were trained on
   Austin, but Austin's bundle is 228 MB, cvcpkg.org sends no CORS for github.io, and nothing cuts
   it down yet, so a `data` world's page shows the windows alone. On `flat` ground every
   checkpoint drives the same line.
@@ -94,7 +98,7 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's run log, `grl_snam
   Set combo picks a data set and shows its run of the same name at the same step; the Run combo
   picks a run in the set; the Windows menu has Training, Ledger and Simulation.
 - **Every run is preloaded.** The page's loader fetches its files before the program starts,
-  and ariglx-web v3.7.13 has no supported fetch after that (non-blocking downloads in the browser
+  and ariglx-web has no supported fetch after that (non-blocking downloads in the browser
   are libcvc's data roadmap D4, not done), so a set cannot be loaded when it is picked. Each
   five-seed set adds about 25 MB to the first visit: with the three sets the page is about
   105 MB gzip.
@@ -108,14 +112,14 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's run log, `grl_snam
 About 20 minutes for the first build; Chrome or Chromium and Node 22 for the smoke:
 
 ```bash
-git clone --depth 1 --branch v3.7.13 https://github.com/transfix/libcvc /tmp/libcvc
+git clone --depth 1 --branch v4.0.0 https://github.com/transfix/libcvc /tmp/libcvc
 bash pages/build-ariglx-web.sh /tmp/libcvc /tmp/agw-work /tmp/agw
 python3 pages/assemble.py --host /tmp/agw/share/ariglx-web --out _site
 node pages/smoke.mjs --site _site --chrome "$(command -v google-chrome)" --shots shots
 
-# with the scrub page: a Python with grl_snam's closure (cvcpkg install grl-snam-cp312)
+# with the scrub page: a Python whose libcvc is ariglx-web's (the closure above, V=4.0.0)
 python3 pages/assemble.py --host /tmp/agw/share/ariglx-web --out _site --scrub \
-  --python "$PREFIX/bin/python3.12" --scrub-cache /tmp/scrub-runs
+  --python "$PREFIX/bin/python3.12" --expect-libcvc 4.0.0 --scrub-cache /tmp/scrub-runs
 node pages/smoke.mjs --site _site --scrub scrub/ --chrome "$(command -v google-chrome)"
 ```
 
@@ -129,10 +133,17 @@ To look at it, serve the site's parent at `/GRL-SNAM/` (for example a directory 
   (SharedArrayBuffer) cannot run there.
 - **Same origin.** Everything a page fetches is beside it: the page loads documents and data only
   from its own origin, and cvcpkg.org sends no CORS headers for github.io.
-- **Size.** A first visit to the learn page downloads about 34 MB gzip (28 MB of it
-  `ariglx.wasm`), which the browser then caches. learn takes about 20 s to start in the page.
+- **Size.** A first visit to the learn page downloads about 35 MB gzip (29.5 MB of it
+  `ariglx.wasm`, 105.6 MB raw at 4.0.0), which the browser then caches. GitHub documents no
+  per-file limit for a Pages site deployed from an Actions artifact (1 GB a site). learn takes about 20 s to start in the page.
   The scrub page is about 105 MB: its own copy of the host, and about 77 MB of run logs (three
   data sets, lean). Each page carries its own host, so a visit to both downloads `ariglx.wasm` twice.
   Gzipped histories ship as they are (the retrain's five: 1.1 MB, 5.4 MB unzipped); learn's
   reader unzips them in the page, whether or not the server marks them `Content-Encoding: gzip`.
-- **Charts.** libcvc v3.7.13 has no `chart:` widget (3.7.14), so learn's windows show text.
+- **Charts.** libcvc 4.0.0 has Ariadne's `chart:` widget (3.7.14+), so learn and scrub draw their
+  curves as charts (on 3.7.13 they showed the same numbers as text).
+- **One libcvc.** ariglx-web is built from `LIBCVC_REF`, and the scrub page's runs are deployed
+  with the catalog's libcvc of the same version: pages.yml pins libcvc, cvcgl, pycvc and pycvc-gl
+  to it, `assemble.py --expect-libcvc` refuses runs from another, and the smoke fails when the page
+  says the world it built is not the deploy's. A newer libcvc in the catalog changes nothing until
+  `LIBCVC_REF` moves.

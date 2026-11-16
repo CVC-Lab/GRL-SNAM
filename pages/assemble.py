@@ -225,6 +225,27 @@ def deploy_scrub(sets, checkpoints: Path, python: str, cache: Path, world: str,
     return reports
 
 
+def check_libcvc(reports, expect: str | None) -> None:
+    """Say which libcvc deployed the runs, and exit when ``expect`` (the page's, ``--host``'s) is
+    given and a run was deployed on another: the page builds libcvc's generated world again with
+    its own generator, so the two must be the same release."""
+    used = {}
+    for r in map(Path, reports):
+        prov = json.loads(r.read_text()).get("provenance") or {}
+        used.setdefault(str(prov.get("libcvc") or "unknown"), []).append(r.name)
+    print(f"assemble: scrub: the runs were deployed on libcvc {', '.join(sorted(used))}")
+    if expect is None:
+        return
+    expect = expect.lstrip("v")
+    other = {v: names for v, names in used.items() if v != expect}
+    if other:
+        what = "; ".join(f"{v}: {', '.join(n[:3])}{' ...' if len(n) > 3 else ''}"
+                         for v, n in sorted(other.items()))  # fmt: skip
+        sys.exit(f"assemble: the page's libcvc is {expect}, but runs were deployed on another "
+                 f"({what}): deploy them with pycvc-gl {expect} (pages.yml pins it to LIBCVC_REF), "
+                 "or build ariglx-web from the libcvc that deployed them")  # fmt: skip
+
+
 def _found(report: Path, name) -> Path | None:
     """A file a scrub report names, as grl_snam.ariadne.scrub.find_file finds it."""
     if not name:
@@ -395,6 +416,9 @@ def main(argv=None) -> int:
                          "directory)")  # fmt: skip
     ap.add_argument("--scrub-reports", nargs="+", type=Path, default=None, metavar="R",
                     help="scrub reports deployed before (grl_snam.scrub/v1): deploy nothing")  # fmt: skip
+    ap.add_argument("--expect-libcvc", default=None, metavar="VERSION",
+                    help="the libcvc --host is built from (e.g. 4.0.0): refuse runs deployed on "
+                         "another, whose generated world the page would not draw the same")  # fmt: skip
     a = ap.parse_args(argv)
     if a.learn_only and a.scrub_only:
         sys.exit("assemble: --learn-only or --scrub-only, not both")
@@ -412,6 +436,7 @@ def main(argv=None) -> int:
                     [(name, set_histories(name)) for name in a.scrub_sets])  # fmt: skip
             reports = deploy_scrub(sets, checkpoints, a.python, cache,
                                    a.scrub_world, a.scrub_ticks)  # fmt: skip
+        check_libcvc(reports, a.expect_libcvc)
     if a.out.exists():
         shutil.rmtree(a.out)
     try:

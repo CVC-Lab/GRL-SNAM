@@ -15,14 +15,14 @@ name: pages
 #      --view` on the checkpoints of the learning check's three retrains (retrain,
 #      fixed/retrain, world-units/retrain), deployed here, natively, on libcvc's generated world
 #      (the page views runs; deploying a .pt checkpoint needs torch and libcvc's sim_world, so
-#      grl_snam's cvcpkg closure; the checkpoints come from the cvcpkg data package
-#      grl-snam-learning-checkpoints; the runs are cached by what they depend on); with
+#      a cvcpkg closure whose libcvc is LIBCVC_REF's; the checkpoints come from the cvcpkg data
+#      package grl-snam-learning-checkpoints; the runs are cached by what they depend on); with
 #      --learn-only or --scrub-only, one page alone, for another site. Everything a page fetches
 #      is on the site's own origin.
 #   3. pages/smoke.mjs loads it in headless Chrome as Pages serves it: learn must start, run its
-#      frames and make learn-report's claims in the page, and scrub must start, show a checkpoint
-#      and run its frames. It runs on the whole site under /GRL-SNAM/, and on the two pages alone
-#      at another path, as another site serves them.
+#      frames and make learn-report's claims in the page, and scrub must start, show a checkpoint,
+#      draw the world its runs were deployed on and run its frames. It runs on the whole site
+#      under /GRL-SNAM/, and on the two pages alone at another path, as another site serves them.
 
 on:
   pull_request:
@@ -50,9 +50,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The libcvc tag ariglx-web is built from: its recipe (cvcpkg/recipes/ariglx-web) and the
-  # pycvc_gl.ariadne Host the ports adopt. ariglx-web is not on cvcpkg.org, so it is built here.
-  LIBCVC_REF: v3.7.13
+  # The libcvc release the pages run on. ariglx-web is built from this tag (its recipe,
+  # cvcpkg/recipes/ariglx-web, and the pycvc_gl.ariadne Host the ports adopt; it is not on
+  # cvcpkg.org), and the scrub page's runs are deployed with the catalog's libcvc of the same
+  # version: the page builds libcvc's generated world again with its own generator, so the two
+  # must be one release. 4.0.0 has Ariadne's chart: widget (3.7.14+), so the pages draw charts.
+  LIBCVC_REF: v4.0.0
 
 jobs:
   build:
@@ -88,28 +91,39 @@ jobs:
         run: bash pages/build-ariglx-web.sh libcvc "$RUNNER_TEMP/ariglx-web-work" ariglx-web
 
       # The scrub page's runs: each retrain checkpoint deployed with `grl-snam ariadne scrub`,
-      # which needs torch and libcvc's sim_world, so grl_snam's own closure (as ci.yml installs
-      # it). libcvc's generator draws the world again in the page, so its pycvc-gl must be the
-      # libcvc ariglx-web is built from (the catalog's newest: 3.7.13; the page says when not).
-      - name: Install grl_snam's closure via cvcpkg (to deploy the scrub page's runs)
+      # which imports numpy, torch, pycvc and pycvc_gl (sim_world, the generator) and no more. The
+      # libcvc family is pinned to LIBCVC_REF's version, the libcvc ariglx-web is built from; a
+      # newer one in the catalog would generate the world the page does not draw (assemble.py's
+      # --expect-libcvc and the smoke check both).
+      - name: Install the deploy's closure via cvcpkg, libcvc pinned to LIBCVC_REF
         id: deps
-        uses: transfix/libcvc-deps/.github/actions/cvcpkg-install@master
-        with:
-          recipe: cvcpkg/recipes/grl-snam-cp312
-          build_type: Release
+        run: |
+          set -euo pipefail
+          command -v cvcpkg >/dev/null || {
+            curl -fsSL https://cvcpkg.org/install.sh | sh
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.local/bin:$PATH"
+          }
+          v="${LIBCVC_REF#v}"
+          prefix="$RUNNER_TEMP/closure"
+          cvcpkg install python312 numpy-cp312 torch-cp312 "libcvc==$v" "cvcgl==$v" \
+            "pycvc-cp312==$v" "pycvc-gl-cp312==$v" --platform linux --prefix "$prefix" \
+            --config release --link shared --no-fallback-to-source
+          ls "$prefix"/lib/libcvc.so.* | head -3
+          echo "path=$prefix" >> "$GITHUB_OUTPUT"
 
       - name: Cache the scrub page's runs
         uses: actions/cache@v4
         with:
           path: scrub-runs
-          key: scrub-runs-v2-${{ hashFiles('grl_snam/**', 'docs/learning-validation/retrain/**', 'docs/learning-validation/fixed/retrain/**', 'docs/learning-validation/world-units/retrain/**', 'cvcpkg/recipes/grl-snam-learning-checkpoints/**') }}
+          key: scrub-runs-v3-${{ env.LIBCVC_REF }}-${{ hashFiles('grl_snam/**', 'docs/learning-validation/retrain/**', 'docs/learning-validation/fixed/retrain/**', 'docs/learning-validation/world-units/retrain/**', 'cvcpkg/recipes/grl-snam-learning-checkpoints/**') }}
 
       - name: Assemble the site, and the learn and scrub pages alone
         env:
           PREFIX: ${{ steps.deps.outputs.path }}
         run: |
           set -euo pipefail
-          test -n "$PREFIX" || { echo "::error::no grl-snam-cp312 closure"; exit 1; }
+          test -n "$PREFIX" || { echo "::error::no deploy closure"; exit 1; }
           command -v cvcpkg >/dev/null || {
             curl -fsSL https://cvcpkg.org/install.sh | sh
             export PATH="$HOME/.local/bin:$PATH"
@@ -121,13 +135,14 @@ jobs:
             --platform any --config release --link shared --no-fallback-to-source
           python3 pages/assemble.py --host ariglx-web/share/ariglx-web --out _site \
             --scrub --python "$PREFIX/bin/python3.12" --scrub-cache scrub-runs \
-            --checkpoints "$RUNNER_TEMP/checkpoints/share/grl-snam-learning-checkpoints"
+            --checkpoints "$RUNNER_TEMP/checkpoints/share/grl-snam-learning-checkpoints" \
+            --expect-libcvc "$LIBCVC_REF"
           python3 pages/assemble.py --host ariglx-web/share/ariglx-web --learn-only \
             --out _other_site/demos/learn
           python3 pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-only \
             --out _other_site/demos/scrub \
             --scrub-reports scrub-runs/retrain/*.scrub.json scrub-runs/fixed/retrain/*.scrub.json \
-              scrub-runs/world-units/retrain/*.scrub.json
+              scrub-runs/world-units/retrain/*.scrub.json --expect-libcvc "$LIBCVC_REF"
 
       - name: Load them in headless Chrome
         run: |
