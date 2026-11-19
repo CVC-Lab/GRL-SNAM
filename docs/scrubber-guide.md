@@ -69,7 +69,8 @@ A falling training loss is not enough. Look for all of the following together.
 
 - **The best checkpoint is step 0:** training never improved on the untrained net.
 - **Ticks penetrating above 0, or clearance falling while reach rises:** the policy is trading
-  safety for progress.
+  safety for progress. A tick penetrating is a tick with the car's centre on a cell the navigator
+  marks blocked, a building or deep water.
 - **Outcomes scattered across training steps** instead of ordered by them.
 - **A held-out curve that falls while the deployed metric stands still.**
 
@@ -82,7 +83,9 @@ The Pages page shows the learning check's three retrains: `retrain`, `fixed/retr
 - Training curves fall in the later retrains.
 - Deployed outcomes are not yet ordered by training step, and no set shows criteria 1–6 together.
 - No checkpoint reaches the goal on either plant.
-- On kinematic, every checkpoint drives through buildings for 355 to 636 ticks of the 1200.
+- On kinematic, every checkpoint spends 355 to 636 of its 1200 ticks where the navigator says a
+  car can't be. Most of those ticks are on dry ground that libcvc 4.0.0's generated world wrongly
+  marks as deep water (transfix/libcvc#1374), and the rest are in buildings.
 - On the Humvee, two of the sets come to a single outcome whatever the step: the car meets a
   building and stays against it. A policy that had learned to route around buildings would not
   do that.

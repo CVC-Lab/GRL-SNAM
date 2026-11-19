@@ -564,15 +564,23 @@ each, 41 checkpoints a seed, 205 a set, on libcvc's generated city for 1200 tick
 | `world-units/retrain` | kinematic | 355–459, every checkpoint | −29.8 m | 471–485 m | 329–339 m |
 | `world-units/retrain` | humvee | 0 | 0.70–0.82 m | 212–218 m | 588 m |
 
-- On kinematic every checkpoint spends 355 to 636 ticks inside buildings, so its progress toward
-  the goal was never real.
+- "Ticks penetrating" counts the ticks a car's centre is on a cell the navigator marks blocked:
+  a building, or deep water. On this world most of them are not buildings. libcvc 4.0.0's
+  generated world marks dry ground between its −4 m water level and −0.5 m as deep water
+  (transfix/libcvc#1374 fixes it).
+- On kinematic, every checkpoint spends 355 to 636 ticks on blocked cells, so its progress toward
+  the goal was never real. 79–93% of those ticks are on that mislabelled water; the rest are in
+  buildings.
 - On the Humvee, `retrain` and `world-units/retrain` each come to one outcome whatever the seed or
   the step: the car meets a building and stays against it.
 - `fixed/retrain`'s Humvees range further (303–472 m). Six of its checkpoints (seeds 0, 1, 3 and
-  4) still count 71 to 186 ticks with the car's centre inside a building's footprint, and they
-  record no building contact over the run, while 596 of the 609 other Humvee runs do. So that
-  building had no collider where the car entered, or the car went over it. Which one is not
-  known yet: the run log keeps no height. To see it yourself, with the retrain's checkpoints from cvcpkg.org:
+  4) count 71 to 186 ticks penetrating with no building contact. They are not in a building: they
+  drive into a dry basin near (−290, 175), 0.6–3.5 m above the water level, that the navigator
+  reads as deep water and the physics has nothing to collide with.
+- The page's runs are deployed on libcvc 4.0.0, so these counts stay until a libcvc with #1374 is
+  released and the runs are deployed again.
+
+To see it yourself, with the retrain's checkpoints from cvcpkg.org:
 
 ```bash
 cvcpkg install grl-snam-learning-checkpoints --prefix <prefix>
