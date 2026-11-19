@@ -35,7 +35,7 @@ Both charts carry a cursor at checkpoint k. ``--report R.json`` writes every che
 policies there (by file name) before beside the history, and ``--cache DIR`` caches the run logs
 there in place of ``<history>.scrub/``. ``--data-set NAME`` names the run's data set in the report (the
 learning check's ``retrain``, ``fixed/retrain``, ...), and ``--lean`` caches lean run logs
-(:meth:`grl_snam.learning.runlog.RunLog.save`: single precision, packed; about 80 KB a checkpoint
+(:meth:`grl_snam.learning.runlog.RunLog.save`: single precision, packed; about 70 KB a checkpoint
 of 1200 ticks) for a page.
 
 **View only.** ``--view R.json ...`` shows runs already deployed: it reads the reports, the run log
