@@ -21,12 +21,14 @@ import textwrap
 from pathlib import Path
 
 import mpmath
+import numpy as np
 import pytest
 import torch
 
 from grl_snam.coph.cooperative import CommunicationConfig
 from grl_snam.coph.records import Config
 from grl_snam.tools import coph_golden as golden
+from grl_snam.tools import coph_golden_learner as learner
 
 FIXTURE = Path(__file__).parent / "fixtures" / "coph_golden"
 
@@ -56,10 +58,42 @@ def _pop_outputs(g) -> dict:
     return {key: [c.pop("out") for c in g[key]["cases"]] for key in FLOAT64_SECTIONS}
 
 
+def _pop_learner_outputs(node, found=None) -> list:
+    """Remove every ``out`` under ``node`` (G5-G8's values); return them in document order."""
+    found = [] if found is None else found
+    if isinstance(node, dict):
+        if "out" in node:
+            found.append(node.pop("out"))
+        for v in node.values():
+            _pop_learner_outputs(v, found)
+    elif isinstance(node, list):
+        for v in node:
+            _pop_learner_outputs(v, found)
+    return found
+
+
+def _same_values(a, b, tier, where=()):
+    """Two ``out`` trees: the same shape, every double within ``tier``."""
+    if isinstance(b, dict):
+        assert isinstance(a, dict) and a.keys() == b.keys(), where
+        for k in b:
+            _same_values(a[k], b[k], tier, (*where, k))
+    elif isinstance(b, list):
+        assert isinstance(a, list) and len(a) == len(b), where
+        for i, (x, y) in enumerate(zip(a, b)):
+            _same_values(x, y, tier, (*where, i))
+    elif b is None:
+        assert a is None, where
+    else:
+        assert _close(_f(a), _f(b), tier), (where, _f(a), _f(b))
+
+
 def _same_golden(mine, theirs):
-    """G1, G4, the rules and every input exactly; the FLOAT64 outputs at their tier."""
+    """G1, G4, the rules, every input and every decision exactly; the FLOAT64 outputs at their
+    tier."""
     mine, theirs = copy.deepcopy(mine), copy.deepcopy(theirs)
     mine_out, theirs_out = _pop_outputs(mine), _pop_outputs(theirs)
+    mine_learner, theirs_learner = (_pop_learner_outputs(x["learner"]) for x in (mine, theirs))
     assert mine == theirs
     for key in FLOAT64_SECTIONS:
         tier = theirs[key]["tier"]
@@ -68,10 +102,14 @@ def _same_golden(mine, theirs):
             for name in b:
                 for x, y in zip(_flat(a[name]), _flat(b[name]), strict=True):
                     assert _close(_f(x), _f(y), tier), (key, case["name"], name)
+    assert len(mine_learner) == len(theirs_learner)
+    for i, (a, b) in enumerate(zip(mine_learner, theirs_learner)):
+        _same_values(a, b, theirs["learner"]["tier"], ("learner", i))
 
 
 def test_the_golden_regenerates(tmp_path, g):
-    path = golden.generate(tmp_path)
+    # The decision checks only guard regeneration; the file is the same without them.
+    path = golden.generate(tmp_path, check=False)
     if path.read_bytes() != (FIXTURE / golden.JSON_NAME).read_bytes():  # another platform
         _same_golden(json.loads(path.read_text()), g)
 
@@ -490,3 +528,301 @@ def test_the_float64_cases_cover_the_roadmap(g):
     assert any(locked) and not all(locked)
     accels = [_f(c["out"]["accel"]) / _f(c["accel_max"]) for c in alloc]
     assert {1.0, -1.0} <= set(accels) and any(abs(a) < 1 for a in accels)
+
+
+# ---------------------------------------------------------------------------
+# G5-G8: the learner at three snapshots of a scripted crossing run
+# ---------------------------------------------------------------------------
+
+
+def _readings(section, runs):
+    """A stage's readings from the script: (tick, j, x, y, value), in the stage's order."""
+    n = len(section["world"]["lattice"])
+    out = []
+    for i in learner._expand(runs):
+        tick, j = divmod(i, n)
+        x, y, v = _vec(section["script"][tick]["readings"][j])
+        out.append((tick, j, x, y, v))
+    return out
+
+
+def _records(section, stages, validation):
+    """Every kept stage's transitions (oldest first) with uid % 5 == 0 iff ``validation``."""
+    sc = section["script"]
+    return [
+        (_vec(sc[k]["state"]), _vec(sc[k]["u"]), _vec(sc[k + 1]["state"]))
+        for st in stages
+        for k in learner._expand(st["transitions"])
+        if (k % 5 == 0) == validation
+    ]
+
+
+def _centers(center, cfg):
+    half_w, half_h = cfg.stage_width / 2, cfg.stage_height / 2
+    xs = np.linspace(center[0] - half_w, center[0] + half_w, cfg.rbf_side)
+    ys = np.linspace(center[1] - half_h, center[1] + half_h, cfg.rbf_side)
+    return [(float(x), float(y)) for x in xs for y in ys]
+
+
+def _phi(q, centers, width):
+    return [
+        math.exp(-0.5 * (((q[0] - cx) / width) ** 2 + ((q[1] - cy) / width) ** 2))
+        for cx, cy in centers
+    ]
+
+
+def _risk(q, weights, centers, width):
+    return _softplus(sum(w * p for w, p in zip(weights, _phi(q, centers, width))))[0] / 4
+
+
+def _plant_loss(records, d, dt):
+    """G6's loss and its first two derivatives in d, in closed form (learner_rules)."""
+    a, integral = math.exp(-d * dt), -math.expm1(-d * dt) / d
+    da, dda = -dt * a, dt * dt * a
+    di = (dt * a - integral) / d
+    ddi = (dt * da - 2 * di) / d
+    se = g1 = h1 = ee = g2 = h2 = 0.0
+    for x, u, y in records:
+        for k in range(2):
+            t = (dt - integral) * u[k] / d
+            dt_ = -di * u[k] / d - (dt - integral) * u[k] / d**2
+            ddt = -ddi * u[k] / d + 2 * di * u[k] / d**2 + 2 * (dt - integral) * u[k] / d**3
+            position = (x[k] + integral * x[2 + k] + t, di * x[2 + k] + dt_,
+                        ddi * x[2 + k] + ddt, y[k])  # fmt: skip
+            velocity = (a * x[2 + k] + integral * u[k], da * x[2 + k] + di * u[k],
+                        dda * x[2 + k] + ddi * u[k], y[2 + k])  # fmt: skip
+            for p, dp, ddp, target in (position, velocity):
+                r = p - target
+                se, g1, h1 = se + r * r, g1 + 2 * r * dp, h1 + 2 * (dp * dp + r * ddp)
+        v0, v1 = x[2:], y[2:]
+        kin = (v0[0] ** 2 + v0[1] ** 2 + v1[0] ** 2 + v1[1] ** 2) / 2
+        power = u[0] * (v0[0] + v1[0]) / 2 + u[1] * (v0[1] + v1[1]) / 2
+        delta = 0.5 * ((v1[0] ** 2 + v1[1] ** 2) - (v0[0] ** 2 + v0[1] ** 2))
+        e = delta - dt * (power - d * kin)
+        ee, g2, h2 = ee + e * e, g2 + 2 * e * dt * kin, h2 + 2 * (dt * kin) ** 2
+    n = len(records)
+    if not n:
+        return 0.0, 0.0, 0.0
+    return se / (4 * n) + 0.05 * ee / n, g1 / (4 * n) + 0.05 * g2 / n, h1 / (4 * n) + 0.05 * h2 / n
+
+
+def _learner_cfg(section):
+    return Config(**{**golden.PROFILE, "steps": section["steps"]})
+
+
+def _cases(g):
+    s = g["learner"]
+    return zip(
+        s["snapshots"], s["field_fit"], s["damping_fit"], s["replay"], s["update"], strict=True
+    )
+
+
+def test_the_field_fit_rules_rebuild_g5(g):
+    section, tier = g["learner"], g["learner"]["tier"]
+    cfg = _learner_cfg(section)
+    for snap, fit, *_ in _cases(g):
+        for st, case in zip(snap["stages"], fit["stages"], strict=True):
+            centers = _centers(_vec(st["center"]), cfg)
+            rows = [
+                (_phi((x, y), centers, cfg.rbf_width), math.log(math.expm1(4 * max(v, 0.001))))
+                for _, j, x, y, v in _readings(section, st["readings"])
+                if j % 5
+            ]
+            assert len(rows) == case["rows"]
+            m = len(centers)
+            normal = np.array(
+                [[sum(r[0][i] * r[0][k] for r in rows) for k in range(m)] for i in range(m)]
+            ) + cfg.fit_ridge * np.eye(m)
+            rhs = np.array([sum(r[0][i] * r[1] for r in rows) for i in range(m)])
+            rhs = rhs + cfg.fit_ridge * np.array(_vec(st["weights"]))
+            out = dict(
+                targets=[r[1] for r in rows],
+                normal=normal.reshape(-1).tolist(),
+                rhs=rhs.tolist(),
+                weights=np.linalg.solve(normal, rhs).tolist(),
+            )
+            for name, mine in out.items():
+                for x, y in zip(mine, _vec(case["out"][name]), strict=True):
+                    assert _close(x, y, tier), (snap["name"], st["id"], name, x, y)
+            # The inverse's small entries carry the matrix's conditioning: compare against its
+            # largest entry.
+            cov = np.linalg.inv(normal)
+            scale = np.abs(cov).max()
+            for x, y in zip(cov.reshape(-1), _vec(case["out"]["covariance"]), strict=True):
+                assert abs(x - y) <= tier["rtol"] * scale, (snap["name"], st["id"], "covariance")
+
+
+def test_the_damping_rules_rebuild_g6(g):
+    section, tier = g["learner"], g["learner"]["tier"]
+    cfg = _learner_cfg(section)
+    for snap, _, case, *_ in _cases(g):
+        records = _records(section, snap["stages"], validation=False)
+        assert len(records) == case["transitions"] >= 3
+        d = _f(snap["damping"])
+        for it in case["out"]["iterates"]:
+            loss, grad, curv = _plant_loss(records, d, cfg.dt)
+            step = d - grad / (abs(curv) + 1e-5)
+            nxt = min(max(step, 0.05), 3.0)
+            mine = dict(damping=d, loss=loss, gradient=grad, curvature=curv, step=step, next=nxt)
+            for name, x in mine.items():
+                assert _close(x, _f(it[name]), tier), (snap["name"], name, x, _f(it[name]))
+            d = _f(it["next"])
+        assert len(case["out"]["iterates"]) == cfg.solver_steps
+        assert d == _f(case["out"]["result"])
+        committed = _f(snap["damping"])
+        low = max(cfg.damping_bounds[0], committed - cfg.damping_trust)
+        high = min(cfg.damping_bounds[1], committed + cfg.damping_trust)
+        assert _f(case["out"]["proposal"]) == min(max(d, low), high)
+
+
+def test_g7s_cost_rebuilds_from_its_trace(g):
+    """cost = the mean over replayed stages of sum dt (1 + 4 r(after) + 0.03 |u|^2), with r the
+    active stage's fitted field; at the committed policy the cost and gradient are G8's."""
+    section, tier = g["learner"], g["learner"]["tier"]
+    cfg = _learner_cfg(section)
+    for snap, fit, _, replay, update in _cases(g):
+        fields = {
+            st["id"]: (_vec(f["out"]["weights"]), _centers(_vec(st["center"]), cfg))
+            for st, f in zip(snap["stages"], fit["stages"])
+        }
+        for case in replay["policies"]:
+            assert case["replayed"]
+            controls = iter(zip(case["controls"], case["out"]["applied"], strict=True))
+            costs = []
+            for (sid, length), path in zip(case["lengths"], case["out"]["paths"], strict=True):
+                horizon = next(p["horizon"] for p in replay["plan"] if p["stage"] == sid)
+                assert length == len(path) == horizon + 1  # no collision, no stop at the goal
+                active, cost = sid, 0.0
+                for step in range(horizon):
+                    (entry, k, *_), u = next(controls)
+                    assert (entry, k) == (sid, step)
+                    for e in case["events"]:
+                        if e[:2] == [sid, step]:
+                            active = e[3]
+                    u, q = _vec(u), _vec(path[step + 1])[:2]
+                    w, c = fields[active]
+                    effort = 0.03 * (u[0] ** 2 + u[1] ** 2)
+                    cost += cfg.dt * (1 + 4 * _risk(q, w, c, cfg.rbf_width) + effort)
+                costs.append(cost)
+            assert _close(sum(costs) / len(costs), _f(case["out"]["cost"]), tier), snap["name"]
+        first = replay["policies"][0]
+        assert first["policy"] == snap["policy"]
+        assert _close(_f(first["out"]["cost"]), _f(update["out"]["replay_before"]), tier)
+        mine, theirs = _vec(first["out"]["gradient"]), _vec(update["out"]["gradient"])
+        assert all(_close(x, y, tier) for x, y in zip(mine, theirs, strict=True))
+
+
+def test_the_update_rules_rebuild_g8(g):
+    section, tier = g["learner"], g["learner"]["tier"]
+    cfg = _learner_cfg(section)
+    for snap, fit, damping, _, case in _cases(g):
+        out = case["out"]
+
+        def field_validation(weights):
+            errors = [
+                (_risk((x, y), w, _centers(_vec(st["center"]), cfg), cfg.rbf_width) - v) ** 2
+                for st, w in zip(snap["stages"], weights)
+                for _, j, x, y, v in _readings(section, st["readings"])
+                if j % 5 == 0
+            ]
+            return sum(errors) / len(errors)
+
+        before = field_validation([_vec(st["weights"]) for st in snap["stages"]])
+        after = field_validation([_vec(f["out"]["weights"]) for f in fit["stages"]])
+        records = _records(section, snap["stages"], validation=True)
+        d0, d1 = _f(snap["damping"]), _f(damping["out"]["proposal"])
+        plant = (_plant_loss(records, d0, cfg.dt)[0], _plant_loss(records, d1, cfg.dt)[0])
+        recorded = _vec(out["field_validation"]) + _vec(out["plant_validation"])
+        for x, y in zip((before, after, *plant), recorded, strict=True):
+            assert _close(x, y, tier), (snap["name"], x, y)
+        fv, pv = _vec(out["field_validation"]), _vec(out["plant_validation"])
+        margins = [(fv[0] + cfg.validation_slack) - fv[1], (pv[0] + cfg.validation_slack) - pv[1]]
+        assert margins == _vec(out["margins"])
+        assert min(abs(m) for m in margins) >= learner.SLACK_MARGIN
+        assert [case["field_valid"], case["plant_valid"]] == [m >= 0 for m in margins]
+
+        policy, grad = _vec(snap["policy"]), _vec(out["gradient"])
+        unconstrained = [p - 0.2 * gr for p, gr in zip(policy, grad)]
+        low = [max(cfg.policy_bounds[0], p - cfg.policy_trust) for p in policy]
+        high = [min(cfg.policy_bounds[1], p + cfg.policy_trust) for p in policy]
+        bounded = [max(lo, min(hi, x)) for lo, hi, x in zip(low, high, unconstrained)]
+        recorded = _vec(out["unconstrained"]) + _vec(out["bounded"])
+        assert all(_close(x, y, tier) for x, y in zip(unconstrained + bounded, recorded))
+        chosen = policy
+        baseline = _f(out["replay_before"])
+        attempts = zip(case["attempts"], out["candidates"], out["costs"], strict=True)
+        for (power, reason, accepted), candidate, cost in attempts:
+            mine = [p + (b - p) * 0.5**power for p, b in zip(policy, _vec(out["bounded"]))]
+            assert mine == _vec(candidate)
+            assert accepted == (_f(cost) <= baseline + 1e-10)
+            assert reason == ("accepted" if accepted else "replay_cost")
+            if accepted:
+                chosen = mine
+                break
+        feasible = cfg.damping_bounds[0] <= d1 <= cfg.damping_bounds[1]
+        in_box = all(0 <= p <= cfg.policy_bounds[1] for p in chosen)
+        assert (case["damping_feasible"], case["policy_in_box"]) == (feasible, in_box)
+        accepted = feasible and in_box and all(m >= 0 for m in margins)
+        assert case["accepted"] == accepted
+        assert case["reason"] == ("accepted" if accepted else "validation_or_feasibility")
+        assert case["version_after"] == snap["version"] + accepted
+        assert _vec(out["policy_after"]) == (chosen if accepted else policy)
+        assert _f(out["damping_after"]) == (d1 if accepted else d0)
+
+
+def test_a_snapshot_holds_everything_the_update_reads(g):
+    """The learner rebuilt from each snapshot's inputs alone reproduces G5-G8."""
+    section = g["learner"]
+    for snap, fit, damping, replay, update in _cases(g):
+        before = learner.rebuild(section, snap)
+        report, holder = learner.traced_update(copy.deepcopy(before), learner._bits(snap["x"]))
+        mine = dict(
+            field_fit=learner.field_fit_case(before),
+            damping_fit=learner.damping_fit_case(before, report),
+            replay=learner.replay_case(holder, before.policy.tolist(), check=False),
+            update=learner.update_case(before, report),
+        )
+        theirs = dict(field_fit=fit, damping_fit=damping, replay=replay, update=update)
+        mine, theirs = json.loads(json.dumps(mine)), copy.deepcopy(theirs)
+        a, b = _pop_learner_outputs(mine), _pop_learner_outputs(theirs)
+        assert mine == theirs, snap["name"]
+        for x, y in zip(a, b, strict=True):
+            _same_values(x, y, section["tier"], (snap["name"],))
+
+
+def test_g5_to_g8_cover_the_roadmap(g):
+    """Three snapshots of three kept stages; six replayed policies each; an accepted and a
+    rejected update, both well away from the slack; a stage handoff, an unsupported entry and a
+    supported_boundary horizon among the replays; the door in the geometry."""
+    section = g["learner"]
+    snaps = section["snapshots"]
+    assert len(snaps) == 3 and all(len(s["stages"]) == 3 for s in snaps)
+    assert all(len(r["policies"]) == 6 for r in section["replay"])
+    assert {u["reason"] for u in section["update"]} == {"accepted", "validation_or_feasibility"}
+    policies = [p for r in section["replay"] for p in r["policies"]]
+    assert {"supported", "unsupported_entry"} <= {e[2] for p in policies for e in p["eligibility"]}
+    assert "supported_boundary" in {p["reason"] for r in section["replay"] for p in r["plan"]}
+    assert any(p["events"] for p in policies)
+    assert any(s["geometry"] for s in snaps)
+    assert any(st["obstacles"] for s in snaps for st in s["stages"])
+    assert max(abs(x) for p in policies for x in _vec(p["out"]["gradient"])) > 1e-4
+
+
+def test_another_platforms_last_bits_pass_in_g5_to_g8_and_nothing_else_does(g):
+    def changed(edit):
+        out = copy.deepcopy(g)
+        edit(out["learner"])
+        return out
+
+    def nudge(ulps):
+        def edit(s):
+            w = s["field_fit"][1]["stages"][0]["out"]["weights"]
+            w[3] = format(int(w[3], 16) + ulps, "016x")
+
+        return edit
+
+    _same_golden(changed(nudge(2)), g)
+    with pytest.raises(AssertionError):
+        _same_golden(changed(nudge(1 << 40)), g)
+    with pytest.raises(AssertionError):
+        _same_golden(changed(lambda s: s["update"][1].update(accepted=True)), g)
