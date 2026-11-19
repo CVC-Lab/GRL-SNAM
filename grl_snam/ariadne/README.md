@@ -404,6 +404,50 @@ adaptive-rate sharing run all the same.
 
 It needs torch, as `grl-snam coph` does, and no city.
 
+### `coph-cars`: CoPH drives the cars (demo 2b, exploratory)
+
+```bash
+python -m grl_snam.ariadne coph-cars --arms --seeds 1 2 3 --out runs/coph-cars            # headless arms
+python -m grl_snam.ariadne coph-cars --arms --layout convoy --seeds 1 2 3 --out runs/convoy
+python -m grl_snam.ariadne coph-cars                      # the cars template's window, CoPH driving
+```
+
+Each car of libcvc's cars template carries one CoPH learner (`grl_snam.coph`, in the demos'
+profile), as libcvc's `NAV-COPH-ROADMAP.md` §3.3 specifies:
+
+- **Scale and clocks.** Froude scaling by `ctl.scale` (lengths x `s`, times x `sqrt(s)`), with one
+  CoPH frame for all cars. CoPH steps every `0.12 sqrt(s)` s (two ticks at `s` = 1) and holds its
+  force between steps.
+- **Allocation.** Every tick the held force goes through `grl_snam.coph.allocation` to a steer
+  and an acceleration. The learner observes the force the car took, and the force it did not take
+  is booked as the unallocated work.
+- **World.** Obstacles are the occupied cells in the sensor radius, as disks
+  (`pycvc.nav_visible_obstacles`). Risk readings sample the risk plane of a material layer the
+  port lays on the world: one seeded patch across each car's line to its goal. The goal well uses
+  a local goal 30 m along the line.
+- **Stages** follow the car along either axis (the demos' learner's rule). Routing is the
+  profile's own A* through sensed footprints, since the cars' worlds have no surveyed network.
+- **Panels.** The coefficient plots are `pi_risk`, `pi_barrier`, `damping` and `version`. The
+  ledger is logged as `coef_*` columns. The Rasters window's cost is the chosen car's `V`
+  (`ctl.view` 0) or its `r` (1). The template's predicted paths hold each car's current force;
+  they teach the learners nothing.
+- **Arms** (`--arms [off coph raw]`): communication off, CoPH packets and raw readings, headless,
+  over paired seeds (each seed gives every arm the same starts, goals and patches). They run on
+  the template's script API on a RoboRacer-sized flat square (21 m across), and a car arrives
+  within 1.5 car lengths of its goal. `--layout convoy` puts the cars in a column on one route.
+  `REPORT.md` leads with the allocation residual and the ledger, then arrivals, path length,
+  contacts, excess risk cost against the best arm, bytes, and the packets by the receiver's
+  verdict. `--logs` keeps each episode's template log.
+
+Two things differ from the spec, because of the template:
+- Inside the template's own loop (the window), a controller does not see the world's grid
+  (`CarsState.world` is its kind), so obstacles come from the cars' rays.
+- The template's flat square is a Humvee's (194 m across) whatever the vehicle, so the window's
+  RoboRacers drive a large square. The arms use their own.
+
+It is exploratory: the formulation treats a fully actuated point, and the allocation is new.
+Claim only what the paired seeds measure. It needs torch and pycvc-gl 3.7.12+.
+
 ### `learn`: did it learn?
 
 ```bash
@@ -620,6 +664,7 @@ controller made for them ([docs/PLANTS.md](../../docs/PLANTS.md#what-to-expect))
 | `Squad(plant=...)`, `--plant` on the recorders | library, `capture --plant` | `fleet --plant humvee / dynamic:humvee / kinematic` (any plant libcvc's `plant_host` names), `squad --plant` |
 | `grl-snam material-demo` | two PNGs | `material` |
 | `grl-snam coph crossing / hazard` | episodes, `results.json`, `REPORT.md` | `coph crossing` / `coph hazard` (live, or `--from` a run) |
+| (new) CoPH driving the cars (demo 2b) | | `coph-cars` (the template's window; `--arms` headless) |
 | `grl-snam learn-report` | text, `report.json` | `learn` (the claims, and the curves, heads, checkpoints and arms behind them) |
 | (new) policies side by side, recorded | | `live austin-freedrive --arms ... --log`, then `replay run.npz` |
 | (new) a training run's checkpoints, deployed | | `scrub run/history.jsonl` |
