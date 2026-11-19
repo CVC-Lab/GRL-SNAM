@@ -1,0 +1,111 @@
+{
+ "seeds": [
+  1,
+  2,
+  3
+ ],
+ "arms": {
+  "off": {
+   "packets": {},
+   "damping_mean": 0.14999999999999997,
+   "damping_at_floor": 12,
+   "pi_risk_mean": 1.0048054015809111,
+   "seeds": [
+    1,
+    2,
+    3
+   ],
+   "cars": 12,
+   "arrivals": 12,
+   "arrival_s": 27.09166666666685,
+   "path_m": 13.5424059716121,
+   "collided_cars": 0,
+   "collided_ticks": 0,
+   "excess_risk_mean": 2.668773070328238e-05,
+   "excess_risk_max": 0.0003158500080111537,
+   "risk_cost": 23.706385914759455,
+   "bytes": 0.0,
+   "accepted": 411,
+   "rejected": 0,
+   "allocation_residual": 0.2238113463114924,
+   "work": 8.312855162733683,
+   "unallocated_work": 0.018092427157750078,
+   "heat": 16.164946916810088,
+   "kinetic_change": 1.8905216025129956,
+   "ledger_residual": 9.7426133565894,
+   "max_step_residual": 0.014375719134607423,
+   "shaping_jumps": -0.1399568377973311,
+   "geometry_overflow": 0
+  },
+  "coph": {
+   "packets": {
+    "unsupported": 984,
+    "eligible": 70
+   },
+   "damping_mean": 0.14999999999999997,
+   "damping_at_floor": 12,
+   "pi_risk_mean": 1.0048509421923264,
+   "seeds": [
+    1,
+    2,
+    3
+   ],
+   "cars": 12,
+   "arrivals": 12,
+   "arrival_s": 27.09166666666685,
+   "path_m": 13.540034163080227,
+   "collided_cars": 0,
+   "collided_ticks": 0,
+   "excess_risk_mean": 0.0012700490950899497,
+   "excess_risk_max": 0.0051398419546870855,
+   "risk_cost": 23.70762927612385,
+   "bytes": 1098680.4166666667,
+   "accepted": 411,
+   "rejected": 0,
+   "allocation_residual": 0.2237976957557599,
+   "work": 8.314039296037066,
+   "unallocated_work": 0.01807255734257668,
+   "heat": 16.16557059543147,
+   "kinetic_change": 1.8904918796668113,
+   "ledger_residual": 9.742023179061215,
+   "max_step_residual": 0.014375719134607423,
+   "shaping_jumps": -0.14189579100773447,
+   "geometry_overflow": 0
+  },
+  "raw": {
+   "packets": {
+    "unsupported": 959,
+    "eligible": 95
+   },
+   "damping_mean": 0.14999999999999997,
+   "damping_at_floor": 12,
+   "pi_risk_mean": 1.00490159233028,
+   "seeds": [
+    1,
+    2,
+    3
+   ],
+   "cars": 12,
+   "arrivals": 12,
+   "arrival_s": 27.09166666666685,
+   "path_m": 13.542239930457313,
+   "collided_cars": 0,
+   "collided_ticks": 0,
+   "excess_risk_mean": 0.0018435452362105902,
+   "excess_risk_max": 0.011190137291812619,
+   "risk_cost": 23.70820277226497,
+   "bytes": 1310140.25,
+   "accepted": 411,
+   "rejected": 0,
+   "allocation_residual": 0.22379437617552742,
+   "work": 8.314641926669392,
+   "unallocated_work": 0.018072989473127323,
+   "heat": 16.165418289709656,
+   "kinetic_change": 1.8905187158901118,
+   "ledger_residual": 9.741295078930376,
+   "max_step_residual": 0.014375719134607423,
+   "shaping_jumps": -0.13857715467505954,
+   "geometry_overflow": 0
+  }
+ }
+}
