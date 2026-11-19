@@ -21,9 +21,9 @@ installs. The site:
       (the host, main.py and grl_snam_web.zip, as learn/'s)
       data/<set>/<run>.scrub.zip      a run's bundle, stored: its scrub report (scrub.json,
                                       grl_snam.scrub/v1, its paths the names inside), its
-                                      learning history and each checkpoint's run log (lean
-                                      grl_snam.run_log/v1); the page's loader takes at most
-                                      512 files, and a run is 43
+                                      learning history and each checkpoint's run log (lean,
+                                      packed: grl_snam.run_log/v2); the page's loader takes
+                                      at most 512 files, and a run is 43
       ariadne.config.json             ["scrub", "--view", "data/<set>/<run>.scrub.zip", ...]
 
 ``--learn-only`` writes the learn page alone, self-contained, at ``--out`` (for another site to
@@ -53,8 +53,8 @@ check's under the same names (retrain/, fixed/retrain/ and world-units/retrain/,
 against the histories' blobs by sha256 when it was packed; cvcpkg/recipes/
 grl-snam-learning-checkpoints), and by default ``--checkpoints`` is that package in ``--python``'s
 prefix. The page's Set combo picks a set, its Run combo a run of it. Every run's logs are
-preloaded (the page's loader has no fetch after start; libcvc's data roadmap D4), about 5 MB a run
-lean, so each five-seed set adds about 25 MB to the first visit. They are deployed on
+preloaded (the page's loader has no fetch after start; libcvc's data roadmap D4), about 3 MB a run
+lean, so each five-seed set adds about 15-18 MB a plant to the first visit. They are deployed on
 ``--scrub-world`` (default generated:
 libcvc's generator from scrub.ari's world.* keys, which the page builds again from the report
 with no data to fetch; Austin's bundle is 228 MB and cvcpkg.org sends no CORS for github.io, so a

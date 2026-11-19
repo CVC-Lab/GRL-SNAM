@@ -516,9 +516,10 @@ directory's, and blobs that are not there are listed and skipped.
   libcvc's version). `--blobs DIR` finds the saved policies there first (by file name), and
   `--cache DIR` caches the run logs there instead of `<history>.scrub/`. `--data-set NAME` puts
   the run's data set in the report (the learning check's `retrain`, `fixed/retrain`,
-  `world-units/retrain`), and `--lean` caches lean run logs (single precision, the cars
-  template's derived fields left out: about 40% smaller, read back the same), as the Pages site
-  does.
+  `world-units/retrain`), and `--lean` caches lean run logs (`grl_snam.run_log/v2`: single
+  precision, the cars template's derived fields left out, the arrays packed losslessly; about
+  70 KB a checkpoint of 1200 ticks, read back the same), as the Pages site does. A lean log
+  cached before they were packed is read, and packed in place.
 - **View only:** `--view R.json ...` shows runs deployed before and deploys nothing, so it needs
   neither torch nor the policies, and no sim_world steps. It reads the reports, the run log each
   checkpoint lists (read when first shown) and the history each names, found as given, relative
