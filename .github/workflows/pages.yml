@@ -112,11 +112,13 @@ jobs:
           ls "$prefix"/lib/libcvc.so.* | head -3
           echo "path=$prefix" >> "$GITHUB_OUTPUT"
 
+      # v5: the lean run logs are packed (grl_snam.run_log/v2). A v4 cache's would still be read,
+      # and packed when read, but the key moves with grl_snam/** anyway.
       - name: Cache the scrub page's runs
         uses: actions/cache@v4
         with:
           path: scrub-runs
-          key: scrub-runs-v4-${{ env.LIBCVC_REF }}-${{ hashFiles('grl_snam/**', 'docs/learning-validation/retrain/**', 'docs/learning-validation/fixed/retrain/**', 'docs/learning-validation/world-units/retrain/**', 'cvcpkg/recipes/grl-snam-learning-checkpoints/**') }}
+          key: scrub-runs-v5-${{ env.LIBCVC_REF }}-${{ hashFiles('grl_snam/**', 'docs/learning-validation/retrain/**', 'docs/learning-validation/fixed/retrain/**', 'docs/learning-validation/world-units/retrain/**', 'cvcpkg/recipes/grl-snam-learning-checkpoints/**') }}
 
       - name: Assemble the site, and the learn and scrub pages alone
         env:

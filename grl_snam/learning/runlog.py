@@ -27,6 +27,17 @@ ariadne replay run.npz`` plays it back. The format is ``grl_snam.run_log/v1``, o
   - ``lean``: true in a lean log (:meth:`RunLog.save`), whose floats are single precision and
     which leaves out the cars template's fields that are derived from the rest.
 
+A lean log is stored as ``grl_snam.run_log/v2``: the same log with its arrays packed into one,
+``packed`` (uint8), which numpy unpacks with no other library (:func:`unpack`; the Pages site's
+scrub page reads them in the browser). ``meta["packed"]`` says how: its ``encoding``,
+``delta-shuffle``, and its ``arrays``, ``[name, dtype, shape]`` each, in the order they are packed.
+The arrays of one dtype follow one another, and their values, each array flattened time first, are
+one vector. Each value's bit pattern is stored as its difference from the one before, an unsigned
+integer that wraps, so it is exact. Then the bytes are shuffled: every value's first byte, then
+every second byte, and so on. Neighbouring ticks differ little, so deflate packs that far better
+than the floats' own bytes: a lean log of 1200 ticks is about 55% of its size as v1, which lean
+logs were until then, and :meth:`RunLog.load` reads those too.
+
 :class:`RunLog` writes and reads it. :meth:`RunLog.from_run` takes anything with ``arrays()``
 and ``meta()`` (``grl_snam.ariadne._arms.ArmsRun``), and :meth:`RunLog.at` gives an arm's values
 at a tick, as the replay shows them.
@@ -35,6 +46,7 @@ at a tick, as the replay shows them.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 import re
@@ -46,6 +58,10 @@ from pathlib import Path
 import numpy as np
 
 SCHEMA = "grl_snam.run_log/v1"
+#: A lean log's format (:meth:`RunLog.save`): v1 with its arrays packed into one (:func:`pack`).
+PACKED_SCHEMA = "grl_snam.run_log/v2"
+#: How a v2 log packs its arrays (``meta["packed"]["encoding"]``).
+PACKING = "delta-shuffle"
 #: The coefficients the cars template's log keeps (``coef_<name>``), from the drive telemetry.
 CARS_COEFS = ("alpha", "beta", "gamma", "lam_soft", "lam_hard", "potential", "clearance",
               "curvature", "v_risk", "mu")  # fmt: skip
@@ -118,6 +134,50 @@ def cars_fields(arrays: Mapping) -> dict:
     return out
 
 
+def _packable(v: np.ndarray) -> bool:
+    return v.dtype.kind in "biuf" and v.dtype.itemsize in (1, 2, 4, 8)
+
+
+def pack(arrays: Mapping) -> tuple[np.ndarray, list]:
+    """``arrays`` (numbers, booleans) packed into one uint8 array, as a v2 log stores them, and the
+    layout that unpacks it (:func:`unpack`): ``[name, dtype, shape]`` for each, in the order
+    packed. The module docstring says how."""
+    layout = sorted(([k, np.dtype(v.dtype).newbyteorder("<").str, list(np.shape(v))]
+                     for k, v in arrays.items()), key=lambda e: (e[1], e[0]))  # fmt: skip
+    parts = [np.zeros(0, np.uint8)]
+    for dtype, group in itertools.groupby(layout, key=lambda e: e[1]):
+        flat = np.concatenate([np.ravel(arrays[k], order="F") for k, _, _ in group]).astype(dtype)
+        bits = flat.view(f"<u{flat.itemsize}")
+        diff = np.diff(bits, prepend=bits.dtype.type(0))  # unsigned: wraps, so it is exact
+        parts.append(diff.view(np.uint8).reshape(-1, flat.itemsize).T.ravel())
+    return np.concatenate(parts), layout
+
+
+def unpack(packed: np.ndarray, layout: Sequence) -> dict:
+    """The arrays :func:`pack` packed into ``packed``, with its ``layout``. Raises ValueError when
+    they do not fit it."""
+    packed = np.asarray(packed, np.uint8).ravel()
+    out, at = {}, 0
+    for dtype, group in itertools.groupby(layout, key=lambda e: e[1]):
+        group, dt = list(group), np.dtype(dtype)
+        sizes = [math.prod(shape) for _, _, shape in group]
+        n = sum(sizes)
+        planes = packed[at : at + n * dt.itemsize]
+        if planes.size != n * dt.itemsize:
+            raise ValueError(f"packed arrays: {packed.size} bytes, too few for the layout")
+        at += planes.size
+        bits = planes.reshape(dt.itemsize, n).T.copy().view(f"<u{dt.itemsize}").ravel()
+        flat = np.cumsum(bits, dtype=bits.dtype).view(dt)
+        ends = np.cumsum(sizes)
+        for (name, _, shape), end, size in zip(group, ends, sizes, strict=True):
+            out[name] = flat[end - size : end].reshape(tuple(shape), order="F").copy()
+    if at != packed.size:
+        raise ValueError(
+            f"packed arrays: {packed.size} bytes, {packed.size - at} more than the layout"
+        )
+    return out
+
+
 class RunLog:
     """A recorded run: ``arrays`` (name -> array, as the module docstring lists them) and
     ``meta``. :meth:`save` writes it, :meth:`load` reads it back."""
@@ -138,12 +198,14 @@ class RunLog:
         return cls(arrays, m)
 
     def save(self, path, *, lean: bool = False) -> str:
-        """Write the log to ``path``. ``lean`` writes a smaller one, to show rather than to analyse:
-        floats in single precision (but ``t``), and none of the cars template's fields that
-        :func:`cars_fields` derives, which :meth:`load` derives again (``meta`` says ``lean``)."""
+        """Write the log to ``path`` (``grl_snam.run_log/v1``). ``lean`` writes a smaller one, to
+        show rather than to analyse (``grl_snam.run_log/v2``): floats in single precision (but
+        ``t``), none of the cars template's fields that :func:`cars_fields` derives, which
+        :meth:`load` derives again (``meta`` says ``lean``), and the arrays packed into one
+        (:func:`pack`)."""
         path = str(path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        arrays, meta = self.arrays, self.meta
+        arrays, meta = self.arrays, {**self.meta, "schema": SCHEMA}
         if lean:
             derived = set(cars_fields({k: v for k, v in arrays.items() if k not in LEAN_DROPS}))
             arrays = {
@@ -151,21 +213,32 @@ class RunLog:
                 for k, v in arrays.items()
                 if k not in derived
             }
-            meta = {**meta, "lean": True}
+            packed, layout = pack({k: v for k, v in arrays.items() if _packable(v)})
+            arrays = {k: v for k, v in arrays.items() if not _packable(v)}
+            arrays["packed"] = packed
+            meta = {**meta, "schema": PACKED_SCHEMA, "lean": True,
+                    "packed": {"encoding": PACKING, "arrays": layout}}  # fmt: skip
         np.savez_compressed(path, meta=json.dumps(meta, default=_jsonable), **arrays)
         return path
 
     @classmethod
     def load(cls, path) -> RunLog:
-        """The log at ``path`` (a lean one with the cars template's fields derived again). Raises
-        ValueError when it is not a run log."""
+        """The log at ``path``, v1 or v2 (a lean one with the cars template's fields derived
+        again); its ``meta["schema"]`` is the one it was stored in. Raises ValueError when it is
+        not a run log."""
         with np.load(path, allow_pickle=False) as z:
             if "meta" not in z.files:
                 raise ValueError(f"{path}: not a run log (no meta)")
             meta = json.loads(str(z["meta"]))
-            if meta.get("schema") != SCHEMA:
-                raise ValueError(f"{path}: not a run log ({SCHEMA}): schema {meta.get('schema')!r}")
-            arrays = {k: z[k] for k in z.files}
+            if meta.get("schema") not in (SCHEMA, PACKED_SCHEMA):
+                raise ValueError(f"{path}: not a run log ({SCHEMA} or {PACKED_SCHEMA}): schema "
+                                 f"{meta.get('schema')!r}")  # fmt: skip
+            arrays = {k: z[k] for k in z.files if k != "meta"}
+        if meta["schema"] == PACKED_SCHEMA:
+            how = meta.pop("packed", None) or {}
+            if how.get("encoding") != PACKING or "packed" not in arrays:
+                raise ValueError(f"{path}: its arrays are not packed as {PACKING!r}")
+            arrays.update(unpack(arrays.pop("packed"), how.get("arrays") or []))
         if meta.get("lean"):
             arrays.update(cars_fields(arrays))
         return cls(arrays, meta)

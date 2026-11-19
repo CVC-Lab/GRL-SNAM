@@ -35,7 +35,8 @@ Both charts carry a cursor at checkpoint k. ``--report R.json`` writes every che
 policies there (by file name) before beside the history, and ``--cache DIR`` caches the run logs
 there in place of ``<history>.scrub/``. ``--data-set NAME`` names the run's data set in the report (the
 learning check's ``retrain``, ``fixed/retrain``, ...), and ``--lean`` caches lean run logs
-(:meth:`grl_snam.learning.runlog.RunLog.save`: single precision, about 40% smaller) for a page.
+(:meth:`grl_snam.learning.runlog.RunLog.save`: single precision, packed; about 80 KB a checkpoint
+of 1200 ticks) for a page.
 
 **View only.** ``--view R.json ...`` shows runs already deployed: it reads the reports, the run log
 each checkpoint lists and the history each report names, and deploys nothing, so it needs neither
@@ -112,7 +113,7 @@ def _args(p):
                    help="the data set the run belongs to, in the report (e.g. retrain): a view of "
                         "several sets picks one with a Set combo")  # fmt: skip
     p.add_argument("--lean", action="store_true",
-                   help="cache lean run logs (single precision, about 40%% smaller), for a page")  # fmt: skip
+                   help="cache lean run logs (single precision, packed), for a page")  # fmt: skip
     p.add_argument("--camera", choices=("follow", "orbit"), default=None,
                    help="follow checkpoint k's ghost (the default), or orbit the world")  # fmt: skip
     p.add_argument("--windows", default=None, metavar="ID,...",
@@ -281,8 +282,9 @@ def run_checkpoint(host, world, plant, row, scenario, shash, history, work):
 
 def deploy_all(host, world, plant, rows, scenario, history, *, cache=None, lean=False, log=print):
     """Every checkpoint's run log, from the cache (``cache``, else ``<history>.scrub``) or deployed
-    now (and cached; ``lean`` caches lean logs)."""
-    from grl_snam.learning.runlog import RunLog
+    now (and cached; ``lean`` caches lean logs). A lean log cached before they were packed
+    (``grl_snam.run_log/v1``) is packed when read: the same run, smaller."""
+    from grl_snam.learning.runlog import PACKED_SCHEMA, RunLog
 
     shash = scenario_hash(scenario)
     work = tempfile.mkdtemp(prefix="grl-snam-scrub-")
@@ -293,6 +295,9 @@ def deploy_all(host, world, plant, rows, scenario, history, *, cache=None, lean=
         try:
             lg = RunLog.load(path)
             how = "cached"
+            if lean and lg.meta.get("schema") != PACKED_SCHEMA:
+                lg.save(path, lean=True)
+                how = "cached, packed"
         except (OSError, ValueError):
             lg = run_checkpoint(host, world, plant, row, scenario, shash, history, work)
             lg.save(path, lean=lean)

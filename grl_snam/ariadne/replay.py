@@ -33,7 +33,9 @@ from grl_snam.learning.runlog import RunLog
 
 
 def _args(p):
-    p.add_argument("log", help="a run log (grl_snam.run_log/v1): live --arms ... --log run.npz")
+    p.add_argument(
+        "log", help="a run log (grl_snam.run_log/v1, or a lean v2): live --arms ... --log run.npz"
+    )
     p.add_argument("--at", type=float, default=0.0, help="start the play head here (s)")
     p.add_argument("--loop", action="store_true", help="play it again from the start at the end")
     p.add_argument("--paused", action="store_true", help="start paused (at --at)")
