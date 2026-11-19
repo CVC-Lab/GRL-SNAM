@@ -549,7 +549,30 @@ there are two outcomes:
   checkpoint.
 
 Nothing orders the outcomes by training step. That is the null of `docs/learning-validation.md`,
-seen checkpoint by checkpoint. To see it yourself, with the retrain's checkpoints from cvcpkg.org:
+seen checkpoint by checkpoint.
+
+The Pages page's runs, deployed again on both plants (2026-11-19): the three retrains, five seeds
+each, 41 checkpoints a seed, 205 a set, on libcvc's generated city for 1200 ticks (60 s), libcvc
+4.0.0. No checkpoint reaches the goal on either plant.
+
+| set | plant | ticks penetrating | least clearance | path | left to the goal |
+|---|---|---|---|---|---|
+| `retrain` | kinematic | 375–636, every checkpoint | −28.9 m | 480–631 m | 272–353 m |
+| `retrain` | humvee | 0 | 1.33 m | 414–415 m | 579–580 m |
+| `fixed/retrain` | kinematic | 372–634, every checkpoint | −28.9 m | 479–636 m | 231–350 m |
+| `fixed/retrain` | humvee | 0 at 199, 71–186 at 6 | −25.7 to 49.0 m | 303–472 m | 503–667 m |
+| `world-units/retrain` | kinematic | 355–459, every checkpoint | −29.8 m | 471–485 m | 329–339 m |
+| `world-units/retrain` | humvee | 0 | 0.70–0.82 m | 212–218 m | 588 m |
+
+- On kinematic every checkpoint spends 355 to 636 ticks inside buildings, so its progress toward
+  the goal was never real.
+- On the Humvee, `retrain` and `world-units/retrain` each come to one outcome whatever the seed or
+  the step: the car meets a building and stays against it.
+- `fixed/retrain`'s Humvees range further (303–472 m). Six of its checkpoints (seeds 0, 1, 3 and
+  4) still count 71 to 186 ticks with the car's centre inside a building's footprint, and they
+  record no building contact over the run, while 596 of the 609 other Humvee runs do. So that
+  building had no collider where the car entered, or the car went over it. Which one is not
+  known yet: the run log keeps no height. To see it yourself, with the retrain's checkpoints from cvcpkg.org:
 
 ```bash
 cvcpkg install grl-snam-learning-checkpoints --prefix <prefix>

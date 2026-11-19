@@ -98,7 +98,8 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's run log, `grl_snam
   files and a run is 43, so three sets as loose files (646) would not load; as bundles they are
   16. The logs are lean (`--lean`: single precision, the
   cars template's derived fields left out; about 40% smaller, read back the same): about
-  4.9 MB a run on kinematic and 5.7 MB on the Humvee, 25–29 MB a five-seed set on one plant. It
+  5.1–5.3 MB a run's bundle on kinematic and 5.8–6.1 MB on the Humvee, 26–30 MB a five-seed set
+  on one plant. It
   opens on the first plant's first set's first run, at its pick,
   from above (`--camera orbit`), with the Scrub, Episode and Stats windows (`--windows`). The
   Set combo picks a data set and shows its run of the same name at the same step; the Run combo
@@ -106,9 +107,11 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's run log, `grl_snam
 - **Every run is preloaded.** The page's loader fetches its files before the program starts,
   and ariglx-web has no supported fetch after that (non-blocking downloads in the browser
   are libcvc's data roadmap D4, not done), so a set cannot be loaded when it is picked. Each
-  five-seed set adds 25–29 MB a plant to the first visit. The run logs are already compressed,
-  so the server's gzip barely shrinks them: with three sets on two plants the page is roughly
-  190 MB, against about 105 MB on one plant. `--scrub-plants humvee` builds the lighter page.
+  five-seed set adds 26–30 MB a plant to the first visit. The run logs are already compressed,
+  so the server's gzip barely shrinks them: three sets on two plants are 167 MB of bundles
+  (154 MB at gzip -9; 89 MB of them the Humvee's, 78 MB kinematic's), so the page is about
+  190 MB on a first visit, against about 105 MB on one plant. `--scrub-plants humvee` builds the
+  lighter page.
 - Once scrub runs, the page's stderr has `grl-snam: scrub: started in N s`, the runs and data
   sets (`scrub: 15 runs in 3 data sets (retrain, fixed/retrain, world-units/retrain)`), a line for each checkpoint it
   shows (`scrub: retrain/seed0: checkpoint 22 of 41: step 2100, the pick; ...`), then
@@ -143,8 +146,8 @@ To look at it, serve the site's parent at `/GRL-SNAM/` (for example a directory 
 - **Size.** A first visit to the learn page downloads about 35 MB gzip (29.5 MB of it
   `ariglx.wasm`, 105.6 MB raw at 4.0.0), which the browser then caches. GitHub documents no
   per-file limit for a Pages site deployed from an Actions artifact (1 GB a site). learn takes about 20 s to start in the page.
-  The scrub page is about 105 MB: its own copy of the host, and about 77 MB of run logs (three
-  data sets, lean). Each page carries its own host, so a visit to both downloads `ariglx.wasm` twice.
+  The scrub page is about 190 MB: its own copy of the host, and 167 MB of run bundles (three
+  data sets on two plants, lean). Each page carries its own host, so a visit to both downloads `ariglx.wasm` twice.
   Gzipped histories ship as they are (the retrain's five: 1.1 MB, 5.4 MB unzipped); learn's
   reader unzips them in the page, whether or not the server marks them `Content-Encoding: gzip`.
 - **Charts.** libcvc 4.0.0 has Ariadne's `chart:` widget (3.7.14+), so learn and scrub draw their

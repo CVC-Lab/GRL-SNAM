@@ -81,7 +81,12 @@ The Pages page shows the learning check's three retrains: `retrain`, `fixed/retr
 
 - Training curves fall in the later retrains.
 - Deployed outcomes are not yet ordered by training step, and no set shows criteria 1–6 together.
+- No checkpoint reaches the goal on either plant.
+- On kinematic, every checkpoint drives through buildings for 355 to 636 ticks of the 1200.
+- On the Humvee, two of the sets come to a single outcome whatever the step: the car meets a
+  building and stays against it. A policy that had learned to route around buildings would not
+  do that.
 
 So treat the page as the instrument to watch the next retrain with, not as evidence that the
-current policy learned. The re-measured Humvee numbers are in the scrub section of
+current policy learned. The numbers, per set and plant, are in the scrub section of
 [`grl_snam/ariadne/README.md`](../grl_snam/ariadne/README.md).
