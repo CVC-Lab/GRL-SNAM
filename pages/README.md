@@ -63,8 +63,12 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's run log, `grl_snam
   data sets: directories under `docs/learning-validation/` whose `*.history.jsonl.gz` are their
   runs. `--scrub-histories H...` deploys those histories instead, as one set
   (`--scrub-set-name`).
+- **The plants.** `--scrub-plants` (default `humvee kinematic`) deploys every set on each, and the
+  page's Plant combo switches between them at the same run and step. `humvee` (the Jolt Humvee)
+  collides with the buildings, and the page opens on it. `kinematic` (nav's bicycle) drives through
+  them, and it is there to compare.
 - **The runs.** Each is deployed with `--python` (default: the Python running assemble), as
-  `scrub HISTORY --headless --lean --data-set SET --report`, its saved policies found in
+  `scrub HISTORY --headless --lean --data-set SET --plant PLANT --report`, its saved policies found in
   `--checkpoints`/<set>/<run>/ (else `--checkpoints`/<run>/; <run> is the history's name without
   `.history.jsonl[.gz]`). A cvcpkg prefix's `bin/python3.12` gets its `lib/` on the loader path.
   `--scrub-cache DIR` keeps the run logs for the next build: a checkpoint already deployed on the
@@ -87,21 +91,24 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's run log, `grl_snam
   Austin, but Austin's bundle is 228 MB, cvcpkg.org sends no CORS for github.io, and nothing cuts
   it down yet, so a `data` world's page shows the windows alone. On `flat` ground every
   checkpoint drives the same line.
-- **The page.** `scrub/data/<set>/<run>.scrub.zip` is a run's bundle: one zip (stored) with its
+- **The page.** `scrub/data/<plant>/<set>/<run>.scrub.zip` (`data/<set>/<run>.scrub.zip` when the page
+  has one plant) is a run's bundle: one zip (stored) with its
   report (`scrub.json`, its paths made the names inside), its history and its run logs, which
   `scrub --view` reads from it when a checkpoint is shown. The page's loader fetches at most 512
   files and a run is 43, so three sets as loose files (646) would not load; as bundles they are
   16. The logs are lean (`--lean`: single precision, the
   cars template's derived fields left out; about 40% smaller, read back the same): about
-  4.9 MB a run, 25 MB a five-seed set. It opens on the first set's first run, at its pick,
+  4.9 MB a run on kinematic and 5.7 MB on the Humvee, 25–29 MB a five-seed set on one plant. It
+  opens on the first plant's first set's first run, at its pick,
   from above (`--camera orbit`), with the Scrub, Episode and Stats windows (`--windows`). The
   Set combo picks a data set and shows its run of the same name at the same step; the Run combo
   picks a run in the set; the Windows menu has Training, Ledger and Simulation.
 - **Every run is preloaded.** The page's loader fetches its files before the program starts,
   and ariglx-web has no supported fetch after that (non-blocking downloads in the browser
   are libcvc's data roadmap D4, not done), so a set cannot be loaded when it is picked. Each
-  five-seed set adds about 25 MB to the first visit: with the three sets the page is about
-  105 MB gzip.
+  five-seed set adds 25–29 MB a plant to the first visit. The run logs are already compressed,
+  so the server's gzip barely shrinks them: with three sets on two plants the page is roughly
+  190 MB, against about 105 MB on one plant. `--scrub-plants humvee` builds the lighter page.
 - Once scrub runs, the page's stderr has `grl-snam: scrub: started in N s`, the runs and data
   sets (`scrub: 15 runs in 3 data sets (retrain, fixed/retrain, world-units/retrain)`), a line for each checkpoint it
   shows (`scrub: retrain/seed0: checkpoint 22 of 41: step 2100, the pick; ...`), then

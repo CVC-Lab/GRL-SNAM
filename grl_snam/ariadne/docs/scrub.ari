@@ -70,7 +70,8 @@ init: |
     (state-set "scrub.metric_name" "path_m")
     (state-set "scrub.run_count" "1")
     (state-set "scrub.set_count" "1")
-    (state-set "nav_plant.vehicle" "kinematic")
+    (state-set "scrub.plant_count" "1")
+    (state-set "nav_plant.vehicle" "humvee")
     (state-set "run.world" "data")
     (state-set "run.uri" "cvcpkg://cy-pca/scene-austin-south-small")
     (state-set "run.data_path" "share/cvc-scenes/austin_south")
@@ -109,6 +110,11 @@ windows:
         options: (string.split (state-get "scrub.set_labels") "\n")
         visible_when: (> (int (state-get "scrub.set_count")) 1)
         tooltip: "the data set: the same run and step in another one"
+      - combo: Plant
+        bind: scrub.plant_choice
+        options: (string.split (state-get "scrub.plant_labels") "\n")
+        visible_when: (> (int (state-get "scrub.plant_count")) 1)
+        tooltip: "the vehicle the checkpoints were deployed on: the same run and step on another"
       - combo: Run
         bind: scrub.run_choice
         options: (string.split (state-get "scrub.run_labels") "\n")

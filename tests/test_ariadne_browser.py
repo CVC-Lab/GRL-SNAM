@@ -315,6 +315,28 @@ def test_the_scrub_page_carries_several_data_sets(tmp_path, site):
                        "--scrub-only", "--scrub-reports", str(reports[0]), str(reports[0])])  # fmt: skip
 
 
+def test_the_scrub_page_carries_several_plants(tmp_path, site):
+    """Runs deployed on two plants: data/<plant>/<set>/<run>.scrub.zip, the first report's first."""
+    assemble = _pages_module("assemble")
+    reports = []
+    for plant in ("humvee", "kinematic"):
+        r = _scrub_report(tmp_path / plant, "seed7", "retrain")
+        rep = json.loads(r.read_text())
+        rep["scenario"]["plant"] = plant
+        r.write_text(json.dumps(rep))
+        reports.append(r)
+    out = tmp_path / "scrub"
+    assert assemble.main(["--host", str(site / "learn"), "--out", str(out), "--scrub-only",
+                          "--scrub-reports", *map(str, reports)]) == 0  # fmt: skip
+    config = json.loads((out / "ariadne.config.json").read_text())
+    assert config["args"][1:4] == ["--view", "data/humvee/retrain/seed7.scrub.zip",
+                                   "data/kinematic/retrain/seed7.scrub.zip"]  # fmt: skip
+    assert _bundle(out / "data/kinematic/retrain/seed7.scrub.zip")[0]["scenario"]["plant"] == (
+        "kinematic"
+    )
+    assert assemble.SCRUB_PLANTS[0] == "humvee"  # the page opens on the plant that has walls
+
+
 def test_the_learning_checks_data_sets(tmp_path):
     assemble = _pages_module("assemble")
     assert [h.name for h in assemble.set_histories("fixed/retrain")] == [

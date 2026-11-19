@@ -476,7 +476,8 @@ python -m grl_snam.ariadne replay run.npz --at 26 --paused --camera orbit --offs
 ### `scrub`: watch it learn
 
 ```bash
-python -m grl_snam.ariadne scrub run/history.jsonl                           # Austin, kinematic
+python -m grl_snam.ariadne scrub run/history.jsonl                           # Austin, Humvee
+python -m grl_snam.ariadne scrub run/history.jsonl --plant humvee --plant kinematic  # both
 python -m grl_snam.ariadne scrub run/history.jsonl --world flat --ticks 600
 python -m grl_snam.ariadne scrub run/history.jsonl --headless --report scrub.json
 python -m grl_snam.ariadne scrub --view scrub.json [more.json ...]          # deployed before
@@ -485,15 +486,22 @@ python -m grl_snam.ariadne scrub --view scrub.json [more.json ...]          # de
 `scrub` deploys every checkpoint of a training run. The learning history names the policy each
 checkpoint saved: its `blob`, a `.cvcnav` or a `.pt`. A relative path is the history's
 directory's, and blobs that are not there are listed and skipped.
-- **The scenario:** each policy drives libcvc's sim_world on `--plant` (kinematic by default)
-  from the scenario's start to its goal for `--ticks` ticks, as `live --arms` drives an arm, tick
-  for tick. So checkpoint 0 deployed here is the untrained arm deployed there, which the tests
-  check.
+- **The scenario:** each policy drives libcvc's sim_world on `--plant` from the scenario's start
+  to its goal for `--ticks` ticks, as `live --arms` drives an arm, tick for tick. So checkpoint 0
+  deployed here is the untrained arm deployed there (on the same plant), which the tests check.
+- **The plant:** `humvee` by default, the Jolt Humvee, which collides with the world's buildings.
+  A car that drives into one stops against it. `kinematic`, nav's bicycle, has no collision
+  response, so its cars drive through buildings: the scrubber's default until 2026-11-19.
+  - `--plant` given again deploys every checkpoint on each plant, and the Scrub window's
+    Plant combo shows the same run and step on another.
+  - One `--report` holds one plant's run.
 - **The cache:** each run is a run log, cached at `<history>.scrub/<blob sha256>-<scenario
   hash>.npz`. A second look costs nothing. The scenario hash covers the world (its `run.*`
   keys, and a generated world's `world.*`), the start and goal, the seed, the ticks, the plant,
   the policies' frame (`--scale`, else the first `.pt` checkpoint's), the settings set on the
   command line, and libcvc's version.
+- **What to look for:** [`docs/scrubber-guide.md`](../../docs/scrubber-guide.md) describes each
+  window, and what a policy that is learning something useful looks like there.
 - **Checkpoint k** is picked by a combo, a slider, Previous and Next, or a click on a chart. It
   opens on the history's pick (`--at K` for another). Its ghost (orange) runs beside step 0's
   (blue) over the episode, with the Stats and Ledger windows for the two and libcvc's sim
@@ -531,8 +539,9 @@ directory's, and blobs that are not there are listed and skipped.
 - **The exit code** is 0, and 2 when the history names no saved policy that is there, the plant
   is torch, or a report or a file it names is not there.
 
-On the learning check's retrain (seed 0, 41 checkpoints, Austin, kinematic, 60 s each), no
-checkpoint reaches the goal, and there are two outcomes:
+On the learning check's retrain (seed 0, 41 checkpoints, Austin, 60 s each), measured on the
+kinematic plant, the default then, so through the buildings, no checkpoint reaches the goal, and
+there are two outcomes:
 - 25 checkpoints, step 0 among them, stop 516 to 558 m short, after 255 to 266 ticks
   penetrating.
 - 16 checkpoints take another turn and end 865 to 883 m away, after 323 to 334 ticks. They are
@@ -552,9 +561,12 @@ python -m grl_snam.ariadne scrub docs/learning-validation/fixed/retrain/seed0.hi
 
 **In a browser.** The Pages site's scrub page is `scrub --view` on the learning check's three
 retrains (`retrain`, `fixed/retrain`, `world-units/retrain`; the Set combo picks one), five seeds
-each, deployed when the site is built on libcvc's generated world (`pages/README.md`). It needs no
-download beyond the page. There, too, none of the 615 checkpoints reaches the goal (each ends 231
-to 353 m short), and in no set are the outcomes ordered by training step.
+each, deployed when the site is built on libcvc's generated world on two plants, the Humvee and
+kinematic (the Plant combo picks one; `pages/README.md`). It needs no download beyond the page.
+On kinematic, through the buildings, none of the 615 checkpoints reaches the goal (each ends 231 to
+353 m short), and in no set are the outcomes ordered by training step. On the Humvee none does
+either: world-units/retrain seed 0's 41 checkpoints all stop against a building about 150 m in,
+588 m from the goal, with no tick penetrating.
 
 ### `cars`: N Ackermann cars driven by your own controller
 
