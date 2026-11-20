@@ -7,13 +7,15 @@
 #   speed, progress), as hud.* (apart from libcvc's nav.* settings), the HUD's lines at hud.hud,
 #   and the coefficients as plots;
 # - View: the plant and the world (austin-freedrive takes any), pause, the sim speed, the camera;
-# - Settings, World and Rasters: libcvc's multi-car template's panels (pycvc_gl.cars's
-#   cars_panels.ari, by cvc:// on the host's component path), bound to libcvc's own keys:
-#   nav.*, nav.vehicle.* (on GRL-SNAM's torch navigator, the keys that mean the same thing there:
-#   grl_snam/ariadne/README.md), nav_plant.* (the plant: nav_plant.vehicle), run.* (the world),
-#   world.* (the terrain generator);
-# - the scene: the city this document names (data: below), or a generated world, and the demo's
-#   vehicle, under a soft afternoon light;
+# - Settings and Rasters: libcvc's multi-car template's panels (pycvc_gl.cars's cars_panels.ari, by
+#   cvc:// on the host's component path), bound to libcvc's own keys: nav.*, nav.vehicle.* (on
+#   GRL-SNAM's torch navigator, the keys that mean the same thing there: grl_snam/ariadne/README.md)
+#   and nav_plant.* (the plant: nav_plant.vehicle);
+# - World: libcvc's world_source component. The scene's worlds are its nodes with `world:` (below):
+#   the city this document names (data:), libcvc's terrain generator (its settings on the node) and
+#   a flat walled square. scene.world.source is the one on, and libcvc's world runtime runs it:
+#   what is drawn, the bodies and the navigator's grid (cut to nav_grid.half) all come from it
+#   (grl_snam/ariadne/_world.py). austin-freedrive drives in any of them;
 # - Trace: with --record-trace or --replay-trace only (trace.on): the file, the ticks and the
 #   hashes compared; in a replay a Position slider and Restart (a seek back runs from tick 0);
 # - Stats and Ledger (stats_panels.ari, beside this file): with --arms only (arms.on), one row per
@@ -24,15 +26,16 @@
 #
 # The city is the Austin scene package on cvcpkg.org. The host downloads it once (later runs read
 # its cache), unpacks it into the state tree and decodes it: the terrain with its aerial image, and
-# the buildings. The city node draws that, and the demo reads the same objects for its terrain,
-# occupancy and SDF (grl_snam.ariadne._host.document_city), so the bundle is never read twice.
-# live.py's --uri / --bundle (or GRL_SNAM_SCENE_BUNDLE) points data.city at another city instead.
+# the buildings. The city node draws that and its bodies collide with it, and the demo reads the
+# same objects for its terrain, occupancy and SDF, so the bundle is never read twice. live.py's
+# --world picks the world on (scene.world.source), and --uri / --bundle (or GRL_SNAM_SCENE_BUNDLE)
+# loads another city into data.city, as the World window's Load does.
 
 meta:
   name: GRL-SNAM live demo
   min_libcvc: 3.7.11
 
-import: [cvc://cars_panels.ari, stats_panels.ari]
+import: [cvc://cars_panels.ari, cvc://components/world_source.ari, stats_panels.ari]
 
 requires:
   - {name: chart, optional: true}   # the arms' charts (libcvc 3.7.14)
@@ -53,19 +56,9 @@ init: |
     (state-set "view.raster_m" "80")
     (state-set "show.plans" "1")
     (state-set "nav_plant.vehicle" "torch")
-    (state-set "run.world" "data")
-    (state-set "run.uri" "cvcpkg://cy-pca/scene-austin-south-small")
-    (state-set "run.data_path" "share/cvc-scenes/austin_south")
-    (state-set "run.crop" "600")
-    (state-set "world.seed" "7")
-    (state-set "world.half" "500")
-    (state-set "world.amp" "25")
-    (state-set "world.water_level" "-4")
-    (state-set "world.buildings" "160")
-    (state-set "world.trees" "200")
-    (state-set "world.rocks" "40")
-    (state-set "world.terrain" "fbm")
-    (state-set "world.city" "districts")
+    (state-set "nav_grid.half" "600")
+    (state-set "nav_grid.flat.cell" "2.42")
+    (state-set "nav_grid.flat.half" "96.8")
     (state-set "arms.on" "0")
     (state-set "trace.on" "0")
     (state-set "arms.goal" "")
@@ -122,7 +115,7 @@ windows:
         values: [torch, kinematic, humvee, roboracer, "dynamic:humvee"]
         tooltip: "on a plant, libcvc's navigator drives with GRL-SNAM's policy; between plants it switches at once"
       - text: "world"
-        bind: run.world
+        bind: scene.world.source
       - checkbox: Paused
         bind: view.paused
       - slider_float: Sim speed
@@ -141,7 +134,7 @@ windows:
     pos: [368, 30]
     size: [360, 330]
 
-  - include: cars_world
+  - include: world_source
     pos: [368, 372]
     size: [340, 330]
 
@@ -201,11 +194,44 @@ scene:
       warmth: 0.5
       environment: 0.5
       ambient: 0.32
+  physics: {}
+  world: { source: data, cell: 2 }   # the world on (scene.world.source): data, generated or flat
   nodes:
+    # World data: the data: block's city (or what --uri / the World window loads into data.city):
+    # its terrain with the aerial image draped, and its buildings, drawn and in the physics world.
     - node: city
-      source: { data: city }     # the terrain (aerial image draped) and the buildings, when loaded
-      visible: { bind: view.city, default: true }
-    - node: gen                  # World: Generated (austin-freedrive): libcvc's generator
+      source: { data: city }
+      world: data
+      body: {}
+    # World generated: libcvc's terrain generator. The node's settings seed the world.* keys, which
+    # the World window edits; Regenerate (world.request) makes a new world from them.
+    - node: gen
       type: generated_world
+      world: generated
       look: soft
-      visible: { bind: view.generated, default: false }
+      seed: 7
+      half: 500
+      amp: 25
+      water_level: -4
+      buildings: 160
+      trees: 200
+      rocks: 40
+      terrain: fbm
+      city: districts
+      body: {}
+    # World flat: a walled square 40 Humvee lengths (193.6 m) across, its grid at half a Humvee
+    # (nav_grid.flat.cell; nav_grid.flat.half is half its side), as pycvc_gl.cars's flat world has it.
+    - node: square
+      world: flat
+      source: { box: { size: [193.6, 193.6, 1] } }
+      transform: { position: [0, 0, -0.5] }
+      material: { color: [0.45, 0.50, 0.40] }
+      body: static
+    - { node: wall_s, world: flat, source: { box: { size: [193.6, 2.42, 5.808] } },
+        transform: { position: [0, -95.59, 2.904] }, material: { color: [0.80, 0.78, 0.74] }, body: static }
+    - { node: wall_n, world: flat, source: { box: { size: [193.6, 2.42, 5.808] } },
+        transform: { position: [0, 95.59, 2.904] }, material: { color: [0.80, 0.78, 0.74] }, body: static }
+    - { node: wall_w, world: flat, source: { box: { size: [2.42, 193.6, 5.808] } },
+        transform: { position: [-95.59, 0, 2.904] }, material: { color: [0.80, 0.78, 0.74] }, body: static }
+    - { node: wall_e, world: flat, source: { box: { size: [2.42, 193.6, 5.808] } },
+        transform: { position: [95.59, 0, 2.904] }, material: { color: [0.80, 0.78, 0.74] }, body: static }

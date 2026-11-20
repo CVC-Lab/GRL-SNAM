@@ -35,8 +35,10 @@ DEFAULT_N = 384
 
 
 def occupancy(bundle_dir: str | Path, *, half_m: float = DEFAULT_HALF_M, n: int = DEFAULT_N):
-    """Rasterize the bundle's buildings into a boolean occupancy grid (libcvc's C++ rasterizer
-    when the installed pycvc has it, else a VTK render: ``demos._common.bundle_occupancy``)."""
+    """The bundle's buildings as a boolean occupancy grid, ``n`` x ``n`` samples over ``half_m``
+    either side of the origin: libcvc's nav rasterizer over the bundle decoded as a document's
+    ``data.city`` is (``demos._common.bundle_occupancy``). The recordings have no document; an
+    Ariadne port's grid is its document's world's (``grl_snam.ariadne._world``)."""
     from grl_snam.demos._common import bundle_occupancy
 
     bounds = (-half_m, -half_m, half_m, half_m)

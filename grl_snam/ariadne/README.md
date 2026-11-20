@@ -95,16 +95,17 @@ states, coefficients, the rasters every `--raster-every` frames with the predict
 every setting in `meta`. The exit code is 0, 1 when the run failed, and 3 below `--min-arrivals`
 (1 for reaching the goal).
 
-The city is the document's (`docs/live.ari`'s `data:` block):
+The world is the document's ([The world: the document's](#the-world-the-documents)); on Austin,
+its `data:` block's city:
 - **Where it comes from:** the host downloads the package once, and later runs read the local
   cache. It unpacks the package into the state tree and decodes it.
 - **What draws it:** the scene's `city` node draws the terrain, with the package's aerial image
-  draped over it, and the buildings.
+  draped over it, and the buildings. The same node's bodies are in the scene's physics world.
 - **What the demo reads:** the same objects, through `DemoHost.city`. Its terrain sampler,
   occupancy grids and SDF come from that one load, so no bundle file is read twice.
-- **A local bundle instead:** `--bundle DIR` (or `GRL_SNAM_SCENE_BUNDLE`) points the document's
-  city at a bundle on disk, with nothing downloaded.
-- **When the package cannot load** (offline, no cache), the installed bundle stands in.
+- **A local bundle instead:** `--bundle DIR` (or `GRL_SNAM_SCENE_BUNDLE`) loads a bundle on disk
+  into the document's city, with nothing downloaded.
+- **When the package cannot load** (offline, no cache), the port says why and stops.
 - **`austin-planner`** drives a world of its own, so the city never loads for it.
 
 #### Arms: policies side by side
@@ -279,9 +280,11 @@ python -m grl_snam.ariadne fleet --headless --frames 600 --log run.npz --min-arr
 
   Between libcvc's plants the switch is live: the agents keep their poses. To or from `torch`
   the squad is rebuilt. The old names still work (`jolt:humvee` is `humvee`).
-- **The world:** Austin from the document's `data:` block, another city (`--uri`), libcvc's
-  terrain generator (`--world generated`), or the flat square (`--world flat`). The squad, the
-  physics and the scene take the same one.
+- **The world:** the document's ([The world: the document's](#the-world-the-documents)): Austin
+  from its `data:` block, another city (`--uri`, or the World window's Load), libcvc's terrain
+  generator (`--world generated`), or the flat square (`--world flat`). The squad drives on its
+  grid and its plant collides with its geometry. A new world (the World window's Source,
+  Regenerate or Load) rebuilds the squad.
 - **The panels:**
   - a row per agent;
   - the chosen agent's (`view.car`) coefficients (alpha, beta, gamma, and its clearance);
@@ -326,6 +329,51 @@ and times the navigator's scale on it:
 The rest are libcvc's alone and do nothing on the torch navigator: `nav_plant.*`, the risk
 governor, `nav.yield.*` and the multi-disc footprint. `austin-patrol` (a route played back) and
 `austin-planner` (its own coefficients) take none.
+
+### The world: the document's
+
+`live`, `fleet`, `replay` and `scrub` drive in their document's world, which libcvc's world
+runtime (`SceneWorld`) runs, as libcvc's own world documents do (libcvc's docs/ARIADNE.md,
+"Worlds"; ARIADNE_WORLDS.md sections 14 and 18). Each document's scene declares its worlds as
+nodes with `world:`:
+
+| world | node | what it is |
+|---|---|---|
+| `data` | `city`, `source: { data: city }` | the city the `data:` block names: Austin's small package |
+| `generated` | `gen`, `type: generated_world` | libcvc's terrain generator, its settings on the node (seed 7, 500 m, ...) |
+| `flat` | `square` and four walls | a walled square 40 Humvee lengths (193.6 m) across, its grid at half a Humvee (`nav_grid.flat.cell`), as the `cars` template's |
+
+- **One is on:** `scene: world: { source: data }`, the `scene.world.source` key. The scene draws
+  only that world, its bodies are the physics world's, and the navigator's grid is its grid.
+- **Choosing one is a change to the document:**
+  - `--world NAME`, or the World window's Source (libcvc's `world_source` component), sets
+    `scene.world.source`;
+  - `--uri` / `--bundle`, or the World window's Load, loads another city into `data.city`, as the
+    document's `(data-load "city" ...)` does;
+  - `--set world.seed=4` (any of the generator's `world.*` keys), or the World window's
+    Regenerate, makes a new generated world.
+  The ports never build a world of their own.
+- **What a port drives on** (`grl_snam/ariadne/_world.py`): the navigator's grid of the world on,
+  from `SceneWorld::grid` (`pycvc.AriApp.grid`), at the document's cell (`nav_grid.<world>.cell`,
+  else the scene's 2 m) and cut to its `nav_grid.half` (600 m); the terrain's height; and the
+  world's geometry, which the plant collides with. On the generated world and on Austin that grid
+  is the one `pycvc_gl.cars`'s `make_world` made, cell for cell, so deployed runs do not move.
+- **Still beside SceneWorld until libcvc's OW7:**
+  - **The plants** are the `cars` template's (`pycvc_gl.cars.Cars`: libcvc's `sim_world` with
+    `plant_host`), not vehicles in the document's world, so a port hands them a
+    `pycvc_gl.cars.World` over that grid and that geometry.
+  - **A drawn host's grid:** under a window, offscreen or in a page, `pycvc.AriApp.grid` finds no
+    world (libcvc 4.0 reads `AppRuntime::scene_world()`, empty when a renderer runs it). The port
+    makes the grid as SceneWorld does (`cvc::nav::make_grid`) over the same world, and checks it
+    against what SceneWorld publishes (`scene.world.grid.*`).
+  - **A generated world's geometry** is generated again from the node's own keys, since
+    SceneWorld's colliders are not reachable from Python.
+  - **The crop** (`nav_grid.half`) cuts the grid only; the city's bodies and what is drawn are the
+    whole city. It becomes the data node's region with libcvc's world bundles (GB2,
+    transfix/libcvc#1380), which cuts all three.
+- **A log or a report** records the world as `run` (the world on, the city, the crop) and
+  `world_keys` (the generator's settings), and `replay` and `scrub --view` choose that world in
+  their document again. Logs from before read the same way.
 
 ### `material`: material-aware navigation
 
@@ -540,8 +588,9 @@ directory's, and blobs that are not there are listed and skipped.
     Plant combo shows the same run and step on another.
   - One `--report` holds one plant's run.
 - **The cache:** each run is a run log, cached at `<history>.scrub/<blob sha256>-<scenario
-  hash>.npz`. A second look costs nothing. The scenario hash covers the world (its `run.*`
-  keys, and a generated world's `world.*`), the start and goal, the seed, the ticks, the plant,
+  hash>.npz`. A second look costs nothing. The scenario hash covers the world (the document's
+  world on, its city and its grid's crop, and a generated world's `world.*`), the start and goal,
+  the seed, the ticks, the plant,
   the policies' frame (`--scale`, else the first `.pt` checkpoint's), the settings set on the
   command line, and libcvc's version.
 - **What to look for:** [`docs/scrubber-guide.md`](../../docs/scrubber-guide.md) describes each

@@ -5,8 +5,10 @@
     python -m grl_snam.ariadne replay run.npz --at 12 --offscreen --frames 1 --png at12.png
 
 The run log (:mod:`grl_snam.learning.runlog`) holds every arm's pose, drive telemetry, books, Stats
-row and plant ledger, tick by tick. The replay rebuilds the recorded world from the log's ``run``
-and ``world`` keys, draws each arm's ghost and track where the arm was at the play head, and
+row and plant ledger, tick by tick. The replay chooses the recorded world in its document (the log's
+``run`` and ``world_keys``: the world on, its city, the generator's settings;
+:func:`grl_snam.ariadne._world.from_record`), draws each arm's ghost and track where the arm was at
+the play head, and
 writes the Stats and Ledger windows (``docs/stats_panels.ari``) as the live run showed them at
 that tick. It writes them with the live run's own code (:func:`grl_snam.ariadne._arms.panel_tables`,
 :func:`~grl_snam.ariadne._arms.chart_series`, :func:`grl_snam.ariadne.live.update_ghosts`), so
@@ -27,7 +29,7 @@ import sys
 
 import numpy as np
 
-from grl_snam.ariadne import _arms, _cars, _host
+from grl_snam.ariadne import _arms, _cars, _host, _world
 from grl_snam.ariadne.live import publish_charts, publish_tables, update_ghosts
 from grl_snam.learning.runlog import RunLog
 
@@ -162,11 +164,7 @@ def main(argv=None) -> int:
     names = [a.name for a in arms]
     meta = log.meta
     host = _host.open_host("replay.ari", "replay", args, load=False)
-    _host.load_document(host, "replay.ari", city=drawn, worlds=drawn)
-    run_keys = {k: v for k, v in (meta.get("run") or {}).items() if v not in (None, "")}
-    host.set_many(run_keys, prefix="run")
-    host.set_many({k: v for k, v in (meta.get("world_keys") or {}).items() if v not in (None, "")},
-                  prefix="world")  # fmt: skip
+    _host.load_document(host, "replay.ari")
     host.set_many({"names": "\n".join(names), "status": ""}, prefix="arms")
     host.set("view.arm", names[0])
     host.set("ledger.agent", names[0])
@@ -188,11 +186,12 @@ def main(argv=None) -> int:
     st = {"nodes": [], "tracks": [[] for _ in arms], "camera": None, "modeled": None,
           "charts": None}  # fmt: skip
     if drawn:
-        C = _cars.C
-        kind = run_keys.get("world", "data")
-        world = C.make_world(host, kind)
-        C.show_world(host, kind, str(_host.DOCS / "replay.ari"))
-        C.draw_world(host, {"world": world})
+        _world.from_record(host, meta.get("run"), meta.get("world_keys"))
+        try:
+            world = _world.world(host)
+        except RuntimeError as e:
+            host.close()
+            return _refuse(f"the recorded world: {e}")
         start = meta.get("start") or (log.arrays["x"][0, 0], log.arrays["y"][0, 0])
         host.lab.add_markers("start", [(start[0], start[1], world.z(*start) + 1.0)],
                              color=(0.15, 0.85, 0.25))  # fmt: skip

@@ -115,21 +115,28 @@ def world_occupancy(world, bounds, nx, ny, *, inflate_m=0.0):
     return planes["occupancy"].astype(bool)
 
 
-def bundle_occupancy(bundle_dir, bounds, nx, ny, *, inflate_m=0.0):
-    """The bundle's buildings as a boolean (ny, nx) occupancy grid over ``bounds``, row 0 at min
-    y: libcvc's nav rasterizer (:func:`world_occupancy`) when the installed pycvc has it, else
-    ``pycvc_gl.scenes.building_occupancy`` (a VTK render). ``inflate_m`` dilates the buildings by
-    that many metres."""
-    import numpy as np
+def load_city(bundle_dir):
+    """The city bundle at ``bundle_dir`` (terrain.json, buildings.glb) as libcvc's city loader reads
+    it (``cvc::world::load_city_bundle``, which the Ariadne data store's ``city_bundle`` decoder
+    runs on a document's ``data.city``): a ``pycvc.city_bundle`` whose ``world()`` is its
+    ``pycvc.world_geometry``. For a host with no document (VolRover3, the recording tools); an
+    Ariadne port's city is its document's (``grl_snam.ariadne._world``)."""
     import pycvc
 
-    if hasattr(pycvc, "nav_world_rasterize") and hasattr(pycvc, "load_city_bundle"):
-        world = pycvc.load_city_bundle(str(bundle_dir)).world()
-        return world_occupancy(world, bounds, nx, ny, inflate_m=inflate_m)
-    from pycvc_gl.scenes import building_occupancy
+    if not hasattr(pycvc, "load_city_bundle") or not hasattr(pycvc, "nav_world_rasterize"):
+        raise RuntimeError("a city bundle needs libcvc's city loader and nav rasterizer (pycvc "
+                           "3.7.11+)")  # fmt: skip
+    try:
+        return pycvc.load_city_bundle(pycvc.make_app(), str(bundle_dir))  # libcvc 4.0: the app
+    except TypeError:
+        return pycvc.load_city_bundle(str(bundle_dir))  # 3.7
 
-    glb = os.path.join(str(bundle_dir), "buildings.glb")
-    return np.asarray(building_occupancy(glb, bounds, nx, ny, inflate_m=inflate_m), bool)
+
+def bundle_occupancy(bundle_dir, bounds, nx, ny, *, inflate_m=0.0):
+    """The bundle's buildings as a boolean (ny, nx) occupancy grid over ``bounds``, row 0 at min
+    y: libcvc's nav rasterizer (:func:`world_occupancy`) over the decoded bundle
+    (:func:`load_city`). ``inflate_m`` dilates the buildings by that many metres."""
+    return world_occupancy(load_city(bundle_dir).world(), bounds, nx, ny, inflate_m=inflate_m)
 
 
 class City:
@@ -137,9 +144,9 @@ class City:
     min_y, max_x, max_y) and :meth:`occupancy`.
 
     A host that has already loaded and drawn the city hands it over with ``host.city()``. The
-    Ariadne live port is one such host: its document names the city in its ``data:`` block, and
-    the scene draws what loaded. Otherwise :func:`open_city` loads the installed bundle into the
-    demo's lab, as the demos always have."""
+    Ariadne live port is one such host: the city is its document's world (its ``data:`` block's
+    city, or another world node), which the scene draws. Otherwise :func:`open_city` loads the
+    installed bundle into the demo's lab, as the demos always have."""
 
     def __init__(self, sample, bounds, occupancy):
         self.sample = sample
@@ -166,9 +173,9 @@ class City:
 
 
 def open_city(host, lab):
-    """The demo's :class:`City`: the host's (``host.city()``, already drawn), else the installed
-    bundle (:func:`default_scene_bundle`), drawn into ``lab``."""
-    import pycvc
+    """The demo's :class:`City`: the host's (``host.city()``: an Ariadne port's is its document's
+    world, already drawn), else the installed bundle (:func:`default_scene_bundle`), drawn into
+    ``lab`` and decoded once (:func:`load_city`) for every grid the demo asks."""
     from pycvc_gl.scenes import load_geometry_bundle
 
     from grl_snam.tools.sdf import terrain_bounds
@@ -179,18 +186,11 @@ def open_city(host, lab):
         return city
     bundle = default_scene_bundle()
     sample = load_geometry_bundle(lab, bundle)
-    bounds = terrain_bounds(bundle)
-    if hasattr(pycvc, "nav_world_rasterize") and hasattr(pycvc, "load_city_bundle"):
-        world = pycvc.load_city_bundle(str(bundle)).world()  # once, for every grid the demo asks
-        return City(
-            sample,
-            bounds,
-            lambda b, nx, ny, inflate_m=0.0: world_occupancy(world, b, nx, ny, inflate_m=inflate_m),
-        )
+    world = load_city(bundle).world()
     return City(
         sample,
-        bounds,
-        lambda b, nx, ny, inflate_m=0.0: bundle_occupancy(bundle, b, nx, ny, inflate_m=inflate_m),
+        terrain_bounds(bundle),
+        lambda b, nx, ny, inflate_m=0.0: world_occupancy(world, b, nx, ny, inflate_m=inflate_m),
     )
 
 

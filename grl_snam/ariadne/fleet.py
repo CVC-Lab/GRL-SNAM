@@ -33,10 +33,14 @@ set the same four ways: in the document's ``init:``, on the sliders, with ``--se
   ``a_lat_max``, ``wheelbase``, ``delta_max``, ``k_steer``, ``allow_reverse``, and
   ``nav.reach_tol``, plus the scenario's ``nav.range_m`` and ``nav.sense_every``. The rest
   (``nav_plant.*``, the risk governor, ``nav.yield.*``, ...) are libcvc's alone.
-- **World**, ``run.world`` (``--world``): the document's ``data:`` block (Austin from cvcpkg.org;
-  ``--uri`` or the URI field for another package or a local bundle; ``--bundle DIR`` is
-  ``--uri DIR``), libcvc's terrain generator (``world.*``), or a flat walled square. The squad,
-  the physics and the scene all take the same world.
+- **World**: the document's world node (``docs/fleet.ari``'s scene, :mod:`grl_snam.ariadne._world`),
+  which libcvc's world runtime runs: Austin from its ``data:`` block (``--uri``, or the World
+  window's Load, for another package or a local bundle; ``--bundle DIR`` is ``--uri DIR``),
+  libcvc's terrain generator (the node's settings, ``world.*``: the World window, or ``--set``),
+  or a flat walled square. ``--world`` or the World window's Source picks one
+  (``scene.world.source``). The squad's grid is that world's, and its plant collides with that
+  world's geometry; a new world (another source, a regenerated or reloaded one) rebuilds the
+  squad.
 - **Panels**: a row per agent; the chosen agent's (``view.car``) coefficients (the policy's alpha,
   beta, gamma and its clearance); the pictures around it (the signed distance with its planned
   route, and its belief: fog of war, grey where it has not looked); the settings; the generator.
@@ -58,7 +62,7 @@ import sys
 
 import numpy as np
 
-from grl_snam.ariadne import _cars, _host
+from grl_snam.ariadne import _cars, _host, _world
 
 #: The Plant combo's choices: GRL-SNAM's torch squad, or a plant libcvc's plant_host names.
 PLANTS = ("torch", "kinematic", "humvee", "roboracer", "dynamic:humvee", "dynamic4w:humvee")
@@ -315,28 +319,28 @@ def main(argv=None) -> int:
     C = _cars.C
     bundle = args.bundle or os.environ.get("GRL_SNAM_SCENE_BUNDLE") or None
     host = _host.open_host("fleet.ari", "fleet", args, load=False)
-    _host.load_document(host, "fleet.ari", worlds=True)
+    _host.load_document(host, "fleet.ari")
     flags = {"fleet.agents": args.agents}
-    if bundle and not args.uri:  # a local city, loaded (from there, no download) when it is used
-        flags.update({"run.uri": str(bundle), "run.data_path": ""})
     if args.plant is not None:
         flags["nav_plant.vehicle"] = plant_name(args.plant)
-    C.apply_settings(host, args, flags)
+    _world.apply_settings(host, args, flags, bundle=bundle)
     model = load_model()
     drawn = host.mode != "headless"
     log = C.CarsLog() if args.log else None
     st = {"fleet": None, "nodes": [], "world": None, "torch": None, "scen": None, "coef": {},
           "speed": [], "error": None, "camera": None, "model": None}  # fmt: skip
-    doc = str(_host.DOCS / "fleet.ari")
 
     def build(seed=None):
-        kind = host.get("run.world", "data") or "data"
+        kind = _world.source(host)
         try:
-            world = C.make_world(host, kind, cell=CELL_M)
-        except Exception as e:  # noqa: BLE001 - say why, and fall back to a world that loads
+            world = _world.world(host, cell=CELL_M)
+        except Exception as e:  # noqa: BLE001 - say why, and keep the squad that runs
             host.set("stats.note", f"{kind} world: {e}")
-            print(f"fleet: the {kind} world failed ({e}); flat ground instead", file=sys.stderr)
-            world = C.flat_world(_cars.humvee_sizes()[0])
+            print(f"fleet: the {kind} world failed: {e}", file=sys.stderr)
+            if st["fleet"] is not None:
+                return
+            raise
+        st["rev"] = host.get("scene.world.rev")
         n = max(1, host.get_int("fleet.agents", 6))
         vehicle = plant_name(host.get("nav_plant.vehicle", "torch"))
         story = austin_story(world.occ.astype(bool), world.bounds, key="fleet", fog=True)[0]
@@ -354,7 +358,6 @@ def main(argv=None) -> int:
             st["scen"].seed()
             if host.get("nav_plant.vehicle") in (None, ""):
                 host.set("nav_plant.vehicle", "torch")
-        C.show_world(host, world.kind, doc)
         if log is not None:
             log.meta.update(world=world.info, agents=n, seed=args.seed if seed is None else seed,
                             plant=vehicle, policy="grl-snam-weights" if model else "untrained")  # fmt: skip
@@ -368,7 +371,7 @@ def main(argv=None) -> int:
             if host.scene.hasGraphics(name):
                 host.scene.removeGraphics(name)
         st["nodes"] = []
-        C.draw_world(host, st)
+        st["camera"] = None  # the document draws the world
         model_mesh = C.humvee_model(host, _host.HUMVEE_LEN_M) or _host.humvee_model(
             _host.bundle_or_none(args.bundle), host=host
         )
@@ -386,30 +389,27 @@ def main(argv=None) -> int:
             host.lab.add_path(f"track_{k}", [(0, 0, 0), (0.1, 0, 0)], a.color)
             st["nodes"] += [f"car_{k}", f"pole_{k}", f"goal_{k}", f"track_{k}"]
 
-    def regenerate():
-        if (host.get("run.world") or "data") != "generated":
-            host.set("run.world", "generated")  # the watch rebuilds
-        else:
-            build()
-        if drawn:
-            host.set("world.request", "regenerate")  # the scene's generated_world node redraws it
-
-    def load_world():
-        C.load_data_world(host, host.get("run.uri", C.AUSTIN), host.get("run.data_path", ""))
-        if host.get("run.world") != "data":
-            host.set("run.world", "data")
-        else:
-            build()
-
     host.on("restart", build)
     host.on("shuffle", lambda: build(int(np.random.default_rng().integers(1 << 30))))
-    host.on("regenerate_world", regenerate)
-    host.on("load_world", load_world)
 
     @host.watch("fleet.agents")
-    @host.watch("run.world")
     def _rebuild(_v):
         if st["fleet"] is not None:
+            build()
+
+    # The World window's Source, Regenerate and Load change the document's world; SceneWorld bumps
+    # scene.world.rev once the new one is ready, and the squad is rebuilt on it.
+    @host.watch("scene.world.source")
+    def _source(_v):
+        _world.network(host)  # the data world's city may need the registry
+
+    @host.watch("scene.world.rev")
+    def _world_changed(rev):
+        if (
+            st["fleet"] is not None
+            and rev != st.get("rev")
+            and host.get("scene.world.ready") == "1"
+        ):
             build()
 
     @host.watch("nav_plant.vehicle")
@@ -553,7 +553,7 @@ def main(argv=None) -> int:
     if log is not None:
         path = C.save_log(
             log, host, args.log, fleet={k: host.get(f"fleet.{k}") for k in ("agents", "ticks")},
-            run={k: host.get(f"run.{k}") for k in ("world", "uri", "data_path")},
+            run=_world.record(host),
             arrivals=arrived, error=st["error"],
         )  # fmt: skip
         print(f"fleet: {len(log)} ticks to {path}")
