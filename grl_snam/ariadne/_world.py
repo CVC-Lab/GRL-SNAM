@@ -20,18 +20,20 @@ never builds a world of its own choosing:
 
 :func:`world` is what a port drives on: the navigator's grid of the world on (SceneWorld's,
 ``pycvc.AriApp.grid``), cut to the document's ``nav_grid.half``, the terrain's height, and the
-world's geometry for the plant's colliders. It is a ``pycvc_gl.cars.World`` because the plants
-are still the Cars template's (``nav_sim_world`` with ``plant_host``, which collides with that
-geometry) until libcvc's OW7 puts them in the document's world. Two things are still read beside
-SceneWorld rather than from it, and :func:`check` holds them to what SceneWorld publishes
-(``scene.world.grid.*``):
+world's geometry for the plant's colliders (``AriApp.world_geometry``: SceneWorld's own). It is
+a ``pycvc_gl.cars.World`` because the plants are still the Cars template's (``nav_sim_world`` with
+``plant_host``, which collides with that geometry) until libcvc's OW7 puts them in the document's
+world. In a page (mode ``embedded``) the world is made in the page's frames, after the port's
+program returns, so a port there takes it in a frame (:func:`when_ready`).
 
-- **A drawn host's grid.** Under a window, offscreen or in a browser page, ``AriApp.grid`` finds no
-  world: it reads ``AppRuntime::scene_world()``, which is empty when a renderer runs the world. So
-  the grid is made as SceneWorld makes it (``cvc::nav::make_grid``), over the same world.
-- **A generated world's geometry.** SceneWorld's colliders are not reachable from Python, so the
-  plant's are generated again from the node's own ``world.*`` keys: the same generator, the same
-  settings.
+On a libcvc whose pycvc has no ``AriApp.world_geometry`` (4.0.2 and before), ``AriApp`` reads only
+a headless host's world, so two things are made beside SceneWorld, and :func:`check` holds them to
+what SceneWorld publishes (``scene.world.grid.*``):
+
+- **a drawn host's grid**, made as SceneWorld makes it (``cvc::nav::make_grid``) over the same
+  world;
+- **a generated world's geometry**, generated again from the node's own ``world.*`` keys: the
+  same generator, the same settings.
 """
 
 from __future__ import annotations
@@ -182,7 +184,7 @@ def network(host) -> None:
     pycvc.data_allow_network(host.app, [registry_origin()])
     if pycvc.data_status(host.app, city_path(host)) == "error":
         host.run_program(f'(data-reload "{CITY}")')  # it runs in the next frame
-        if _steps(host):
+        if steps(host):
             host.step(1.0 / 60.0)
 
 
@@ -259,7 +261,7 @@ def _headless(host) -> bool:
     return host.mode == "headless"
 
 
-def _steps(host) -> bool:
+def steps(host) -> bool:
     """Whether this program may run the host's frames itself: not in a scripting host's page
     (mode ``embedded``), which runs them once the program returns, nor from inside a frame (a
     handler or a watch)."""
@@ -292,7 +294,7 @@ def wait(host, timeout=900.0) -> None:
         network(host)
         if not pycvc.data_wait(host.app, city_path(host), timeout=timeout):
             raise RuntimeError(f"the document's city did not load: {_data_error(host)}")
-    if not _steps(host):
+    if not steps(host):
         if getattr(host, "_in_frame", False) and not _settled(host):
             raise RuntimeError(f"the {name} world is not ready: {host.get('scene.world.status')}")
         return
@@ -336,8 +338,8 @@ def grid_cut(host, cell=None, half=None) -> tuple[float, float]:
 def grid(host, cell=None, half=None, *, timeout=60.0):
     """The navigator's grid of the world on (a ``pycvc.world_grid``): SceneWorld's
     (``pycvc.AriApp.grid``), ``cell`` m samples, cut to ``half`` m either side of its centre
-    (:func:`grid_cut`). Under a drawn host, where ``AriApp.grid`` finds no world, it is made as
-    SceneWorld makes it, over the same world (:func:`made_grid`)."""
+    (:func:`grid_cut`). Under a drawn host on a libcvc whose ``AriApp`` reads only a headless
+    host's world, it is made as SceneWorld makes it, over the same world (:func:`made_grid`)."""
     import time
 
     cell, half = grid_cut(host, cell, half)
@@ -348,8 +350,8 @@ def grid(host, cell=None, half=None, *, timeout=60.0):
             g = rt.grid(node, cell, half)
             if g is not None:
                 return g
-        if not _headless(host) or not _steps(host) or time.monotonic() > deadline:
-            break  # a drawn host's runtime has no world to read (libcvc 4.0)
+        if not _headless(host) or not steps(host) or time.monotonic() > deadline:
+            break  # a drawn host's world, on a libcvc whose AriApp reads only a headless one
         host.step(1.0 / 60.0)  # SceneWorld takes a dataset's world at its next step
     if _headless(host):
         raise RuntimeError(f"SceneWorld has no grid of the {source(host)} world "
@@ -366,7 +368,8 @@ def made_grid(host, cell, half):
     if k == "data":
         return pycvc.nav_world_grid(pycvc.data_world(host.app, city_path(host)), cell, half)
     if k == "generated":
-        return pycvc.nav_world_grid(generated(host).world(), cell, half)
+        geometry = scene_geometry(host) or generated(host).world()
+        return pycvc.nav_world_grid(geometry, cell, half)
     if k == "flat":
         return pycvc.nav_flat_grid(flat_half(host), cell)
     raise RuntimeError(f"a {k or 'missing'} world: the ports drive on data, generated or flat")
@@ -403,8 +406,8 @@ def world_keys(host) -> dict:
 
 def generated(host):
     """The generated world on, generated here from the node's own keys (:func:`world_keys`), once
-    per setting: what the plant's colliders and the terrain's height come from while SceneWorld's
-    are not reachable from Python."""
+    per setting: on a libcvc without ``AriApp.world_geometry``, what the plant's colliders and the
+    terrain's height come from (:func:`scene_geometry` is SceneWorld's own)."""
     C = _cars()
     params = {}
     for k, v in world_keys(host).items():
@@ -441,11 +444,72 @@ def check(host, g=None) -> str:
             f"SceneWorld's {want[0]} x {want[1]} with {want[2]}")  # fmt: skip
 
 
+#: What a generated world's record keeps beside its settings: the stats its node publishes
+#: (``world.stats.*``), so a world made by another libcvc's generator shows as another world.
+STATS = ("props", "buildings", "occupied", "terrain", "water")
+
+
+def reads_drawn_worlds() -> bool:
+    """Whether this pycvc's ``AriApp`` reads the scene's world wherever it runs (a drawn host's
+    too) and its colliders (``AriApp.world_geometry``): libcvc after 4.0.2."""
+    return hasattr(_pycvc().AriApp, "world_geometry")
+
+
+def scene_geometry(host):
+    """The world the world on's node made, as SceneWorld holds it (``AriApp.world_geometry``: a
+    generated world's colliders, a dataset's world), or None (none yet, or a pycvc without it)."""
+    rt = _runtime(host)
+    if rt is None or not reads_drawn_worlds():
+        return None
+    for node in nodes(host):
+        w = rt.world_geometry(node)
+        if w is not None:
+            return w
+    return None
+
+
+def generated_info(host) -> dict:
+    """A generated world's record: its settings (:func:`world_keys`) and the stats its node
+    published (:data:`STATS`)."""
+    stats = {k: host.get(f"world.stats.{k}") or "" for k in STATS}
+    return {"source": "generated", "settings": world_keys(host), "stats": stats}
+
+
+def ready(host) -> bool:
+    """Whether the world on has its world now, by what SceneWorld has published (no frame run)."""
+    if source(host) == "data" and _pycvc().data_status(host.app, city_path(host)) != "ready":
+        return False
+    return _settled(host)
+
+
+def when_ready(host, fn, *, timeout=900.0):
+    """``fn(world(host))``: now, where this program may run the host's frames (:func:`wait` runs
+    them), returning its value; else (a page, whose frames run after the program returns) from
+    the first frame the world is ready, returning None. A failure there goes to ``fn`` as a
+    RuntimeError in place of the world."""
+    if steps(host):
+        return fn(world(host, timeout=timeout))
+    done = []
+
+    @host.on_frame
+    def _arrive(_dt):
+        if done or not ready(host):
+            return
+        done.append(True)
+        try:
+            w = world(host, timeout=timeout)
+        except RuntimeError as e:
+            w = e
+        fn(w)
+
+    return None
+
+
 def world(host, cell=None, half=None, *, timeout=900.0):
     """The world on, as a port drives on it (a ``pycvc_gl.cars.World``): the navigator's grid
     (:func:`grid`), the terrain's height, and the geometry the plant collides with (the data
-    world's dataset; a generated world's, generated from the node's keys; none on flat ground).
-    Waits for the world (:func:`wait`)."""
+    world's dataset; a generated world's colliders, SceneWorld's (:func:`scene_geometry`), else
+    generated from the node's keys; none on flat ground). Waits for the world (:func:`wait`)."""
     C = _cars()
     pycvc = _pycvc()
     wait(host, timeout=timeout)
@@ -460,14 +524,16 @@ def world(host, cell=None, half=None, *, timeout=900.0):
         info = {"source": "data", "uri": city_uri(host), "canonical": city_key(host, "canonical"),
                 "path": path}  # fmt: skip
     elif k == "generated":
-        gen = generated(host)
-        geometry, height = gen.world(), gen.height
-        info = {"source": "generated", **dict(gen.info())}
+        geometry = scene_geometry(host)
+        if geometry is None:
+            geometry = generated(host).world()
+        height = geometry.terrain().height
+        info = generated_info(host)
     else:
         geometry = height = None
         info = {"source": k}
     w = C.World(k, occ, bounds, height, geometry, info)
-    if not _headless(host):
+    if not _headless(host) and not reads_drawn_worlds():
         why = check(host)
         if why:
             print(f"grl_snam: {why}", flush=True)

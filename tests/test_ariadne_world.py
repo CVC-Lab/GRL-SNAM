@@ -11,7 +11,9 @@ host and its multi-car template (pycvc-gl 3.7.12+), as tests/test_ariadne_live_a
   another city in its ``data.city``), and a key a port once read (``run.world``) does nothing;
 - what a drawn host makes in AriApp.grid's place (``_world.made_grid``) is SceneWorld's grid,
   sample for sample, and GRL_SNAM_ARIADNE_GL=1 checks an offscreen host against what SceneWorld
-  publishes;
+  publishes (on a pycvc whose AriApp reads a drawn host's world, that nothing is made beside it);
+- on such a pycvc, a generated world is not generated again in Python;
+- a page takes its world in a frame (``_world.when_ready``);
 - while another world is on, the city the document names is not downloaded.
 
 Austin's data world needs the installed bundle (``scene-austin-south-small``); without one those
@@ -101,6 +103,9 @@ class _Spy:
         self.calls.append((node, cell, half, g is not None))
         return g
 
+    def __getattr__(self, name):
+        return getattr(self.rt, name)
+
 
 @needs_host
 @pytest.mark.parametrize("name,node,shape,cell", [("generated", "gen", (501, 501), 2.0),
@@ -145,11 +150,12 @@ def test_choosing_a_world_is_a_change_to_the_document(tmp_path):
         # The document's key does: the world on, then a generator setting (a new world).
         _world.use(host, {"scene.world.source": "generated"})
         w7 = _world.world(host)
-        assert w7.kind == "generated" and w7.info["seed"] == 7
+        assert w7.kind == "generated" and w7.info["settings"]["seed"] == "7"
         rev = host.get("scene.world.rev")
         _world.use(host, {"world.seed": "8"})
         w8 = _world.world(host)
-        assert host.get("scene.world.rev") != rev and w8.info["seed"] == 8
+        assert host.get("scene.world.rev") != rev and w8.info["settings"]["seed"] == "8"
+        assert w8.info["stats"] != w7.info["stats"]  # SceneWorld's stats of the new world
         assert not np.array_equal(w7.occ, w8.occ)
         assert np.array_equal(w8.occ, np.asarray(host.runtime.grid("gen", 2.0, 600.0).occupancy()))
     finally:
@@ -204,6 +210,52 @@ def test_what_a_drawn_host_makes_is_scene_worlds_grid(name):
         host.close()
 
 
+needs_scene_geometry = pytest.mark.skipif(
+    not _host_ready() or not _world.reads_drawn_worlds(),
+    reason="needs a pycvc whose AriApp has world_geometry (libcvc after 4.0.2)",
+)
+
+
+@needs_scene_geometry
+def test_a_generated_world_is_not_generated_again(monkeypatch):
+    """The plant's colliders and the terrain's height are SceneWorld's own world: nothing is
+    generated in Python."""
+    import pycvc
+
+    def refuse(_host):
+        raise AssertionError("the world was generated again in Python")
+
+    monkeypatch.setattr(_world, "generated", refuse)
+    host = _open(world="generated")
+    try:
+        w = _world.world(host)
+        g = host.runtime.world_geometry("gen")
+        made = pycvc.nav_world_grid(w.geometry, 2.0, 600.0)
+        assert g is not None and np.array_equal(np.asarray(made.occupancy()), w.occ)
+        assert w.z(0.0, 0.0) == g.terrain().height(0.0, 0.0)
+        assert w.info["settings"]["seed"] == "7" and w.info["stats"]["buildings"] not in ("", None)
+    finally:
+        host.close()
+
+
+@needs_host
+def test_a_page_takes_its_world_in_a_frame(monkeypatch):
+    """Where the port's program may not run frames (a page), when_ready hands the world over in
+    the first frame it is ready, as the scrub page's view takes it."""
+    host = _open(world="flat")
+    try:
+        monkeypatch.setattr(_world, "steps", lambda h: False)
+        got = []
+        assert _world.when_ready(host, got.append) is None and got == []
+        for _ in range(30):
+            if got:
+                break
+            host.step(1.0 / 60.0)
+        assert len(got) == 1 and got[0].kind == "flat" and got[0].occ.shape == (81, 81)
+    finally:
+        host.close()
+
+
 @needs_host
 def test_the_city_is_not_fetched_while_another_world_is_on():
     import pycvc
@@ -249,11 +301,17 @@ def test_austin_is_the_data_worlds_city():
 )
 @needs_host
 @pytest.mark.parametrize("name", ["generated", "flat"])
-def test_an_offscreen_host_drives_on_scene_worlds_grid(name):
+def test_an_offscreen_host_drives_on_scene_worlds_grid(name, monkeypatch):
     host = _open(mode="offscreen", world=name)
     try:
-        w = _world.world(host)
-        assert w.kind == name and _world.check(host) == ""
+        if _world.reads_drawn_worlds():  # SceneWorld's grid itself: nothing is made here
+            monkeypatch.setattr(_world, "made_grid", lambda *a: pytest.fail("made the grid"))
+            monkeypatch.setattr(_world, "generated", lambda h: pytest.fail("generated again"))
+            w = _world.world(host)
+            monkeypatch.undo()
+        else:
+            w = _world.world(host)
+        assert w.kind == name and _world.check(host) == ""  # what made_grid makes agrees too
         assert int(host.get("scene.world.grid.rows")) > 0
     finally:
         host.close()
