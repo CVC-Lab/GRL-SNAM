@@ -38,11 +38,14 @@ jobs:
         with:
           python-version: '3.12'
 
+      # cy-pca/cvcpkg at the release ci.yml and publish-cvcpkg.yml pin;
+      # transfix/libcvc-deps is archived and frozen at cvcpkg 2.2.1. [publish] brings
+      # httpx, which pack --bump's server query and publish need under 2.5.
       - name: Install cvcpkg
         run: |
           set -euo pipefail
           python3 -m pip install --upgrade pip >/dev/null
-          python3 -m pip install 'git+https://github.com/transfix/libcvc-deps@master'
+          python3 -m pip install 'cvcpkg[publish] @ git+https://github.com/cy-pca/cvcpkg@cvcpkg-v2.5.15'
           cvcpkg --version
 
       - name: Pack + publish grl-snam-weights

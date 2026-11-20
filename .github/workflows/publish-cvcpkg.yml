@@ -42,6 +42,12 @@ concurrency:
   group: publish-cvcpkg-${{ github.ref }}
   cancel-in-progress: false
 
+# cvcpkg itself is cy-pca/cvcpkg at the cvcpkg-v2.5.15 tag in every job, the
+# release ci.yml's cvcpkg-install action pins. transfix/libcvc-deps is archived
+# (2026-09-16) and frozen at 2.2.1. Before this, pack-publish's "publish extra"
+# step reinstalled 2.2.1 over the 2.5.15 that action had installed, so the pack
+# and publish ran 2.2.1. The [publish] extra brings httpx, which 2.5's plain
+# install leaves out.
 env:
   CVCPKG_ORG: cvc
   CVCPKG_SERVER: ${{ secrets.CVCPKG_SERVER_URL || 'https://cvcpkg.org' }}
@@ -62,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install 'cvcpkg[publish] @ git+https://github.com/transfix/libcvc-deps@master'
+          pip install 'cvcpkg[publish] @ git+https://github.com/cy-pca/cvcpkg@cvcpkg-v2.5.15'
           cvcpkg --version
       - name: Push grl-snam's recipes
         run: |
@@ -94,7 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install 'cvcpkg[publish] @ git+https://github.com/transfix/libcvc-deps@master'
+          pip install 'cvcpkg[publish] @ git+https://github.com/cy-pca/cvcpkg@cvcpkg-v2.5.15'
       - name: Compute next revision
         id: rev
         run: |
@@ -142,7 +148,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install 'cvcpkg[publish] @ git+https://github.com/transfix/libcvc-deps@master'
+          pip install 'cvcpkg[publish] @ git+https://github.com/cy-pca/cvcpkg@cvcpkg-v2.5.15'
           cvcpkg --version
 
       # `source.type: vendored` — this packs the checkout, which is the whole
