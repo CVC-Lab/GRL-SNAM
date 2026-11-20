@@ -209,7 +209,27 @@ fit), G7 (the replay) and G8 (the update), at three update snapshots of a script
   (|d cost / d policy| at most about 3e-3), so every update takes its first candidate, and no G8
   case halves or exhausts the budget. No replay control is projected or braked.
 
-The roadmap's G9, G10 and G12 come with C4 and C5.
+C4's cases come from `grl_snam.tools.coph_golden_packets`: G9 (exports) and G10 (assimilation),
+on the same scripted run.
+- **G9.** `export` at the three snapshots, with both block bootstraps' resample indices recorded
+  from the learner's own generators and injected back (roadmap D8). The demos' learner exports
+  twice over: `CooperativeLearner` anchors at four candidates around the agent, then
+  `TerrainLearner` replaces them with the four riskiest supported readings and a second
+  bootstrap; `MazeLearner` adds the geometry reports. G9 records both.
+- **Bytes.** Every export bootstraps from 4 to 6 time blocks, so no covariance is pure round-off.
+  Its entries' last bits still change their shortest repr, and so the JSON length. So G9 records
+  each packet's *wire* form, with the anchors' values and gradients, the covariance, H and V_task
+  rounded to 2^-24. `bytes()` is BIT on that, and the test pins export 0's JSON text in full.
+- **G10.** A receiver (the last snapshot's learner as agent '1', its readings relabelled)
+  assimilates 37 packets: the wire packets, an earlier export whose anchors are behind it (route
+  evidence only), copies from 9 more senders (two are evicted at the cap of 8, oldest first) and
+  malformed variants that reach every reason the three `assimilate` layers give. Then its field
+  fit with the received packets, and its update, which accepts with 8 messages.
+- **The tests rebuild** the bootstraps, anchors and covariances (G9) and the whitened
+  Gauss–Newton step (G10) from the rules in plain numpy. They also rebuild the sender and the
+  receiver from the file's inputs and check that the vendored code reproduces every case.
+
+The roadmap's G12 comes with C5.
 
 ## The numbers gate
 
@@ -251,8 +271,8 @@ box the same 8 rows give 112 or 132 exact zeros, 380 bytes apart, depending only
 
 Linux CI (cp311–cp313) measured the 50-step crossing smoke's `one_way_01` at 80,817–80,834
 bytes, against 79,488 here, with the paths equal to 1e-6. So `tests/test_coph.py` pins the
-packets' structure, not their bytes. For the goldens (roadmap G9, where `bytes()` is BIT), either
-inject the covariance or avoid single-block exports.
+packets' structure, not their bytes. The goldens (roadmap G9, where `bytes()` is BIT) count the
+bytes of each export's wire form, rounded to 2^-24 (see The goldens).
 
 ## Re-syncing
 
