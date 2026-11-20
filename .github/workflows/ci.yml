@@ -39,10 +39,24 @@ jobs:
       # `from pycvc_gl... import *` used to ModuleNotFoundError in CI. The
       # column recipe is the single source of truth for the closure
       # (`install-deps <recipe>`), so there is no requirements file.
+      #
+      # cvcpkg comes from cy-pca/cvcpkg at a release tag, not from
+      # transfix/libcvc-deps (archived 2026-09-16, frozen at cvcpkg 2.2.1). The
+      # action pip-installs whatever `repository`@`libcvc_deps_ref` it checks out
+      # (into _libcvc-deps, hence ruff's --exclude below). While libcvc 4.0.1 was
+      # half-published, this job got pycvc 4.0.0 beside libcvc 4.0.1 (segfaults,
+      # CVC-Lab/GRL-SNAM#193). Every libcvc row on cvcpkg.org now pins its own
+      # release (transfix/libcvc#1377 and a catalog backfill), but 2.2.1's
+      # resolver checks a candidate only against the pins of packages already
+      # picked, not the candidate's own pins against them, so it still mixes
+      # releases in some half-published states. cvcpkg 2.5.1 and later check
+      # both ways (cy-pca/cvcpkg#251) and fall back to the last complete release.
       - name: Install dependency closure via cvcpkg
         id: deps
-        uses: transfix/libcvc-deps/.github/actions/cvcpkg-install@master
+        uses: cy-pca/cvcpkg/.github/actions/cvcpkg-install@cvcpkg-v2.5.15
         with:
+          repository: cy-pca/cvcpkg
+          libcvc_deps_ref: cvcpkg-v2.5.15
           recipe: cvcpkg/recipes/grl-snam-cp${{ matrix.py }}
           build_type: Release
 
