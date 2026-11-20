@@ -30,10 +30,13 @@ What each demo takes:
   same CoefMLP policy, GRL-SNAM's ``grl-snam-weights`` exported to ``.cvcnav``, in its trained
   frame) drives the vehicle from the same start to the same goal, switching plants live. The
   others stay on their own stepping (:data:`REASONS` says why).
-- **World**, ``run.world`` (``--world``, ``--uri``): Austin from the document's ``data:`` block by
-  default (``--bundle DIR`` is ``--uri DIR``). austin-freedrive also drives another city
-  (``--uri``), libcvc's terrain generator or the flat square, from a start to a goal picked far
-  apart in it (``GRL_SNAM_START`` / ``GRL_SNAM_GOAL`` still set them). The others are Austin's.
+- **World**: the document's world node (``docs/live.ari``'s scene, :mod:`grl_snam.ariadne._world`),
+  which libcvc's world runtime runs: Austin from its ``data:`` block by default. ``--world`` picks
+  another of its worlds (``scene.world.source``: ``generated``, libcvc's terrain generator with the
+  node's settings, or ``flat``, the walled square) and ``--uri`` loads another city into its
+  ``data.city`` (``--bundle DIR`` is ``--uri DIR``). austin-freedrive drives in any of them, from a
+  start to a goal picked far apart (``GRL_SNAM_START`` / ``GRL_SNAM_GOAL`` still set them). The
+  others are Austin's.
 - **Panels**: the coefficients (the policy's alpha, beta, gamma and the clearance) and the
   pictures around the vehicle: the signed distance with its predicted path, and where the wall
   barrier reaches (``rr`` + ``d_hat``; on a plant, the navigator's belief).
@@ -66,7 +69,7 @@ import sys
 
 import numpy as np
 
-from grl_snam.ariadne import _arms, _cars, _host, _trace
+from grl_snam.ariadne import _arms, _cars, _host, _trace, _world
 
 DEMOS = {
     "austin-freedrive": ("grl_snam.demos.austin_freedrive", "the learned SDF navigator, no route"),
@@ -172,7 +175,6 @@ def main(argv=None) -> int:
     if not _cars.HAS_CARS:
         return _refuse(f"needs {_cars.INSTALL}")
     args = _host.parse(argv, _args)
-    C = _cars.C
     demo = args.demo
     bundle = args.bundle or os.environ.get("GRL_SNAM_SCENE_BUNDLE") or None
     planner = demo == "austin-planner"
@@ -213,16 +215,14 @@ def main(argv=None) -> int:
         except ValueError as e:
             return _refuse(f"--arms: {e}")
     host = _host.open_host("live.ari", "live", args, load=False)
-    _host.load_document(host, "live.ari", city=not planner, worlds=not planner)
-    flags = {"nav_plant.vehicle": args.plant}
-    if bundle and not args.uri:  # a local city, loaded (from there, no download) when it is used
-        flags.update({"run.uri": str(bundle), "run.data_path": ""})
-    C.apply_settings(host, args, flags)
+    _host.load_document(host, "live.ari")
+    _world.apply_settings(host, args, {"nav_plant.vehicle": args.plant},
+                          bundle=None if planner else bundle)  # fmt: skip
     player = None
     if trace is not None:  # the recorded settings over the document's, the clock in replay mode
         player = _trace.Player(host, trace, header, tmeta)
         player.rewind()
-    kind = host.get("run.world", "data") or "data"
+    kind = _world.source(host)
     plant = host.get("nav_plant.vehicle", "torch") or "torch"
     if demo not in ANYWHERE and (kind != "data" or args.uri):
         host.close()
@@ -236,8 +236,11 @@ def main(argv=None) -> int:
     host.set("demo.title", f"{demo}: {DEMOS[demo][1]}")
     world = None
     if not planner:
-        world = C.make_world(host, kind)
-        C.show_world(host, kind, str(_host.DOCS / "live.ari"))
+        try:
+            world = _world.world(host)
+        except RuntimeError as e:
+            host.close()
+            return _refuse(str(e))
     if arms is not None:
         return run_arms(host, args, world, plant, kind, arms, retarget_at, replay=player)
     if plant != "torch":
@@ -258,10 +261,10 @@ def run_demo(host, args, demo, world, kind) -> int:
     drawn = host.mode != "headless"
     endpoints = {}  # the demo reads its start and goal from these while it sets up
     if demo in ANYWHERE and world is not None:
-        start, goal = start_and_goal(world, kind, host.get("run.uri"))
+        start, goal = start_and_goal(world, kind, _world.city_uri(host))
         endpoints = {"GRL_SNAM_START": f"{start[0]},{start[1]}",
                      "GRL_SNAM_GOAL": f"{goal[0]},{goal[1]}"}  # fmt: skip
-    city = None if kind == "data" or world is None else _cars.city_of(world)
+    city = None if world is None else _world.city(host, world)
     demo_host = _host.DemoHost(host, city=city, metrics_prefix=HUD)
     log = C.CarsLog() if args.log else None
     st = {"settings": None, "coef": {}, "series": {"clearance": [], "speed": []}, "path": None,
@@ -398,7 +401,7 @@ def run_on_plant(host, args, world, plant, kind) -> int:
 
     C = _cars.C
     path, scale = grl_policy()
-    start, goal = start_and_goal(world, kind, host.get("run.uri"))
+    start, goal = start_and_goal(world, kind, _world.city_uri(host))
     cars = C.Cars(world, 1, plant, navigator=True, nav_weights=path, scale=scale, app=host.app,
                   prefix=host.prefix, starts=[start], goals=[goal])  # fmt: skip
     drawn = host.mode != "headless"
@@ -411,7 +414,6 @@ def run_on_plant(host, args, world, plant, kind) -> int:
         log.meta.update(world=world.info, demo="austin-freedrive", plant=plant, nav_weights=path,
                         nav_scale=scale, start=start, goal=goal)  # fmt: skip
     if drawn:
-        C.draw_world(host, st)
         host.lab.add_markers("start", [(start[0], start[1], world.z(*start) + 1.0)],
                              color=(0.15, 0.85, 0.25))  # fmt: skip
         host.lab.add_markers("goal", [(goal[0], goal[1], world.z(*goal) + 1.0)],
@@ -527,7 +529,7 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=(), replay=None) 
     if replay is not None and meta.get("start") and meta.get("goal"):
         start, goal = tuple(meta["start"]), tuple(meta["goal"])
     else:
-        start, goal = start_and_goal(world, kind, host.get("run.uri"))
+        start, goal = start_and_goal(world, kind, _world.city_uri(host))
     try:
         scale = _arms.resolve(arms, tempfile.mkdtemp(prefix="grl-snam-arms-"), seed=seed)
     except (RuntimeError, ValueError, OSError) as e:
@@ -646,7 +648,6 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=(), replay=None) 
         host.set_many({"on": "1", "mode": "replay" if replay is not None else "record",
                        "file": str(args.replay_trace or args.record_trace)}, prefix="trace")  # fmt: skip
     if drawn:
-        C.draw_world(host, st)
         host.lab.add_markers("start", [(start[0], start[1], world.z(*start) + 1.0)],
                              color=(0.15, 0.85, 0.25))  # fmt: skip
 
@@ -824,13 +825,14 @@ def tick_arms(fleet, run) -> None:
 
 
 def world_meta(host) -> dict:
-    """What a run log keeps to rebuild the world and the settings: ``run`` (``run.*``: the world's
-    kind, its uri, the part of the package kept, the crop), ``world_keys`` (the generator's
-    ``world.*``) and ``settings`` (``nav.*``, ``nav_plant.*``)."""
+    """What a run log keeps to rebuild the world and the settings: ``run`` (the document's world on,
+    the city its data.city holds and the grid's crop: :func:`grl_snam.ariadne._world.record`),
+    ``world_keys`` (the generated_world node's ``world.*``) and ``settings`` (``nav.*``,
+    ``nav_plant.*``)."""
     C = _cars.C
     return {
-        "run": {k: host.get(f"run.{k}") for k in ("world", "uri", "data_path", "crop")},
-        "world_keys": {k: host.get(f"world.{k}") for k in C.WORLD_KEYS},
+        "run": _world.record(host),
+        "world_keys": _world.world_keys(host),
         "settings": {d["path"]: d["value"] for d in C.settings(host.app, host.prefix)},
     }
 

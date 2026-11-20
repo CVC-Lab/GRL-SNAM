@@ -4,14 +4,16 @@ This is R49, the Laboratory's live/replay harness (the engagement docs' Laborato
 Phase 6). The trace is libcvc's input trace, ``cvc.input_trace/v1`` (libcvc's
 docs/INPUT_TRACE.md, ``pycvc.input_trace_recorder`` / ``input_trace_player``). It holds the
 starting state (the world, the starts and goals, the settings, the policies' sha256), every write to
-the ``nav``, ``nav_plant``, ``run`` and ``world`` keys stamped by the world clock's tick, nav's own
-verbs as events (a Retarget is ``nav.retarget``), and the state's hash after each frame. A run on
-the world clock is a function of exactly those, so a replay reproduces the session tick for tick,
-and a replay with another policy shows where the trajectory departs.
+the ``nav``, ``nav_plant``, ``nav_grid`` and ``world`` keys and to ``scene.world.source`` stamped by
+the world clock's tick, nav's own verbs as events (a Retarget is ``nav.retarget``), and the state's
+hash after each frame. A run on the world clock is a function of exactly those, so a replay
+reproduces the session tick for tick, and a replay with another policy shows where the trajectory
+departs.
 
-- **Recording** steps on the app's ``world_clock`` (quantum :data:`QUANTUM`, the navigator every
-  ``dt / QUANTUM`` quanta), not live's own pacer, so every input is stamped with the tick that
-  consumed it. The UI's writes land between frames, and the Retarget is applied at the start of
+- **Recording** steps on a ``world_clock`` of its own (quantum :data:`QUANTUM`, the navigator
+  every ``dt / QUANTUM`` quanta), not live's own pacer, so every input is stamped with the tick that
+  consumed it. It is not the app's: the document's world (libcvc's SceneWorld) drives that one
+  from its scene clock every frame, and the session's ticks are the trace's alone. The UI's writes land between frames, and the Retarget is applied at the start of
   a frame, before the clock moves.
 - **The header** describes the first arm's world (``nav_trace_header``), and its ``meta`` holds the
   arms (each one's spec and its ``.cvcnav``'s sha256), the start, the goal, the plant and the
@@ -51,9 +53,12 @@ INSTALL = (
 #: The world clock's quantum while tracing (s): the suite's, which nav's 0.05 s step divides.
 QUANTUM = 0.01
 #: The keys a trace records (below the host's prefix), and the ones it leaves out: what sim_world
-#: publishes about itself.
-WATCH = ("nav", "nav_plant", "run", "world")
-IGNORE = ("nav.agents", "nav.settings")
+#: publishes about itself, and what the generated_world node does (its status, stats and job).
+#: The world is the document's: the world on (scene.world.source), the grid's crop (nav_grid) and
+#: the generator's settings (world.*).
+WATCH = ("nav", "nav_plant", "scene.world.source", "nav_grid", "world")
+IGNORE = ("nav.agents", "nav.settings", "world.stats", "world.status", "world.progress",
+          "world.phase", "world.busy", "world.pending", "world.generators")  # fmt: skip
 
 
 def _under(prefix: str, key: str) -> str:
@@ -79,14 +84,14 @@ class Recorder:
 
     Make it before the first step: it pulls the tree's settings into every world, describes the
     first arm's world (its own policy and the arm's) with ``meta`` in the header, and starts the
-    app's world clock at :data:`QUANTUM`. Each frame: :meth:`retarget` for a Retarget, then
+    trace's own world clock at :data:`QUANTUM`. Each frame: :meth:`retarget` for a Retarget, then
     :meth:`frame` advances the clock and steps the worlds that fell due; :meth:`finish` at the
     end."""
 
     def __init__(self, host, fleet, arms, path, *, world_id: str, seed: int, dt: float,
                  meta: dict):  # fmt: skip
         self.host, self.fleet = host, fleet
-        self.clock = host.app.world_clock()
+        self.clock = pycvc.world_clock()  # the trace's own (the docstring says why)
         self.clock.set_config(QUANTUM, 1.0, 1000)
         for c in fleet:
             pycvc.nav_sim_world_pull(c.sim, host.app, host.prefix)
@@ -159,7 +164,7 @@ class Player:
         end = trace.end
         last = max((int(trace.records[k].tick) for k in range(trace.record_count())), default=0)
         self.end_tick = int(end.tick) if end.present else max(last, self.start_tick)
-        self.clock = host.app.world_clock()
+        self.clock = pycvc.world_clock()  # the trace's own, as the Recorder's
         self.play = pycvc.input_trace_player(host.app, self.clock, trace)
         self.dt = float(header.get("dt", 0.05))
         fixed = float(header.get("fixed_dt", QUANTUM))

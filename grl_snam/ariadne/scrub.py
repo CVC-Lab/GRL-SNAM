@@ -17,10 +17,13 @@ again deploys on each, and a Plant combo switches between them. It drives them a
 deployed there.
 
 Each run is a run log (:mod:`grl_snam.learning.runlog`), cached at
-``<history>.scrub/<blob sha256>-<scenario hash>.npz``. The scenario is the world (its ``run.*``
-keys, and a generated world's ``world.*``), the start and goal, the seed, the ticks, the plant, the policy's frame,
-the settings set on the command line, and libcvc's version, so any of them changing runs the
-checkpoints again.
+``<history>.scrub/<blob sha256>-<scenario hash>.npz``. The scenario is the world (the document's
+world on, its city and its grid's crop, and a generated world's ``world.*``:
+:func:`grl_snam.ariadne._world.record`), the start and goal, the seed, the ticks, the plant, the
+policy's frame, the settings set on the command line, and libcvc's version, so any of them changing
+runs the checkpoints again. The world is the document's world node (``docs/scrub.ari``'s scene),
+which libcvc's world runtime runs: Austin by default, ``--world generated`` or ``flat`` for its other
+worlds, ``--uri`` for another city (:mod:`grl_snam.ariadne._world`).
 
 The view (``docs/scrub.ari``):
 - **Checkpoint k** is picked by a combo, a slider, Previous and Next, or a click on a chart. Its
@@ -47,9 +50,10 @@ files. A report may also be a run's bundle, one zip with the report, the history
 world and the files' places may differ from the ones that deployed. With several reports a Run
 combo picks one, and a Set combo their data set when they come from several: a set picked shows
 its run of the same name at the same training step, so the sets compare side by side. Their
-worlds must be the same. The world is rebuilt from the report's ``run`` and
-``world`` keys (a generated world from its generator settings, which the deploy's libcvc made:
-another libcvc's may differ, and the view says so); ``--no-world``, a city that is not on this
+worlds must be the same. The report's world is chosen in the document (its ``run`` and
+``world_keys``: :func:`grl_snam.ariadne._world.from_record`; a generated world from its generator
+settings, which the deploy's libcvc made: another libcvc's may differ, and the view says so);
+``--no-world``, a city that is not on this
 machine in a browser, or a pycvc_gl without the multi-car template, shows the windows alone (no
 3-D world). A run log is read when its checkpoint is first shown.
 
@@ -72,7 +76,7 @@ from pathlib import Path
 
 import numpy as np
 
-from grl_snam.ariadne import _arms, _cars, _host
+from grl_snam.ariadne import _arms, _cars, _host, _world
 
 REPORT_SCHEMA = "grl_snam.scrub/v1"
 #: Bumped when the scrubber's runs would change, so older caches are not read.
@@ -753,17 +757,15 @@ def view_main(args) -> int:
             "no 3-D world: the run's city is not in this page",
         )  # cvcpkg.org: no CORS
     host = _host.open_host("scrub.ari", "scrub", args, load=False)
-    city = drawn and kind == "data"
-    _host.load_document(host, "scrub.ari", city=city, worlds=city)
-    host.set_many(run_keys, prefix="run")
-    host.set_many({k: v for k, v in (sc.get("world_keys") or {}).items() if v not in (None, "")},
-                  prefix="world")  # fmt: skip
+    _host.load_document(host, "scrub.ari")
     world = None
-    if drawn:
-        C = _cars.C
-        world = C.make_world(host, kind)
-        C.show_world(host, kind, str(_host.DOCS / "scrub.ari"))
-        C.draw_world(host, {"world": world})
+    if drawn:  # else the city the document names stays unloaded (the network is shut): no world
+        _world.from_record(host, sc.get("run"), sc.get("world_keys"))
+        try:
+            world = _world.world(host)
+        except RuntimeError as e:
+            host.close()
+            return _refuse(f"the reports' world: {e}")
         sx, sy = sc["start"]
         host.lab.add_markers("start", [(sx, sy, world.z(sx, sy) + 1.0)], color=(0.15, 0.85, 0.25))
         if json.dumps(world.info, sort_keys=True, default=str) != json.dumps(
@@ -771,8 +773,6 @@ def view_main(args) -> int:
         ):
             note = ("this world is not quite the one deployed on (another libcvc's generator?): "
                     "the ghosts may cross what is drawn")  # fmt: skip
-    elif _cars.HAS_CARS and args.mode != "headless":
-        _cars.C.show_world(host, "flat", str(_host.DOCS / "scrub.ari"))  # the city node, emptied
     if note:
         print(f"scrub: {note}", file=sys.stderr)
     host.set("scrub.world_note", note)
@@ -801,11 +801,9 @@ def deploy_main(args) -> int:
     C = _cars.C
     drawn = args.mode != "headless" and not args.no_world
     host = _host.open_host("scrub.ari", "scrub", args, load=False)
-    _host.load_document(host, "scrub.ari", worlds=True)
-    flags = {"nav_plant.vehicle": args.plant[0] if args.plant else None}
-    if args.bundle and not args.uri:
-        flags.update({"run.uri": str(args.bundle), "run.data_path": ""})
-    C.apply_settings(host, args, flags)
+    _host.load_document(host, "scrub.ari")
+    _world.apply_settings(host, args, {"nav_plant.vehicle": args.plant[0] if args.plant else None},
+                          bundle=args.bundle)  # fmt: skip
     plants = list(
         dict.fromkeys(args.plant or [host.get("nav_plant.vehicle", "humvee") or "humvee"])
     )
@@ -815,13 +813,14 @@ def deploy_main(args) -> int:
     if args.report and len(plants) > 1:
         host.close()
         return _refuse("--report writes one plant's run: deploy each --plant to its own report")
-    kind = host.get("run.world", "data") or "data"
-    meta = live.world_meta(host)  # before the scene fills in the generator's other keys
-    world = C.make_world(host, kind)
-    if drawn:
-        C.show_world(host, kind, str(_host.DOCS / "scrub.ari"))
-        C.draw_world(host, {"world": world})
-    start, goal = live.start_and_goal(world, kind, host.get("run.uri"))
+    kind = _world.source(host)
+    try:
+        world = _world.world(host)
+    except RuntimeError as e:
+        host.close()
+        return _refuse(str(e))
+    meta = live.world_meta(host)
+    start, goal = live.start_and_goal(world, kind, _world.city_uri(host))
     scale = args.scale
     if scale is None:
         pt = next((r["blob"] for r in rows if r["blob"].endswith(".pt")), None)

@@ -9,10 +9,11 @@ ports reuse those pieces rather than copying them:
   sim_world reads them as libcvc does. A port on GRL-SNAM's torch navigator
   (:class:`~grl_snam.nav.SdfNavigator`, normalized units) maps them with :class:`TorchSettings`
   where they mean the same thing (:data:`TORCH_KEYS`).
-- **World, panels, log.** ``pycvc_gl.cars``'s ``make_world`` / ``show_world``, its panels
-  (``cars_panels.ari``, imported by ``cvc://`` with :func:`component_paths` on the host),
-  ``state_from`` / ``raster_arrays`` / ``raster_pictures`` / ``plot_coefficients``, ``CarsLog``,
-  ``save_log`` and ``exit_code``.
+- **Panels, cars, log.** ``pycvc_gl.cars``'s panels (``cars_panels.ari``, imported by ``cvc://``
+  with :func:`component_paths` on the host), its ``Cars`` (the plants, until libcvc's OW7 puts them
+  in the document's world), ``state_from`` / ``raster_arrays`` / ``raster_pictures`` /
+  ``plot_coefficients``, ``CarsLog``, ``save_log`` and ``exit_code``. The world is the document's
+  (:mod:`grl_snam.ariadne._world`), not the template's ``make_world``.
 
 They need pycvc-gl 3.7.12+. :data:`HAS_CARS` says whether the installed pycvc_gl has them; without
 them the ports run as they did, and an option that needs them says what to install
@@ -23,8 +24,6 @@ from __future__ import annotations
 
 import os
 import sys
-
-import numpy as np
 
 # On Windows torch brings Intel's OpenMP runtime (libiomp5md.dll) and libcvc LLVM's (libomp.dll);
 # the second to start (libcvc's terrain generator, after the torch squad has run) refuses to with
@@ -156,38 +155,6 @@ class TorchSettings:
             for nav in self.navs:
                 set_torch_value(nav, key, x)
             self._last[key] = v
-
-
-# ── the world as a demo's City ────────────────────────────────────────────────────────────────
-
-
-def city_of(world):
-    """A :class:`~grl_snam.demos._common.City` over a ``pycvc_gl.cars`` World: its terrain
-    height, its bounds, and occupancy from its geometry (rasterized as the demos rasterize the
-    document's city), or from its grid for a world with none (the flat square)."""
-    from grl_snam.demos._common import City, world_occupancy
-
-    if world.geometry is not None:
-        geometry = world.geometry
-
-        def occupancy(bounds, nx, ny, inflate_m=0.0):
-            return world_occupancy(geometry, bounds, nx, ny, inflate_m=inflate_m)
-
-    else:
-
-        def occupancy(bounds, nx, ny, inflate_m=0.0):
-            mnx, mny, mxx, mxy = bounds
-            X, Y = np.meshgrid(np.linspace(mnx, mxx, nx), np.linspace(mny, mxy, ny))
-            occ = world.occupied(X, Y)
-            if inflate_m > 0.0 and occ.any():
-                import pycvc
-
-                cell = (mxx - mnx) / max(nx - 1, 1)
-                d2 = np.asarray(pycvc.nav_edt2_squared(occ.astype(np.uint8)), float)
-                occ = d2 * cell * cell <= inflate_m * inflate_m
-            return occ
-
-    return City(world.z, world.bounds, occupancy)
 
 
 def humvee_sizes():
