@@ -77,15 +77,21 @@ def source(host) -> str:
     return host.get("scene.world.source") or ""
 
 
+def _taken(host) -> bool:
+    """Whether SceneWorld has taken the world asked for: its status names it. Until its next step
+    (in a page, until the page runs a frame) it still publishes the world before."""
+    return (host.get("scene.world.status") or "").split(" ", 1)[0] == source(host)
+
+
 def kind(host) -> str:
-    """The world on's kind (``data``, ``generated``, ``terrain`` or ``flat``), as SceneWorld says,
-    else its name."""
-    return host.get("scene.world.kind") or source(host)
+    """The world on's kind (``data``, ``generated``, ``terrain`` or ``flat``), as SceneWorld says
+    once it has taken it, else its name (the documents name their worlds by their kinds)."""
+    return (host.get("scene.world.kind") if _taken(host) else "") or source(host)
 
 
 def nodes(host) -> list[str]:
-    """The scene nodes of the world on (``scene.world.node``)."""
-    return [n for n in (host.get("scene.world.node") or "").split(",") if n]
+    """The scene nodes of the world on (``scene.world.node``), once SceneWorld has taken it."""
+    return [n for n in (host.get("scene.world.node") or "").split(",") if n] if _taken(host) else []
 
 
 def city_path(host) -> str:
@@ -263,9 +269,7 @@ def _steps(host) -> bool:
 def _settled(host) -> bool:
     """Whether the world on is the one asked for and has its world: SceneWorld's status names
     it, it is ready, and a generated world has no request or job left."""
-    name = source(host)
-    status = host.get("scene.world.status") or ""
-    if status.split(" ", 1)[0] != name or host.get("scene.world.ready") != "1":
+    if not _taken(host) or host.get("scene.world.ready") != "1":
         return False
     if kind(host) == "generated":
         return not host.get("world.request") and host.get("world.busy") in (None, "", "0")
@@ -411,9 +415,9 @@ def generated(host):
 def check(host, g=None) -> str:
     """Whether the grid made here (:func:`made_grid`) is SceneWorld's: its rows, columns and
     blocked samples against ``scene.world.grid.*``, at the scene's cell over the whole world.
-    "" when they agree, or SceneWorld has published none yet; else what differs."""
+    "" when they agree, or SceneWorld has published none of this world yet; else what differs."""
     rows = host.get("scene.world.grid.rows")
-    if rows in (None, ""):
+    if rows in (None, "") or not _taken(host):
         return ""
     want = (int(float(rows)), int(float(host.get("scene.world.grid.cols") or 0)),
             int(float(host.get("scene.world.grid.occupied") or 0)))  # fmt: skip
