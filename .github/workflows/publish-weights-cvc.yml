@@ -65,8 +65,17 @@ jobs:
             --output-dir dist
           ls -l dist
 
+          # cvcpkg 2.5 packs data with build type and link "none"
+          # (grl-snam-weights-1.0.0+cvc.2-any-noarch-none-none.tar.gz); 2.2.1 wrote
+          # release-shared. Found before the dry-run check, so a dry run checks it too.
+          shopt -s nullglob
+          archives=(dist/grl-snam-weights-*-any-noarch-*.tar.gz)
+          if [ "${#archives[@]}" -ne 1 ]; then
+            echo "::error::expected one grl-snam-weights archive in dist/, found ${#archives[@]}"; exit 1
+          fi
+          archive="${archives[0]}"
+
           if [ "${{ github.event.inputs.dry_run }}" = "false" ]; then
-            archive="$(ls dist/grl-snam-weights-*-any-noarch-release-shared.tar.gz)"
             cvcpkg publish "$archive" \
               --server "$CVCPKG_SERVER" --org "$CVCPKG_ORG" --token "$CVCPKG_TOKEN"
             echo "published grl-snam-weights → $CVCPKG_ORG (public)"
