@@ -229,7 +229,17 @@ on the same scripted run.
   Gauss–Newton step (G10) from the rules in plain numpy. They also rebuild the sender and the
   receiver from the file's inputs and check that the vendored code reproduces every case.
 
-The roadmap's G12 comes with C5.
+C5's case comes from `grl_snam.tools.coph_golden_episode`: G12, an episode of the demos' own runner
+(`staggered_demo.execute`, arm `reciprocal_fixed`) with two `CrossingLearner` agents for 60 ticks.
+- **The world** is `CrossingWorld` with a fixed rational sensor-noise pattern in place of numpy's
+  draws, so the C++ senses the same readings at its own positions. The plant is the world's
+  exact flow in torch, so positions are FLOAT64 at atol 1e-6, and every decision is BIT.
+- **The episode.** Agent 1 senses the middle door at tick 33 and turns north. Agent 0 learns of
+  the door from agent 1's packet at tick 40 and reroutes through the north row. Every update
+  takes the other's packet and accepts.
+- **Determinism.** Generation checks that no decision changes when the world's damping is
+  nudged by 1e-9 relative each way (they hold at 1e-6 too).
+- **The tests rebuild** each agent's positions from its forces with G2's closed form.
 
 ## The numbers gate
 
