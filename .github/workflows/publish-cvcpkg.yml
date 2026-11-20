@@ -42,6 +42,12 @@ concurrency:
   group: publish-cvcpkg-${{ github.ref }}
   cancel-in-progress: false
 
+# cvcpkg itself is cy-pca/cvcpkg at the cvcpkg-v2.5.15 tag in every job, the
+# release ci.yml's cvcpkg-install action pins. transfix/libcvc-deps is archived
+# (2026-09-16) and frozen at 2.2.1. Before this, pack-publish's "publish extra"
+# step reinstalled 2.2.1 over the 2.5.15 that action had installed, so the pack
+# and publish ran 2.2.1. The [publish] extra brings httpx, which 2.5's plain
+# install leaves out.
 env:
   CVCPKG_ORG: cvc
   CVCPKG_SERVER: ${{ secrets.CVCPKG_SERVER_URL || 'https://cvcpkg.org' }}
@@ -62,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install 'cvcpkg[publish] @ git+https://github.com/transfix/libcvc-deps@master'
+          pip install 'cvcpkg[publish] @ git+https://github.com/cy-pca/cvcpkg@cvcpkg-v2.5.15'
           cvcpkg --version
       - name: Push grl-snam's recipes
         run: |
@@ -94,7 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install 'cvcpkg[publish] @ git+https://github.com/transfix/libcvc-deps@master'
+          pip install 'cvcpkg[publish] @ git+https://github.com/cy-pca/cvcpkg@cvcpkg-v2.5.15'
       - name: Compute next revision
         id: rev
         run: |
@@ -142,7 +148,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install 'cvcpkg[publish] @ git+https://github.com/transfix/libcvc-deps@master'
+          pip install 'cvcpkg[publish] @ git+https://github.com/cy-pca/cvcpkg@cvcpkg-v2.5.15'
           cvcpkg --version
 
       # `source.type: vendored` — this packs the checkout, which is the whole
@@ -160,8 +166,22 @@ jobs:
             --cvc-revision ${{ needs.compute-revision.outputs.rev }} \
             --output-dir dist
 
+      # cvcpkg 2.5 packs a noarch package with build type and link "none"
+      # (grl-snam-cp312-0.3.1+cvc.2-any-noarch-none-none.tar.gz); 2.2.1 wrote
+      # release-shared. Find the one archive here, so a dry run checks the file
+      # the publish step uploads.
       - name: Show what was packed
-        run: ls -lh dist
+        id: archive
+        run: |
+          set -euo pipefail
+          ls -lh dist
+          shopt -s nullglob
+          archives=(dist/grl-snam-cp${{ matrix.py }}-*-any-noarch-*.tar.gz)
+          if [ "${#archives[@]}" -ne 1 ]; then
+            echo "::error::expected one grl-snam-cp${{ matrix.py }} archive in dist/, found ${#archives[@]}"
+            exit 1
+          fi
+          echo "path=${archives[0]}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -181,8 +201,7 @@ jobs:
           # derives arch from the host (any/x86_64) and cannot find the NOARCH archive
           # pack produces (any/noarch), and there is no --arch to override it. Passing
           # the path reads the archive's own manifest and uploads it.
-          archive="$(ls dist/grl-snam-cp${{ matrix.py }}-*-any-noarch-release-shared.tar.gz)"
-          cvcpkg publish "$archive" \
+          cvcpkg publish "${{ steps.archive.outputs.path }}" \
             --server "$CVCPKG_SERVER" \
             --org "$CVCPKG_ORG" \
             --token "$CVCPKG_TOKEN"
