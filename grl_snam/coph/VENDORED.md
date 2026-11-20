@@ -188,8 +188,28 @@ along whichever axis left the inner box, by `size * (1 - overlap)`. It pools the
 every kept stage and never sets `Stage.anchors`, so `_field_fit`'s overlap continuity rows are
 always empty in the demos. G4 pins that rule. The roadmap's C1 text describes `Learner.advance`.
 
-Later C steps add their cases (G2, G3 and G11 with C2, and so on), as the belief-material
-controller's golden grew.
+C2 added G2, G3 and G11 (the plant, the potential and command, and the allocation).
+
+C3's cases come from `grl_snam.tools.coph_golden_learner`: G5 (the field fit), G6 (the damping
+fit), G7 (the replay) and G8 (the update), at three update snapshots of a scripted crossing run.
+- **The run.** One `CrossingLearner` is driven by a script, not by its own controller: the exact
+  flow at the world's damping (0.85) in plain Python, a carrot tracker east along the middle row to
+  the door and back, and a rational risk bump on the demos' sensor lattice. After each update the
+  script rounds what the update committed to multiples of 2^-24, so a snapshot's inputs are the
+  same bytes on every OS. Generation checks every update's and every replay's decisions against
+  copies nudged by 1e-12 relative, so no decision sits where a platform's last bits could flip it
+  (`--no-check` skips that).
+- **A snapshot** holds everything `update` reads (`learner_rules` lists it), and
+  `coph_golden_learner.rebuild` turns it back into a learner; a test checks the rebuilt learner
+  reproduces G5–G8.
+- **The tests rebuild** G5, G6 and G8 from the rules in plain Python, and G7's cost from its own
+  trace. G7's routed controller itself (the maze route, the CBF projection and the guard) is
+  checked by rebuilding the learner and replaying with the vendored code.
+- **What the run does not reach.** The replay barely depends on the policy here
+  (|d cost / d policy| at most about 3e-3), so every update takes its first candidate, and no G8
+  case halves or exhausts the budget. No replay control is projected or braked.
+
+The roadmap's G9, G10 and G12 come with C4 and C5.
 
 ## The numbers gate
 

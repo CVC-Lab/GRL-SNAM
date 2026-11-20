@@ -10,10 +10,13 @@ Every double is written as its raw bits: a 64-bit unsigned integer as 16 lowerca
 most significant first (``"3fbeb851eb851eb8"`` is 0.12). The file is the same bytes on every run.
 G1, G4 and every input are the same bytes on every OS too. G2, G3 and G11's outputs are the
 platform's float64 torch and libm results, so another OS may differ in their last bits; the test
-compares those at their tier (FLOAT64: rtol 1e-12, atol 1e-12).
+compares those at their tier (FLOAT64: rtol 1e-12, atol 1e-12). G5-G8's values (every ``out``) are
+compared at theirs (rtol 1e-9, atol 1e-12), and their decisions exactly.
 
-The cases are the C1 set (the records and the stage ledger, the spec's G1 and G4) and the C2 set
-(the plant, the potential and command, and the allocation: G2, G3 and G11).
+The cases are the C1 set (the records and the stage ledger, the spec's G1 and G4), the C2 set
+(the plant, the potential and command, and the allocation: G2, G3 and G11) and the C3 set (the
+learner's field fit, damping fit, replay and update: G5-G8, written by
+``grl_snam.tools.coph_golden_learner``).
 
 - ``config`` (G1): ``Config`` and ``CommunicationConfig`` built from overrides. An accepted one
   records every field after ``__post_init__`` (which fills ``replay_update_cap``) and the fields
@@ -815,8 +818,14 @@ speed_floor, out: {accel, steer, kappa, used, unallocated}}.
 # ---------------------------------------------------------------------------
 
 
-def generate(out_dir) -> Path:
-    """Write ``coph_golden.json`` into ``out_dir``; return its path."""
+def generate(out_dir, check=True) -> Path:
+    """Write ``coph_golden.json`` into ``out_dir``; return its path.
+
+    ``check`` runs G5-G8's decision checks (every update and replay against nudged copies), which
+    triple the learner run's time. The golden is the same either way.
+    """
+    from grl_snam.tools.coph_golden_learner import LEARNER_RULES, learner_cases
+
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     golden = {
@@ -824,19 +833,23 @@ def generate(out_dir) -> Path:
             "libcvc's C++ twin of CoPH-Stagewise (NAV-COPH-ROADMAP.md §3.4, §5), written by "
             "GRL-SNAM's grl_snam.tools.coph_golden. Doubles are raw bits: 16 hex digits of the "
             "uint64, most significant first. Cases: G1 (config), G2 (plant), G3 (potential), "
-            "G4 (stages) and G11 (allocation). G1 and G4 are BIT; G2, G3 and G11 are FLOAT64 "
-            "(each section's tier)."
+            "G4 (stages), G11 (allocation) and, in learner, G5 (field fit), G6 (damping fit), "
+            "G7 (replay) and G8 (update). G1 and G4 are BIT; G2, G3 and G11 are FLOAT64; in "
+            "G5-G8 every value under an 'out' key is FLOAT64 at learner.tier and everything else "
+            "is BIT."
         ),
         "upstream": UPSTREAM,
         "stage_rules": STAGE_RULES,
         "plant_rules": PLANT_RULES,
         "potential_rules": POTENTIAL_RULES,
         "allocation_rules": ALLOCATION_RULES,
+        "learner_rules": LEARNER_RULES,
         "config": config_cases(),
         "plant": plant_cases(),
         "potential": potential_cases(),
         "stages": stage_cases(),
         "allocation": allocation_cases(),
+        "learner": learner_cases(check),
     }
     path = out_dir / JSON_NAME
     # Bytes, not text: a text-mode write would end the file with \r\n on Windows.
@@ -847,8 +860,13 @@ def generate(out_dir) -> Path:
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", required=True, help="output directory")
+    ap.add_argument(
+        "--no-check",
+        action="store_true",
+        help="skip G5-G8's decision checks against nudged copies (faster, same file)",
+    )
     args = ap.parse_args(argv)
-    print(generate(args.out))
+    print(generate(args.out, check=not args.no_check))
 
 
 if __name__ == "__main__":
