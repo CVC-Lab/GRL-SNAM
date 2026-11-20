@@ -127,11 +127,14 @@ jobs:
       - uses: actions/checkout@v5
 
       # Same closure ci.yml installs: the recipe is the single source of truth,
-      # so there is no requirements file to drift.
+      # so there is no requirements file to drift. cvcpkg 2.5.15 from
+      # cy-pca/cvcpkg, as in ci.yml (which says why).
       - name: Install dependency closure via cvcpkg
         id: deps
-        uses: transfix/libcvc-deps/.github/actions/cvcpkg-install@master
+        uses: cy-pca/cvcpkg/.github/actions/cvcpkg-install@cvcpkg-v2.5.15
         with:
+          repository: cy-pca/cvcpkg
+          libcvc_deps_ref: cvcpkg-v2.5.15
           recipe: cvcpkg/recipes/grl-snam-cp${{ matrix.py }}
           build_type: Release
 
