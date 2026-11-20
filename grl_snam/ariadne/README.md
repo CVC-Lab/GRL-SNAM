@@ -520,7 +520,8 @@ python -m grl_snam.ariadne replay run.npz --at 26 --paused --camera orbit --offs
 ### `scrub`: watch it learn
 
 ```bash
-python -m grl_snam.ariadne scrub run/history.jsonl                           # Austin, kinematic
+python -m grl_snam.ariadne scrub run/history.jsonl                           # Austin, Humvee
+python -m grl_snam.ariadne scrub run/history.jsonl --plant humvee --plant kinematic  # both
 python -m grl_snam.ariadne scrub run/history.jsonl --world flat --ticks 600
 python -m grl_snam.ariadne scrub run/history.jsonl --headless --report scrub.json
 python -m grl_snam.ariadne scrub --view scrub.json [more.json ...]          # deployed before
@@ -529,15 +530,22 @@ python -m grl_snam.ariadne scrub --view scrub.json [more.json ...]          # de
 `scrub` deploys every checkpoint of a training run. The learning history names the policy each
 checkpoint saved: its `blob`, a `.cvcnav` or a `.pt`. A relative path is the history's
 directory's, and blobs that are not there are listed and skipped.
-- **The scenario:** each policy drives libcvc's sim_world on `--plant` (kinematic by default)
-  from the scenario's start to its goal for `--ticks` ticks, as `live --arms` drives an arm, tick
-  for tick. So checkpoint 0 deployed here is the untrained arm deployed there, which the tests
-  check.
+- **The scenario:** each policy drives libcvc's sim_world on `--plant` from the scenario's start
+  to its goal for `--ticks` ticks, as `live --arms` drives an arm, tick for tick. So checkpoint 0
+  deployed here is the untrained arm deployed there (on the same plant), which the tests check.
+- **The plant:** `humvee` by default, the Jolt Humvee, which collides with the world's buildings.
+  A car that drives into one stops against it. `kinematic`, nav's bicycle, has no collision
+  response, so its cars drive through buildings: the scrubber's default until 2026-11-19.
+  - `--plant` given again deploys every checkpoint on each plant, and the Scrub window's
+    Plant combo shows the same run and step on another.
+  - One `--report` holds one plant's run.
 - **The cache:** each run is a run log, cached at `<history>.scrub/<blob sha256>-<scenario
   hash>.npz`. A second look costs nothing. The scenario hash covers the world (its `run.*`
   keys, and a generated world's `world.*`), the start and goal, the seed, the ticks, the plant,
   the policies' frame (`--scale`, else the first `.pt` checkpoint's), the settings set on the
   command line, and libcvc's version.
+- **What to look for:** [`docs/scrubber-guide.md`](../../docs/scrubber-guide.md) describes each
+  window, and what a policy that is learning something useful looks like there.
 - **Checkpoint k** is picked by a combo, a slider, Previous and Next, or a click on a chart. It
   opens on the history's pick (`--at K` for another). Its ghost (orange) runs beside step 0's
   (blue) over the episode, with the Stats and Ledger windows for the two and libcvc's sim
@@ -552,9 +560,10 @@ directory's, and blobs that are not there are listed and skipped.
   libcvc's version). `--blobs DIR` finds the saved policies there first (by file name), and
   `--cache DIR` caches the run logs there instead of `<history>.scrub/`. `--data-set NAME` puts
   the run's data set in the report (the learning check's `retrain`, `fixed/retrain`,
-  `world-units/retrain`), and `--lean` caches lean run logs (single precision, the cars
-  template's derived fields left out: about 40% smaller, read back the same), as the Pages site
-  does.
+  `world-units/retrain`), and `--lean` caches lean run logs (`grl_snam.run_log/v2`: single
+  precision, the cars template's derived fields left out, the arrays packed losslessly; about
+  70 KB a checkpoint of 1200 ticks, read back the same), as the Pages site does. A lean log
+  cached before they were packed is read, and packed in place.
 - **View only:** `--view R.json ...` shows runs deployed before and deploys nothing, so it needs
   neither torch nor the policies, and no sim_world steps. It reads the reports, the run log each
   checkpoint lists (read when first shown) and the history each names, found as given, relative
@@ -575,8 +584,9 @@ directory's, and blobs that are not there are listed and skipped.
 - **The exit code** is 0, and 2 when the history names no saved policy that is there, the plant
   is torch, or a report or a file it names is not there.
 
-On the learning check's retrain (seed 0, 41 checkpoints, Austin, kinematic, 60 s each), no
-checkpoint reaches the goal, and there are two outcomes:
+On the learning check's retrain (seed 0, 41 checkpoints, Austin, 60 s each), measured on the
+kinematic plant, the default then, so through the buildings, no checkpoint reaches the goal, and
+there are two outcomes:
 - 25 checkpoints, step 0 among them, stop 516 to 558 m short, after 255 to 266 ticks
   penetrating.
 - 16 checkpoints take another turn and end 865 to 883 m away, after 323 to 334 ticks. They are
@@ -584,7 +594,38 @@ checkpoint reaches the goal, and there are two outcomes:
   checkpoint.
 
 Nothing orders the outcomes by training step. That is the null of `docs/learning-validation.md`,
-seen checkpoint by checkpoint. To see it yourself, with the retrain's checkpoints from cvcpkg.org:
+seen checkpoint by checkpoint.
+
+The Pages page's runs, deployed again on both plants (2026-11-19): the three retrains, five seeds
+each, 41 checkpoints a seed, 205 a set, on libcvc's generated city for 1200 ticks (60 s), libcvc
+4.0.0. No checkpoint reaches the goal on either plant.
+
+| set | plant | ticks penetrating | least clearance | path | left to the goal |
+|---|---|---|---|---|---|
+| `retrain` | kinematic | 375–636, every checkpoint | −28.9 m | 480–631 m | 272–353 m |
+| `retrain` | humvee | 0 | 1.33 m | 414–415 m | 579–580 m |
+| `fixed/retrain` | kinematic | 372–634, every checkpoint | −28.9 m | 479–636 m | 231–350 m |
+| `fixed/retrain` | humvee | 0 at 199, 71–186 at 6 | −25.7 to 49.0 m | 303–472 m | 503–667 m |
+| `world-units/retrain` | kinematic | 355–459, every checkpoint | −29.8 m | 471–485 m | 329–339 m |
+| `world-units/retrain` | humvee | 0 | 0.70–0.82 m | 212–218 m | 588 m |
+
+- "Ticks penetrating" counts the ticks a car's centre is on a cell the navigator marks blocked:
+  a building, or deep water. On this world most of them are not buildings. libcvc 4.0.0's
+  generated world marks dry ground between its −4 m water level and −0.5 m as deep water
+  (transfix/libcvc#1374 fixes it).
+- On kinematic, every checkpoint spends 355 to 636 ticks on blocked cells, so its progress toward
+  the goal was never real. 79–93% of those ticks are on that mislabelled water; the rest are in
+  buildings.
+- On the Humvee, `retrain` and `world-units/retrain` each come to one outcome whatever the seed or
+  the step: the car meets a building and stays against it.
+- `fixed/retrain`'s Humvees range further (303–472 m). Six of its checkpoints (seeds 0, 1, 3 and
+  4) count 71 to 186 ticks penetrating with no building contact. They are not in a building: they
+  drive into a dry basin near (−290, 175), 0.6–3.5 m above the water level, that the navigator
+  reads as deep water and the physics has nothing to collide with.
+- The page's runs are deployed on libcvc 4.0.0, so these counts stay until a libcvc with #1374 is
+  released and the runs are deployed again.
+
+To see it yourself, with the retrain's checkpoints from cvcpkg.org:
 
 ```bash
 cvcpkg install grl-snam-learning-checkpoints --prefix <prefix>
@@ -596,9 +637,12 @@ python -m grl_snam.ariadne scrub docs/learning-validation/fixed/retrain/seed0.hi
 
 **In a browser.** The Pages site's scrub page is `scrub --view` on the learning check's three
 retrains (`retrain`, `fixed/retrain`, `world-units/retrain`; the Set combo picks one), five seeds
-each, deployed when the site is built on libcvc's generated world (`pages/README.md`). It needs no
-download beyond the page. There, too, none of the 615 checkpoints reaches the goal (each ends 231
-to 353 m short), and in no set are the outcomes ordered by training step.
+each, deployed when the site is built on libcvc's generated world on two plants, the Humvee and
+kinematic (the Plant combo picks one; `pages/README.md`). It needs no download beyond the page.
+On kinematic, through the buildings, none of the 615 checkpoints reaches the goal (each ends 231 to
+353 m short), and in no set are the outcomes ordered by training step. On the Humvee none does
+either: world-units/retrain seed 0's 41 checkpoints all stop against a building about 150 m in,
+588 m from the goal, with no tick penetrating.
 
 ### `cars`: N Ackermann cars driven by your own controller
 

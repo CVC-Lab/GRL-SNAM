@@ -21,9 +21,9 @@ installs. The site:
       (the host, main.py and grl_snam_web.zip, as learn/'s)
       data/<set>/<run>.scrub.zip      a run's bundle, stored: its scrub report (scrub.json,
                                       grl_snam.scrub/v1, its paths the names inside), its
-                                      learning history and each checkpoint's run log (lean
-                                      grl_snam.run_log/v1); the page's loader takes at most
-                                      512 files, and a run is 43
+                                      learning history and each checkpoint's run log (lean,
+                                      packed: grl_snam.run_log/v2); the page's loader takes
+                                      at most 512 files, and a run is 43
       ariadne.config.json             ["scrub", "--view", "data/<set>/<run>.scrub.zip", ...]
 
 ``--learn-only`` writes the learn page alone, self-contained, at ``--out`` (for another site to
@@ -53,8 +53,8 @@ check's under the same names (retrain/, fixed/retrain/ and world-units/retrain/,
 against the histories' blobs by sha256 when it was packed; cvcpkg/recipes/
 grl-snam-learning-checkpoints), and by default ``--checkpoints`` is that package in ``--python``'s
 prefix. The page's Set combo picks a set, its Run combo a run of it. Every run's logs are
-preloaded (the page's loader has no fetch after start; libcvc's data roadmap D4), about 5 MB a run
-lean, so each five-seed set adds about 25 MB to the first visit. They are deployed on
+preloaded (the page's loader has no fetch after start; libcvc's data roadmap D4), about 3 MB a run
+lean, so each five-seed set adds about 15-18 MB a plant to the first visit. They are deployed on
 ``--scrub-world`` (default generated:
 libcvc's generator from scrub.ari's world.* keys, which the page builds again from the report
 with no data to fetch; Austin's bundle is 228 MB and cvcpkg.org sends no CORS for github.io, so a
@@ -89,6 +89,9 @@ LEARNING = REPO / "docs" / "learning-validation"
 #: The learning check's data sets the scrub page shows: directories under LEARNING whose
 #: *.history.jsonl.gz are their runs, and the package's directories of the same names.
 SCRUB_SETS = ("retrain", "fixed/retrain", "world-units/retrain")
+#: The plants the scrub page's runs are deployed on, the page's Plant combo: the Jolt Humvee, which
+#: collides with the buildings, first; nav's kinematic bicycle, which drives through them, beside it.
+SCRUB_PLANTS = ("humvee", "kinematic")
 SCRUB_SCHEMA = "grl_snam.scrub/v1"
 #: How the scrub page opens: the world seen from above, and the windows that leave it in view
 #: (Training, Ledger and Simulation are in its Windows menu).
@@ -191,32 +194,35 @@ def run_key(set_name: str, run: str) -> str:
 
 
 def deploy_scrub(sets, checkpoints: Path, python: str, cache: Path, world: str,
-                 ticks: int) -> list[Path]:  # fmt: skip
+                 ticks: int, plants=("humvee",)) -> list[Path]:  # fmt: skip
     """Each data set's runs deployed natively (``grl-snam ariadne scrub --headless --lean
-    --report``): ``sets`` is ``[(name, histories)]``; the reports in ``cache``/<set>/<run>.scrub.json,
-    the run logs in ``cache``/<set>/<run>/."""
+    --report``) on each of ``plants``: ``sets`` is ``[(name, histories)]``; the reports in
+    ``cache``/<plant>/<set>/<run>.scrub.json, the run logs in ``cache``/<plant>/<set>/<run>/. The
+    first plant's runs come first, so the page opens on them."""
     keys, reports = [], []
-    for set_name, histories in sets:
+    plants = list(dict.fromkeys(plants))
+    if not plants:
+        sys.exit("assemble: --scrub-plants names no plant")
+    for plant, (set_name, histories) in ((p, s) for p in plants for s in sets):
         for h in map(Path, histories):
             key = run_key(set_name, run_name(h))
-            if key in keys:
+            if (plant, key) in keys:
                 sys.exit(f"assemble: two histories are run {key}")
-            keys.append(key)
+            keys.append((plant, key))
             blobs = next((d for d in (checkpoints / key, checkpoints / run_name(h)) if d.is_dir()),
                          None)  # fmt: skip
             if blobs is None:
                 sys.exit(f"assemble: no saved policies for {key}: {checkpoints / key} is not a "
                          "directory")  # fmt: skip
-            report = cache / f"{key}.scrub.json"
+            report = cache / plant / f"{key}.scrub.json"
             cmd = [python, "-s", "-m", "grl_snam.ariadne", "scrub", str(h.resolve()), "--blobs",
-                   str(blobs.resolve()), "--cache", str((cache / key).resolve()), "--headless",
-                   "--lean", "--world", world, "--ticks", str(ticks), "--report",
-                   str(report.resolve())]  # fmt: skip
+                   str(blobs.resolve()), "--cache", str((cache / plant / key).resolve()),
+                   "--headless", "--lean", "--world", world, "--ticks", str(ticks), "--plant",
+                   plant, "--report", str(report.resolve())]  # fmt: skip
             if set_name:
                 cmd += ["--data-set", set_name]
-            print(
-                f"assemble: scrub: deploying {key}'s checkpoints on {world} ({blobs})", flush=True
-            )
+            print(f"assemble: scrub: deploying {key}'s checkpoints on {world}, on {plant} ({blobs})",
+                  flush=True)  # fmt: skip
             report.parent.mkdir(parents=True, exist_ok=True)
             r = subprocess.run(cmd, env=_python_env(python), cwd=REPO, check=False)
             if r.returncode != 0 or not report.is_file():
@@ -258,25 +264,33 @@ def _found(report: Path, name) -> Path | None:
     return None
 
 
+def _plant_of(rep: dict) -> str:
+    return str((rep.get("scenario") or {}).get("plant") or "")
+
+
 def scrub_page(host: Path, page: Path, reports) -> dict:
     """The scrub page at ``page`` (made here): the host, the launcher, the package, a bundle per
-    run, data/<set>/<run>.scrub.zip (data/<run>.scrub.zip in no set): one zip with its report
-    (scrub.json, its paths made the names inside), its history and its run logs, stored. The page's
-    loader fetches at most 512 files, and a run is 43; scrub --view reads the bundles. The page
-    config views them."""
+    run, data/<set>/<run>.scrub.zip (data/<run>.scrub.zip in no set; data/<plant>/<set>/<run>.scrub.zip
+    when the runs were deployed on more than one plant): one zip with its report (scrub.json, its
+    paths made the names inside), its history and its run logs, stored. The page's loader fetches
+    at most 512 files, and a run is 43; scrub --view reads the bundles. The page config views
+    them, the first report's run first."""
     reports = [Path(r) for r in reports]
     if not reports:
         sys.exit("assemble: no scrub reports to show")
+    reps = [json.loads(r.read_text()) for r in reports]
+    plants = list(dict.fromkeys(_plant_of(rep) for rep in reps))
     n = host_page(host, page)
     args, preload, names, logs = ["scrub", "--view"], ["grl_snam_web.zip"], [], 0
-    for r in reports:
-        rep = json.loads(r.read_text())
+    for r, rep in zip(reports, reps, strict=True):
         if rep.get("schema") != SCRUB_SCHEMA:
             sys.exit(f"assemble: {r} is {rep.get('schema')!r}, not a scrub report ({SCRUB_SCHEMA})")
         hist = _found(r, rep.get("history"))
         if hist is None:
             sys.exit(f"assemble: {r}: its history {rep.get('history')!r} is not there")
         name = run_key(str(rep.get("set") or ""), run_name(hist))
+        if len(plants) > 1:
+            name = f"{_plant_of(rep) or 'unknown'}/{name}"
         if name in names:
             sys.exit(f"assemble: two scrub reports are of run {name}")
         names.append(name)
@@ -308,9 +322,10 @@ def scrub_page(host: Path, page: Path, reports) -> dict:
         "args": args + SCRUB_VIEW,
     }
     (page / "ariadne.config.json").write_text(json.dumps(config, indent=2) + "\n")
-    sets = len({x.rpartition("/")[0] for x in names})
+    sets = len({str(rep.get("set") or "") for rep in reps})
+    on = ", ".join(p or "?" for p in plants)
     print(f"assemble: {page}: grl_snam_web.zip ({n} files), {len(names)} runs in {sets} data "
-          f"sets, {logs} run logs")  # fmt: skip
+          f"sets on {len(plants)} plants ({on}), {logs} run logs")  # fmt: skip
     return config
 
 
@@ -411,6 +426,9 @@ def main(argv=None) -> int:
     ap.add_argument("--scrub-world", default="generated", choices=("generated", "flat", "data"),
                     help="the world they are deployed on (default generated)")  # fmt: skip
     ap.add_argument("--scrub-ticks", type=int, default=1200, help="each checkpoint's ticks")
+    ap.add_argument("--scrub-plants", nargs="+", default=list(SCRUB_PLANTS), metavar="PLANT",
+                    help="the vehicles they are deployed on, each a choice in the page's Plant "
+                         f"combo, the first shown first (default: {' '.join(SCRUB_PLANTS)})")  # fmt: skip
     ap.add_argument("--scrub-cache", type=Path, default=None, metavar="DIR",
                     help="keep the deployed run logs here between builds (default: a temporary "
                          "directory)")  # fmt: skip
@@ -435,7 +453,7 @@ def main(argv=None) -> int:
             sets = ([(a.scrub_set_name, a.scrub_histories)] if a.scrub_histories else
                     [(name, set_histories(name)) for name in a.scrub_sets])  # fmt: skip
             reports = deploy_scrub(sets, checkpoints, a.python, cache,
-                                   a.scrub_world, a.scrub_ticks)  # fmt: skip
+                                   a.scrub_world, a.scrub_ticks, a.scrub_plants)  # fmt: skip
         check_libcvc(reports, a.expect_libcvc)
     if a.out.exists():
         shutil.rmtree(a.out)

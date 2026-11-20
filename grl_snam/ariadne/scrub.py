@@ -1,14 +1,17 @@
 """grl-snam ariadne scrub: watch it learn. Every checkpoint of a training run, deployed.
 
-    python -m grl_snam.ariadne scrub run/history.jsonl                          # Austin, kinematic
+    python -m grl_snam.ariadne scrub run/history.jsonl                          # Austin, Humvee
+    python -m grl_snam.ariadne scrub run/history.jsonl --plant humvee --plant kinematic
     python -m grl_snam.ariadne scrub run/history.jsonl --world flat --ticks 600
     python -m grl_snam.ariadne scrub run/history.jsonl --headless --report scrub.json
     python -m grl_snam.ariadne scrub --view scrub.json [more.json ...]       # view only
 
 A learning history (:mod:`grl_snam.learning.history`) names the policy each checkpoint saved, its
 ``blob`` (a ``.cvcnav`` or a ``.pt``; a relative path is the history's directory's). The scrubber
-deploys every one of them on one scenario: libcvc's sim_world on ``--plant`` (kinematic by
-default), from the scenario's start to its goal, for ``--ticks`` ticks. It drives them as
+deploys every one of them on one scenario: libcvc's sim_world on ``--plant`` (the Jolt Humvee by
+default, which collides with the world's buildings; nav's kinematic bicycle, ``kinematic``, drives
+through them), from the scenario's start to its goal, for ``--ticks`` ticks. ``--plant`` given
+again deploys on each, and a Plant combo switches between them. It drives them as
 ``live --arms`` does, tick for tick (:func:`grl_snam.ariadne.live.make_fleet`,
 :func:`~grl_snam.ariadne.live.tick_arms`), so checkpoint 0 deployed here is the untrained arm
 deployed there.
@@ -32,7 +35,8 @@ Both charts carry a cursor at checkpoint k. ``--report R.json`` writes every che
 policies there (by file name) before beside the history, and ``--cache DIR`` caches the run logs
 there in place of ``<history>.scrub/``. ``--data-set NAME`` names the run's data set in the report (the
 learning check's ``retrain``, ``fixed/retrain``, ...), and ``--lean`` caches lean run logs
-(:meth:`grl_snam.learning.runlog.RunLog.save`: single precision, about 40% smaller) for a page.
+(:meth:`grl_snam.learning.runlog.RunLog.save`: single precision, packed; about 70 KB a checkpoint
+of 1200 ticks) for a page.
 
 **View only.** ``--view R.json ...`` shows runs already deployed: it reads the reports, the run log
 each checkpoint lists and the history each report names, and deploys nothing, so it needs neither
@@ -55,6 +59,7 @@ scrubber deploys on libcvc's sim_world), or when a report or a file it names is 
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -108,14 +113,18 @@ def _args(p):
                    help="the data set the run belongs to, in the report (e.g. retrain): a view of "
                         "several sets picks one with a Set combo")  # fmt: skip
     p.add_argument("--lean", action="store_true",
-                   help="cache lean run logs (single precision, about 40%% smaller), for a page")  # fmt: skip
+                   help="cache lean run logs (single precision, packed), for a page")  # fmt: skip
     p.add_argument("--camera", choices=("follow", "orbit"), default=None,
                    help="follow checkpoint k's ghost (the default), or orbit the world")  # fmt: skip
     p.add_argument("--windows", default=None, metavar="ID,...",
                    help="the windows open at the start (default all: " + ",".join(WINDOWS)
                         + "); the others are in the Windows menu")  # fmt: skip
     p.add_argument("--run", type=int, default=-1, help="which run in the file (default the last)")
-    p.add_argument("--plant", default=None, help="nav_plant.vehicle (default kinematic)")
+    p.add_argument("--plant", action="append", default=None, metavar="PLANT",
+                   help="the vehicle the checkpoints drive (nav_plant.vehicle): humvee, the "
+                        "default, a Jolt Humvee that collides with the buildings; kinematic, nav's "
+                        "bicycle, which drives through them; roboracer, ... Give it again to deploy "
+                        "on several, and the Plant combo switches between them")  # fmt: skip
     p.add_argument("--ticks", type=int, default=1200, help="each checkpoint's ticks (0.05 s each)")
     p.add_argument("--seed", type=int, default=0, help="the scenario's seed")
     p.add_argument("--scale", type=float, default=None,
@@ -273,8 +282,9 @@ def run_checkpoint(host, world, plant, row, scenario, shash, history, work):
 
 def deploy_all(host, world, plant, rows, scenario, history, *, cache=None, lean=False, log=print):
     """Every checkpoint's run log, from the cache (``cache``, else ``<history>.scrub``) or deployed
-    now (and cached; ``lean`` caches lean logs)."""
-    from grl_snam.learning.runlog import RunLog
+    now (and cached; ``lean`` caches lean logs). A lean log cached before they were packed
+    (``grl_snam.run_log/v1``) is packed when read: the same run, smaller."""
+    from grl_snam.learning.runlog import PACKED_SCHEMA, RunLog
 
     shash = scenario_hash(scenario)
     work = tempfile.mkdtemp(prefix="grl-snam-scrub-")
@@ -285,6 +295,9 @@ def deploy_all(host, world, plant, rows, scenario, history, *, cache=None, lean=
         try:
             lg = RunLog.load(path)
             how = "cached"
+            if lean and lg.meta.get("schema") != PACKED_SCHEMA:
+                lg.save(path, lean=True)
+                how = "cached, packed"
         except (OSError, ValueError):
             lg = run_checkpoint(host, world, plant, row, scenario, shash, history, work)
             lg.save(path, lean=lean)
@@ -338,6 +351,8 @@ class Deployed:
 
         self.history, self.run, self.rows, self.metrics = history, run, rows, metrics
         self.set = set_name or ""
+        #: The plant its checkpoints were deployed on (the scenario's).
+        self.plant = str((scenario or {}).get("plant") or "")
         self.scenario, self.provenance, self._h = scenario, provenance or {}, h
         self._files = list(logs)
         self._read: dict[int, object] = {}
@@ -474,8 +489,9 @@ def load_report(path) -> Deployed:
 class ScrubView:
     """Checkpoint k beside step 0: the controls that pick k, the metric and training charts, the
     table, and the two runs over the episode (the replay's play head, tables and ghosts). ``runs``
-    are :class:`Deployed` s: a Set combo picks their data set when they have several, and a Run
-    combo a run of it. ``world`` is the world to draw them on (None: the windows alone)."""
+    are :class:`Deployed` s: a Set combo picks their data set when they have several, a Plant combo
+    the plant they were deployed on when they have several, and a Run combo a run of that set on
+    that plant. ``world`` is the world to draw them on (None: the windows alone)."""
 
     def __init__(self, host, runs, world, k=None):
         from grl_snam.ariadne.replay import PlayHead
@@ -485,17 +501,23 @@ class ScrubView:
         self.st = {"nodes": [], "tracks": [[], []], "camera": None, "modeled": None,
                    "charts": None}  # fmt: skip
         self.sets = list(dict.fromkeys(r.set for r in self.runs))
+        self.plants = list(dict.fromkeys(r.plant for r in self.runs))
         self.by_set = {s: [i for i, r in enumerate(self.runs) if r.set == s] for s in self.sets}
-        self.run_names = [""] * len(self.runs)  # unique in their set
-        for idx in self.by_set.values():
+        #: The runs of each data set on each plant: the Run combo's choices.
+        self.by_group: dict[tuple[str, str], list[int]] = {}
+        for i, r in enumerate(self.runs):
+            self.by_group.setdefault((r.set, r.plant), []).append(i)
+        self.run_names = [""] * len(self.runs)  # unique in their set, on their plant
+        for idx in self.by_group.values():
             names = [self.runs[i].name for i in idx]
             for j, i in enumerate(idx):
                 self.run_names[i] = f"{names[j]} ({j})" if names.count(names[j]) > 1 else names[j]
         host.set_many({"set_labels": "\n".join(self.sets), "set_count": str(len(self.sets))},
                       prefix="scrub")  # fmt: skip
         named = ", ".join(s or "(none)" for s in self.sets)
-        print(f"scrub: {len(self.runs)} runs in {len(self.sets)} data sets ({named})",
-              file=sys.stderr, flush=True)  # fmt: skip
+        on = ", ".join(p or "?" for p in self.plants)
+        print(f"scrub: {len(self.runs)} runs in {len(self.sets)} data sets ({named}) on "
+              f"{len(self.plants)} plants ({on})", file=sys.stderr, flush=True)  # fmt: skip
         self.head = PlayHead(host, self.runs[0].log(0).duration, self.runs[0].log(0).dt)
         host.on("scrub_prev", lambda: self.pick(self.k - 1))
         host.on("scrub_next", lambda: self.pick(self.k + 1))
@@ -518,7 +540,8 @@ class ScrubView:
 
         host = self.host
         self.i, self.r = i, self.runs[i]
-        in_set = [self.run_names[j] for j in self.by_set[self.r.set]]
+        in_set = [self.run_names[j] for j in self.by_group[(self.r.set, self.r.plant)]]
+        plants = [p for p in self.plants if (self.r.set, p) in self.by_group]
         self.labels = [f"step {r['step']:g}" + (" (pick)" if r["selected"] else "")
                        for r in self.rows]  # fmt: skip
         self.k, self._shown, self._pos, self._choice = -1, None, None, None
@@ -527,9 +550,12 @@ class ScrubView:
         host.set_many({"labels": "\n".join(self.labels), "curve_names": "\n".join(names),
                        "run_labels": "\n".join(in_set), "run_count": str(len(in_set)),
                        "run_choice": self.run_names[i], "set_choice": self.r.set,
+                       "plant_labels": "\n".join(plants), "plant_count": str(len(plants)),
+                       "plant_choice": self.r.plant,
                        "title": self.r.title(), "scenario": self.r.scenario_text(),
                        "made": self.r.made_text()}, prefix="scrub")  # fmt: skip
         self._run, self._set = host.get("scrub.run_choice", ""), host.get("scrub.set_choice", "")
+        self._plant = host.get("scrub.plant_choice", "")
         if names and host.get("scrub.curve_name", "") not in names:
             host.set("scrub.curve_name", names[0])
         first = self.r.log(0)
@@ -538,9 +564,22 @@ class ScrubView:
         self.pick(self.r.pick if k is None else k)
 
     def use_set(self, name: str) -> None:
-        """Show data set ``name``: its run of the same name as this one when it has one (else its
-        first), at the checkpoint of the same step when that run has one (else its pick)."""
-        idx = self.by_set[name]
+        """Show data set ``name``: on this plant when it was deployed on it (else its first), its
+        run of the same name as this one when it has one (else its first), at the checkpoint of the
+        same step when that run has one (else its pick)."""
+        plant = self.r.plant if (name, self.r.plant) in self.by_group else self.runs[
+            self.by_set[name][0]].plant  # fmt: skip
+        self._use_like((name, plant))
+
+    def use_plant(self, plant: str) -> None:
+        """Show this data set on ``plant``: the same run and step, deployed there."""
+        if (self.r.set, plant) in self.by_group:
+            self._use_like((self.r.set, plant))
+
+    def _use_like(self, group) -> None:
+        """Show the run of ``group`` (a data set and a plant) named as this one, else its first, at
+        this checkpoint's step when it has one, else its pick."""
+        idx = self.by_group[group]
         i = next((j for j in idx if self.run_names[j] == self.run_names[self.i]), idx[0])
         step = self.rows[self.k]["step"] if self.k >= 0 else None
         k = next((n for n, r in enumerate(self.runs[i].rows) if r["step"] == step), None)
@@ -562,9 +601,13 @@ class ScrubView:
         name = host.get("scrub.set_choice", "")
         if name != self._set and name in self.by_set:
             self.use_set(name)
+        plant = host.get("scrub.plant_choice", "")
+        if plant != self._plant and plant in self.plants:
+            self.use_plant(plant)
         run = host.get("scrub.run_choice", "")
         if run != self._run:
-            i = next((j for j in self.by_set[self.r.set] if self.run_names[j] == run), None)
+            group = self.by_group[(self.r.set, self.r.plant)]
+            i = next((j for j in group if self.run_names[j] == run), None)
             if i is not None:
                 self.use(i)
         n = len(self.rows)
@@ -759,14 +802,19 @@ def deploy_main(args) -> int:
     drawn = args.mode != "headless" and not args.no_world
     host = _host.open_host("scrub.ari", "scrub", args, load=False)
     _host.load_document(host, "scrub.ari", worlds=True)
-    flags = {"nav_plant.vehicle": args.plant}
+    flags = {"nav_plant.vehicle": args.plant[0] if args.plant else None}
     if args.bundle and not args.uri:
         flags.update({"run.uri": str(args.bundle), "run.data_path": ""})
     C.apply_settings(host, args, flags)
-    plant = host.get("nav_plant.vehicle", "kinematic") or "kinematic"
-    if plant == "torch":
+    plants = list(
+        dict.fromkeys(args.plant or [host.get("nav_plant.vehicle", "humvee") or "humvee"])
+    )
+    if "torch" in plants:
         host.close()
-        return _refuse("the scrubber deploys on libcvc's sim_world: --plant kinematic, humvee, ...")
+        return _refuse("the scrubber deploys on libcvc's sim_world: --plant humvee, kinematic, ...")
+    if args.report and len(plants) > 1:
+        host.close()
+        return _refuse("--report writes one plant's run: deploy each --plant to its own report")
     kind = host.get("run.world", "data") or "data"
     meta = live.world_meta(host)  # before the scene fills in the generator's other keys
     world = C.make_world(host, kind)
@@ -779,25 +827,32 @@ def deploy_main(args) -> int:
         pt = next((r["blob"] for r in rows if r["blob"].endswith(".pt")), None)
         scale = (_arms._pt_scale(pt) if pt else None) or _arms.POLICY_SCALE
     world_keys = meta["world_keys"] if kind == "generated" else {}  # only a generated world's
-    scenario = {"scrub": SCRUB_VERSION, "run": meta["run"], "world_keys": world_keys,
-                "world": world.info, "start": list(start), "goal": list(goal), "seed": args.seed,
-                "ticks": int(args.ticks), "plant": plant, "scale": float(scale), "dt": C.DT,
-                "overrides": sorted(args.set or []), "params": args.params,
-                "libcvc": libcvc_version()}  # fmt: skip
-    logs = deploy_all(host, world, plant, rows, scenario, args.history, cache=args.cache,
-                      lean=args.lean)  # fmt: skip
-    metrics = [metrics_of(lg) for lg in logs]
-    prov = logs[0].meta.get("provenance")
-    if args.report:
-        write_report(args.report, args.history, args.run, rows, metrics, scenario, prov,
-                     args.data_set)  # fmt: skip
-        print(f"scrub: {len(rows)} checkpoints to {args.report}")
+    deployed = []
+    for plant in plants:
+        # The cars read the plant from the tree (Cars.pull), so it is set there for each one.
+        host.set("nav_plant.vehicle", plant)
+        scenario = {"scrub": SCRUB_VERSION, "run": meta["run"], "world_keys": world_keys,
+                    "world": world.info, "start": list(start), "goal": list(goal),
+                    "seed": args.seed, "ticks": int(args.ticks), "plant": plant,
+                    "scale": float(scale), "dt": C.DT, "overrides": sorted(args.set or []),
+                    "params": args.params, "libcvc": libcvc_version()}  # fmt: skip
+        on = copy.deepcopy(rows)  # deploy_all records each one's run log in its row
+        print(f"scrub: {len(on)} checkpoints on {plant}", flush=True)
+        logs = deploy_all(host, world, plant, on, scenario, args.history, cache=args.cache,
+                          lean=args.lean)  # fmt: skip
+        metrics = [metrics_of(lg) for lg in logs]
+        prov = logs[0].meta.get("provenance")
+        if args.report:
+            write_report(args.report, args.history, args.run, on, metrics, scenario, prov,
+                         args.data_set)  # fmt: skip
+            print(f"scrub: {len(on)} checkpoints to {args.report}")
+        deployed.append(Deployed(args.history, args.run, on, metrics, scenario, logs, h=h,
+                                 provenance=prov, set_name=args.data_set))  # fmt: skip
+    host.set("nav_plant.vehicle", plants[0])
     if drawn:
         host.lab.add_markers("start", [(start[0], start[1], world.z(*start) + 1.0)],
                              color=(0.15, 0.85, 0.25))  # fmt: skip
-    deployed = Deployed(args.history, args.run, rows, metrics, scenario, logs, h=h, provenance=prov,
-                        set_name=args.data_set)  # fmt: skip
-    return _run_view(host, args, [deployed], world if drawn else None)
+    return _run_view(host, args, deployed, world if drawn else None)
 
 
 def main(argv=None) -> int:

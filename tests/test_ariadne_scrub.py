@@ -114,6 +114,37 @@ def test_two_runs_side_by_side():
     assert [(a["name"], a["slot"]) for a in both.meta["arms"]] == [("step 0", 0), ("step 9", 1)]
 
 
+def test_a_lean_log_cached_before_packing_is_packed_when_read(tmp_path):
+    """A lean log an older scrubber cached (grl_snam.run_log/v1) is read, not deployed again, and
+    packed in place (v2): the same run, smaller. Read again, it is left as it is."""
+    from grl_snam.learning.runlog import PACKED_SCHEMA, SCHEMA, RunLog
+
+    blob, hist, scenario = tmp_path / "a.step0.pt", tmp_path / "h.jsonl", {"seed": 0, "ticks": 4}
+    blob.write_bytes(b"a policy")
+    path = scrub.cache_path(hist, scrub._arms._sha256(blob), scrub.scenario_hash(scenario),
+                            lean=True)  # fmt: skip
+    col = np.linspace(-3.0, 300.0, 4, dtype=np.float32)[:, None]
+    pose = ("x", "y", "heading", "speed", "goal_x", "goal_y", "stats_path_m")
+    arrays = {"t": 0.05 * np.arange(1, 5), "leg_tick": np.array([0]),
+              "leg_goal": np.array([[3.0, 4.0]], np.float32),
+              **{k: col * (i + 1) for i, k in enumerate(pose)}}  # fmt: skip
+    path.parent.mkdir(parents=True)
+    meta = {"schema": SCHEMA, "lean": True, "arms": [{"name": "a"}]}
+    np.savez_compressed(path, meta=json.dumps(meta), **arrays)
+    said, rows = [], [{"step": 0.0, "blob": str(blob)}]
+    (lg,) = scrub.deploy_all(None, None, "kinematic", rows, scenario, hist, lean=True,
+                             log=said.append)  # fmt: skip
+    assert "cached, packed" in said[0] and rows[0]["cache"] == str(path)
+    back = RunLog.load(path)
+    assert back.meta["schema"] == PACKED_SCHEMA
+    for k, v in arrays.items():
+        assert back.arrays[k].dtype == v.dtype and back.arrays[k].tobytes() == v.tobytes(), k
+    stamp = path.stat().st_mtime_ns
+    said.clear()
+    scrub.deploy_all(None, None, "kinematic", rows, scenario, hist, lean=True, log=said.append)
+    assert ", cached:" in said[0] and path.stat().st_mtime_ns == stamp
+
+
 def test_a_report_finds_its_files(tmp_path, monkeypatch):
     """As given, relative to the report, from the working directory, else by name beside it."""
     (tmp_path / "rep" / "logs").mkdir(parents=True)
@@ -213,8 +244,9 @@ def _run(args, actions=None):
 def deployed(tmp_path_factory):
     root = tmp_path_factory.mktemp("scrub")
     hist = _blobs(root)
+    # nav's kinematic plant, as live --arms drives the untrained arm below (and fast).
     args = ["scrub", str(hist), "--headless", "--world", "flat", "--ticks", str(TICKS),
-            "--frames", "3"]  # fmt: skip
+            "--plant", "kinematic", "--frames", "3"]  # fmt: skip
     code, hosts = _run([*args, "--report", str(root / "report.json")])
     return dict(root=root, hist=hist, args=args, code=code, host=hosts[0],
                 report=json.loads((root / "report.json").read_text()))  # fmt: skip
@@ -478,7 +510,7 @@ def test_assemble_deploys_a_scrub_page(deployed, tmp_path):
     assert assemble.main(["--host", str(host), "--out", str(page), "--scrub-only",
                           "--scrub-histories", str(FIXTURE), "--checkpoints", str(blobs.parent),
                           "--python", sys.executable, "--scrub-world", "flat",
-                          "--scrub-ticks", "40"]) == 0  # fmt: skip
+                          "--scrub-ticks", "40", "--scrub-plants", "kinematic"]) == 0  # fmt: skip
     config = json.loads((page / "ariadne.config.json").read_text())
     bundle = page / config["args"][2]
     assert config["args"][:3] == ["scrub", "--view", "data/coef_train_history.scrub.zip"]
@@ -494,3 +526,37 @@ def test_assemble_deploys_a_scrub_page(deployed, tmp_path):
     assert code == 0
     assert hosts[0].get("scrub.now").startswith("checkpoint 3 of 4: step 4, the pick")
     assert [r["arm"] for r in hosts[0].get_tree("arms.stats")] == ["step 0", "step 4"]
+
+
+@needs_host
+def test_the_humvee_is_the_default_plant(deployed, tmp_path):
+    """With no --plant the checkpoints drive the Jolt Humvee, which collides with the world."""
+    report = tmp_path / "humvee.json"
+    code, _ = _run(["scrub", str(deployed["hist"]), "--headless", "--world", "flat",
+                    "--ticks", "40", "--cache", str(tmp_path / "cache"), "--report", str(report)])  # fmt: skip
+    assert code == 0
+    assert json.loads(report.read_text())["scenario"]["plant"] == "humvee"
+
+
+@needs_host
+def test_several_plants_and_the_plant_combo(deployed, tmp_path):
+    """--plant twice deploys on both; the Plant combo shows the same run and step on the other."""
+    seen = {}
+    code, hosts = _run(["scrub", str(deployed["hist"]), "--headless", "--world", "flat",
+                        "--ticks", "40", "--plant", "kinematic", "--plant", "humvee",
+                        "--cache", str(tmp_path / "cache"), "--frames", "8"], {
+        2: lambda h: h.emit("scrub_next"),
+        4: lambda h: seen.update(first=h.get("scrub.scenario"), step=h.get("scrub.step")),
+        5: lambda h: h.set("scrub.plant_choice", "humvee"),
+        7: lambda h: seen.update(second=h.get("scrub.scenario"), step2=h.get("scrub.step")),
+    })  # fmt: skip
+    assert code == 0
+    host = hosts[0]
+    assert host.get("scrub.plant_count") == "2"
+    assert host.get("scrub.plant_labels") == "kinematic\nhumvee"
+    assert " on kinematic," in seen["first"] and " on humvee," in seen["second"]
+    assert seen["step"] == seen["step2"]  # the same checkpoint, on the other plant
+    assert host.get("scrub.plant_choice") == "humvee"
+    # One report holds one plant's run.
+    assert _main(["scrub", str(deployed["hist"]), "--headless", "--world", "flat", "--plant",
+                  "kinematic", "--plant", "humvee", "--report", str(tmp_path / "r.json")]) == 2  # fmt: skip
