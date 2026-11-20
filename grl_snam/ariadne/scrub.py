@@ -707,9 +707,10 @@ class ScrubView:
             host.set_plot("scrub.curve", series, markers=markers)
 
 
-def _run_view(host, args, runs, world) -> int:
+def _run_view(host, args, runs, world, *, later=None) -> int:
     """The view's frames: until closed, ``--frames`` of them, or one when headless. The windows
-    ``--windows`` does not name start closed (``tree.<id>.open``)."""
+    ``--windows`` does not name start closed (``tree.<id>.open``). ``later(view)``, when given,
+    hands the view its world once there is one (``world`` is then None)."""
     if args.camera:
         host.set("view.camera", args.camera)
     if args.windows is not None:
@@ -717,6 +718,8 @@ def _run_view(host, args, runs, world) -> int:
         for w in WINDOWS:
             host.set(f"tree.{w}.open", "1" if w in keep else "0")
     view = ScrubView(host, runs, world, args.at)
+    if later is not None:
+        later(view)
     once = host.mode == "headless" and not args.frames
 
     @host.on_frame
@@ -758,25 +761,41 @@ def view_main(args) -> int:
         )  # cvcpkg.org: no CORS
     host = _host.open_host("scrub.ari", "scrub", args, load=False)
     _host.load_document(host, "scrub.ari")
-    world = None
-    if drawn:  # else the city the document names stays unloaded (the network is shut): no world
-        _world.from_record(host, sc.get("run"), sc.get("world_keys"))
-        try:
-            world = _world.world(host)
-        except RuntimeError as e:
-            host.close()
-            return _refuse(f"the reports' world: {e}")
+    if note:
+        print(f"scrub: {note}", file=sys.stderr)
+    host.set("scrub.world_note", note)
+    if not drawn:  # the city the document names stays unloaded (the network is shut): no world
+        return _run_view(host, args, runs, None)
+    _world.from_record(host, sc.get("run"), sc.get("world_keys"))
+
+    def arrive(world, view):
+        """The reports' world, drawn: the start, and a note when it is not the deployed one."""
+        if isinstance(world, RuntimeError):  # in a page, where the world comes in a frame
+            why = f"no 3-D world: {world}"
+            print(f"scrub: {why}", file=sys.stderr)
+            host.set("scrub.world_note", why)
+            return
         sx, sy = sc["start"]
         host.lab.add_markers("start", [(sx, sy, world.z(sx, sy) + 1.0)], color=(0.15, 0.85, 0.25))
         if json.dumps(world.info, sort_keys=True, default=str) != json.dumps(
             sc.get("world"), sort_keys=True, default=str
         ):
-            note = ("this world is not quite the one deployed on (another libcvc's generator?): "
-                    "the ghosts may cross what is drawn")  # fmt: skip
-    if note:
-        print(f"scrub: {note}", file=sys.stderr)
-    host.set("scrub.world_note", note)
-    return _run_view(host, args, runs, world)
+            why = ("this world is not quite the one deployed on (another libcvc's generator?): "
+                   "the ghosts may cross what is drawn")  # fmt: skip
+            print(f"scrub: {why}", file=sys.stderr)
+            host.set("scrub.world_note", why)
+        view.world = world
+
+    if _world.steps(host):  # the world now, before the first frame
+        try:
+            world = _world.world(host)
+        except RuntimeError as e:
+            host.close()
+            return _refuse(f"the reports' world: {e}")
+        return _run_view(host, args, runs, None, later=lambda view: arrive(world, view))
+    # A page makes the world in its frames, after this returns: the view takes it in one.
+    return _run_view(host, args, runs, None,
+                     later=lambda view: _world.when_ready(host, lambda w: arrive(w, view)))  # fmt: skip
 
 
 def deploy_main(args) -> int:
