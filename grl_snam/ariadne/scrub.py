@@ -129,7 +129,9 @@ def _args(p):
                         "default, a Jolt Humvee that collides with the buildings; kinematic, nav's "
                         "bicycle, which drives through them; roboracer, ... Give it again to deploy "
                         "on several, and the Plant combo switches between them")  # fmt: skip
-    p.add_argument("--ticks", type=int, default=1200, help="each checkpoint's ticks (0.05 s each)")
+    p.add_argument("--ticks", type=int, default=1200,
+                   help="each checkpoint's ticks, of libcvc's tick each (pycvc_gl.cars.DT: 0.05 s "
+                        "before libcvc 4.0.2, 0.06 s since)")  # fmt: skip
     p.add_argument("--seed", type=int, default=0, help="the scenario's seed")
     p.add_argument("--scale", type=float, default=None,
                    help="the policies' frame (normalized units per metre; default: the first "

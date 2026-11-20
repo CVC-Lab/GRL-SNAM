@@ -285,10 +285,15 @@ def test_one_checkpoint_deployed_twice_is_the_same_run(deployed):
 @needs_host
 def test_checkpoint_0_is_the_untrained_arm(deployed, tmp_path):
     """Step 0's blob deployed by the scrubber is ``live --arms untrained=BLOB``, tick for tick."""
+    import math
+
+    from grl_snam.ariadne import _cars
     from grl_snam.learning.runlog import RunLog
 
     blob = deployed["report"]["checkpoints"][0]["blob"]
-    frames = str(int(TICKS * 1.5))  # 30 frames a second, 20 ticks a second
+    # 30 frames a second, a tick every pycvc_gl.cars.DT: libcvc's tick, 0.05 s before 4.0.2 and
+    # pycvc.SIM_TICK (0.06 s) since.
+    frames = str(math.ceil(TICKS * _cars.C.DT * 30))
     assert _main(["live", "austin-freedrive", "--headless", "--frames", frames, "--world", "flat",
                   "--plant", "kinematic", "--arms", f"untrained={blob}",
                   "--log", str(tmp_path / "live.npz")]) == 0  # fmt: skip

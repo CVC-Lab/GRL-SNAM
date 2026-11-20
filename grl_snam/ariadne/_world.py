@@ -385,6 +385,10 @@ def flat_half(host) -> float:
 
 
 _GENERATED = {}  # the generator's settings (as JSON) -> the world generated from them
+#: The generator's settings it takes by name, and ``world.edge``'s names by the index the node's key
+#: holds (libcvc 4.0.2's ``cvc::world::world_edge``: wall, shore, none).
+NAMED = ("terrain", "city", "terrain_file")
+EDGES = ("wall", "shore", "none")
 
 
 def world_keys(host) -> dict:
@@ -404,7 +408,15 @@ def generated(host):
     C = _cars()
     params = {}
     for k, v in world_keys(host).items():
-        params[k] = v if k in ("terrain", "city", "terrain_file") else float(v)
+        if k in NAMED:
+            params[k] = v
+        elif k == "edge":  # the node holds the edge's index, the generator takes its name
+            try:
+                params[k] = EDGES[int(float(v))]
+            except (ValueError, IndexError):
+                params[k] = v
+        else:
+            params[k] = float(v)
     key = json.dumps(params, sort_keys=True)
     if key not in _GENERATED:
         _GENERATED.clear()

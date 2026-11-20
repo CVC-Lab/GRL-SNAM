@@ -24,6 +24,16 @@ from grl_snam.ariadne import _trace
 
 ARMS = "untrained,constant,brisk=const:1,6,2"
 GOAL = "-20, -5"
+#: The recorded session's frames, at 30 a second.
+FRAMES = 450
+
+
+def _ticks(frames: int) -> int:
+    """The navigator's ticks in ``frames`` frames: one every ``pycvc_gl.cars.DT``, libcvc's tick
+    (0.05 s before 4.0.2, ``pycvc.SIM_TICK`` (0.06 s) since)."""
+    from grl_snam.ariadne import _cars
+
+    return int(frames / 30.0 / _cars.C.DT + 1e-9)
 
 
 def _ready() -> bool:
@@ -112,7 +122,7 @@ def session(tmp_path_factory):
     pytest.importorskip("torch")
     root = tmp_path_factory.mktemp("lab")
     code, _ = _run(
-        _live("--frames", "450", "--arms", ARMS, "--seed", "3", "--set", f"arms.goal={GOAL}",
+        _live("--frames", str(FRAMES), "--arms", ARMS, "--seed", "3", "--set", f"arms.goal={GOAL}",
               "--record-trace", str(root / "s.trace"), "--log", str(root / "rec.npz")),
         {120: lambda h: h.emit("arms_retarget"), 200: lambda h: h.set("nav.vehicle.vmax", "6")},
     )  # fmt: skip
@@ -150,7 +160,7 @@ def test_6_exact_replay(session, capsys):
     assert code == 0 and "the replay matches the trace" in out, out
     rec, rep = _log(root / "rec.npz").arrays, _log(root / "rep.npz").arrays
     n = len(rec["t"])
-    assert len(rep["t"]) == n > 250
+    assert len(rep["t"]) == n >= _ticks(FRAMES) - 1  # every frame's ticks, recorded and replayed
     for k in ("x", "y", "heading", "speed", "goal_x", "goal_y", "tel_alpha", "book_context"):
         assert rec[k].tobytes() == rep[k].tobytes(), k
     assert rec["leg_tick"].tolist() == rep["leg_tick"].tolist()

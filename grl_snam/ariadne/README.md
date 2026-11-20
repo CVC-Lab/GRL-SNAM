@@ -710,7 +710,8 @@ so any multi-car experiment can start from it. It needs no torch. See
 
 `grl-snam ariadne cars --copy my_cars` (or `python -m pycvc_gl.cars --copy my_cars`) writes
 libcvc's template: `cars.py`, with a `controller(s, p)` to edit, and `cars.ari`, its panels.
-- **Each tick** (0.05 s), `controller(s, p)` gets every car's state as numpy arrays (SI units):
+- **Each tick** (`pycvc_gl.cars.DT`: libcvc's tick, 0.05 s before libcvc 4.0.2 and 0.06 s since),
+  `controller(s, p)` gets every car's state as numpy arrays (SI units):
   pose, speed, wheel angle, velocity, goal, range rays, collisions, limits and sizes.
 - **It returns** `(steer, accel)` per car, which each car's plant takes in the navigator's place.
 - **The plant is a state-tree setting**, `nav_plant.vehicle`: `kinematic`, `humvee`,

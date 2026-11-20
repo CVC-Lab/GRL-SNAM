@@ -50,7 +50,8 @@ INSTALL = (
     "a pycvc with libcvc's input traces (transfix/libcvc#1168, libcvc 3.7.15+): "
     "pycvc.input_trace_recorder and input_trace_player"
 )
-#: The world clock's quantum while tracing (s): the suite's, which nav's 0.05 s step divides.
+#: The world clock's quantum while tracing (s): the suite's, which nav's step divides (libcvc's
+#: tick, ``pycvc_gl.cars.DT``: 0.05 s before 4.0.2, 0.06 s since).
 QUANTUM = 0.01
 #: The keys a trace records (below the host's prefix), and the ones it leaves out: what sim_world
 #: publishes about itself, and what the generated_world node does (its status, stats and job).
