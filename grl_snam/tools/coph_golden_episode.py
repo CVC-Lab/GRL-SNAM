@@ -75,9 +75,13 @@ class GoldenWorld(CrossingWorld):
 
 class GoldenLearner(CrossingLearner):
     """``CrossingLearner`` that keeps each export's bootstrap draws (both generators), by packet
-    identity, so the C++ can inject them (D8)."""
+    identity, so the C++ can inject them (D8), and traces its updates' policy attempts."""
 
     draws: dict = {}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.decision_tracing = True  # each update's policy attempts (records only)
 
     def export(self, x, recipient):
         generators: list = []
