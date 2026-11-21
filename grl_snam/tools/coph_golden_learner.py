@@ -170,9 +170,9 @@ def round_committed(agent) -> None:
     agent.refresh_terrain()
 
 
-def make_learner(cfg: Config, first: dict):
+def make_learner(cfg: Config, first: dict, agent_id: str = AGENT_ID):
     comm = CommunicationConfig(byte_budget=4000000, ttl=300.0)
-    agent = CrossingLearner(cfg, np.array(first["state"]), GOAL, agent_id=AGENT_ID,
+    agent = CrossingLearner(cfg, np.array(first["state"]), GOAL, agent_id=agent_id,
                             communication=comm)  # fmt: skip
     return agent
 
@@ -541,18 +541,34 @@ def update_case(agent, report) -> dict:
     )  # fmt: skip
 
 
-def learner_cases(check=True) -> dict:
-    """G5-G8 at the snapshots, with the script and the world they need."""
-    from grl_snam.tools.coph_golden import COMMUNICATION, PROFILE, _hexes, hexbits
+# Ticks whose learner the packet cases (coph_golden_packets) also keep: an export from the west
+# end, before the agent reaches the bump.
+EXTRA_TICKS = (24,)
+
+
+def simulate(check=True):
+    """The scripted run to the last snapshot: ``(cfg, script, found)``, where ``found[tick]`` is
+    ``(learner before the update, report, holder)`` for each snapshot tick and ``EXTRA_TICKS``."""
+    from grl_snam.tools.coph_golden import PROFILE
 
     cfg = Config(**{**PROFILE, "steps": 2500})
-    names = {t: n for n, t in SNAPSHOTS}
+    ticks = tuple(t for _, t in SNAPSHOTS) + EXTRA_TICKS
     found = {}
 
     def keep(tick, before, report, holder):
         found[tick] = (before, report, holder)
 
-    sc, _ = run(cfg, max(names) + 1, snapshot_ticks=tuple(names), check=check, on_snapshot=keep)
+    sc, _ = run(cfg, max(ticks) + 1, snapshot_ticks=ticks, check=check, on_snapshot=keep)
+    return cfg, sc, found
+
+
+def learner_cases(check=True, sim=None) -> dict:
+    """G5-G8 at the snapshots, with the script and the world they need. ``sim`` is a
+    ``simulate(check)`` result to reuse."""
+    from grl_snam.tools.coph_golden import COMMUNICATION, _hexes, hexbits
+
+    cfg, sc, found = sim if sim is not None else simulate(check)
+    names = {t: n for n, t in SNAPSHOTS}
     snapshots, fits, dampings, replays, updates = [], [], [], [], []
     for tick, name in names.items():
         before, report, holder = found[tick]
@@ -595,15 +611,16 @@ def _expand(runs) -> list[int]:
     return [i for start, count in runs for i in range(start, start + count)]
 
 
-def rebuild(section: dict, snap: dict):
-    """A ``CrossingLearner`` in a snapshot's state, from the file's inputs and the rules alone."""
+def rebuild(section: dict, snap: dict, agent_id: str = AGENT_ID):
+    """A ``CrossingLearner`` in a snapshot's state, from the file's inputs and the rules alone.
+    With another ``agent_id`` (G10's receiver), the readings' uids carry that id."""
     from grl_snam.coph.records import new_stage
     from grl_snam.tools.coph_golden import PROFILE
 
     cfg = Config(**{**PROFILE, "steps": section["steps"]})
     sc = section["script"]
     state = [tuple(_bits(t["state"])) for t in sc]
-    agent = make_learner(cfg, dict(state=state[0]))
+    agent = make_learner(cfg, dict(state=state[0]), agent_id)
     radius = _bits(section["world"]["sensor_radius"])
     network = (NODES, EDGES)
     stages = []
@@ -616,7 +633,7 @@ def rebuild(section: dict, snap: dict):
         for i in _expand(st["readings"]):
             tick, j = divmod(i, n)
             x, y, v = _bits(sc[tick]["readings"][j])
-            s.readings.append(Reading(f"{AGENT_ID}:{tick}:{j}", tick * cfg.dt, (x, y), v))
+            s.readings.append(Reading(f"{agent_id}:{tick}:{j}", tick * cfg.dt, (x, y), v))
         s.transitions = [
             Transition(k, (k + 1) * cfg.dt, state[k], tuple(_bits(sc[k]["u"])), state[k + 1],
                        sc[k]["version"])
@@ -633,6 +650,8 @@ def rebuild(section: dict, snap: dict):
         reported_geometry=[OBSTACLES[k] for k in snap["reported_geometry"]],
         terrain_anchors=[tuple(_bits(a)) for a in snap["terrain_anchors"]],
     )  # fmt: skip
+    # Nothing was received, so the terrain anchors are the learner's own (TerrainLearner).
+    agent.local_model_anchors = list(agent.navigation["terrain_anchors"])
     agent.damping = _bits(snap["damping"])
     agent.policy = tensor(_bits(snap["policy"]))
     agent.version = snap["version"]
