@@ -96,6 +96,7 @@ def _same_golden(mine, theirs):
     mine_out, theirs_out = _pop_outputs(mine), _pop_outputs(theirs)
     mine_learner, theirs_learner = (_pop_learner_outputs(x["learner"]) for x in (mine, theirs))
     mine_packets, theirs_packets = (_pop_learner_outputs(x["packets"]) for x in (mine, theirs))
+    mine_episode, theirs_episode = (_pop_learner_outputs(x["episode"]) for x in (mine, theirs))
     assert mine == theirs
     for key in FLOAT64_SECTIONS:
         tier = theirs[key]["tier"]
@@ -110,6 +111,9 @@ def _same_golden(mine, theirs):
     assert len(mine_packets) == len(theirs_packets)
     for i, (a, b) in enumerate(zip(mine_packets, theirs_packets)):
         _same_values(a, b, theirs["packets"]["tier"], ("packets", i))
+    assert len(mine_episode) == len(theirs_episode)
+    for i, (a, b) in enumerate(zip(mine_episode, theirs_episode)):
+        _same_values(a, b, theirs["episode"]["tier"], ("episode", i))
 
 
 def test_the_golden_regenerates(tmp_path, g):
@@ -1128,6 +1132,72 @@ def test_another_platforms_last_bits_pass_in_g9_and_g10_and_nothing_else_does(g)
         anchor,
         lambda s: s["assimilate"]["cases"][3].update(reason="eligible"),
         lambda s: s["exports"][1].update(bytes=s["exports"][1]["bytes"] + 1),
+    ):
+        with pytest.raises(AssertionError):
+            _same_golden(changed(edit), g)
+
+
+# ---------------------------------------------------------------------------
+# G12: an episode with communication on
+# ---------------------------------------------------------------------------
+
+
+def test_the_plant_rules_rebuild_g12s_positions(g):
+    """Each boundary's state is the exact flow (G2's closed form) from the last at the world's
+    damping, with the force the agent held."""
+    e = g["episode"]
+    d = _f(e["world"]["damping"])
+    cfg = Config(**{**golden.PROFILE, "steps": e["ticks"]})
+    for i, out in enumerate(e["out"]):
+        xs, us = [_vec(x) for x in out["x"]], [_vec(u) for u in out["u"]]
+        assert len(xs) == len(us) + 1 == e["ticks"] + 1
+        assert xs[0] == _vec(e["world"]["initials"][i])
+        for t, u in enumerate(us):
+            after = _plant(xs[t], u, d, cfg.dt)["flow"]
+            assert all(abs(a - b) <= 1e-12 * (1 + abs(b)) for a, b in zip(after, xs[t + 1])), (i, t)
+
+
+def test_g12_covers_the_roadmap(g):
+    """Both agents update every 8 ticks with the other's packet, every packet is eligible and
+    every update accepted; agent 1 senses the middle door and agent 0 learns it from agent 1's
+    packet, and both change their routes."""
+    e = g["episode"]
+    assert e["ticks"] == 60 and e["arm"] == "reciprocal_fixed"
+    for i, a in enumerate(e["agents"]):
+        assert [u[0] for u in a["updates"]] == list(range(0, 60, 8))
+        assert all(
+            u[2] and len(u[1]) == 1 and u[1][0].startswith(f"{1 - i}:") for u in a["updates"]
+        )
+        assert [u[4] for u in a["updates"]] == list(range(1, 9))
+        assert len(a["samples"]) == 61 and a["samples"][-1][2]
+        assert len({tuple(c[3]) for c in a["controls"]}) >= 2  # the route changes
+    delivered = [ev for ev in e["events"] if ev[0] == "delivered"]
+    assert len(delivered) == 16 and all(ev[4] == "eligible" for ev in delivered)
+    assert e["agents"][1]["geometry"][0][:2] == ["locally_sensed", 0]
+    assert e["agents"][0]["geometry"][0][:2] == ["received_geometry", 0]
+    received = int(e["agents"][0]["geometry"][0][2].split(":")[1].split(".")[0])  # its time, s
+    changed = [c[0] for c in e["agents"][0]["controls"] if c[6]]
+    assert any(t * 0.12 >= received for t in changed)
+
+
+def test_another_platforms_last_bits_pass_in_g12_and_nothing_else_does(g):
+    def changed(edit):
+        out = copy.deepcopy(g)
+        edit(out["episode"])
+        return out
+
+    def nudge(delta):
+        def edit(e):
+            x = e["out"][0]["x"][30]
+            x[0] = golden.hexbits(_f(x[0]) + delta)
+
+        return edit
+
+    _same_golden(changed(nudge(1e-9)), g)
+    for edit in (
+        nudge(1e-5),
+        lambda e: e["agents"][0]["updates"][3].__setitem__(2, False),
+        lambda e: e["agents"][1]["controls"][40][3].append(0),
     ):
         with pytest.raises(AssertionError):
             _same_golden(changed(edit), g)
