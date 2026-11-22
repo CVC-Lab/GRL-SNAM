@@ -41,6 +41,7 @@ SPEC = dict(
     damping=0.85,
     obstacles=[(1.3, 0.3, 0.3), (2.8, 0.05, 0.25)],
     patches=[(2.0, 0.2, 0.7, 0.5, 0.9)],
+    start_seconds=[0.0, 0.0],
 )
 
 
@@ -215,8 +216,8 @@ CARS_RULES = """\
 G13 pins the cars controller's learner (grl_snam.ariadne.coph_cars.CarLearner, demo 2b) under the
 demos' runner (staggered_demo.execute, arm reciprocal_fixed), two agents for 120 ticks on an open
 field: agent 0 from (0, 0) to (4, 0.4), agent 1 from (4, 0.4) to (0, 0); disks (1.3, 0.3, 0.3) and
-(2.8, 0.05, 0.25); damping 0.85; the profile with steps 120, and CommunicationConfig(byte_budget=4e6,
-ttl=300).
+(2.8, 0.05, 0.25); damping 0.85; both start at 0 s (start_seconds [0, 0]); the profile with steps 120,
+and CommunicationConfig(byte_budget=4e6, ttl=300).
 
 The learner: CooperativeLearner on Learner, with stage_mode 'spatial'. It advances as MazeLearner
 does: when x leaves the last stage's inner box (half-sizes (w, h) (1 - overlap) / 2) along either

@@ -243,15 +243,16 @@ C5's case comes from `grl_snam.tools.coph_golden_episode`: G12, an episode of th
 
 C5 part 2's case comes from `grl_snam.tools.coph_golden_cars`: G13, the same runner with two of the
 cars controller's learners (`grl_snam.ariadne.coph_cars.CarLearner`, demo 2b) for 120 ticks on an
-open field (`CooperativeWorld`: two disks and a risk patch between the agents).
+open field (`CooperativeWorld`: two disks and a risk patch between the agents), both starting at
+0 s as a fleet of cars does.
 - **What it adds to G12.** A car's learner is a bare `CooperativeLearner` whose stages follow it in
   any direction. It routes with the profile's own planner (`navigation.route`: A* through its
   sensor footprints on a 0.1 m grid), since a car's world has no surveyed network, and its packets
   have no maze or terrain layers. The C++ fleet driver (C5 part 2) runs this learner.
 - **The episode.** Both cars reach their goals without a hit, each replanning 33 times. They plan
   frontier routes, follow cached waypoints, take the goal directly at the end, and project some
-  controls around the disks. Packets arrive both eligible and unsupported, and one car rejects
-  two updates.
+  controls around the disks. Packets arrive both eligible and unsupported, and each car rejects
+  one update.
 - **Determinism and tiers** as G12's: the sensor noise is G12's pattern, decisions are BIT and
   survive a 1e-9 nudge of the damping, and positions are FLOAT64 at atol 1e-6.
 - **The tests rebuild** the positions from the forces, and check that every planned route steps
