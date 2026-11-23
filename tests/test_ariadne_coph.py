@@ -71,26 +71,37 @@ def test_refusals(tmp_path, capsys):
 def test_walkthrough_runs_crossing_then_hazard(tmp_path, monkeypatch):
     from grl_snam.ariadne import coph
 
-    calls = []
+    calls, relayed, made = [], [], []
 
-    def call(cmd):
-        calls.append([str(c) for c in cmd])
-        return 0
+    class Popen:
+        def __init__(self, cmd, env=None):
+            calls.append([str(c) for c in cmd])
+            self.key = (env or {}).get(coph.RECORD_KEY)
 
-    monkeypatch.setattr(coph.subprocess, "call", call)
+    class Recorder:
+        def __init__(self, path, ffmpeg=None):
+            made.append((str(path), ffmpeg))
+
+        def close(self):
+            return 0
+
+    monkeypatch.setattr(coph.subprocess, "Popen", Popen)
+    monkeypatch.setattr(coph, "Recorder", Recorder)
+    monkeypatch.setattr(coph, "relay", lambda listener, rec, proc: relayed.append(proc.key) or 0)
     out = tmp_path / "walk.mp4"
     args = ["walkthrough", "--from", str(tmp_path / "runs"), "--offscreen", "--width", "1920",
             "--height", "1080", "--record", str(out), "--ffmpeg", "ff"]  # fmt: skip
     assert _main(args) == 0
-    crossing, hazard, concat = calls
+    crossing, hazard = calls
     assert crossing[3:7] == ["coph", "crossing", "--tour", "--from"]
     assert crossing[7] == str(tmp_path / "runs" / "crossing")
     assert hazard[4] == "hazard" and hazard[7] == str(tmp_path / "runs" / "hazard")
     assert ["--scene", "severe"] == hazard[hazard.index("--scene") :][:2]
-    for cmd in (crossing, hazard):
-        assert {"--offscreen", "1920", "1080"} <= set(cmd) and cmd.count("--record") == 1
-        assert str(out) not in cmd
-    assert concat[0] == "ff" and concat[-1] == str(out) and "concat" in concat
+    for cmd in (crossing, hazard):  # one video, recorded here: each tour pipes its frames
+        assert {"--offscreen", "1920", "1080"} <= set(cmd) and "--record" not in cmd
+        assert cmd.count("--record-to") == 1
+    assert made == [(str(out), "ff")]
+    assert len(relayed) == 2 and relayed[0] and relayed[0] == relayed[1]
 
 
 def test_min_goals_sets_exit_code_3(live):

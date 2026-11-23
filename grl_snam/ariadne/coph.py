@@ -58,12 +58,12 @@ fewer agents arrived than ``--min-goals``.
 
 from __future__ import annotations
 
+import argparse
 import math
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,6 +183,7 @@ def _args(p):
     p.add_argument("--shots", default=None, help="write a PNG here at the end of each tour step")
     p.add_argument("--record", default=None, help="write every frame to this mp4 (ffmpeg)")
     p.add_argument("--ffmpeg", default=None, help="the ffmpeg to record with (default: PATH's)")
+    p.add_argument("--record-to", default=None, help=argparse.SUPPRESS)  # walkthrough's pipe
 
 
 def label(arm):
@@ -1324,6 +1325,64 @@ class Recorder:
         return self.frames
 
 
+#: The environment variable that hands ``walkthrough``'s pipe key to its tours.
+RECORD_KEY = "GRL_SNAM_COPH_RECORD_KEY"
+
+
+class PipeRecorder:
+    """A tour's frames sent to the ``walkthrough`` process that started it (``--record-to``),
+    whose single :class:`Recorder` makes one video of both tours: ffmpeg is then needed only
+    to encode, not to join (cvcpkg's minimal build can't)."""
+
+    def __init__(self, address):
+        from multiprocessing.connection import Client
+
+        self.conn = Client(address, authkey=bytes.fromhex(os.environ[RECORD_KEY]))
+        self.path, self.frames = "the walkthrough's video", 0
+
+    def write(self, rgb):
+        import numpy as np
+
+        rgb = np.ascontiguousarray(rgb[: rgb.shape[0] // 2 * 2, : rgb.shape[1] // 2 * 2])
+        self.conn.send_bytes(np.asarray(rgb.shape[:2], np.int32).tobytes() + rgb.tobytes())
+        self.frames += 1
+
+    def close(self):
+        self.conn.send_bytes(b"")
+        self.conn.close()
+        return self.frames
+
+
+def relay(listener, recorder, proc):
+    """Pass one tour's frames from its process ``proc`` (``PipeRecorder``) to ``recorder``,
+    until it says it is done; ``proc``'s exit code. A tour that exits before it connects (a
+    failure) ends the wait rather than hanging it."""
+    import threading
+
+    import numpy as np
+
+    got = {}
+    t = threading.Thread(target=lambda: got.setdefault("conn", listener.accept()), daemon=True)
+    t.start()
+    while t.is_alive() and proc.poll() is None:
+        t.join(0.2)
+    t.join(0.5)
+    conn = got.get("conn")
+    if conn is None:
+        return proc.wait() or 1
+    with conn:
+        while True:
+            try:
+                msg = conn.recv_bytes()
+            except EOFError:
+                break
+            if not msg:
+                break
+            h, w = (int(v) for v in np.frombuffer(msg[:8], np.int32))
+            recorder.write(np.frombuffer(msg[8:], np.uint8).reshape(h, w, 3))
+    return proc.wait()
+
+
 def run_frames(host, args, tour=None, recorder=None, fps=FPS):
     """``_host.finish`` with a tour's shots and a recording: each frame steps ``1/fps`` of
     simulated time; a window is paced to it unless it records."""
@@ -1378,28 +1437,40 @@ def walkthrough(argv, args) -> int:
         if a.split("=")[0] in ("--from", "--record", "--scene"):
             continue
         passthrough.append(a)
-    parts, code = [], 0
-    with tempfile.TemporaryDirectory(prefix="coph-walkthrough-") as tmp:
+    recorder = listener = None
+    env = dict(os.environ)
+    if args.record:  # one encoder here; each tour sends its frames (PipeRecorder)
+        from multiprocessing.connection import Listener
+
+        try:
+            recorder = Recorder(args.record, ffmpeg=args.ffmpeg)
+        except FileNotFoundError as e:
+            print(f"grl_snam coph: {e}", file=sys.stderr)
+            return 2
+        key = os.urandom(32)
+        listener = Listener(authkey=key)
+        env[RECORD_KEY] = key.hex()
+    code = 0
+    try:
         for demo in ("crossing", "hazard"):
             cmd = [sys.executable, "-m", "grl_snam.ariadne", "coph", demo, "--tour",
                    "--from", str(root / demo), *passthrough]  # fmt: skip
             if demo == "hazard":
                 cmd += ["--scene", "severe"]
-            if args.record:
-                parts.append(Path(tmp) / f"{demo}.mp4")
-                cmd += ["--record", str(parts[-1])]
-            code = subprocess.call(cmd)
+            if listener is None:
+                code = subprocess.call(cmd)
+            else:
+                proc = subprocess.Popen([*cmd, "--record-to", str(listener.address)], env=env)
+                code = relay(listener, recorder, proc)
             if code:
                 return code
-        if args.record:
-            listing = Path(tmp) / "parts.txt"
-            listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts))
-            exe = args.ffmpeg or os.environ.get("FFMPEG") or shutil.which("ffmpeg")
-            Path(args.record).parent.mkdir(parents=True, exist_ok=True)
-            code = subprocess.call([exe, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
-                                    "-i", str(listing), "-c", "copy", str(args.record)])  # fmt: skip
+    finally:
+        if listener is not None:
+            listener.close()
+            frames = recorder.close()
             if not code:
-                print(f"grl_snam coph: the walkthrough is in {args.record}", flush=True)
+                print(f"grl_snam coph: the walkthrough is in {args.record} ({frames} frames, "
+                      f"{frames / FPS:.1f} s)", flush=True)  # fmt: skip
     return code
 
 
@@ -1437,7 +1508,10 @@ def main(argv=None) -> int:
             source = Source.replay(demo, arms, seed, args.scene, args.source)
         else:
             source = Source.live(demo, arms, seed, steps, args.scene, args.out)
-        recorder = Recorder(args.record, ffmpeg=args.ffmpeg) if args.record else None
+        if args.record_to:
+            recorder = PipeRecorder(args.record_to)
+        else:
+            recorder = Recorder(args.record, ffmpeg=args.ffmpeg) if args.record else None
     except (ValueError, FileNotFoundError) as e:
         print(f"grl_snam coph: {e}", file=sys.stderr)
         return 2
@@ -1465,7 +1539,9 @@ def main(argv=None) -> int:
                 tour_steps(demo, source.timelines, seed, args.scene),
                 demo=demo,
                 shots=args.shots,
-                close_at_end=bool(args.record or args.shots or host.mode != "window"),
+                close_at_end=bool(
+                    args.record or args.record_to or args.shots or host.mode != "window"
+                ),
             )
         else:
             host.set("view.tour", "0")

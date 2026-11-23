@@ -185,6 +185,62 @@ def test_the_recorder_writes_an_mp4_of_odd_sized_frames(tmp_path):
     assert rec.close() == 10 and (tmp_path / "r.mp4").stat().st_size > 0
 
 
+def test_two_tours_relay_their_frames_into_one_recorder(monkeypatch):
+    """walkthrough's pipe: each tour's PipeRecorder (here a thread) sends its frames, odd-sized,
+    and the relay hands them on to the one recorder, trimmed to even sizes, in order."""
+    import threading
+    from multiprocessing.connection import Listener
+
+    key = os.urandom(32)
+    monkeypatch.setenv(coph.RECORD_KEY, key.hex())
+
+    class Got:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, rgb):
+            self.frames.append((rgb.shape, int(rgb[0, 0, 0])))
+
+    class Proc:  # the tour's process: running until its thread is done
+        def __init__(self, thread):
+            self.thread = thread
+
+        def poll(self):
+            return None if self.thread.is_alive() else 0
+
+        def wait(self):
+            self.thread.join()
+            return 0
+
+    def tour(address, start, n):
+        rec = coph.PipeRecorder(address)
+        for i in range(n):
+            rec.write(np.full((49, 65, 3), start + i, np.uint8))
+        assert rec.close() == n
+
+    got = Got()
+    with Listener(authkey=key) as listener:
+        for start, n in ((0, 4), (100, 3)):
+            t = threading.Thread(target=tour, args=(listener.address, start, n))
+            t.start()
+            assert coph.relay(listener, got, Proc(t)) == 0
+    assert got.frames == [((48, 64, 3), v) for v in (0, 1, 2, 3, 100, 101, 102)]
+
+
+def test_a_tour_that_dies_before_connecting_ends_the_relay():
+    from multiprocessing.connection import Listener
+
+    class Dead:
+        def poll(self):
+            return 3
+
+        def wait(self):
+            return 3
+
+    with Listener(authkey=b"k") as listener:
+        assert coph.relay(listener, None, Dead()) == 3
+
+
 def test_the_pose_tween_zooms_evenly_and_turns_the_short_way():
     a = {"azimuth": 170.0, "distance": 10.0, "center.x": 0.0}
     b = {"azimuth": -170.0, "distance": 40.0, "center.x": 4.0}
