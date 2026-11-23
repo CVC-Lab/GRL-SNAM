@@ -670,7 +670,7 @@ def run_arms(host, args, world, plant, kind, arms, retarget_at=(), replay=None) 
             while not replay.done():
                 replay.quantum(on_event, step_once, lambda: _trace.session_hash(S["fleet"]))
         elif not host.get_bool("view.paused"):
-            st["quanta"] += dt * max(host.get_float("view.speed", 1.0), 0.0) / _trace.QUANTUM
+            st["quanta"] += dt * max(host.get_float("view.speed", 1.0), 0.0) / replay.fixed_dt
             while st["quanta"] >= 1.0 and not replay.done():
                 replay.quantum(on_event, step_once, lambda: _trace.session_hash(S["fleet"]))
                 st["quanta"] -= 1.0
