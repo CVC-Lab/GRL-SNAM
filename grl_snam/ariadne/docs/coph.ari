@@ -5,13 +5,18 @@
 #   python -m grl_snam.ariadne coph crossing
 #   python -m grl_snam.ariadne coph hazard --scene severe
 #   python -m grl_snam.ariadne coph crossing --from runs/crossing
+#   python -m grl_snam.ariadne coph walkthrough --from runs/coph
 #
-# - Transport: play / pause, speed, loop, a position slider (play.pos, 0..1) and, while a live run
-#   is still going, Live (play.live), which keeps the play head on the newest boundary.
-# - Headline: the reference's established result with its seed counts, this run's own number once
-#   both arms finish, and what the panels show that the reference has not established.
+# The windows are docked so that the floors stay clear: CoPH and Learning down the right edge
+# (a pos past the view's edge opens the window against it), Headline above and Agents below, in
+# fractions of the view that coph.py's RIGHT, TOP and BOTTOM repeat for the camera.
+# - CoPH: play / pause, speed, loop, a position slider (play.pos, 0..1), Live (play.live) while a
+#   live run is still going, the heat map, the camera, and the walkthrough's caption and buttons
+#   when coph.py runs one (--tour).
+# - Headline: the claims as the roadmap's §8 labels them: what the reference established, with its
+#   own seed counts (green); this run's number once both arms finish; what it has not established
+#   (amber); and that the validation gate cannot reject at its slack, with this run's count.
 # - Agents: one row per agent per arm: its learner, its packet bytes and its energy ledger.
-# - View: the floor's heat map (the true risk field, or an agent's own r) and the camera.
 # - Learning (pycvc_gl's chart:, libcvc 3.7.14; hidden without it): for one agent, what each
 #   arm's learner measured at each update. The held-out field loss before and after it, which
 #   the gate compares, with the gate's threshold; below, a statistic Show picks. A click on
@@ -34,6 +39,9 @@ init: |
     (state-set "view.heat" "truth")
     (state-set "view.camera" "overview")
     (state-set "view.learning" "1")
+    (state-set "view.tour" "0")
+    (state-set "tour.step" "")
+    (state-set "tour.caption" "")
     (state-set "learn.agent" "0")
     (state-set "learn.show" "field")
     (state-set "learn.log" "0")
@@ -57,8 +65,8 @@ menubar:
 windows:
   - window: CoPH
     id: transport
-    pos: [8, 28]
-    size: [300, 272]
+    pos: [10000, 4]
+    size: ["27%", "41%"]
     children:
       - text: ""
         bind: play.title
@@ -69,17 +77,20 @@ windows:
         fmt: "%.3f"
       - text: "time"
         bind: play.time
-      - checkbox: Playing
-        bind: play.playing
-      - checkbox: Live (follow the run)
-        bind: play.live
+      - type: group
+        layout: { kind: grid, col_widths: [100, 110, 90] }
+        children:
+          - checkbox: Playing
+            bind: play.playing
+          - checkbox: Live
+            bind: play.live
+          - checkbox: Loop
+            bind: play.loop
       - slider_float: Speed
         bind: play.speed
         lo: 0.1
         hi: 8.0
         fmt: "%.1fx"
-      - checkbox: Loop
-        bind: play.loop
       - combo: Heat map
         bind: view.heat
         options: [True risk field, Agent 0's own r, Agent 1's own r]
@@ -91,27 +102,58 @@ windows:
       - checkbox: Learning panels
         bind: view.learning
         visible_when: (has? "chart")
+      - separator
+      - type: group
+        layout: { kind: grid, col_widths: [130, 170] }
+        visible_when: (not (= (state-get "tour.step") ""))
+        children:
+          - checkbox: Walkthrough
+            bind: view.tour
+          - text: ""
+            bind: tour.step
+            color: [0.65, 0.68, 0.72]
+      - type: group
+        layout: { kind: grid, col_widths: [80, 80, 80] }
+        visible_when: (not (= (state-get "tour.step") ""))
+        children:
+          - button: Back
+            on: tour_back
+          - button: Next
+            on: tour_next
+          - button: Restart
+            on: tour_restart
 
   - window: Headline
     id: headline
-    pos: [316, 28]
-    size: [700, 132]
+    pos: [4, 4]
+    size: ["72.5%", "28%"]
     children:
       - text: ""
+        bind: tour.caption
+        color: [1.0, 0.95, 0.72]
+        visible_when: (= (state-get "view.tour") "1")
+      - text: ""
         bind: coph.headline
+        visible_when: (not (= (state-get "view.tour") "1"))
       - text: ""
         bind: coph.reference
+        color: [0.45, 0.86, 0.52]
       - text: ""
         bind: coph.result
       - text: ""
-        bind: coph.status
-      - text: ""
         bind: coph.unestablished
+        color: [0.98, 0.72, 0.30]
+      - text: ""
+        bind: coph.gate
+        color: [0.98, 0.72, 0.30]
+      - text: ""
+        bind: coph.status
+        color: [0.65, 0.68, 0.72]
 
   - window: Learning
     id: learning
-    pos: [596, 164]
-    size: [420, 390]
+    pos: [10000, 10000]
+    size: ["27%", "58%"]
     visible_when: (and (has? "chart") (= (state-get "view.learning") "1"))
     children:
       - text: ""
@@ -123,49 +165,50 @@ windows:
       - chart: Held-out field loss, each update
         bind: learn.heldout
         log_y: true
-        legend: right
+        legend: top
         x_label: time (s)
         cursor: learn.t
         pick: learn.pick
         on: learn_seek
-        height: 110
+        height: 112
       - combo: Show
         bind: learn.show
-        options: [Own field against the truth, Damping against the world's, Policy pi,
-                  Held-out plant loss, Replay cost]
+        options: [Own field against the truth, Damping against the world's,
+                  "Policy pi (from replay: unestablished)", Held-out plant loss,
+                  "Replay cost (unestablished)"]
         values: [field, damping, policy, plant, replay]
       - text: ""
         bind: learn.note
       - chart: The chosen statistic
         bind: learn.stat
         log_y: learn.log
-        legend: right
+        legend: top
         x_label: time (s)
         cursor: learn.t
         pick: learn.pick
         on: learn_seek
-        height: 110
+        height: 112
 
   - window: Agents
     id: agents
-    pos: [8, 556]
-    size: [1008, 190]
+    pos: [4, 10000]
+    size: ["72.5%", "22%"]
     children:
-      - text: "learner: version, pi (risk, barrier), damping, accepts / rejects, the last update's reason; packet payload bytes; energy ledger (J, unit mass): work in, heat out, kinetic change, shaping jumps, balance residual"
+      - text: "learner (version, pi, damping, accepts / rejects, last reason); payload bytes; energy ledger (J, unit mass): work, heat, dKE, shaping, residual"
       - type: group
-        layout: { kind: grid, col_widths: [104, 68, 62, 34, 48, 48, 46, 58, 82, 58, 58, 52, 52, 46, 56, 72] }
+        layout: { kind: grid, col_widths: [64, 76, 62, 34, 48, 48, 46, 58, 82, 66, 66, 56, 56, 50, 60, 72] }
         children:
           - text: "arm"
           - text: "agent"
           - text: "status"
           - text: "ver"
-          - text: "pi r"
-          - text: "pi b"
+          - text: "pi r*"
+          - text: "pi b*"
           - text: "d"
           - text: "acc/rej"
           - text: "last"
           - text: "sent B"
-          - text: "recv B"
+          - text: "recv B*"
           - text: "work"
           - text: "heat"
           - text: "dKE"
@@ -173,7 +216,7 @@ windows:
           - text: "residual"
       - type: group
         repeat: (state-get "agents")
-        layout: { kind: grid, col_widths: [104, 68, 62, 34, 48, 48, 46, 58, 82, 58, 58, 52, 52, 46, 56, 72] }
+        layout: { kind: grid, col_widths: [64, 76, 62, 34, 48, 48, 46, 58, 82, 66, 66, 56, 56, 50, 60, 72] }
         children:
           - text: ""
             bind: agents.{i}.arm
@@ -207,6 +250,8 @@ windows:
             bind: agents.{i}.shaping
           - text: ""
             bind: agents.{i}.residual
+      - text: "* pi comes from replay, and what an agent receives feeds its field fit; both run here, and the reference has not established a gain from either."
+        color: [0.98, 0.72, 0.30]
 
 scene:
   chrome: false
