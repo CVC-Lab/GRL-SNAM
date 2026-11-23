@@ -828,6 +828,7 @@ def generate(out_dir, check=True) -> Path:
     ``check`` runs G5-G8's decision checks (every update and replay against nudged copies), which
     triple the learner run's time. The golden is the same either way.
     """
+    from grl_snam.tools.coph_golden_cars import CARS_RULES, cars_case
     from grl_snam.tools.coph_golden_episode import EPISODE_RULES, episode_case
     from grl_snam.tools.coph_golden_learner import LEARNER_RULES, learner_cases, simulate
     from grl_snam.tools.coph_golden_packets import PACKET_RULES, packet_cases
@@ -841,8 +842,9 @@ def generate(out_dir, check=True) -> Path:
             "uint64, most significant first. Cases: G1 (config), G2 (plant), G3 (potential), "
             "G4 (stages), G11 (allocation); in learner, G5 (field fit), G6 (damping fit), "
             "G7 (replay) and G8 (update); in packets, G9 (exports, bytes) and G10 (assimilate); "
-            "episode, G12 (two agents, communication on). G1 and G4 are BIT; G2, G3 and G11 are "
-            "FLOAT64; in G5-G10 and G12 every value under an 'out' key is FLOAT64 at the "
+            "episode, G12 (two agents, communication on); cars, G13 (two car learners on an open "
+            "field). G1 and G4 are BIT; G2, G3 and G11 are FLOAT64; in G5-G10, G12 and G13 "
+            "every value under an 'out' key is FLOAT64 at the "
             "section's tier and everything else is BIT."
         ),
         "upstream": UPSTREAM,
@@ -853,6 +855,7 @@ def generate(out_dir, check=True) -> Path:
         "learner_rules": LEARNER_RULES,
         "packet_rules": PACKET_RULES,
         "episode_rules": EPISODE_RULES,
+        "cars_rules": CARS_RULES,
         "config": config_cases(),
         "plant": plant_cases(),
         "potential": potential_cases(),
@@ -863,6 +866,7 @@ def generate(out_dir, check=True) -> Path:
     golden["learner"] = learner_cases(check, sim)
     golden["packets"] = packet_cases(check, sim)
     golden["episode"] = episode_case(check)
+    golden["cars"] = cars_case(check)
     path = out_dir / JSON_NAME
     # Bytes, not text: a text-mode write would end the file with \r\n on Windows.
     path.write_bytes((json.dumps(golden, separators=(",", ":")) + "\n").encode("utf-8"))
@@ -875,7 +879,7 @@ def main(argv=None) -> None:
     ap.add_argument(
         "--no-check",
         action="store_true",
-        help="skip G5-G10's and G12's decision checks against nudged copies (faster, same file)",
+        help="skip G5-G10's, G12's and G13's decision checks against nudged copies (faster, same file)",
     )
     args = ap.parse_args(argv)
     print(generate(args.out, check=not args.no_check))

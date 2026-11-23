@@ -97,6 +97,7 @@ def _same_golden(mine, theirs):
     mine_learner, theirs_learner = (_pop_learner_outputs(x["learner"]) for x in (mine, theirs))
     mine_packets, theirs_packets = (_pop_learner_outputs(x["packets"]) for x in (mine, theirs))
     mine_episode, theirs_episode = (_pop_learner_outputs(x["episode"]) for x in (mine, theirs))
+    mine_cars, theirs_cars = (_pop_learner_outputs(x["cars"]) for x in (mine, theirs))
     assert mine == theirs
     for key in FLOAT64_SECTIONS:
         tier = theirs[key]["tier"]
@@ -114,6 +115,9 @@ def _same_golden(mine, theirs):
     assert len(mine_episode) == len(theirs_episode)
     for i, (a, b) in enumerate(zip(mine_episode, theirs_episode)):
         _same_values(a, b, theirs["episode"]["tier"], ("episode", i))
+    assert len(mine_cars) == len(theirs_cars)
+    for i, (a, b) in enumerate(zip(mine_cars, theirs_cars)):
+        _same_values(a, b, theirs["cars"]["tier"], ("cars", i))
 
 
 def test_the_golden_regenerates(tmp_path, g):
@@ -1198,6 +1202,83 @@ def test_another_platforms_last_bits_pass_in_g12_and_nothing_else_does(g):
         nudge(1e-5),
         lambda e: e["agents"][0]["updates"][3].__setitem__(2, False),
         lambda e: e["agents"][1]["controls"][40][3].append(0),
+    ):
+        with pytest.raises(AssertionError):
+            _same_golden(changed(edit), g)
+
+
+# G13: two car learners on an open field
+# ---------------------------------------------------------------------------
+
+
+def test_the_plant_rules_rebuild_g13s_positions(g):
+    """Each boundary's state is the exact flow from the last at the world's damping, with the force
+    the agent held, until it is done."""
+    e = g["cars"]
+    d = _f(e["world"]["damping"])
+    cfg = Config(**{**golden.PROFILE, "steps": e["ticks"]})
+    for i, out in enumerate(e["out"]):
+        xs, us = [_vec(x) for x in out["x"]], [_vec(u) for u in out["u"]]
+        assert len(xs) == len(us) + 1 == len(e["agents"][i]["samples"])
+        assert xs[0] == _vec(e["world"]["initials"][i])
+        for t, u in enumerate(us):
+            after = _plant(xs[t], u, d, cfg.dt)["flow"]
+            assert all(abs(a - b) <= 1e-12 * (1 + abs(b)) for a, b in zip(after, xs[t + 1])), (i, t)
+
+
+def test_g13s_routes_walk_the_grid(g):
+    """A planned route steps between 8-neighbours of the 0.1 m grid, and only its last point may be
+    the goal."""
+    for a in g["cars"]["agents"]:
+        planned = [c[4] for c in a["controls"] if c[7]]
+        assert planned and all(c[4] is None for c in a["controls"] if not c[7])
+        for route in planned:
+            grid = [p for p in route if p != "goal"]
+            assert "goal" not in route[:-1]
+            for p, q in zip(grid, grid[1:]):
+                assert max(abs(p[0] - q[0]), abs(p[1] - q[1])) == 1, (p, q)
+
+
+def test_g13_covers_the_roadmap(g):
+    """Both cars reach their goals without a hit; the router plans frontier routes, follows cached
+    waypoints and takes the goal directly at the end; some controls are projected; packets arrive
+    both eligible and unsupported; an update is rejected; the stages advance."""
+    e = g["cars"]
+    assert e["ticks"] == 120 and e["arm"] == "reciprocal_fixed"
+    for a in e["agents"]:
+        assert a["outcome"] == [True, False]
+        reasons = {c[2] for c in a["controls"]}
+        assert {"frontier_route", "cached", "direct_goal"} <= reasons
+        assert sum(c[7] for c in a["controls"]) >= 10
+        assert max(s[0] for s in a["samples"]) >= 2
+        assert a["samples"][-1][2]
+    assert any(c[1] == "projected" for a in e["agents"] for c in a["controls"])
+    assert any(not u[2] for a in e["agents"] for u in a["updates"])
+    delivered = {ev[4] for ev in e["events"] if ev[0] == "delivered"}
+    assert {"eligible", "unsupported"} <= delivered
+    assert all(len(d[1]) == 1 for d in e["draws"])  # CooperativeLearner's bootstrap only
+
+
+def test_another_platforms_last_bits_pass_in_g13_and_nothing_else_does(g):
+    def changed(edit):
+        out = copy.deepcopy(g)
+        edit(out["cars"])
+        return out
+
+    def nudge(delta):
+        def edit(e):
+            x = e["out"][0]["x"][30]
+            x[0] = golden.hexbits(_f(x[0]) + delta)
+
+        return edit
+
+    _same_golden(changed(nudge(1e-9)), g)
+    for edit in (
+        nudge(1e-5),
+        lambda e: e["agents"][0]["updates"][3].__setitem__(2, not e["agents"][0]["updates"][3][2]),
+        lambda e: e["agents"][1]["controls"][40].__setitem__(
+            3, e["agents"][1]["controls"][40][3] + 1
+        ),
     ):
         with pytest.raises(AssertionError):
             _same_golden(changed(edit), g)
