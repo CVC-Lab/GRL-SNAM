@@ -476,6 +476,12 @@ def publish(host, demo, source, t, seed, scene):
     else:
         heads = ", ".join(f"{tl.label} {tl.duration:.1f} s" for tl in source.timelines)
         state = f"running: {heads} ({source.origin})"
+    passing_now = overlapping(source.timelines, t)
+    if passing_now:
+        state += (
+            f". {' and '.join(passing_now)}: the agents pass through each other; the reference "
+            "models no contact between agents"
+        )
     host.set("coph.status", state)
     host.set("coph.unestablished", UNESTABLISHED[demo])
     host.set("coph.gate", gate_line(source.timelines, t))
@@ -959,7 +965,8 @@ class Step:
     """One step of a tour: show ``caption``, move the camera to ``view`` (:meth:`View.pose_for`)
     over ``move`` seconds, set the heat map and the Learning window (``learn`` = (agent, show),
     or None to hide it), play to ``until`` (simulated seconds) at ``speed``, then hold ``hold``
-    seconds."""
+    seconds. The run never stops: during the camera move and the hold it plays on at ``idle``
+    (a frozen picture reads as a hang); at the episode's end the camera drifts instead."""
 
     caption: str
     view: tuple = ("overview",)
@@ -969,6 +976,38 @@ class Step:
     heat: str = "truth"
     learn: tuple | None = None
     move: float = 1.5
+    idle: float = 0.5
+
+
+#: How far apart (m) two agents of an arm count as passing through each other.
+OVERLAP = 0.3
+
+
+def passing(timeline):
+    """When the two agents of an arm pass closest while both drive, if they come within
+    :data:`OVERLAP` (the reference models no contact between agents, so they pass through each
+    other), else None."""
+    a, b = timeline.agents
+    a.index()
+    best = (math.inf, None)
+    for t, x, *_ in a.poses:
+        sa, sb = timeline.state(0, t), timeline.state(1, t)
+        if not (sa.active and sb.active) or sa.outcome or sb.outcome:
+            continue
+        d = math.dist(sa.q, sb.q)
+        if d < best[0]:
+            best = (d, t)
+    return best[1] if best[0] < OVERLAP else None
+
+
+def overlapping(timelines, t):
+    """The labels of the arms whose two driving agents are within :data:`OVERLAP` at ``t``."""
+    out = []
+    for tl in timelines:
+        s = [tl.state(i, t) for i in range(2)]
+        if all(x.active and x.outcome is None for x in s) and math.dist(s[0].q, s[1].q) < OVERLAP:
+            out.append(tl.label)
+    return out
 
 
 def _first(agent, kind=None, obstacle=None):
@@ -1026,13 +1065,15 @@ def _tour_steps(demo, timelines, seed, scene):
         on_done = [_finish(a) or on.duration for a in on.agents]
         off_done = [_finish(a) or off.duration for a in off.agents]
         s = c["saving"] if c else (math.nan, math.nan)
-        return [
+        t_pass, t_pass_off = passing(on), passing(off)
+        steps = [
             Step(
                 "Crossing. Agent 0 (orange) starts in the west and agent 1 (blue) in the east, "
                 "each bound for the other's start. Two doors in the corridor maze are shut, and "
                 "neither agent knows where. Left: communication off. Right: CoPH, each agent "
                 "sending what it senses to the other. Same seed, same code.",
-                hold=7.0,
+                hold=6.0,
+                idle=0.25,
             ),
             Step(
                 f"{t_sense:.1f} s: agent 1 senses the middle door beside its start, in both arms. "
@@ -1041,16 +1082,16 @@ def _tour_steps(demo, timelines, seed, scene):
                 view=("arm", 1),
                 until=t_told + 1.2,
                 speed=0.5,
-                hold=4.0,
+                hold=3.0,
             ),
             Step(
                 f"Right: agent 0 meets the north door at {t_north:.1f} s and says so; agent 1, "
                 f"told at {t_north_told:.1f} s, turns back before reaching it. Both now take the "
                 "south corridor.",
                 view=("arm", 1),
-                until=t_north_told + 2.0,
+                until=t_north_told + 0.6,
                 speed=3.0,
-                hold=4.0,
+                hold=3.0,
             ),
             Step(
                 f"Left, with no communication: agent 0 finds the middle door itself at "
@@ -1058,24 +1099,40 @@ def _tour_steps(demo, timelines, seed, scene):
                 "that agent 0 on the right has already reported.",
                 view=("arm", 0),
                 until=t_off_middle + 3.0,
-                speed=2.0,
-                hold=4.0,
+                speed=1.5,
+                hold=3.0,
             ),
             Step(
                 f"Left: agent 1 finds the north door at {t_off_north1:.1f} s, and agent 0 finds "
                 f"it too at {t_off_north0:.1f} s. Each pays for every dead end itself.",
-                until=t_off_north0 + 1.5,
+                until=t_off_north0 + 0.5,
                 speed=4.0,
-                hold=3.0,
+                hold=1.0,
             ),
+        ]
+        if t_pass is not None:
+            q = on.state(0, t_pass).q
+            steps.append(
+                Step(
+                    f"Right, at {t_pass:.1f} s: the two agents pass through each other on the "
+                    "south corridor. CoPH-Stagewise models no contact between agents: each senses "
+                    "only the walls, the doors and the risk, so neither sees the other.",
+                    view=("spot", 1, q[0], q[1], 3.0),
+                    until=t_pass + 1.5,
+                    speed=0.5,
+                    hold=2.5,
+                    move=1.0,
+                )
+            )
+        left = (
+            f"its agents pass through each other at {t_pass_off:.1f} s too, and "
+            if t_pass_off is not None
+            else ""
+        )
+        steps += [
             Step(
-                f"Right: both arrive, at {on_done[0]:.1f} and {on_done[1]:.1f} s.",
-                until=max(on_done) + 0.5,
-                speed=4.0,
-                hold=2.5,
-            ),
-            Step(
-                f"Left: they arrive at {off_done[0]:.1f} and {off_done[1]:.1f} s.",
+                f"Right: both arrive, at {on_done[0]:.1f} and {on_done[1]:.1f} s. Left: "
+                f"{left}they arrive at {off_done[0]:.1f} and {off_done[1]:.1f} s.",
                 until=max(off_done),
                 speed=4.0,
                 hold=2.5,
@@ -1090,6 +1147,7 @@ def _tour_steps(demo, timelines, seed, scene):
                 hold=10.0,
             ),
         ]
+        return steps
     t_rx = min((d[0] for d in on.deliveries if d[2] == 1), default=26.0)
     start = on.start(1)
     t_back = _turn_back(off.agents[1], start) or 41.0
@@ -1102,16 +1160,17 @@ def _tour_steps(demo, timelines, seed, scene):
             "scout (orange, risk weight 0.25) crosses first; the carrier (blue, risk weight 6) "
             f"leaves the same start {start:.0f} s later for the same goal. Left: communication "
             "off. Right: the scout shares its graded field.",
-            hold=7.0,
+            hold=6.0,
+            idle=0.25,
         ),
         Step(
             "The scout drives straight through: at its risk weight the hazard costs it little. "
             "The floors now show the scout's own fitted field r, which picks the hazard up as "
             "the scout passes. On the right, the scout sends what it has fitted to the carrier.",
             heat="agent0",
-            until=start - 1.0,
+            until=start - 2.0,
             speed=4.0,
-            hold=3.0,
+            hold=2.5,
         ),
         Step(
             f"Right: the scout's packets reach the carrier at {t_rx:.1f} s, before the carrier "
@@ -1120,7 +1179,7 @@ def _tour_steps(demo, timelines, seed, scene):
             view=("arm", 1),
             until=t_rx + 6.0,
             speed=1.5,
-            hold=4.0,
+            hold=3.0,
         ),
         Step(
             "Left, with no communication: the carrier knows nothing of the hazard. Its own "
@@ -1130,20 +1189,20 @@ def _tour_steps(demo, timelines, seed, scene):
             heat="agent1",
             until=t_back + 3.0,
             speed=2.0,
-            hold=4.0,
+            hold=3.0,
         ),
         Step(
             f"The scout arrived at {scout:.1f} s in both arms. Right: the carrier arrives at "
             f"{on_done:.1f} s.",
             until=on_done + 0.5,
             speed=4.0,
-            hold=2.5,
+            hold=2.0,
         ),
         Step(
             f"Left: the carrier arrives at {off_done:.1f} s, after the way back.",
             until=off_done,
             speed=4.0,
-            hold=2.5,
+            hold=2.0,
         ),
         Step(
             f"This run: the carrier's cost (time + risk) is {cost[0]:.1f} with communication off "
@@ -1217,7 +1276,7 @@ class Tour:
             return
         step = self.steps[self.index]
         if step.until is not None:
-            self.transport.seek(step.until)
+            self.transport.seek(max(step.until, self.transport.t))
         if self.index + 1 < len(self.steps):
             self.view.set_pose(self.cam_to)
             self.begin(self.index + 1)
@@ -1256,6 +1315,7 @@ class Tour:
         step = self.steps[self.index]
         self.phase_t += dt
         if self.phase == "move":
+            self._idle(dt, step, head)
             f = min(self.phase_t / max(step.move, 1e-6), 1.0)
             self.view.set_pose(_lerp_pose(self.cam_from, self.cam_to, f * f * (3 - 2 * f)))
             if f >= 1.0:
@@ -1265,17 +1325,33 @@ class Tour:
         elif self.phase == "play":
             until = step.until if live else min(step.until, head)
             t = self.transport.t
-            if t < until:
-                self.transport.seek(min(until, t + dt * step.speed, head))
-            if self.transport.t >= until - 1e-9:
-                self.transport.seek(until)
+            if t >= until - 1e-9:  # reached, perhaps while idling: never seek back
                 self.phase, self.phase_t = "hold", 0.0
                 self._shot()
-        elif self.phase == "hold" and self.phase_t >= step.hold:
-            if self.index + 1 < len(self.steps):
-                self.begin(self.index + 1)
             else:
-                self._end()
+                self.transport.seek(min(until, t + dt * step.speed, head))
+        elif self.phase == "hold":
+            if not self._idle(dt, step, head) and self.view.pose:
+                pose = dict(self.view.pose)  # the episode is over: the camera drifts
+                pose["azimuth"] = pose.get("azimuth", -90.0) + self.DRIFT * dt
+                self.view.set_pose(pose)
+            if self.phase_t >= step.hold:
+                if self.index + 1 < len(self.steps):
+                    self.begin(self.index + 1)
+                else:
+                    self._end()
+        return True
+
+    #: How fast the camera drifts round once the episode is over (degrees a second).
+    DRIFT = 1.5
+
+    def _idle(self, dt, step, head):
+        """Play on at the step's ``idle`` during a camera move or a hold; False when the run
+        cannot go further (its end, or a live run's newest boundary)."""
+        t = self.transport.t
+        if step.idle <= 0 or t >= head - 1e-9:
+            return False
+        self.transport.seek(min(t + dt * step.idle, head))
         return True
 
     def _shot(self):

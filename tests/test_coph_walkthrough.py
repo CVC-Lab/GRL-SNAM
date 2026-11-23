@@ -96,11 +96,36 @@ def test_the_overview_fits_the_room_the_panels_leave(size):
 
 def test_tour_steps_read_the_episode(timelines):
     steps = coph.tour_steps("crossing", timelines, 76000, "severe")
-    assert len(steps) == 8
+    assert len(steps) == 7  # no pass-through step: at 6 s the agents are 12 m apart
     assert "4.0 s" in steps[1].caption and "4.8 s" in steps[1].caption
     ends = [s.until for s in steps if s.until is not None]
     assert ends == sorted(ends)
     assert steps[-1].learn == (0, "field")
+    assert steps[0].idle == 0.25 and all(s.idle > 0 for s in steps)
+
+
+def _crossed(timelines):
+    """A copy of the CoPH arm whose agent 1 is moved onto agent 0 at 3 s (a pass-through)."""
+    import copy
+
+    tl = copy.deepcopy(timelines[1])
+    a0, a1 = tl.agents
+    for k, (t, x, *rest) in enumerate(a1.poses):
+        if abs(t - 3.0) < 0.07:
+            a1.poses[k] = (t, list(tl.state(0, t).q) + list(x[2:]), *rest)
+    a1._dirty = True
+    return tl
+
+
+def test_passing_finds_where_the_agents_overlap(timelines):
+    assert coph.passing(timelines[1]) is None
+    assert coph.overlapping(timelines, 3.0) == []
+    crossed = _crossed(timelines)
+    assert coph.passing(crossed) == pytest.approx(3.0, abs=0.07)
+    assert coph.overlapping([timelines[0], crossed], coph.passing(crossed)) == [crossed.label]
+    steps = coph.tour_steps("crossing", [timelines[0], crossed], 76000, "severe")
+    assert len(steps) == 8
+    assert any("pass through each other" in s.caption and s.view[0] == "spot" for s in steps)
 
 
 class _Host:
@@ -148,26 +173,31 @@ def test_the_tour_plays_every_step_and_hands_the_run_back(timelines):
     tour = coph.Tour(host, view, transport, steps, demo="crossing", shots="unused",
                      close_at_end=True)  # fmt: skip
     head = max(tl.duration for tl in timelines)
-    seen, shots = set(), 0
+    n = len(steps)
+    seen, shots, frozen, last = set(), 0, 0, None
     for _ in range(20000):
         tour.frame(1.0 / coph.FPS, head)
         transport.tick(1.0 / coph.FPS, head, False)
         seen.add(host.get("tour.step"))
+        now = (transport.t, tuple(sorted((view.pose or {}).items())))
+        frozen += now == last  # neither the run nor the camera moved: a frozen frame
+        last = now
         if tour.want_shot:
             shots, tour.want_shot = shots + 1, None
         if host.closed:
             break
     assert host.closed and host.get("tour.step") == "End of the walkthrough"
-    assert {f"Step {i} of 8" for i in range(1, 9)} <= seen and shots == 8
+    assert {f"Step {i} of {n}" for i in range(1, n + 1)} <= seen and shots == n
     assert transport.t == pytest.approx(head)  # the run is shorter than the steps' ends
+    assert frozen <= n  # at most a frame a step: the run plays on through holds, then drifts
     assert host.get("view.learning") == "1" and host.get("learn.agent") == "0"
     # Restart, then the presenter presses Playing: the tour hands the run back.
     host.handlers["tour_restart"]()
-    assert transport.t == 0.0 and host.get("tour.step") == "Step 1 of 8"
+    assert transport.t == 0.0 and host.get("tour.step") == f"Step 1 of {n}"
     host.set("play.playing", True)
     assert tour.frame(1.0 / coph.FPS, head) is False and host.get("view.tour") == "0"
     host.handlers["tour_next"]()  # Next resumes it at step 2
-    assert host.get("view.tour") == "1" and host.get("tour.step") == "Step 2 of 8"
+    assert host.get("view.tour") == "1" and host.get("tour.step") == f"Step 2 of {n}"
 
 
 def test_the_recorder_needs_ffmpeg(monkeypatch, tmp_path):
