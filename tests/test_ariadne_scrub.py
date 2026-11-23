@@ -291,8 +291,8 @@ def test_checkpoint_0_is_the_untrained_arm(deployed, tmp_path):
     from grl_snam.learning.runlog import RunLog
 
     blob = deployed["report"]["checkpoints"][0]["blob"]
-    # 30 frames a second, a tick every pycvc_gl.cars.DT: libcvc's tick, 0.05 s before 4.0.2 and
-    # pycvc.SIM_TICK (0.06 s) since.
+    # 30 frames a second, a tick every pycvc_gl.cars.DT: libcvc's tick, 0.05 s before 4.0.2, then
+    # pycvc.SIM_TICK (0.06 s in 4.0.2, 7/120 s since).
     frames = str(math.ceil(TICKS * _cars.C.DT * 30))
     assert _main(["live", "austin-freedrive", "--headless", "--frames", frames, "--world", "flat",
                   "--plant", "kinematic", "--arms", f"untrained={blob}",

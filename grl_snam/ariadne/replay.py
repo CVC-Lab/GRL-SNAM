@@ -98,7 +98,8 @@ class PlayHead:
                     host.set("sim.paused", "1")
         host.set("play.pos", round(self.t / self.duration, 6))
         self._pos = host.get_float("play.pos", 0.0)  # as the state text reads back
-        host.set("play.t", f"{self.t:.4f}")
+        # To the microsecond: since libcvc 4.0.3 a tick is 7/120 s, which 4 decimals round.
+        host.set("play.t", f"{self.t:.6f}")
         host.set("play.time", f"{self.t:6.1f} / {self.duration:.1f} s")
         return self.t
 

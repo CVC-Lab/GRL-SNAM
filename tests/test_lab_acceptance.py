@@ -30,7 +30,7 @@ FRAMES = 450
 
 def _ticks(frames: int) -> int:
     """The navigator's ticks in ``frames`` frames: one every ``pycvc_gl.cars.DT``, libcvc's tick
-    (0.05 s before 4.0.2, ``pycvc.SIM_TICK`` (0.06 s) since)."""
+    (0.05 s before 4.0.2, then ``pycvc.SIM_TICK``: 0.06 s in 4.0.2, 7/120 s since)."""
     from grl_snam.ariadne import _cars
 
     return int(frames / 30.0 / _cars.C.DT + 1e-9)
