@@ -131,7 +131,7 @@ def _args(p):
                         "on several, and the Plant combo switches between them")  # fmt: skip
     p.add_argument("--ticks", type=int, default=1200,
                    help="each checkpoint's ticks, of libcvc's tick each (pycvc_gl.cars.DT: 0.05 s "
-                        "before libcvc 4.0.2, 0.06 s since)")  # fmt: skip
+                        "before libcvc 4.0.2, 0.06 s in 4.0.2, 7/120 s since)")  # fmt: skip
     p.add_argument("--seed", type=int, default=0, help="the scenario's seed")
     p.add_argument("--scale", type=float, default=None,
                    help="the policies' frame (normalized units per metre; default: the first "

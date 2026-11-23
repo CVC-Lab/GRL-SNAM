@@ -50,9 +50,12 @@ INSTALL = (
     "a pycvc with libcvc's input traces (transfix/libcvc#1168, libcvc 3.7.15+): "
     "pycvc.input_trace_recorder and input_trace_player"
 )
-#: The world clock's quantum while tracing (s): the suite's, which nav's step divides (libcvc's
-#: tick, ``pycvc_gl.cars.DT``: 0.05 s before 4.0.2, 0.06 s since).
-QUANTUM = 0.01
+#: The world clock's quantum while tracing (s): libcvc's own, ``pycvc.SIM_QUANTUM``, of which
+#: nav's step (libcvc's tick, ``pycvc_gl.cars.DT``, ``pycvc.SIM_TICK``) is a whole number. That is
+#: 1/120 s since libcvc 4.0.3 (a tick of 7 quanta, 7/120 s); 0.01 s in 4.0.2 (a tick of 0.06 s)
+#: and before it, which had no SIM_QUANTUM (a tick of 0.05 s). A replay runs at its trace's own
+#: quantum, the header's ``fixed_dt`` (:attr:`Player.fixed_dt`).
+QUANTUM = float(getattr(pycvc, "SIM_QUANTUM", 0.01))
 #: The keys a trace records (below the host's prefix), and the ones it leaves out: what sim_world
 #: publishes about itself, and what the generated_world node does (its status, stats and job).
 #: The world is the document's: the world on (scene.world.source), the grid's crop (nav_grid) and
@@ -168,8 +171,9 @@ class Player:
         self.clock = pycvc.world_clock()  # the trace's own, as the Recorder's
         self.play = pycvc.input_trace_player(host.app, self.clock, trace)
         self.dt = float(header.get("dt", 0.05))
-        fixed = float(header.get("fixed_dt", QUANTUM))
-        self.period = max(1, round(self.dt / fixed))
+        #: The trace's quantum (s), the clock's when it was recorded: a quantum() moves this much.
+        self.fixed_dt = float(header.get("fixed_dt", QUANTUM))
+        self.period = max(1, round(self.dt / self.fixed_dt))
         self.phase = int(header.get("phase", 0))
         self.follower = None
 
