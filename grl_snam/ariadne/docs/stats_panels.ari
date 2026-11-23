@@ -4,7 +4,7 @@
 #
 #   import: [cvc://cars_panels.ari, stats_panels.ari]
 #   windows:
-#     - include: arms_stats        # pos: / size: at the include site place it
+#     - include: arms_stats        # pos: / size: at the include site place it (no size: it fits)
 #     - include: arms_ledger
 #
 # replay.ari includes them too: grl_snam/ariadne/replay.py writes the same keys from a run log at
@@ -31,7 +31,6 @@ units:
     args: { title: Stats, id: arms_stats }
     window: "{title}"
     id: "{id}"
-    size: [600, 400]
     visible_when: (= (state-get "arms.on") "1")
     children:
       - text: "one row per arm, this leg: clearance (m), ticks penetrating, path (m),"
@@ -39,39 +38,93 @@ units:
       - text: ""
         bind: arms.time
       - type: group
-        layout: { kind: grid, col_widths: [88, 60, 54, 54, 40, 56, 58, 60, 52] }
+        id: stats_table
+        layout:
+          kind: grid
+          col_widths: [auto, auto, auto, auto, auto, auto, auto, auto, auto]
+          borders: { show: all }
         children:
-          - text: "arm"
-          - text: "colour"
-          - text: "min"
-          - text: "mean"
-          - text: "pen"
-          - text: "path"
-          - text: "elapsed"
-          - text: "ms/tick"
-          - text: "reached"
-      - type: group
-        repeat: (state-get "arms.stats")
-        layout: { kind: grid, col_widths: [88, 60, 54, 54, 40, 56, 58, 60, 52] }
-        children:
-          - text: ""
-            bind: arms.stats.{i}.arm
-          - text: ""
-            bind: arms.stats.{i}.colour
-          - text: ""
-            bind: arms.stats.{i}.clear_min
-          - text: ""
-            bind: arms.stats.{i}.clear_mean
-          - text: ""
-            bind: arms.stats.{i}.pen
-          - text: ""
-            bind: arms.stats.{i}.path
-          - text: ""
-            bind: arms.stats.{i}.elapsed
-          - text: ""
-            bind: arms.stats.{i}.ms
-          - text: ""
-            bind: arms.stats.{i}.reached
+          - type: group
+            children:
+              - text: "arm"
+              - separator
+              - type: group
+                repeat: (state-get "arms.stats")
+                children:
+                  - text: ""
+                    bind: arms.stats.{i}.arm
+          - type: group
+            children:
+              - text: "colour"
+              - separator
+              - type: group
+                repeat: (state-get "arms.stats")
+                children:
+                  - text: ""
+                    bind: arms.stats.{i}.colour
+          - type: group
+            children:
+              - text: "min"
+              - separator
+              - type: group
+                repeat: (state-get "arms.stats")
+                children:
+                  - text: ""
+                    bind: arms.stats.{i}.clear_min
+          - type: group
+            children:
+              - text: "mean"
+              - separator
+              - type: group
+                repeat: (state-get "arms.stats")
+                children:
+                  - text: ""
+                    bind: arms.stats.{i}.clear_mean
+          - type: group
+            children:
+              - text: "pen"
+              - separator
+              - type: group
+                repeat: (state-get "arms.stats")
+                children:
+                  - text: ""
+                    bind: arms.stats.{i}.pen
+          - type: group
+            children:
+              - text: "path"
+              - separator
+              - type: group
+                repeat: (state-get "arms.stats")
+                children:
+                  - text: ""
+                    bind: arms.stats.{i}.path
+          - type: group
+            children:
+              - text: "elapsed"
+              - separator
+              - type: group
+                repeat: (state-get "arms.stats")
+                children:
+                  - text: ""
+                    bind: arms.stats.{i}.elapsed
+          - type: group
+            children:
+              - text: "ms/tick"
+              - separator
+              - type: group
+                repeat: (state-get "arms.stats")
+                children:
+                  - text: ""
+                    bind: arms.stats.{i}.ms
+          - type: group
+            children:
+              - text: "reached"
+              - separator
+              - type: group
+                repeat: (state-get "arms.stats")
+                children:
+                  - text: ""
+                    bind: arms.stats.{i}.reached
       - separator
       - type: group
         visible_when: (= (state-get "arms.live") "1")
@@ -104,116 +157,293 @@ units:
     args: { title: Ledger, id: arms_ledger }
     window: "{title}"
     id: "{id}"
-    size: [640, 560]
     visible_when: (= (state-get "arms.on") "1")
     children:
       - text: "per arm, this tick: the coefficients in force and the terms of U_nav"
       - type: group
-        layout: { kind: grid, col_widths: [96, 64, 64, 64, 68, 68, 56] }
+        id: coef_table
+        layout:
+          kind: grid
+          col_widths: [auto, auto, auto, auto, auto, auto, auto]
+          borders: { show: all }
         children:
-          - text: "arm"
-          - text: "alpha"
-          - text: "beta"
-          - text: "gamma"
-          - text: "lam_soft"
-          - text: "lam_hard"
-          - text: "mu"
+          - type: group
+            children:
+              - text: "arm"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.coef")
+                children:
+                  - text: ""
+                    bind: ledger.coef.{i}.arm
+          - type: group
+            children:
+              - text: "alpha"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.coef")
+                children:
+                  - text: ""
+                    bind: ledger.coef.{i}.alpha
+          - type: group
+            children:
+              - text: "beta"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.coef")
+                children:
+                  - text: ""
+                    bind: ledger.coef.{i}.beta
+          - type: group
+            children:
+              - text: "gamma"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.coef")
+                children:
+                  - text: ""
+                    bind: ledger.coef.{i}.gamma
+          - type: group
+            children:
+              - text: "lam_soft"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.coef")
+                children:
+                  - text: ""
+                    bind: ledger.coef.{i}.lam_soft
+          - type: group
+            children:
+              - text: "lam_hard"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.coef")
+                children:
+                  - text: ""
+                    bind: ledger.coef.{i}.lam_hard
+          - type: group
+            children:
+              - text: "mu"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.coef")
+                children:
+                  - text: ""
+                    bind: ledger.coef.{i}.mu
       - type: group
-        repeat: (state-get "ledger.coef")
-        layout: { kind: grid, col_widths: [96, 64, 64, 64, 68, 68, 56] }
+        id: terms_table
+        layout:
+          kind: grid
+          col_widths: [auto, auto, auto, auto, auto, auto, auto]
+          borders: { show: all }
         children:
-          - text: ""
-            bind: ledger.coef.{i}.arm
-          - text: ""
-            bind: ledger.coef.{i}.alpha
-          - text: ""
-            bind: ledger.coef.{i}.beta
-          - text: ""
-            bind: ledger.coef.{i}.gamma
-          - text: ""
-            bind: ledger.coef.{i}.lam_soft
-          - text: ""
-            bind: ledger.coef.{i}.lam_hard
-          - text: ""
-            bind: ledger.coef.{i}.mu
-      - type: group
-        layout: { kind: grid, col_widths: [96, 64, 64, 70, 56, 56, 60] }
-        children:
-          - text: "arm"
-          - text: "U"
-          - text: "goal"
-          - text: "barrier"
-          - text: "soft"
-          - text: "hard"
-          - text: "terrain"
-      - type: group
-        repeat: (state-get "ledger.terms")
-        layout: { kind: grid, col_widths: [96, 64, 64, 70, 56, 56, 60] }
-        children:
-          - text: ""
-            bind: ledger.terms.{i}.arm
-          - text: ""
-            bind: ledger.terms.{i}.potential
-          - text: ""
-            bind: ledger.terms.{i}.u_goal
-          - text: ""
-            bind: ledger.terms.{i}.u_barrier
-          - text: ""
-            bind: ledger.terms.{i}.u_soft
-          - text: ""
-            bind: ledger.terms.{i}.u_hard
-          - text: ""
-            bind: ledger.terms.{i}.u_terrain
+          - type: group
+            children:
+              - text: "arm"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.terms")
+                children:
+                  - text: ""
+                    bind: ledger.terms.{i}.arm
+          - type: group
+            children:
+              - text: "U"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.terms")
+                children:
+                  - text: ""
+                    bind: ledger.terms.{i}.potential
+          - type: group
+            children:
+              - text: "goal"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.terms")
+                children:
+                  - text: ""
+                    bind: ledger.terms.{i}.u_goal
+          - type: group
+            children:
+              - text: "barrier"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.terms")
+                children:
+                  - text: ""
+                    bind: ledger.terms.{i}.u_barrier
+          - type: group
+            children:
+              - text: "soft"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.terms")
+                children:
+                  - text: ""
+                    bind: ledger.terms.{i}.u_soft
+          - type: group
+            children:
+              - text: "hard"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.terms")
+                children:
+                  - text: ""
+                    bind: ledger.terms.{i}.u_hard
+          - type: group
+            children:
+              - text: "terrain"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.terms")
+                children:
+                  - text: ""
+                    bind: ledger.terms.{i}.u_terrain
       - separator
       - text: "the books against U_nav (unit mass, normalized units):"
       - text: "dU = drive + projection + context + residual; dH = dKE + dU. Summed over the run:"
       - type: group
-        layout: { kind: grid, col_widths: [96, 64, 64, 76, 64, 60, 64] }
+        id: books_table
+        layout:
+          kind: grid
+          col_widths: [auto, auto, auto, auto, auto, auto, auto]
+          borders: { show: all }
         children:
-          - text: "arm"
-          - text: "dU"
-          - text: "drive"
-          - text: "projection"
-          - text: "context"
-          - text: "dKE"
-          - text: "residual"
-      - type: group
-        repeat: (state-get "ledger.books")
-        layout: { kind: grid, col_widths: [96, 64, 64, 76, 64, 60, 64] }
-        children:
-          - text: ""
-            bind: ledger.books.{i}.arm
-          - text: ""
-            bind: ledger.books.{i}.dU
-          - text: ""
-            bind: ledger.books.{i}.drive
-          - text: ""
-            bind: ledger.books.{i}.projection
-          - text: ""
-            bind: ledger.books.{i}.context
-          - text: ""
-            bind: ledger.books.{i}.dKE
-          - text: ""
-            bind: ledger.books.{i}.residual
+          - type: group
+            children:
+              - text: "arm"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.books")
+                children:
+                  - text: ""
+                    bind: ledger.books.{i}.arm
+          - type: group
+            children:
+              - text: "dU"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.books")
+                children:
+                  - text: ""
+                    bind: ledger.books.{i}.dU
+          - type: group
+            children:
+              - text: "drive"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.books")
+                children:
+                  - text: ""
+                    bind: ledger.books.{i}.drive
+          - type: group
+            children:
+              - text: "projection"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.books")
+                children:
+                  - text: ""
+                    bind: ledger.books.{i}.projection
+          - type: group
+            children:
+              - text: "context"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.books")
+                children:
+                  - text: ""
+                    bind: ledger.books.{i}.context
+          - type: group
+            children:
+              - text: "dKE"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.books")
+                children:
+                  - text: ""
+                    bind: ledger.books.{i}.dKE
+          - type: group
+            children:
+              - text: "residual"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.books")
+                children:
+                  - text: ""
+                    bind: ledger.books.{i}.residual
       - text: "this tick:"
       - type: group
-        repeat: (state-get "ledger.tick")
-        layout: { kind: grid, col_widths: [96, 64, 64, 76, 64, 60, 64] }
+        id: tick_table
+        layout:
+          kind: grid
+          col_widths: [auto, auto, auto, auto, auto, auto, auto]
+          borders: { show: all }
         children:
-          - text: ""
-            bind: ledger.tick.{i}.arm
-          - text: ""
-            bind: ledger.tick.{i}.dU
-          - text: ""
-            bind: ledger.tick.{i}.drive
-          - text: ""
-            bind: ledger.tick.{i}.projection
-          - text: ""
-            bind: ledger.tick.{i}.context
-          - text: ""
-            bind: ledger.tick.{i}.dKE
-          - text: ""
-            bind: ledger.tick.{i}.residual
+          - type: group
+            children:
+              - text: "arm"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.tick")
+                children:
+                  - text: ""
+                    bind: ledger.tick.{i}.arm
+          - type: group
+            children:
+              - text: "dU"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.tick")
+                children:
+                  - text: ""
+                    bind: ledger.tick.{i}.dU
+          - type: group
+            children:
+              - text: "drive"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.tick")
+                children:
+                  - text: ""
+                    bind: ledger.tick.{i}.drive
+          - type: group
+            children:
+              - text: "projection"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.tick")
+                children:
+                  - text: ""
+                    bind: ledger.tick.{i}.projection
+          - type: group
+            children:
+              - text: "context"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.tick")
+                children:
+                  - text: ""
+                    bind: ledger.tick.{i}.context
+          - type: group
+            children:
+              - text: "dKE"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.tick")
+                children:
+                  - text: ""
+                    bind: ledger.tick.{i}.dKE
+          - type: group
+            children:
+              - text: "residual"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.tick")
+                children:
+                  - text: ""
+                    bind: ledger.tick.{i}.residual
       - separator
       - combo: Agent
         bind: ledger.agent
@@ -244,12 +474,36 @@ units:
       - text: ""
         bind: ledger.plant_note
       - type: group
-        repeat: (state-get "ledger.plant")
-        layout: { kind: grid, col_widths: [170, 90, 60] }
+        id: plant_table
+        layout:
+          kind: grid
+          col_widths: [auto, auto, auto]
+          borders: { show: all }
         children:
-          - text: ""
-            bind: ledger.plant.{i}.key
-          - text: ""
-            bind: ledger.plant.{i}.value
-          - text: ""
-            bind: ledger.plant.{i}.unit
+          - type: group
+            children:
+              - text: "item"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.plant")
+                children:
+                  - text: ""
+                    bind: ledger.plant.{i}.key
+          - type: group
+            children:
+              - text: "value"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.plant")
+                children:
+                  - text: ""
+                    bind: ledger.plant.{i}.value
+          - type: group
+            children:
+              - text: "unit"
+              - separator
+              - type: group
+                repeat: (state-get "ledger.plant")
+                children:
+                  - text: ""
+                    bind: ledger.plant.{i}.unit

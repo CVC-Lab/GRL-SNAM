@@ -26,14 +26,22 @@ which libcvc's world runtime runs: Austin by default, ``--world generated`` or `
 worlds, ``--uri`` for another city (:mod:`grl_snam.ariadne._world`).
 
 The view (``docs/scrub.ari``):
-- **Checkpoint k** is picked by a combo, a slider, Previous and Next, or a click on a chart. Its
-  ghost runs beside step 0's (the first checkpoint) over the episode, with the Stats and Ledger
-  windows for the two.
+- **Checkpoint k** is picked by a combo, a slider, Previous and Next, Most apart (the checkpoint
+  whose car gets farthest from step 0's), or a click on a chart. Its car (opaque, orange) runs
+  beside step 0's (the first checkpoint; see-through, blue) over the episode, each with its whole
+  path drawn, with the Stats and Ledger windows for the two. The Scrub window says how far k's car
+  gets from step 0's (``apart_m``: at most, and at the end), and how far the run's checkpoints do
+  all told; under a car's width, that the two drive as one.
 - **A deployed metric** (Metric picks it) against the checkpoint's step, with step 0's as a
-  dashed line, and the same as a table.
+  dashed line, and every metric in the Checkpoints window's table, one row per checkpoint.
 - **A held-out curve** from the history, with the learn port's marks.
+- **The episode**: Paused, Speed, Step and Restart, and the play head (the Episode window).
 
-Both charts carry a cursor at checkpoint k. ``--report R.json`` writes every checkpoint's metrics
+Both charts carry a cursor at checkpoint k. Each frame moves the two cars to the play head; the
+Stats and Ledger tables follow it at most every :data:`TABLES_EVERY` s while it plays (a new
+checkpoint, run or arm at once), writing only the cells that changed, and the paths are drawn once
+per checkpoint shown. ``--at K`` opens on checkpoint K (default the pick), ``--at far`` on the one
+whose car gets farthest from step 0's. ``--report R.json`` writes every checkpoint's metrics
 (``grl_snam.scrub/v1``), its run log's file and the scenario. ``--blobs DIR`` looks for the saved
 policies there (by file name) before beside the history, and ``--cache DIR`` caches the run logs
 there in place of ``<history>.scrub/``. ``--data-set NAME`` names the run's data set in the report (the
@@ -46,7 +54,8 @@ each checkpoint lists and the history each report names, and deploys nothing, so
 torch nor the policies, and no sim_world steps. A file a report names is found as given, then
 relative to the report, then by its file name beside the report, so a report travels with its
 files. A report may also be a run's bundle, one zip with the report, the history and the logs
-(the Pages site's scrub page ships those). It does not hash the scenario again: the libcvc in use, the
+(the Pages site's scrub page ships those). ``--data-set`` and ``--plant`` pick the run it opens
+on (default the first report's). It does not hash the scenario again: the libcvc in use, the
 world and the files' places may differ from the ones that deployed. With several reports a Run
 combo picks one, and a Set combo their data set when they come from several: a set picked shows
 its run of the same name at the same training step, so the sets compare side by side. Their
@@ -71,6 +80,7 @@ import math
 import os
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -82,10 +92,13 @@ REPORT_SCHEMA = "grl_snam.scrub/v1"
 #: Bumped when the scrubber's runs would change, so older caches are not read.
 SCRUB_VERSION = 1
 #: docs/scrub.ari's windows, by id.
-WINDOWS = ("scrub", "training", "episode", "sim_transport", "arms_stats", "arms_ledger")
+WINDOWS = ("scrub", "checkpoints", "training", "episode", "sim_transport", "arms_stats",
+           "arms_ledger")  # fmt: skip
 #: The run logs a view keeps read at once (step 0's is always kept).
 KEEP_LOGS = 8
-#: The deployed metrics, from each run's last tick: name -> (label, run log array, digits).
+#: The deployed metrics: name -> (label, run log array, digits). Each is the array's value at the
+#: run's last tick, but ``apart_m`` (no array): how far the car got from step 0's, at the same
+#: tick, at most over the run (:func:`apart`).
 METRICS = {
     "reached": ("reached the goal", "stats_reached", 0),
     "time_s": ("time (s)", "stats_elapsed_s", 1),
@@ -94,7 +107,16 @@ METRICS = {
     "clear_min_m": ("clearance min (m)", "stats_clear_min_m", 2),
     "clear_mean_m": ("clearance mean (m)", "stats_clear_mean_m", 2),
     "goal_m": ("left to the goal (m)", "goal_dist", 1),
+    "apart_m": ("apart from step 0, most (m)", None, 1),
 }
+#: While the episode plays, the Stats and Ledger tables follow the play head at most this often
+#: (s of wall time); a new checkpoint, arm or run shows at once.
+TABLES_EVERY = 0.2
+#: The two runs' trails are drawn once a checkpoint has been shown this long (s of wall time), so
+#: dragging the Scrub slider through the checkpoints draws none on the way.
+TRAILS_AFTER = 0.25
+#: The most points a trail has (a run's ticks, thinned).
+TRAIL_POINTS = 600
 
 
 def _args(p):
@@ -115,7 +137,8 @@ def _args(p):
     p.add_argument("--no-world", action="store_true", help="the windows alone: no 3-D world")
     p.add_argument("--data-set", default="", metavar="NAME",
                    help="the data set the run belongs to, in the report (e.g. retrain): a view of "
-                        "several sets picks one with a Set combo")  # fmt: skip
+                        "several sets picks one with a Set combo. With --view, the data set it "
+                        "opens on")  # fmt: skip
     p.add_argument("--lean", action="store_true",
                    help="cache lean run logs (single precision, packed), for a page")  # fmt: skip
     p.add_argument("--camera", choices=("follow", "orbit"), default=None,
@@ -128,7 +151,8 @@ def _args(p):
                    help="the vehicle the checkpoints drive (nav_plant.vehicle): humvee, the "
                         "default, a Jolt Humvee that collides with the buildings; kinematic, nav's "
                         "bicycle, which drives through them; roboracer, ... Give it again to deploy "
-                        "on several, and the Plant combo switches between them")  # fmt: skip
+                        "on several, and the Plant combo switches between them. With --view, the "
+                        "plant it opens on")  # fmt: skip
     p.add_argument("--ticks", type=int, default=1200,
                    help="each checkpoint's ticks, of libcvc's tick each (pycvc_gl.cars.DT: 0.05 s "
                         "before libcvc 4.0.2, 0.06 s in 4.0.2, 7/120 s since)")  # fmt: skip
@@ -138,7 +162,9 @@ def _args(p):
                         ".pt checkpoint's, else 1/300)")  # fmt: skip
     p.add_argument("--bundle", default=None, help="a local Austin bundle: the same as --uri DIR")
     p.add_argument("--report", default=None, help="write every checkpoint's metrics (JSON)")
-    p.add_argument("--at", type=int, default=None, help="start at checkpoint k (default the pick)")
+    p.add_argument("--at", default=None, metavar="K",
+                   help="start at checkpoint K (0 is the first; default the pick), or at 'far': the "
+                        "checkpoint whose car gets farthest from step 0's")  # fmt: skip
     if _cars.HAS_CARS:
         _cars.C.add_args(p)
 
@@ -197,13 +223,59 @@ def cache_path(history, blob_sha: str, shash: str, cache=None, lean: bool = Fals
     )
 
 
-def metrics_of(log) -> dict:
-    """The deployed metrics (:data:`METRICS`) at a run log's last tick (its one arm)."""
+def metrics_of(log, first=None) -> dict:
+    """The deployed metrics (:data:`METRICS`) at a run log's last tick (its one arm); ``apart_m``
+    from ``first`` (step 0's log; NaN without it)."""
     out = {}
     for name, (_, key, _) in METRICS.items():
-        a = log.arrays.get(key)
+        a = log.arrays.get(key) if key else None
         out[name] = float(a[-1, 0]) if a is not None and len(a) else math.nan
+    if first is not None:
+        out["apart_m"] = apart(log, first)[0]
     return out
+
+
+def apart(log, first, j: int = 0, i: int = 0) -> tuple[float, float]:
+    """How far arm ``j`` of ``log`` is from arm ``i`` of ``first`` at the same tick (m): the most
+    over the ticks both have, and at the last of them. NaN when they have none."""
+    a, b = log.arrays, first.arrays
+    n = min(len(a["x"]), len(b["x"]))
+    if not n:
+        return math.nan, math.nan
+    d = np.hypot(a["x"][:n, j] - b["x"][:n, i], a["y"][:n, j] - b["y"][:n, i])
+    return float(np.max(d)), float(d[-1])
+
+
+def apart_text(rows, metrics, k: int, far: float, end: float, width: float) -> str:
+    """What the two cars of checkpoint ``k`` and step 0 do apart: how far k's got from step 0's
+    (``far`` at most, ``end`` at the last tick), and when that is less than a car's ``width`` that
+    the two drive as one."""
+    if k == 0:
+        return "this is step 0 itself: the two cars are one run"
+    if not math.isfinite(far):
+        return ""
+    step = f"step {rows[k]['step']:g}"
+    text = f"{step} gets {far:.1f} m from step 0 at most, {end:.1f} m at the end"
+    if far < width:
+        text += (f":\nnever a car's width ({width:.1f} m) apart, the two cars overlap all the way,\n"
+                 f"and {step} drives as step 0 does")  # fmt: skip
+    return text
+
+
+def run_apart_text(rows, metrics, width: float) -> str:
+    """How far this run's checkpoints get from step 0, all of them (once each one's ``apart_m`` is
+    known): the farthest, and when even that is less than a car's ``width``, that training has not
+    changed how the policy drives here."""
+    far = np.asarray([m.get("apart_m", math.nan) for m in metrics[1:]], float)
+    if not len(far) or not np.isfinite(far).all():
+        return ""
+    i = int(np.argmax(far)) + 1
+    text = (f"its checkpoints get {far.max():.1f} m from step 0 at most (step {rows[i]['step']:g}),"
+            f"\nhalf of them {np.median(far):.1f} m or less")  # fmt: skip
+    if far.max() < width:
+        text += (f":\nevery one drives within a car's width ({width:.1f} m) of step 0,\n"
+                 "so on this scenario, training has not changed how it drives")  # fmt: skip
+    return text
 
 
 def _cell(v, digits) -> str:
@@ -219,7 +291,7 @@ def table_rows(rows, metrics, k: int) -> list[dict]:
     out = []
     for i, (r, m) in enumerate(zip(rows, metrics, strict=True)):
         flag = ("pick" if r["selected"] else "") or ("best" if r["best"] else "")
-        cells = {name: _cell(m[name], d) for name, (_, _, d) in METRICS.items()}
+        cells = {name: _cell(m.get(name, math.nan), d) for name, (_, _, d) in METRICS.items()}
         cells["reached"] = "yes" if m["reached"] >= 0.5 else "no"
         out.append({"at": ">" if i == k else "", "step": f"{r['step']:g}", "flag": flag, **cells})
     return out
@@ -230,7 +302,7 @@ def metric_chart(rows, metrics, name: str):
     held-out bests marked: (series, markers, text)."""
     label, _, digits = METRICS.get(name, METRICS["path_m"])
     x = np.asarray([r["step"] for r in rows], float)
-    y = np.asarray([m[name] for m in metrics], float)
+    y = np.asarray([m.get(name, math.nan) for m in metrics], float)
     series = [{"x": x, "y": y, "label": label, "style": "c1"},
               {"x": x, "y": np.full_like(y, y[0]), "label": "step 0", "style": "c0 dashed"}]  # fmt: skip
     markers = [(r["step"], "pick", "best") for r in rows if r["selected"]]
@@ -492,20 +564,39 @@ def load_report(path) -> Deployed:
 # ── the view ───────────────────────────────────────────────────────────────────────────────────
 
 
+def first_run(runs, set_name: str = "", plant: str = "") -> int | None:
+    """The first of ``runs`` (:class:`Deployed` s) of data set ``set_name`` deployed on ``plant``
+    ("" for any), or None when none is."""
+    return next((i for i, r in enumerate(runs)
+                 if (not set_name or r.set == set_name) and (not plant or r.plant == plant)), None)  # fmt: skip
+
+
 class ScrubView:
     """Checkpoint k beside step 0: the controls that pick k, the metric and training charts, the
     table, and the two runs over the episode (the replay's play head, tables and ghosts). ``runs``
     are :class:`Deployed` s: a Set combo picks their data set when they have several, a Plant combo
     the plant they were deployed on when they have several, and a Run combo a run of that set on
-    that plant. ``world`` is the world to draw them on (None: the windows alone)."""
+    that plant; it opens on run ``first``. ``world`` is the world to draw them on (None: the windows
+    alone).
 
-    def __init__(self, host, runs, world, k=None):
+    Each frame moves the two ghosts to the play head. The rest follows less often: the Stats and
+    Ledger tables when the checkpoint, the run or the arm changes, and while the episode plays at
+    most every :data:`TABLES_EVERY` s; the two runs' whole trails once per checkpoint shown (step
+    0's once per run), :data:`TRAILS_AFTER` s after it was picked."""
+
+    def __init__(self, host, runs, world, k=None, first: int = 0):
         from grl_snam.ariadne.replay import PlayHead
 
         self.host, self.runs, self.world = host, list(runs), world
         self.charts = hasattr(host, "set_plot")
-        self.st = {"nodes": [], "tracks": [[], []], "camera": None, "modeled": None,
-                   "charts": None}  # fmt: skip
+        # No running tracks (st["tracks"] None): the view draws each run's whole path. Checkpoint
+        # k's ghost is opaque, step 0's see-through, so k's shows where the two overlap.
+        self.st = {"nodes": [], "tracks": None, "camera": None, "modeled": None, "charts": None,
+                   "opacity": [0.45, 1.0]}  # fmt: skip
+        self._tables_key, self._tables_tick, self._tables_at = None, None, 0.0
+        self._published: dict = {}  # the tables' rows as last written (live.set_rows)
+        self._trails, self._trail0, self._shown_at = None, None, 0.0
+        self._modeled = None  # what the cars were drawn as, said once
         self.sets = list(dict.fromkeys(r.set for r in self.runs))
         self.plants = list(dict.fromkeys(r.plant for r in self.runs))
         self.by_set = {s: [i for i, r in enumerate(self.runs) if r.set == s] for s in self.sets}
@@ -524,11 +615,12 @@ class ScrubView:
         on = ", ".join(p or "?" for p in self.plants)
         print(f"scrub: {len(self.runs)} runs in {len(self.sets)} data sets ({named}) on "
               f"{len(self.plants)} plants ({on})", file=sys.stderr, flush=True)  # fmt: skip
-        self.head = PlayHead(host, self.runs[0].log(0).duration, self.runs[0].log(0).dt)
+        self.head = PlayHead(host, self.runs[first].log(0).duration, self.runs[first].log(0).dt)
         host.on("scrub_prev", lambda: self.pick(self.k - 1))
         host.on("scrub_next", lambda: self.pick(self.k + 1))
         host.on("scrub_pick", self.pick_step)
-        self.use(0, k)
+        host.on("scrub_far", self.pick_far)
+        self.use(first, k)
 
     # the runs and the checkpoint
 
@@ -600,6 +692,29 @@ class ScrubView:
         if math.isfinite(s):
             self.pick(int(np.argmin([abs(r["step"] - s) for r in self.rows])))
 
+    def pick_far(self) -> None:
+        """Most apart: the checkpoint that gets farthest from step 0 (a checkpoint whose distance
+        the report does not have is measured from the two run logs)."""
+        far = [-1.0]
+        for i in range(1, len(self.rows)):
+            far.append(self._apart(i)[0])
+        self._shown = None  # the table and the chart again, every distance now in them
+        self.pick(int(np.nanargmax(np.asarray(far, float))) if len(far) > 1 else 0)
+
+    def _apart(self, i: int) -> tuple[float, float]:
+        """How far checkpoint ``i``'s car gets from step 0's (:func:`apart`), kept in its metrics."""
+        far, end = apart(self.r.log(i), self.r.log(0))
+        m = self.metrics[i]
+        if not math.isfinite(m.get("apart_m", math.nan)) and math.isfinite(far):
+            m["apart_m"] = far
+            self._metric = None  # the chart again
+        return far, end
+
+    def _width(self) -> float:
+        """The car's width (m), from step 0's run log."""
+        w = self.r.log(0).arrays.get("width")
+        return float(w[0, 0]) if w is not None and len(w) else math.nan
+
     def _controls(self) -> None:
         """Whichever control moved since the last frame picks the run or k; then all of them show
         it."""
@@ -640,18 +755,49 @@ class ScrubView:
         host.set_many({"names": "\n".join(names)}, prefix="arms")
         for key in ("view.arm", "ledger.agent"):
             host.set(key, names[1])
-        flags = ", the pick" if r["selected"] else (", a held-out best" if r["best"] else "")
+        far, end = self._apart(self.k) if self.k else (0.0, 0.0)
+        known = np.asarray([m.get("apart_m", math.nan) for m in self.metrics[1:]], float)
+        flags = ["the pick" if r["selected"] else ("a held-out best" if r["best"] else "")]
+        if self.k and len(known) and np.isfinite(known).all() and self.k == 1 + np.argmax(known):
+            flags.append("the farthest from step 0")
+        flags = "".join(f", {f}" for f in flags if f)
         now = (f"checkpoint {self.k + 1} of {len(self.rows)}: step {r['step']:g}{flags}; "
                f"{Path(r['blob']).name}")  # fmt: skip
         host.set("scrub.now", now)
         host.set("scrub.step", f"{r['step']:g}")
         host.set("play.title", f"{names[0]} (blue) and {names[1]} (orange), {self.both.duration:.1f}"
                                " s each")  # fmt: skip
+        width = self._width()
+        host.set("scrub.apart", apart_text(self.rows, self.metrics, self.k, far, end, width))
+        host.set("scrub.apart_run", run_apart_text(self.rows, self.metrics, width))
         host.set_table("scrub.table", table_rows(self.rows, self.metrics, self.k))
-        self.st["tracks"] = [[], []]
         self.st["charts"] = None
-        self._shown = self.k
+        self._shown, self._tables_key = self.k, None
+        self._shown_at = time.perf_counter()
         print(f"scrub: {self.r.label}: {now}", file=sys.stderr, flush=True)
+
+    def _draw_trails(self) -> None:
+        """Both runs' whole paths, each in its car's colour: step 0's once per run, checkpoint k's
+        each time one is shown."""
+        import pycvc_gl
+
+        host, world, a = self.host, self.world, self.both.arrays
+        n = len(self.both)
+        idx = np.unique(np.r_[np.arange(0, n, max(1, -(-n // TRAIL_POINTS))), n - 1])
+        for j, arm in enumerate(self.arms):
+            if j == 0 and self._trail0 == self.i:
+                continue
+            name = f"arm{j}_track"
+            if host.scene.hasGraphics(name):
+                host.scene.removeGraphics(name)
+            xs, ys = a["x"][idx, j].tolist(), a["y"][idx, j].tolist()
+            if len(xs) >= 2:
+                host.lab.add_path(name, [(x, y, world.z(x, y) + 0.3) for x, y in zip(xs, ys, strict=True)],
+                                  _arms.slot_rgb(arm.slot))  # fmt: skip
+                g = host.scene.geometry_node(name)
+                g.setRenderMode(pycvc_gl.GeometryRenderMode_LINES)
+                g.setLineWidth(2.5)
+        self._trail0, self._trails = self.i, (self.i, self._shown)
 
     def frame(self, dt) -> None:
         from grl_snam.ariadne.live import publish_charts, publish_tables, update_ghosts
@@ -676,23 +822,32 @@ class ScrubView:
         k = both.index(t)
         names = [a.name for a in arms]
         j = names.index(host.get("ledger.agent")) if host.get("ledger.agent") in names else 1
-        rows = _arms.plant_ledger_rows(both.at(k, j)["plant"])
-        publish_tables(host, tables_at(both, arms, k), rows, names[j], both.meta.get("plant", ""))
-        host.set("arms.time", f"t = {float(both.t[k]):.1f} s, tick {k + 1} of {len(both)}")
+        now = time.perf_counter()
+        if self._tables_key != j or (
+            k != self._tables_tick and now - self._tables_at >= TABLES_EVERY
+        ):
+            rows = _arms.plant_ledger_rows(both.at(k, j)["plant"])
+            publish_tables(host, tables_at(both, arms, k), rows, names[j], both.meta.get("plant", ""),
+                           self._published)  # fmt: skip
+            host.set("arms.time", f"t = {float(both.t[k]):.1f} s, tick {k + 1} of {len(both)}")
+            self._tables_key, self._tables_tick, self._tables_at = j, k, now
         book = host.get("ledger.book", "dU")
         if self.charts and self.st["charts"] != (j, book):
             publish_charts(host, charts_of(both, arms, j, book))
             self.st["charts"] = (j, book)
         if self.world is not None:
             a = both.arrays
-            every = max(1, len(both) // 600)
-            for i in range(2):
-                self.st["tracks"][i] = list(zip(a["x"][: k + 1 : every, i].tolist(),
-                                                a["y"][: k + 1 : every, i].tolist(), strict=True))  # fmt: skip
+            if self._trails != (self.i, self._shown) and now - self._shown_at >= TRAILS_AFTER:
+                self._draw_trails()
             sizes = [(a["length"][k, i], a["width"][k, i], a["wheelbase"][k, i]) for i in range(2)]
             goal = (float(a["goal_x"][k, 0]), float(a["goal_y"][k, 0]))
             follow = names.index(host.get("view.arm")) if host.get("view.arm") in names else 1
             update_ghosts(host, self.st, self.world, arms, poses_at(both, t), sizes, goal, follow)
+            modeled = self.st.get("modeled")
+            if modeled is not None and modeled != self._modeled:
+                self._modeled = list(modeled)
+                what = "the Humvee's model" if all(modeled) else "boxes (no Humvee model here)"
+                print(f"scrub: the cars are {what}", file=sys.stderr, flush=True)
 
     def _training(self, name: str) -> None:
         from grl_snam.ariadne import learn
@@ -709,17 +864,20 @@ class ScrubView:
             host.set_plot("scrub.curve", series, markers=markers)
 
 
-def _run_view(host, args, runs, world, *, later=None) -> int:
+def _run_view(host, args, runs, world, *, later=None, first=0) -> int:
     """The view's frames: until closed, ``--frames`` of them, or one when headless. The windows
-    ``--windows`` does not name start closed (``tree.<id>.open``). ``later(view)``, when given,
-    hands the view its world once there is one (``world`` is then None)."""
+    ``--windows`` does not name start closed (``tree.<id>.open``). It opens on run ``first``.
+    ``later(view)``, when given, hands the view its world once there is one (``world`` is then
+    None)."""
     if args.camera:
         host.set("view.camera", args.camera)
     if args.windows is not None:
         keep = {w.strip() for w in args.windows.split(",")}
         for w in WINDOWS:
             host.set(f"tree.{w}.open", "1" if w in keep else "0")
-    view = ScrubView(host, runs, world, args.at)
+    view = ScrubView(host, runs, world, None if args.at == "far" else args.at, first)
+    if args.at == "far":
+        view.pick_far()
     if later is not None:
         later(view)
     once = host.mode == "headless" and not args.frames
@@ -739,6 +897,11 @@ def view_main(args) -> int:
         runs = [load_report(p) for p in args.view]
     except (OSError, ValueError) as e:
         return _refuse(str(e))
+    plant = args.plant[0] if args.plant else ""
+    first = first_run(runs, args.data_set, plant)
+    if first is None:
+        return _refuse(f"no report is of data set {args.data_set or '(any)'!r} on plant "
+                       f"{plant or '(any)'!r}")  # fmt: skip
     worlds = [(r.scenario.get("run"), r.scenario.get("world_keys")) for r in runs]
     if not args.no_world and any(w != worlds[0] for w in worlds[1:]):
         return _refuse("the reports were deployed on different worlds: view them one at a time, "
@@ -767,7 +930,7 @@ def view_main(args) -> int:
         print(f"scrub: {note}", file=sys.stderr)
     host.set("scrub.world_note", note)
     if not drawn:  # the city the document names stays unloaded (the network is shut): no world
-        return _run_view(host, args, runs, None)
+        return _run_view(host, args, runs, None, first=first)
     _world.from_record(host, sc.get("run"), sc.get("world_keys"))
 
     def arrive(world, view):
@@ -782,7 +945,7 @@ def view_main(args) -> int:
         if json.dumps(world.info, sort_keys=True, default=str) != json.dumps(
             sc.get("world"), sort_keys=True, default=str
         ):
-            why = ("this world is not quite the one deployed on (another libcvc's generator?): "
+            why = ("this world is not quite the one deployed on (another libcvc's generator?):\n"
                    "the ghosts may cross what is drawn")  # fmt: skip
             print(f"scrub: {why}", file=sys.stderr)
             host.set("scrub.world_note", why)
@@ -794,9 +957,10 @@ def view_main(args) -> int:
         except RuntimeError as e:
             host.close()
             return _refuse(f"the reports' world: {e}")
-        return _run_view(host, args, runs, None, later=lambda view: arrive(world, view))
+        return _run_view(host, args, runs, None, later=lambda view: arrive(world, view),
+                         first=first)  # fmt: skip
     # A page makes the world in its frames, after this returns: the view takes it in one.
-    return _run_view(host, args, runs, None,
+    return _run_view(host, args, runs, None, first=first,
                      later=lambda view: _world.when_ready(host, lambda w: arrive(w, view)))  # fmt: skip
 
 
@@ -860,7 +1024,7 @@ def deploy_main(args) -> int:
         print(f"scrub: {len(on)} checkpoints on {plant}", flush=True)
         logs = deploy_all(host, world, plant, on, scenario, args.history, cache=args.cache,
                           lean=args.lean)  # fmt: skip
-        metrics = [metrics_of(lg) for lg in logs]
+        metrics = [metrics_of(lg, logs[0]) for lg in logs]
         prov = logs[0].meta.get("provenance")
         if args.report:
             write_report(args.report, args.history, args.run, on, metrics, scenario, prov,
@@ -882,6 +1046,11 @@ def main(argv=None) -> int:
         return _refuse(str(e))
     if args.view and args.history:
         return _refuse("name a history to deploy, or --view reports, not both")
+    if args.at not in (None, "far"):
+        try:
+            args.at = int(args.at)
+        except ValueError:
+            return _refuse(f"--at {args.at}: a checkpoint's index, or far")
     if args.view:
         return view_main(args)
     if not args.history:

@@ -109,6 +109,10 @@ jobs:
           cvcpkg install python312 numpy-cp312 torch-cp312 "libcvc==$v" "cvcgl==$v" \
             "pycvc-cp312==$v" "pycvc-gl-cp312==$v" --platform linux --prefix "$prefix" \
             --config release --link shared --no-fallback-to-source
+          # The Humvee's glTF the scrub page draws its cars with (assemble.py ships it from the
+          # prefix, with its CC BY credit in the page's THIRD_PARTY_NOTICES.md).
+          cvcpkg install vehicle-humvee --prefix "$prefix" --platform any --config release \
+            --link shared --no-fallback-to-source
           ls "$prefix"/lib/libcvc.so.* | head -3
           echo "path=$prefix" >> "$GITHUB_OUTPUT"
 
@@ -148,7 +152,8 @@ jobs:
               scrub-runs/humvee/world-units/retrain/*.scrub.json \
               scrub-runs/kinematic/retrain/*.scrub.json \
               scrub-runs/kinematic/fixed/retrain/*.scrub.json \
-              scrub-runs/kinematic/world-units/retrain/*.scrub.json --expect-libcvc "$LIBCVC_REF"
+              scrub-runs/kinematic/world-units/retrain/*.scrub.json --expect-libcvc "$LIBCVC_REF" \
+            --vehicle-model "$PREFIX/share/cvc-scenes/shared/Humvee.glb"
 
       - name: Load them in headless Chrome
         run: |

@@ -3,8 +3,8 @@
 A page's ``ariadne.config.json`` runs this file in place of a document (``"src": "main.py"``),
 with the port and its arguments as the config's ``args`` (``["learn",
 "data/seed0.history.jsonl.gz", ...]``), and preloads ``grl_snam_web.zip`` and the port's data
-beside it. The page writes those files into its file system at their URL paths, so they sit in
-this file's directory.
+beside it (and the scrub page the Humvee's model, under share/). The page writes those files into
+its file system at their URL paths, so they sit in this file's directory.
 
 grl_snam ships as files, not as a wheel: its package metadata requires torch, which has no
 browser build. The zip holds the package with its ``.ari`` documents, and is unpacked here because
@@ -32,6 +32,10 @@ def main(argv) -> int:
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
     os.chdir(HERE)
+    if os.path.isdir(os.path.join(HERE, "share", "cvc-scenes")):
+        # The scrub page ships the Humvee's model (share/cvc-scenes/shared/Humvee.glb), where
+        # pycvc_gl looks for it in a prefix: the page is that prefix.
+        os.environ.setdefault("CVC_PREFIX", HERE)
     from grl_snam.ariadne.__main__ import main as port
 
     code = port(argv)

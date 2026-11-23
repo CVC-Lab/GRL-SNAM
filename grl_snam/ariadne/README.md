@@ -595,13 +595,24 @@ directory's, and blobs that are not there are listed and skipped.
   command line, and libcvc's version.
 - **What to look for:** [`docs/scrubber-guide.md`](../../docs/scrubber-guide.md) describes each
   window, and what a policy that is learning something useful looks like there.
-- **Checkpoint k** is picked by a combo, a slider, Previous and Next, or a click on a chart. It
-  opens on the history's pick (`--at K` for another). Its ghost (orange) runs beside step 0's
-  (blue) over the episode, with the Stats and Ledger windows for the two and libcvc's sim
-  transport.
+- **Checkpoint k** is picked by a combo, a slider, Previous and Next, Most apart, or a click on
+  a chart. It opens on the history's pick (`--at K` for another, `--at far` for the checkpoint
+  whose car gets farthest from step 0's). Its car (orange, opaque) runs beside step 0's (blue,
+  see-through) over the episode, each with its whole path drawn, with the Stats and Ledger
+  windows for the two. The Episode window has the sim transport: Paused, Speed, Step, Restart.
+- **How far apart they drive:** `apart_m` is the farthest k's car gets from step 0's at the same
+  tick. The Scrub window says it for k (and at the end), and for the run's checkpoints all told.
+  Under a car's width it says the two drive as one: the ghosts overlap, and scrubbing changes
+  nothing you can see.
 - **The deployed metric** (the Metric combo: reached, time, path, ticks penetrating, clearance,
-  what is left to the goal) is charted against the checkpoint's step, with step 0's as a dashed
-  line, and shown as a table, one row per checkpoint.
+  what is left to the goal, apart from step 0) is charted against the checkpoint's step, with
+  step 0's as a dashed line. The Checkpoints window (Table) has them all as a table, one row per
+  checkpoint.
+- **Frames:** each frame moves the two cars to the play head. The Stats and Ledger tables follow
+  it at most five times a second while it plays (at once for a new checkpoint, run or arm),
+  writing only the cells that changed, and the paths are drawn once per checkpoint, so the frame
+  costs about 1.5 ms of Python natively (25.6 ms before, when every frame rewrote the tables and
+  every sixth redrew both trails).
 - **The training curve** is a held-out curve from the history, with the `learn` port's marks.
   Both charts carry a cursor at checkpoint k.
 - **Headless,** it deploys and reports: `--report R.json` writes every checkpoint's metrics
@@ -619,7 +630,8 @@ directory's, and blobs that are not there are listed and skipped.
   to the report, or by file name beside it, so a report travels with its files. A report may also
   be a run's bundle: one zip with the report (`scrub.json`), the history and the logs, which the
   view reads from it (the Pages site ships those; `pages/assemble.py` writes them). It does not
-  hash the scenario again. With several reports a Run combo picks one (their worlds must be the same),
+  hash the scenario again. `--data-set` and `--plant` pick the run it opens on. With several
+  reports a Run combo picks one (their worlds must be the same),
   and a Set combo their data set when the reports name several. Picking another set shows its run
   of the same name at the same training step, so the learning check's retrains compare side by
   side.
@@ -627,9 +639,10 @@ directory's, and blobs that are not there are listed and skipped.
   view says when this libcvc's differs from the deploy's). With `--no-world`, a city that is not
   on the machine in a browser, or a pycvc_gl without `pycvc_gl.cars`, it shows the windows
   alone. The Pages site's scrub page is this mode (`pages/README.md`).
-- **`--windows ID,...`** opens only those windows (`scrub`, `training`, `episode`,
-  `sim_transport`, `arms_stats`, `arms_ledger`); the Windows menu has the rest. `--camera
-  orbit` looks at the world from above instead of following checkpoint k.
+- **`--windows ID,...`** opens only those windows (`scrub`, `checkpoints`, `training`,
+  `episode`, `sim_transport`, `arms_stats`, `arms_ledger`); the Windows menu has the rest. No
+  window has a set size: each fits what it shows, as far as the view's edge. `--camera orbit`
+  looks at the world from above instead of following checkpoint k.
 - **The exit code** is 0, and 2 when the history names no saved policy that is there, the plant
   is torch, or a report or a file it names is not there.
 
@@ -649,14 +662,18 @@ The Pages page's runs, deployed again on both plants (2026-11-19): the three ret
 each, 41 checkpoints a seed, 205 a set, on libcvc's generated city for 1200 ticks (60 s), libcvc
 4.0.0. No checkpoint reaches the goal on either plant.
 
-| set | plant | ticks penetrating | least clearance | path | left to the goal |
-|---|---|---|---|---|---|
-| `retrain` | kinematic | 375–636, every checkpoint | −28.9 m | 480–631 m | 272–353 m |
-| `retrain` | humvee | 0 | 1.33 m | 414–415 m | 579–580 m |
-| `fixed/retrain` | kinematic | 372–634, every checkpoint | −28.9 m | 479–636 m | 231–350 m |
-| `fixed/retrain` | humvee | 0 at 199, 71–186 at 6 | −25.7 to 49.0 m | 303–472 m | 503–667 m |
-| `world-units/retrain` | kinematic | 355–459, every checkpoint | −29.8 m | 471–485 m | 329–339 m |
-| `world-units/retrain` | humvee | 0 | 0.70–0.82 m | 212–218 m | 588 m |
+| set | plant | ticks penetrating | least clearance | path | left to the goal | apart from step 0 |
+|---|---|---|---|---|---|---|
+| `retrain` | kinematic | 375–636, every checkpoint | −28.9 m | 480–631 m | 272–353 m | 15.3 m; 39–120 m |
+| `retrain` | humvee | 0 | 1.33 m | 414–415 m | 579–580 m | 0.1 m; 0.26–0.45 m |
+| `fixed/retrain` | kinematic | 372–634, every checkpoint | −28.9 m | 479–636 m | 231–350 m | 39.1 m; 114–119 m |
+| `fixed/retrain` | humvee | 0 at 199, 71–186 at 6 | −25.7 to 49.0 m | 303–472 m | 503–667 m | 9.3 m; 54–98 m |
+| `world-units/retrain` | kinematic | 355–459, every checkpoint | −29.8 m | 471–485 m | 329–339 m | 8.1 m; 8.6–11.1 m |
+| `world-units/retrain` | humvee | 0 | 0.70–0.82 m | 212–218 m | 588 m | 1.0 m; 1.2–1.4 m |
+
+"Apart from step 0" is `apart_m`, the farthest a checkpoint's car gets from step 0's at the same
+tick: the median over the set's checkpoints, then the range of each seed's farthest (measured
+2026-11-23, the same runs deployed again with libcvc 4.0.0).
 
 - "Ticks penetrating" counts the ticks a car's centre is on a cell the navigator marks blocked:
   a building, or deep water. On this world most of them are not buildings. libcvc 4.0.0's
@@ -666,7 +683,11 @@ each, 41 checkpoints a seed, 205 a set, on libcvc's generated city for 1200 tick
   the goal was never real. 79–93% of those ticks are on that mislabelled water; the rest are in
   buildings.
 - On the Humvee, `retrain` and `world-units/retrain` each come to one outcome whatever the seed or
-  the step: the car meets a building and stays against it.
+  the step: the car meets a building and stays against it. Every `retrain` checkpoint drives
+  within 0.45 m of step 0, under a fifth of the Humvee's width, so its two cars overlap all the
+  way and scrubbing through it shows nothing; `world-units/retrain`'s stay within 1.4 m.
+- `fixed/retrain`'s history picks step 0 on every seed (its held-out best is the untrained net),
+  so the page opens on the set's checkpoint that drives farthest from step 0 instead of its pick.
 - `fixed/retrain`'s Humvees range further (303–472 m). Six of its checkpoints (seeds 0, 1, 3 and
   4) count 71 to 186 ticks penetrating with no building contact. They are not in a building: they
   drive into a dry basin near (−290, 175), 0.6–3.5 m above the water level, that the navigator
