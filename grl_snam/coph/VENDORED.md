@@ -14,7 +14,7 @@ graded hazards. The copy is kept in sync with upstream by re-vendoring and by th
 
 The copied files keep upstream's formatting and names, so that re-syncing is a mechanical diff.
 black and ruff skip them (`pyproject.toml` lists them). `__init__.py`, `results.py`, `feed.py`,
-`timeline.py` and `allocation.py` are GRL-SNAM's own code and are linted.
+`timeline.py`, `runfile.py` and `allocation.py` are GRL-SNAM's own code and are linted.
 
 ## What was copied
 
@@ -47,7 +47,11 @@ path, detour and saving arithmetic is upstream's.
 the demos' own `run` does, adding only the runner's read-only `boundary_callback` and
 `delivery_callback`, or reads a run's episode file. Either way it turns the episode into plain
 messages. `timeline.py` turns those messages into what the viewer draws: each agent's state at a
-time, the floor image and the `.npz` log. Neither changes a vendored module.
+time, the floor image and the `.npz` log. Neither changes a vendored module. `timeline.py` needs
+no torch: it reads `records.Config` only when first asked, and draws an agent's own field with a
+numpy copy of `model.risk` (equal to it to 1e-12, `tests/test_coph_runfile.py`). `runfile.py`
+packs a run (its messages, each floor's corridors and true field, the learning series) into one
+`.npz` that plays back without torch, as GRL-SNAM's web page does.
 `tests/test_coph_feed.py` checks that a live run's episode equals `crossing_demo.run`'s (apart
 from wall-clock fields) and that its messages equal its replay's.
 

@@ -19,13 +19,17 @@ name: pages
 #      package grl-snam-learning-checkpoints; the runs are cached by what they depend on); and,
 #      with --scrub-austin, scrub-austin/ beside it: the same runs deployed in Austin, where the
 #      policies were trained, the city (the cvcpkg package cy-pca/scene-austin-south-small, 10 MB)
-#      fetched by the page from cvcpkg.org. With --learn-only or --scrub-only, one page alone, for
-#      another site. Everything a page fetches is on the site's own origin, but Austin's city.
+#      fetched by the page from cvcpkg.org; and, with --coph, coph/live/ inside the CoPH poster:
+#      `grl-snam ariadne coph` playing back a run file per demo (crossing, hazard), baked here
+#      with torch from the vendored demos' episodes (cached by grl_snam/coph/). With --learn-only,
+#      --scrub-only or --coph-only, one page alone, for another site. Everything a page fetches
+#      is on the site's own origin, but Austin's city.
 #   3. pages/smoke.mjs loads it in headless Chrome as Pages serves it: learn must start, run its
 #      frames and make learn-report's claims in the page, and each scrub page must start, show a
 #      checkpoint, draw the world its runs were deployed on and run its frames (scrub-austin/ may
-#      reach cvcpkg.org, no other page any origin but its own). It runs on the whole site under
-#      /GRL-SNAM/, and on the pages alone at another path, as another site serves them.
+#      reach cvcpkg.org, no other page any origin but its own), and the CoPH page must play each
+#      demo's run file. It runs on the whole site under /GRL-SNAM/, and on the pages alone at
+#      another path, as another site serves them.
 
 on:
   pull_request:
@@ -109,7 +113,8 @@ jobs:
           }
           v="${LIBCVC_REF#v}"
           prefix="$RUNNER_TEMP/closure"
-          cvcpkg install python312 numpy-cp312 torch-cp312 "libcvc==$v" "cvcgl==$v" \
+          # pillow-cp312: the CoPH run files' nameplates (grl-snam ariadne coph --bake draws them).
+          cvcpkg install python312 numpy-cp312 torch-cp312 pillow-cp312 "libcvc==$v" "cvcgl==$v" \
             "pycvc-cp312==$v" "pycvc-gl-cp312==$v" --platform linux --prefix "$prefix" \
             --config release --link shared --no-fallback-to-source
           # The Humvee's glTF the scrub page draws its cars with (assemble.py ships it from the
@@ -127,7 +132,16 @@ jobs:
           path: scrub-runs
           key: scrub-runs-v5-${{ env.LIBCVC_REF }}-${{ hashFiles('grl_snam/**', 'docs/learning-validation/retrain/**', 'docs/learning-validation/fixed/retrain/**', 'docs/learning-validation/world-units/retrain/**', 'cvcpkg/recipes/grl-snam-learning-checkpoints/**') }}
 
-      - name: Assemble the site, and the learn and scrub pages alone
+      # The CoPH demos' episodes (two arms each, from the vendored runner: a crossing arm takes
+      # about 20 minutes, a hazard arm about 6), which the CoPH page's run files are baked from on
+      # every build. They depend on grl_snam/coph/'s code alone.
+      - name: Cache the CoPH demos' episodes
+        uses: actions/cache@v4
+        with:
+          path: coph-runs
+          key: coph-runs-v1-${{ hashFiles('grl_snam/coph/**/*.py') }}
+
+      - name: Assemble the site, and the learn, scrub and CoPH pages alone
         env:
           PREFIX: ${{ steps.deps.outputs.path }}
         run: |
@@ -143,11 +157,15 @@ jobs:
           cvcpkg install grl-snam-learning-checkpoints --prefix "$RUNNER_TEMP/checkpoints" \
             --platform any --config release --link shared --no-fallback-to-source
           # scrub/ on libcvc's generated city, and scrub-austin/ on Austin (its runs in
-          # scrub-runs/austin/).
+          # scrub-runs/austin/); coph/live/, its run files baked from coph-runs/.
           python3 pages/assemble.py --host ariglx-web/share/ariglx-web --out _site \
             --scrub --scrub-austin --python "$PREFIX/bin/python3.12" --scrub-cache scrub-runs \
             --checkpoints "$RUNNER_TEMP/checkpoints/share/grl-snam-learning-checkpoints" \
-            --expect-libcvc "$LIBCVC_REF"
+            --expect-libcvc "$LIBCVC_REF" --coph --coph-cache coph-runs
+          python3 pages/assemble.py --host ariglx-web/share/ariglx-web --coph-only \
+            --out _other_site/demos/coph/live \
+            --coph-runs coph-runs/crossing.coph.npz coph-runs/hazard.coph.npz \
+            --vehicle-model "$PREFIX/share/cvc-scenes/shared/Humvee.glb"
           python3 pages/assemble.py --host ariglx-web/share/ariglx-web --learn-only \
             --out _other_site/demos/learn
           python3 pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-only \
@@ -183,12 +201,12 @@ jobs:
           chrome=$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)
           "$chrome" --version
           "$node" pages/smoke.mjs --site _site --chrome "$chrome" --base /GRL-SNAM/ \
-            --scrub scrub/ --city-scrub scrub-austin/ --shots shots
-          # The learn and scrub pages alone, as another site serves them: under its own path, no
-          # landing page.
+            --scrub scrub/ --city-scrub scrub-austin/ --coph coph/live/ --shots shots
+          # The learn, scrub and CoPH pages alone, as another site serves them: under its own
+          # path, no landing page.
           "$node" pages/smoke.mjs --site _other_site --chrome "$chrome" --base /other-site/ \
             --learn demos/learn/ --scrub demos/scrub/ --city-scrub demos/scrub-austin/ \
-            --no-landing --shots shots/alone
+            --coph demos/coph/live/ --no-landing --shots shots/alone
 
       - name: Upload the smoke's screenshots
         if: always()

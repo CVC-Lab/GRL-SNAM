@@ -258,6 +258,79 @@ def test_the_scrub_page_carries_its_runs_beside_it(tmp_path, site):
     assert (out / "main.py").is_file() and not (out / "learn").exists()
 
 
+def _coph_run(path):
+    """A stand-in run file: an .npz with a meta array, all assemble.py looks for."""
+    import numpy as np
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        np.savez_compressed(f, meta=np.frombuffer(b"{}", np.uint8))
+    return path
+
+
+def test_the_coph_page_plays_back_a_run_file_per_demo(tmp_path, site):
+    """--coph-only --coph-runs: data/<demo>.coph.npz each, opening on crossing's walkthrough;
+    the page's ?demo= picks the demo (url_env), only among the demos it has."""
+    assemble = _pages_module("assemble")
+    runs = [_coph_run(tmp_path / "r" / f"{d}.coph.npz") for d in ("hazard", "crossing")]
+    out = tmp_path / "other" / "coph" / "live"
+    assert assemble.main(["--host", str(site / "learn"), "--out", str(out), "--coph-only",
+                          "--coph-runs", *map(str, runs)]) == 0  # fmt: skip
+    config = json.loads((out / "ariadne.config.json").read_text())
+    assert config["args"] == ["coph", "crossing", "--from", "data/{demo}.coph.npz", "--tour"]
+    assert config["url_env"] == {"demo": {"env": "GRL_SNAM_COPH_DEMO",
+                                          "match": "^(crossing|hazard)$"}}  # fmt: skip
+    model = Path(sys.executable).resolve().parent.parent / assemble.VEHICLE_MODEL
+    assert config["preload"] == ["grl_snam_web.zip", "data/crossing.coph.npz",
+                                 "data/hazard.coph.npz",
+                                 *([assemble.VEHICLE_MODEL] if model.is_file() else [])]  # fmt: skip
+    assert all((out / f).is_file() for f in config["preload"])
+    from grl_snam.ariadne import coph
+
+    assert assemble.COPH_ENV == coph.PAGE_DEMO
+    # One demo: the page opens on it, and ?demo= can name only it.
+    one = tmp_path / "one"
+    assert assemble.main(["--host", str(site / "learn"), "--out", str(one), "--coph-only",
+                          "--coph-runs", str(runs[0])]) == 0  # fmt: skip
+    config = json.loads((one / "ariadne.config.json").read_text())
+    assert config["args"][1] == "hazard" and config["url_env"]["demo"]["match"] == "^(hazard)$"
+
+
+def test_the_site_with_the_coph_page_and_without(tmp_path, site):
+    """--coph puts the page inside the poster (coph/live/), which links to it; without the page
+    the poster's links to it are gone."""
+    assemble = _pages_module("assemble")
+    assert 'href="live/?demo=crossing"' not in (site / "coph" / "index.html").read_text()
+    assert "coph-live" not in (site / "coph" / "index.html").read_text()
+    runs = [_coph_run(tmp_path / "r" / f"{d}.coph.npz") for d in ("crossing", "hazard")]
+    out = tmp_path / "_site"
+    host = site / "learn"
+    assert assemble.main(["--host", str(host), "--out", str(out), "--coph",
+                          "--coph-runs", *map(str, runs)]) == 0  # fmt: skip
+    poster = (out / "coph" / "index.html").read_text()
+    assert 'href="live/?demo=crossing"' in poster and 'href="live/?demo=hazard"' in poster
+    assert (out / "coph" / "live" / "data" / "hazard.coph.npz").is_file()
+    assert (out / "coph" / "walkthrough.mp4").is_file()  # the poster as it is, beside the page
+
+
+def test_assemble_refuses_what_the_coph_page_cannot_show(tmp_path, site):
+    assemble = _pages_module("assemble")
+    host = str(site / "learn")
+    other = _coph_run(tmp_path / "maze.coph.npz")
+    with pytest.raises(SystemExit, match="named <demo>.coph.npz"):
+        assemble.main(["--host", host, "--out", str(tmp_path / "o"), "--coph-only",
+                       "--coph-runs", str(other)])  # fmt: skip
+    plain = tmp_path / "crossing.coph.npz"
+    with zipfile.ZipFile(plain, "w") as z:
+        z.writestr("x.npy", b"")
+    with pytest.raises(SystemExit, match="not a run file"):
+        assemble.main(["--host", host, "--out", str(tmp_path / "o"), "--coph-only",
+                       "--coph-runs", str(plain)])  # fmt: skip
+    with pytest.raises(SystemExit, match="one of --learn-only"):
+        assemble.main(["--host", host, "--out", str(tmp_path / "o"), "--coph-only",
+                       "--learn-only"])  # fmt: skip
+
+
 def test_the_site_with_the_scrub_page(tmp_path, site):
     assemble = _pages_module("assemble")
     out = tmp_path / "_site"
@@ -296,7 +369,7 @@ def test_a_page_of_runs_deployed_in_austin_says_so(tmp_path, site):
 def test_assemble_refuses_what_the_scrub_page_cannot_show(tmp_path, site):
     assemble = _pages_module("assemble")
     host = str(site / "learn")
-    with pytest.raises(SystemExit, match="not both"):
+    with pytest.raises(SystemExit, match="one of --learn-only"):
         assemble.main(
             ["--host", host, "--out", str(tmp_path / "x"), "--learn-only", "--scrub-only"]
         )

@@ -79,7 +79,7 @@ def test_the_held_out_chart(timelines):
         assert len(s["x"]) == len(s["y"]) == len(timelines[0 if "off" in s["label"] else 1]
                                                    .agents[0].updates)  # fmt: skip
     assert series[0]["style"] == "c0 points" and series[3]["style"] == "c1"
-    np.testing.assert_allclose(series[4]["y"], series[2]["y"] + coph.SLACK)
+    np.testing.assert_allclose(series[4]["y"], series[2]["y"] + coph.slack())
     # Agent 0 hears of the middle door from agent 1 in the CoPH arm, and senses nothing with
     # communication off; nobody arrives within 50 steps.
     assert [m[1] for m in markers] == ["door (CoPH)"]

@@ -6,6 +6,11 @@ at time ``t`` (:meth:`Timeline.state`): its pose and heading, its stages, its le
 :class:`Floor` draws an arm's floor as an image (corridors, the risk field as a heat map, the
 stages and the sensor disc), with numpy only. :func:`log_arrays` lays the arms out as the cars
 template's ``.npz`` log, plus the ledger columns. Nothing here needs pycvc_gl or a display.
+
+Nothing here needs torch either, so that a web page (libcvc's ariglx-web, which has no torch)
+can play a run back: :data:`CFG` reads ``records.Config`` only when first asked, and a page hands
+it the values its run file carries instead (:func:`use_config`); an agent's own risk field is
+:func:`risk`, the vendored ``model.risk`` in numpy.
 """
 
 from __future__ import annotations
@@ -13,13 +18,47 @@ from __future__ import annotations
 import bisect
 import math
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
-from .records import Config
 
-CFG = Config()
+class _Config:
+    """``records.Config()``'s values, read on first use. ``records`` imports ``model``, which
+    imports torch at import time, and both are vendored verbatim, so a page without torch hands
+    over the values a run file saved (:func:`use_config`) before anything reads them."""
+
+    values: dict | None = None
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        if _Config.values is None:
+            from .records import Config
+
+            _Config.values = asdict(Config())
+        try:
+            return _Config.values[name]
+        except KeyError:
+            raise AttributeError(f"records.Config has no {name!r}") from None
+
+
+#: The learner's default configuration (``records.Config()``), attribute by attribute.
+CFG = _Config()
+
+
+def config_values() -> dict:
+    """``records.Config()``'s fields as a dict (what a run file saves). Needs torch."""
+    from .records import Config
+
+    return asdict(Config())
+
+
+def use_config(values) -> None:
+    """Read :data:`CFG` from ``values`` (a run file's) rather than from ``records.Config``."""
+    _Config.values = dict(values)
+
+
 #: The ledger's items, in the order the panels and the log show them.
 LEDGER = ("work", "heat", "kinetic_change", "shaping", "residual")
 
@@ -176,7 +215,7 @@ class Timeline:
     @property
     def duration(self):
         """The latest control boundary of either agent (0 before any)."""
-        return max((p[0] for a in self.agents for p in a.poses), default=0.0)
+        return max((a.index()["pose_t"][-1] for a in self.agents if a.poses), default=0.0)
 
     def start(self, i):
         return self.spec.get("start_seconds", [0.0, 0.0])[i]
@@ -285,13 +324,40 @@ def heat(values, vmax):
     return _STOPS[lo] * (1 - f) + _STOPS[lo + 1] * f
 
 
+def risk(q, weights, centers, width, residual=None):
+    """The vendored ``model.risk`` in numpy (float64), on points ``q`` (n, 2): softplus of a
+    Gaussian RBF expansion, plus a stage's local residual (Wendland C2 kernels) when it has one,
+    over 4. It equals the torch original to rounding, and needs no torch."""
+    q, c = np.asarray(q, float), np.asarray(centers, float)
+    raw = np.exp(-0.5 * (((q[:, None, :] - c) / width) ** 2).sum(-1)) @ np.asarray(weights, float)
+    if residual is not None and residual.get("coefficients"):
+        rc = np.asarray(residual["centers"], float)
+        squared = (((q[:, None, :] - rc) / residual["radius"]) ** 2).sum(-1)
+        d = np.sqrt(np.maximum(squared, 1e-24))
+        value = 1 - 10 * squared + 20 * squared * d - 15 * squared**2 + 4 * squared**2 * d
+        raw = raw + np.where(squared < 1, value, 0.0) @ np.asarray(residual["coefficients"], float)
+    return np.logaddexp(0.0, raw) / 4
+
+
+@dataclass
+class Patch:
+    """An overlay's pixels inside a window of a :class:`Floor`: ``mask`` (h, w) at rows
+    ``y0..``, columns ``x0..``, so drawing it touches the window, not the whole floor."""
+
+    y0: int
+    x0: int
+    mask: np.ndarray
+
+
 class Floor:
     """An arm's floor as an image: the corridors, a risk field as a heat map over them, and
-    overlays. Row 0 is the south edge (``y0``), column 0 the west edge (``x0``)."""
+    overlays. Row 0 is the south edge (``y0``), column 0 the west edge (``x0``).
 
-    def __init__(self, spec, world=None, px_per_m=32):
-        from .maze_geometry import distance_to_network
+    The corridors and the true risk field come from the episode's ``world`` (which needs the
+    vendored demos, so torch), or, already sampled on this floor's grid, from a run file
+    (``corridor`` and ``truth``)."""
 
+    def __init__(self, spec, world=None, px_per_m=32, *, corridor=None, truth=None):
         self.spec, self.px = spec, px_per_m
         self.x0, self.x1, self.y0, self.y1 = bounds(spec)
         self.w = int(round((self.x1 - self.x0) * px_per_m))
@@ -299,22 +365,23 @@ class Floor:
         xs = self.x0 + (np.arange(self.w) + 0.5) / px_per_m
         ys = self.y0 + (np.arange(self.h) + 0.5) / px_per_m
         self.points = np.stack(np.meshgrid(xs, ys), axis=-1)  # (h, w, 2)
-        nodes = [tuple(n) for n in spec["network_nodes"]]
-        edges = [tuple(e) for e in spec["network_edges"]]
-        self.corridor = (
-            distance_to_network(self.points, nodes=nodes, edges=edges) <= spec["corridor_radius"]
-        )
-        self.truth = world.risk_truth(self.points) if world is not None else None
+        if corridor is None:
+            from .maze_geometry import distance_to_network
+
+            nodes = [tuple(n) for n in spec["network_nodes"]]
+            edges = [tuple(e) for e in spec["network_edges"]]
+            d = distance_to_network(self.points, nodes=nodes, edges=edges)
+            corridor = d <= spec["corridor_radius"]
+        self.corridor = np.asarray(corridor, bool).reshape(self.h, self.w)
+        if truth is None and world is not None:
+            truth = world.risk_truth(self.points)
+        self.truth = None if truth is None else np.asarray(truth, float).reshape(self.h, self.w)
         #: A scale both the truth and an agent's field share.
         self.vmax = max(float(np.max(self.truth)) if self.truth is not None else 0.0, 0.25)
 
     def agent_risk(self, stages):
         """An agent's own risk field ``r`` over its kept stages (the newest stage wins where they
         overlap), NaN where it has none."""
-        import torch
-
-        from .model import risk, tensor
-
         r = np.full(self.points.shape[:2], np.nan)
         for s in sorted(stages, key=lambda s: s["id"]):
             x0, x1, y0, y1 = s["bounds"]
@@ -326,42 +393,71 @@ class Floor:
             )
             if not mask.any():
                 continue
-            with torch.no_grad():
-                values = risk(
-                    tensor(self.points[mask]),
-                    tensor(s["weights"]),
-                    tensor(s["centers"]),
-                    CFG.rbf_width,
-                    s.get("local_residual"),
-                )
-            r[mask] = values.numpy()
+            r[mask] = risk(
+                self.points[mask], s["weights"], s["centers"], CFG.rbf_width,
+                s.get("local_residual"),
+            )  # fmt: skip
         return r
 
-    def image(self, field=None, overlays=()):
-        """The floor as uint8 RGB (h, w, 3). ``field`` (h, w) is drawn as a heat map on the
-        corridors; each overlay is ``(mask, rgb, alpha)``."""
+    def base(self, field=None):
+        """The floor without overlays, as uint8 RGB (h, w, 3): ``field`` (h, w) as a heat map on
+        the corridors (where it is not NaN), the corridors' floor colour elsewhere on them."""
         rgb = np.empty(self.points.shape[:2] + (3,))
         rgb[:] = _OFF
         floor = heat(field, self.vmax) if field is not None else _STOPS[0]
         known = self.corridor & ~np.isnan(field) if field is not None else self.corridor
         rgb[self.corridor] = _STOPS[0]
         rgb[known] = floor[known] if field is not None else _STOPS[0]
-        for mask, colour, alpha in overlays:
-            rgb[mask] = rgb[mask] * (1 - alpha) + np.asarray(colour) * alpha
         return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
 
+    def compose(self, base, overlays=()):
+        """``base`` (from :meth:`base`) with the overlays blended on, a new uint8 image. Each
+        overlay is ``(patch, rgb, alpha)``: a :class:`Patch`, or a mask over the whole floor."""
+        out = base.copy()
+        for patch, colour, alpha in overlays:
+            if isinstance(patch, Patch):
+                h, w = patch.mask.shape
+                window, mask = out[patch.y0 : patch.y0 + h, patch.x0 : patch.x0 + w], patch.mask
+            else:
+                window, mask = out, patch
+            if not mask.any():
+                continue
+            blend = window[mask] / 255.0 * (1 - alpha) + np.asarray(colour) * alpha
+            window[mask] = (np.clip(blend, 0, 1) * 255).astype(np.uint8)
+        return out
+
+    def image(self, field=None, overlays=()):
+        """The floor as uint8 RGB (h, w, 3): :meth:`base` with ``overlays`` (:meth:`compose`)."""
+        return self.compose(self.base(field), overlays)
+
+    def _window(self, x0, x1, y0, y1):
+        """The rows and columns whose pixel centres can lie in ``[x0, x1] x [y0, y1]`` (with a
+        pixel to spare), clipped to the floor."""
+        c0 = max(int(math.floor((x0 - self.x0) * self.px)) - 1, 0)
+        c1 = min(int(math.ceil((x1 - self.x0) * self.px)) + 1, self.w)
+        r0 = max(int(math.floor((y0 - self.y0) * self.px)) - 1, 0)
+        r1 = min(int(math.ceil((y1 - self.y0) * self.px)) + 1, self.h)
+        return r0, max(r1, r0), c0, max(c1, c0)
+
     def ring(self, centre, radius, width_px=1.5):
-        d = np.linalg.norm(self.points - np.asarray(centre, float), axis=-1)
-        return np.abs(d - radius) <= width_px / self.px
+        """The circle of ``radius`` about ``centre``, ``width_px`` wide, as a :class:`Patch`."""
+        cx, cy = float(centre[0]), float(centre[1])
+        reach = radius + width_px / self.px
+        r0, r1, c0, c1 = self._window(cx - reach, cx + reach, cy - reach, cy + reach)
+        d = np.linalg.norm(self.points[r0:r1, c0:c1] - np.array([cx, cy]), axis=-1)
+        return Patch(r0, c0, np.abs(d - radius) <= width_px / self.px)
 
     def outline(self, rect, width_px=1.5):
+        """The rectangle ``(x0, x1, y0, y1)``'s edges, ``width_px`` wide, as a :class:`Patch`."""
         x0, x1, y0, y1 = rect
-        p, e = self.points, width_px / self.px
+        e = width_px / self.px
+        r0, r1, c0, c1 = self._window(x0 - e, x1 + e, y0 - e, y1 + e)
+        p = self.points[r0:r1, c0:c1]
         inside = (p[..., 0] >= x0 - e) & (p[..., 0] <= x1 + e)
         inside &= (p[..., 1] >= y0 - e) & (p[..., 1] <= y1 + e)
         near = (np.abs(p[..., 0] - x0) <= e) | (np.abs(p[..., 0] - x1) <= e)
         near |= (np.abs(p[..., 1] - y0) <= e) | (np.abs(p[..., 1] - y1) <= e)
-        return inside & near
+        return Patch(r0, c0, inside & near)
 
 
 # ── the log ────────────────────────────────────────────────────────────────────────────────────

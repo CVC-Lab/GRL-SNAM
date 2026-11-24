@@ -33,7 +33,7 @@ def test_the_gate_kept_every_update(timelines):
     kept, rejected, worse, rise = coph.gate_counts(timelines)
     total = sum(len(a.updates) for tl in timelines for a in tl.agents)
     assert kept == total > 0 and rejected == 0
-    assert 0 <= worse <= kept and 0.0 <= rise < coph.SLACK
+    assert 0 <= worse <= kept and 0.0 <= rise < coph.slack()
     assert coph.gate_counts(timelines, t=0.0)[0] < kept  # counted up to the play head
     line = coph.gate_line(timelines)
     assert "can't reject" in line and f"{kept} kept, 0 rejected" in line

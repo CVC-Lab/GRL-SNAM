@@ -57,15 +57,43 @@ def test_replay_draws_what_the_live_run_drew(live, capsys):
     assert "saves agent 0 0.2 m" in out  # 1.8597 - 1.6794 m at 50 steps (tests/test_coph.py)
 
 
+def test_a_run_file_draws_what_its_episodes_drew(live, capsys, monkeypatch):
+    """--bake packs the run (tests/test_coph_runfile.py); --from it replays it alike, and a page's
+    ?demo= (GRL_SNAM_COPH_DEMO) fills in {demo}."""
+    from grl_snam.ariadne import coph
+
+    root = live["root"]
+    path = root / "crossing.coph.npz"
+    assert (
+        _main(["crossing", "--from", str(root / "run"), "--steps", "50", "--bake", str(path)]) == 0
+    )
+    assert "wrote" in capsys.readouterr().out and path.is_file()
+    assert _main(["crossing", "--headless", "--from", str(path),
+                  "--log", str(root / "runfile.npz")]) == 0  # fmt: skip
+    a, b = np.load(root / "live.npz"), np.load(root / "runfile.npz")
+    for k in ("x", "y", "heading", "coef_work", "coef_version", "coef_bytes_received"):
+        assert np.array_equal(a[k], b[k]), k
+    meta = json.loads(str(b["meta"]))
+    assert meta["origin"] == "run file" and meta["episodes"] == str(path)
+    assert "saves agent 0 0.2 m" in capsys.readouterr().out
+    monkeypatch.setattr(coph._host, "BROWSER", True)
+    monkeypatch.setenv(coph.PAGE_DEMO, "hazard")
+    template = str(root / "{demo}.coph.npz")
+    assert _main(["crossing", "--headless", "--from", template]) == 2
+    assert "hazard.coph.npz" in capsys.readouterr().err  # the page's demo, not the argument's
+
+
 def test_refusals(tmp_path, capsys):
     assert _main(["crossing", "--headless", "--arms", "disabled"]) == 2
     assert _main(["crossing", "--headless", "--arms", "disabled,field"]) == 2
     assert _main(["hazard", "--headless", "--from", str(tmp_path)]) == 2
     assert _main(["crossing", "--offscreen", "--tour", "--arms", "disabled,one_way_10"]) == 2
     assert _main(["crossing", "--headless", "--tour", "--from", str(tmp_path)]) == 2
+    assert _main(["crossing", "--from", str(tmp_path / "x.coph.npz"), "--bake", "y.npz"]) == 2
     err = capsys.readouterr().err
     assert "two different arms" in err and "no arm 'field'" in err and "is missing" in err
     assert "--tour follows the default arms" in err and "--tour draws" in err
+    assert "--from a directory, not a run file" in err
 
 
 def test_walkthrough_runs_crossing_then_hazard(tmp_path, monkeypatch):

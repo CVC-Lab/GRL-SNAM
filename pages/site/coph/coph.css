@@ -85,6 +85,19 @@ footer {
 }
 .chapters button:hover { border-color: var(--accent); }
 .caption, .note { color: var(--muted); font-size: 0.92rem; max-width: 90ch; }
+.live { margin: 18px 0 4px; }
+.live p { margin-bottom: 8px; }
+.live .btn {
+  display: inline-block;
+  padding: 6px 14px;
+  margin: 0 6px 4px 6px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+  text-decoration: none;
+}
+.live .btn:hover { filter: brightness(1.1); }
 .grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

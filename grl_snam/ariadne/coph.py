@@ -6,6 +6,8 @@
     python -m grl_snam.ariadne coph crossing --headless --steps 200 --log run.npz
     python -m grl_snam.ariadne coph walkthrough --from runs/coph    # the scripted walkthrough
     python -m grl_snam.ariadne coph walkthrough --from runs/coph --offscreen --record coph.mp4
+    python -m grl_snam.ariadne coph crossing --from runs/crossing --bake crossing.coph.npz
+    python -m grl_snam.ariadne coph crossing --from crossing.coph.npz --tour  # needs no torch
 
 The episodes are the vendored demos' own (``grl_snam.coph``, roadmap §3.2). A live run calls the
 runner exactly as ``grl-snam coph`` does, one worker process per arm, and keeps the episodes with
@@ -50,6 +52,18 @@ the end of each step, and ``--record PATH`` an mp4 of every frame (ffmpeg on PAT
 ``--ffmpeg``); with ``--offscreen`` the frames step at 30 per simulated second whatever the
 machine's speed.
 
+A run file (:mod:`grl_snam.coph.runfile`, ``*.coph.npz``, about 0.7 MB a demo) packs a run so
+that it plays back without torch: ``--bake FILE`` writes one from the episodes under ``--from``
+(computing them first when missing), and ``--from FILE`` plays it. Reading episodes builds each
+arm's world from the vendored demos, which import torch; a run file carries what the viewer
+draws instead (each arm's messages, its floor's corridors and true risk field, its nameplate, the
+Learning window's series), and an agent's own field is drawn with numpy
+(:func:`grl_snam.coph.timeline.risk`). That is how GRL-SNAM's Pages site runs this viewer in a web
+page (pages/assemble.py ``--coph``, on libcvc's ariglx-web): the page opens on the walkthrough,
+its ``?demo=crossing`` or ``?demo=hazard`` picks the demo (:data:`PAGE_DEMO`; ``{demo}`` in
+``--from`` is its name), the tour runs on the page's own frames, and the camera follows the
+canvas's size.
+
 Headless (``--headless``), the run goes to its end with nothing drawn; ``--log run.npz`` writes the
 cars template's log shape (``pycvc_gl.cars.CarsLog``) plus the ledger columns
 (:func:`grl_snam.coph.timeline.log_arrays`). The exit code is 0, 1 when a run failed, and 3 when
@@ -69,9 +83,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from grl_snam.ariadne import _host
-from grl_snam.coph import feed
-from grl_snam.coph.records import Config
-from grl_snam.coph.timeline import Floor, Timeline, comparison, learning, log_arrays
+from grl_snam.coph import feed, runfile
+from grl_snam.coph.timeline import (
+    CFG,
+    Floor,
+    Timeline,
+    comparison,
+    config_values,
+    learning,
+    log_arrays,
+    use_config,
+)
 
 TITLES = {
     "crossing": "Crossing traverses: what one agent has seen saves the other's route",
@@ -165,7 +187,15 @@ def _args(p):
         "--from",
         dest="source",
         default=None,
-        help="replay the episodes of a `grl-snam coph` run's --out directory instead",
+        help="replay the episodes of a `grl-snam coph` run's --out directory instead, or play a "
+        f"run file (*{runfile.SUFFIX}); {{demo}} in it is the demo's name",
+    )
+    p.add_argument(
+        "--bake",
+        default=None,
+        metavar="FILE",
+        help=f"write the run file FILE (*{runfile.SUFFIX}) from the episodes under --from "
+        "(computed there first when missing) and exit: what a web page plays back",
     )
     p.add_argument(
         "--out", default=None, help="keep a live run's episodes here, in grl-snam coph's layout"
@@ -194,14 +224,38 @@ def label(arm):
 
 
 class Source:
-    """The two arms' timelines: filled by worker processes as a live run goes, or from a
-    finished run's episode files."""
+    """The two arms' timelines: filled by worker processes as a live run goes, from a finished
+    run's episode files, or from a run file (:mod:`grl_snam.coph.runfile`), which also carries
+    each arm's floor, nameplate and learning series (``floors``, ``plates``, ``learning``; None
+    otherwise, when the viewer makes them itself)."""
 
     def __init__(self, demo, timelines, *, queue=None, procs=(), origin="", where=None):
         self.demo, self.timelines, self.queue, self.procs = demo, timelines, queue, list(procs)
         self.origin, self.where = origin, where
         self.done = {tl.arm for tl in timelines} if queue is None else set()
         self.error = None
+        self.floors = self.plates = self.learning = None
+
+    @classmethod
+    def from_runfile(cls, path, demo, arms=None, seed=None, scene=None):
+        """Play back the run file at ``path``. ``arms``, ``seed`` and ``scene`` (None: the
+        file's) must be the file's; ``ValueError`` if not, or if it is another demo's."""
+        run = runfile.read(path)
+        theirs = tuple(a.arm for a in run.arms)
+        if run.demo != demo:
+            raise ValueError(f"{path} is a {run.demo} run, not {demo}")
+        if arms is not None and tuple(arms) != theirs:
+            raise ValueError(f"{path} holds the arms {', '.join(theirs)}, not {', '.join(arms)}")
+        if seed is not None and seed != run.seed:
+            raise ValueError(f"{path} is seed {run.seed}, not {seed}")
+        if demo == "hazard" and scene is not None and scene != run.scene:
+            raise ValueError(f"{path} is scene {run.scene!r}, not {scene!r}")
+        use_config(run.config)
+        src = cls(demo, run.timelines(), origin="run file", where=str(path))
+        src.floors, src.plates = run.floors(), [a.plate for a in run.arms]
+        src.learning = [a.learning for a in run.arms]
+        src.run = run
+        return src
 
     @staticmethod
     def episode(demo, arm, seed, scene, root):
@@ -313,6 +367,35 @@ def ensure_episodes(demo, arms, seed, steps, scene, root):
             print(f"grl_snam coph: {demo} {arm} done", flush=True)
 
 
+def bake(path, demo, arms, seed, steps, scene, root):
+    """Write the run file ``path`` (:mod:`grl_snam.coph.runfile`) of ``arms`` from the episodes
+    under ``root`` (computed there first when missing, as a tour does): what a page without torch
+    plays back. This needs torch (each arm's world) and, for the nameplates, Pillow."""
+    from grl_snam import __version__
+    from grl_snam.coph import UPSTREAM
+    from grl_snam.coph.evaluation import load
+
+    ensure_episodes(demo, arms, seed, steps, scene, root)
+    out, px = [], 32
+    for arm in arms:
+        record = load(Source.episode(demo, arm, seed, scene, root))
+        messages = feed.messages(record)
+        spec = record["spec"]
+        tl = Timeline(demo, spec, arm, label=label(arm)).ingest(messages)
+        world = feed.world(demo, spec)
+        floor, coarse = Floor(spec, world, px_per_m=px), Floor(spec, world, px_per_m=4)
+        plate = plate_image(PLATES.get(arm, label(arm)), floor.x1 - floor.x0, PLATE)
+        if plate is None:
+            print(f"grl_snam coph: no Pillow, so {arm}'s nameplate is left out", file=sys.stderr)
+        out.append(runfile.Arm(arm=arm, label=tl.label, spec=spec, messages=messages,
+                               truth=floor.truth, corridor=floor.corridor, plate=plate,
+                               learning=[learning(tl, i, coarse) for i in range(2)]))  # fmt: skip
+    run = runfile.Run(demo=demo, seed=seed, scene=scene if demo == "hazard" else None,
+                      steps=steps, px_per_m=px, config=config_values(), arms=out,
+                      meta=dict(grl_snam=__version__, upstream=UPSTREAM["commit"]))  # fmt: skip
+    return runfile.write(path, run)
+
+
 # ── the transport ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -406,6 +489,17 @@ def rows(demo, timelines, t):
 
 
 def result_line(demo, timelines, seed, scene):
+    """This run's own number once both arms finish (remade only when new messages arrive)."""
+    key = (demo, seed, scene, tuple((tl, tl.messages) for tl in timelines))  # tl by identity
+    if _result_cache.get("key") != key:
+        _result_cache.update(key=key, line=_result_line(demo, timelines, seed, scene))
+    return _result_cache["line"]
+
+
+_result_cache: dict = {}
+
+
+def _result_line(demo, timelines, seed, scene):
     c = comparison(demo, *timelines)
     if c is None:
         return "This run: its own number appears once both arms finish."
@@ -456,7 +550,7 @@ def gate_counts(timelines, t=math.inf):
 def gate_line(timelines, t=math.inf):
     kept, rejected, worse, rise = gate_counts(timelines, t)
     return (
-        f"The validation gate can't reject: its slack ({SLACK:g}) is about 100x the typical "
+        f"The validation gate can't reject: its slack ({slack():g}) is about 100x the typical "
         f"held-out field loss, and {GATE_REFERENCE}. This run so far: {kept} kept, {rejected} "
         f"rejected; {worse} kept with a worse held-out field loss (up to +{rise:.4f})."
     )
@@ -489,7 +583,12 @@ def publish(host, demo, source, t, seed, scene):
 
 # ── the learning panels ────────────────────────────────────────────────────────────────────────
 
-SLACK = Config().validation_slack
+
+def slack():
+    """The validation gate's slack (``records.Config().validation_slack``, or a run file's)."""
+    return CFG.validation_slack
+
+
 #: The Learning window's second chart (``learn.show``): its caption, whether its y is log, and
 #: the series it draws from each arm's :func:`~grl_snam.coph.timeline.learning`, as (key, label
 #: suffix, line style, band keys or None).
@@ -539,10 +638,18 @@ class Learning:
     #: How often a growing run's charts are redrawn (wall seconds).
     REFRESH = 0.25
 
-    def __init__(self, host, demo, timelines, transport):
+    def __init__(self, host, demo, timelines, transport, series=None):
+        """``series``: per arm, per agent, :func:`~grl_snam.coph.timeline.learning`'s arrays
+        for the whole run (a run file's), drawn as they are; without it, they are measured here
+        on a coarse floor built from each arm's world."""
         self.host, self.demo, self.transport = host, demo, transport
         self.enabled = hasattr(host, "set_plot")
-        self.floors = [Floor(tl.spec, feed.world(demo, tl.spec), px_per_m=4) for tl in timelines]
+        self.series = series
+        self.floors = (
+            None
+            if series is not None
+            else [Floor(tl.spec, feed.world(demo, tl.spec), px_per_m=4) for tl in timelines]
+        )
         self.key, self._at, self._t = None, -math.inf, None
         if self.enabled:
             host.on("learn_seek", self.seek)
@@ -573,7 +680,10 @@ class Learning:
         if same_choice and not finished and now - self._at < self.REFRESH:
             return
         self.key, self._at = key, now
-        series = [learning(tl, agent, floor) for tl, floor in zip(timelines, self.floors)]
+        if self.series is not None:
+            series = [arm[agent] for arm in self.series]
+        else:
+            series = [learning(tl, agent, floor) for tl, floor in zip(timelines, self.floors)]
         markers = self.markers(timelines, agent)
         names = [ARM_SHORT.get(tl.arm, tl.label) for tl in timelines]
         heldout = []
@@ -583,7 +693,7 @@ class Learning:
             heldout.append(dict(x=s["t"], y=s["field_heldout"], label=f"{name} after",
                                 style=f"c{k}"))  # fmt: skip
         last = series[-1]
-        heldout.append(dict(x=last["t"], y=last["field_before"] + SLACK,
+        heldout.append(dict(x=last["t"], y=last["field_before"] + slack(),
                             label=f"gate ({names[-1]})", style="c7 dotted"))  # fmt: skip
         host.set_plot("learn.heldout", heldout, markers=markers)
         caption, log_y, keys = STATS[show]
@@ -755,23 +865,31 @@ class View:
     """Both arms' scenes: floors, nameplates, doors, cars, goals, tracks and packet arcs, and
     the camera's poses (:meth:`pose_for`)."""
 
-    def __init__(self, host, demo, timelines, size=DEFAULT_SIZE):
+    def __init__(self, host, demo, timelines, size=DEFAULT_SIZE, floors=None, plates=None):
+        """``floors`` and ``plates`` (per arm, a run file's) stand in for the floors built from
+        each arm's world and the nameplates drawn with Pillow."""
         from grl_snam.fog_scene import _style
 
         self.host, self.demo, self.timelines, self._style = host, demo, timelines, _style
         self.size = (max(int(size[0]), 64), max(int(size[1]), 64))
-        self.floors = [Floor(tl.spec, feed.world(demo, tl.spec)) for tl in timelines]
+        self.floors = floors or [Floor(tl.spec, feed.world(demo, tl.spec)) for tl in timelines]
         f0 = self.floors[0]
         self.offsets = [k * (f0.x1 - f0.x0 + GAP) for k in range(len(timelines))]
         self.frame, self.risk_cache, self.arcs_used = 0, {}, {}
-        self.pose = None
+        self.arc_keys = {}  # arc node -> the delivery it draws, (identity, time)
+        self.bases = {}  # arm -> (the heat map's key, its floor image without overlays)
+        self.pose, self.last_view = None, ("overview",)
+        self.sync_size(refit=False)
         lab = host.lab
         model = _car_model(host)
         for k, (tl, floor, ox) in enumerate(zip(timelines, self.floors, self.offsets)):
             v, t, uv = _quad(floor.x0 + ox, floor.x1 + ox, floor.y0, floor.y1)
             lab.add_mesh(f"floor_{k}", v, t, color=(1.0, 1.0, 1.0), uvs=uv)
             lab.set_texture(f"floor_{k}", texture(floor.image(floor.truth)))
-            plate = plate_image(PLATES.get(tl.arm, label(tl.arm)), floor.x1 - floor.x0, PLATE)
+            if plates is not None:
+                plate = plates[k]
+            else:
+                plate = plate_image(PLATES.get(tl.arm, label(tl.arm)), floor.x1 - floor.x0, PLATE)
             if plate is not None:
                 v, t, uv = _quad(floor.x0 + ox, floor.x1 + ox, floor.y1 + 0.1,
                                  floor.y1 + 0.1 + PLATE, z=0.01)  # fmt: skip
@@ -815,6 +933,7 @@ class View:
         """The orbit for a tour's view: ``("overview",)``, ``("arm", k)`` or ``("spot", k, x, y,
         half_width)`` (in arm ``k``'s own coordinates), with an optional elevation last."""
         kind, rest = view[0], list(view[1:])
+        self.last_view = tuple(view)
         if kind == "overview":
             box, elev = self.box(), (rest[0] if rest else 55.0)
         elif kind == "arm":
@@ -830,6 +949,21 @@ class View:
     def set_pose(self, pose):
         self.pose = dict(pose)
         self.host.set_many(self.pose, prefix="viewers.main.camera.orbit")
+
+    def sync_size(self, refit=True):
+        """Follow the drawing surface's size, which a web page's canvas takes from the browser
+        window (and a window from its user): when it changed, fit the last view again
+        (:meth:`pose_for`) in the room the panels leave."""
+        try:
+            w, h = int(self.host.view.frameWidth()), int(self.host.view.frameHeight())
+        except Exception:  # noqa: BLE001 - no renderer (headless) or an older pycvc_gl
+            return
+        if w < 64 or h < 64 or (w, h) == self.size:
+            return
+        self.size = (w, h)
+        print(f"coph: the view is {w}x{h} pixels", file=sys.stderr, flush=True)
+        if refit and self.pose is not None:
+            self.set_pose(self.pose_for(self.last_view))
 
     def overview(self):
         """Both floors from the south at 55 degrees, in the room the docked panels leave.
@@ -850,20 +984,31 @@ class View:
         self._style(scene, name, color=colour, mode="lines", line_width=width)
 
     def _heat(self, k, states):
+        """Arm ``k``'s heat map now: ``(key, field)``, the key naming what the field is."""
         source = self.host.get("view.heat", "truth")
         floor = self.floors[k]
         if source not in ("agent0", "agent1"):
-            return floor.truth
+            return ("truth",), floor.truth
         s = states[int(source[-1])]
         key = (k, s.agent, s.version, tuple(st["id"] for st in s.stages))
         if key not in self.risk_cache:
             if len(self.risk_cache) > 64:
                 self.risk_cache.clear()
             self.risk_cache[key] = floor.agent_risk(s.stages)
-        return self.risk_cache[key]
+        return key, self.risk_cache[key]
+
+    def _base(self, k, states):
+        """Arm ``k``'s floor image without overlays, remade only when its heat map changes."""
+        key, field = self._heat(k, states)
+        held = self.bases.get(k)
+        if held is None or held[0] != key:
+            held = self.bases[k] = (key, self.floors[k].base(field))
+        return held[1]
 
     def draw(self, t, camera):
         host, lab, frame = self.host, self.host.lab, self.frame
+        if frame % 15 == 0:
+            self.sync_size()
         heat = host.get("view.heat", "truth")
         redraw = frame % 2 == 0 or heat != getattr(self, "_last_heat", heat)
         self._last_heat = heat
@@ -879,7 +1024,8 @@ class View:
                         )
                     if s.active and s.outcome is None:
                         overlays.append((floor.ring(s.q, feed_sensor_radius()), colour, 0.85))
-                lab.set_texture(f"floor_{k}", texture(floor.image(self._heat(k, states), overlays)))
+                image = floor.compose(self._base(k, states), overlays)
+                lab.set_texture(f"floor_{k}", texture(image))
             known = set().union(*(s.known for s in states))
             for name, door in tl.doors().items():
                 cx, cy, r, hx, hy = door
@@ -922,9 +1068,13 @@ class View:
                     )
                 )
             name = f"arc_{k}_{j}"
+            if self.arc_keys.get(name) == (identity, when):
+                continue  # this slot already draws this delivery
+            self.arc_keys[name] = (identity, when)
             colour = ACCEPT if accepted else REJECT
             self._path(name, pts, colour, min(8.0, 1.0 + nbytes / 4000.0))
         for j in range(len(recent), self.arcs_used.get(k, 0)):
+            self.arc_keys.pop(f"arc_{k}_{j}", None)
             host.scene.getGraphics(f"arc_{k}_{j}").setTransform(HIDDEN)
         self.arcs_used[k] = max(len(recent), self.arcs_used.get(k, 0))
 
@@ -1403,6 +1553,9 @@ class Recorder:
 
 #: The environment variable that hands ``walkthrough``'s pipe key to its tours.
 RECORD_KEY = "GRL_SNAM_COPH_RECORD_KEY"
+#: In a web page, the demo to show in place of the argument: the page's ``?demo=crossing`` or
+#: ``?demo=hazard`` sets it (the page config's ``url_env``).
+PAGE_DEMO = "GRL_SNAM_COPH_DEMO"
 
 
 class PipeRecorder:
@@ -1561,12 +1714,41 @@ def main(argv=None) -> int:
     if args.mode != "window" and not any(a.split("=")[0] == "--frames" for a in argv):
         args.frames = 0  # headless and offscreen run to the end, not the host's default 30
     demo = args.demo
-    arms = tuple(a.strip() for a in args.arms.split(",")) if args.arms else feed.DEFAULT_ARMS[demo]
+    if _host.BROWSER and os.environ.get(PAGE_DEMO) in ("crossing", "hazard"):
+        demo = os.environ[PAGE_DEMO]  # the page's ?demo= (its config's url_env)
+    if args.source:
+        args.source = args.source.replace("{demo}", demo)
+    played = bool(args.source) and args.source.endswith(runfile.SUFFIX)
+    picked = tuple(a.strip() for a in args.arms.split(",")) if args.arms else None
+    arms = picked or feed.DEFAULT_ARMS[demo]
     if len(arms) != 2 or arms[0] == arms[1]:
         print("grl_snam coph: --arms takes two different arms", file=sys.stderr)
         return 2
     seed = args.seed if args.seed is not None else feed.DEFAULT_SEEDS[demo]
     steps = args.steps or feed.DEFAULT_STEPS[demo]
+    if args.bake and played:
+        print("grl_snam coph: --bake writes a run file from a run's episodes: --from a "
+              "directory, not a run file", file=sys.stderr)  # fmt: skip
+        return 2
+    try:
+        if played:
+            scene_given = any(a.split("=")[0] == "--scene" for a in argv)
+            source = Source.from_runfile(args.source, demo, picked, args.seed,
+                                         args.scene if scene_given else None)  # fmt: skip
+            arms = tuple(tl.arm for tl in source.timelines)
+            seed, steps = source.run.seed, source.run.steps
+            args.scene = source.run.scene or args.scene
+        else:
+            for arm in arms:
+                feed.job(demo, arm, seed, steps, args.scene)
+    except (ValueError, FileNotFoundError) as e:
+        print(f"grl_snam coph: {e}", file=sys.stderr)
+        return 2
+    if args.bake:
+        root = args.source or args.out or str(Path("runs/coph") / demo)
+        path = bake(args.bake, demo, arms, seed, steps, args.scene, root)
+        print(f"grl_snam coph: wrote {path} ({path.stat().st_size / 1e6:.1f} MB)", flush=True)
+        return 0
     if args.tour and (arms != feed.DEFAULT_ARMS[demo] or seed != feed.DEFAULT_SEEDS[demo]):
         print("grl_snam coph: --tour follows the default arms and seed", file=sys.stderr)
         return 2
@@ -1574,16 +1756,15 @@ def main(argv=None) -> int:
         print("grl_snam coph: --tour draws: drop --headless", file=sys.stderr)
         return 2
     try:
-        for arm in arms:
-            feed.job(demo, arm, seed, steps, args.scene)
-        if args.tour:
-            root = args.source or args.out or str(Path("runs/coph") / demo)
-            ensure_episodes(demo, arms, seed, steps, args.scene, root)
-            source = Source.replay(demo, arms, seed, args.scene, root)
-        elif args.source:
-            source = Source.replay(demo, arms, seed, args.scene, args.source)
-        else:
-            source = Source.live(demo, arms, seed, steps, args.scene, args.out)
+        if not played:  # a run file's Source is read above
+            if args.tour:
+                root = args.source or args.out or str(Path("runs/coph") / demo)
+                ensure_episodes(demo, arms, seed, steps, args.scene, root)
+                source = Source.replay(demo, arms, seed, args.scene, root)
+            elif args.source:
+                source = Source.replay(demo, arms, seed, args.scene, args.source)
+            else:
+                source = Source.live(demo, arms, seed, steps, args.scene, args.out)
         if args.record_to:
             recorder = PipeRecorder(args.record_to)
         else:
@@ -1592,16 +1773,23 @@ def main(argv=None) -> int:
         print(f"grl_snam coph: {e}", file=sys.stderr)
         return 2
     title = TITLES[demo] + (f" ('{args.scene}')" if demo == "hazard" else "")
+    print(f"coph: {demo}, {' beside '.join(arms)}, seed {seed} ({source.origin})",
+          file=sys.stderr, flush=True)  # fmt: skip
     try:
         host = _host.open_host("coph.ari", "coph", args)
         drawn = host.mode != "headless"
-        view = View(host, demo, source.timelines, (args.width, args.height)) if drawn else None
+        view = (
+            View(host, demo, source.timelines, (args.width, args.height), source.floors,
+                 source.plates)  # fmt: skip
+            if drawn
+            else None
+        )
         camera = _host.CameraSwitch(host, view.overview) if drawn else None
         if drawn:
             _host.track_camera(host, length=2.0)
         transport = Transport(host, title)
         host.on("restart", transport.restart)
-        panels = Learning(host, demo, source.timelines, transport)
+        panels = Learning(host, demo, source.timelines, transport, source.learning)
         host.set("view.heat", args.heat)
         if args.at > 0:
             transport.t = args.at
@@ -1616,7 +1804,10 @@ def main(argv=None) -> int:
                 demo=demo,
                 shots=args.shots,
                 close_at_end=bool(
-                    args.record or args.record_to or args.shots or host.mode != "window"
+                    args.record
+                    or args.record_to
+                    or args.shots
+                    or host.mode not in ("window", "embedded")  # a page stays open
                 ),
             )
         else:
@@ -1641,9 +1832,9 @@ def main(argv=None) -> int:
             if not drawn and source.finished and not source.live_running:
                 host.request_close()
 
-        if tour is not None or recorder is not None:
+        if (tour is not None or recorder is not None) and not _host.BROWSER:
             code = run_frames(host, args, tour, recorder)
-        else:
+        else:  # a page runs the frames itself, a tour's included (it steps in _frame)
             code = _host.finish(host, args)
     finally:
         source.close()

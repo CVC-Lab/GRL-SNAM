@@ -132,6 +132,15 @@ SCRUB_AUSTIN_IMG = "img/scrub-austin.jpg"
 SCRUB_AUSTIN_CACHE = "austin"
 SCRUB_TITLE = "GRL-SNAM: watch it learn"
 SCRUB_AUSTIN_TITLE = "GRL-SNAM: watch it learn in Austin"
+#: The CoPH page (--coph): the demos it plays back, the first the one it opens on without a
+#: ?demo=; where it goes, inside the CoPH poster's directory (a site that serves coph/ as it is
+#: keeps the two together); its title; the variable its ?demo= sets (grl_snam.ariadne.coph's
+#: PAGE_DEMO); and the poster's links to it, between these marks, dropped without the page.
+COPH_DEMOS = ("crossing", "hazard")
+COPH_PAGE = "coph/live"
+COPH_TITLE = "GRL-SNAM: CoPH-Stagewise in 3-D"
+COPH_ENV = "GRL_SNAM_COPH_DEMO"
+COPH_LIVE = ("<!-- coph-live:", "<!-- /coph-live -->")
 #: ariglx-web's files, as its recipe installs them in share/ariglx-web.
 HOST_FILES = ("index.html", "ariglx.js", "ariglx.wasm", "python312.zip", "arigl-web.js",
               "arigl-web.css", "LICENSE", "THIRD_PARTY_NOTICES.md")  # fmt: skip
@@ -265,6 +274,72 @@ def deploy_scrub(sets, checkpoints: Path, python: str, cache: Path, world: str, 
                 sys.exit(f"assemble: scrub on {key} failed (exit {r.returncode})")
             reports.append(report)
     return reports
+
+
+def deploy_coph(python: str, cache: Path) -> list[Path]:
+    """Each CoPH demo's run file (grl_snam.coph.runfile), baked natively: ``grl-snam ariadne
+    coph DEMO --from cache/DEMO --bake cache/DEMO.coph.npz``, which computes the demo's two
+    episodes there first when they are missing (side by side; a crossing arm takes about 20
+    minutes, a hazard arm about 6) and reads them back on later builds."""
+    runs = []
+    for demo in COPH_DEMOS:
+        out = cache / f"{demo}.coph.npz"
+        cmd = [python, "-s", "-m", "grl_snam.ariadne", "coph", demo, "--from",
+               str((cache / demo).resolve()), "--bake", str(out.resolve())]  # fmt: skip
+        print(f"assemble: coph: baking {demo}'s run file from {cache / demo}", flush=True)
+        cache.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(cmd, env=_python_env(python), cwd=REPO, check=False)
+        if r.returncode != 0 or not out.is_file():
+            sys.exit(f"assemble: coph {demo} --bake failed (exit {r.returncode})")
+        runs.append(out)
+    return runs
+
+
+def coph_page(host: Path, page: Path, runs, vehicle: Path | None = None) -> dict:
+    """The CoPH page at ``page`` (made here): ``grl-snam ariadne coph`` playing back a run file
+    per demo (data/<demo>.coph.npz, from :func:`deploy_coph`), opening on its walkthrough. The
+    page's ``?demo=crossing`` or ``?demo=hazard`` picks the demo (the config's url_env sets
+    COPH_ENV, which coph reads in a page); without it, the first of :data:`COPH_DEMOS` it has.
+    ``vehicle`` ships as the scrub page's does (the cars are boxes without it)."""
+    by_demo = {}
+    for r in map(Path, runs):
+        demo = r.name[: -len(".coph.npz")] if r.name.endswith(".coph.npz") else None
+        if demo not in COPH_DEMOS:
+            sys.exit(f"assemble: {r} is not a CoPH run file named <demo>.coph.npz "
+                     f"({', '.join(COPH_DEMOS)})")  # fmt: skip
+        with zipfile.ZipFile(r) as z:  # an .npz is a zip of .npy arrays
+            if "meta.npy" not in z.namelist():
+                sys.exit(f"assemble: {r} is not a run file (no meta)")
+        by_demo[demo] = r
+    demos = [d for d in COPH_DEMOS if d in by_demo]
+    if not demos:
+        sys.exit("assemble: no CoPH run files to show")
+    n = host_page(host, page)
+    preload = ["grl_snam_web.zip"]
+    for demo in demos:
+        dest = page / "data" / f"{demo}.coph.npz"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(by_demo[demo], dest)
+        preload.append(f"data/{demo}.coph.npz")
+    if vehicle is not None:
+        (page / VEHICLE_MODEL).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(vehicle, page / VEHICLE_MODEL)
+        preload.append(VEHICLE_MODEL)
+        with open(page / "THIRD_PARTY_NOTICES.md", "a", encoding="utf-8") as f:
+            f.write("\n" + model_credit(vehicle))
+    else:
+        print("assemble: coph: no Humvee model (--vehicle-model): the page's cars are boxes")
+    config = {
+        "title": COPH_TITLE,
+        "src": "main.py",
+        "src_param": False,
+        "preload": preload,
+        "args": ["coph", demos[0], "--from", "data/{demo}.coph.npz", "--tour"],
+        "url_env": {"demo": {"env": COPH_ENV, "match": f"^({'|'.join(demos)})$"}},
+    }
+    (page / "ariadne.config.json").write_text(json.dumps(config, indent=2) + "\n")
+    print(f"assemble: {page}: grl_snam_web.zip ({n} files), run files for {', '.join(demos)}")
+    return config
 
 
 def check_libcvc(reports, expect: str | None) -> None:
@@ -468,16 +543,17 @@ def learn_page(host: Path, page: Path, histories, arms: Path | None) -> dict:
     return config
 
 
-def drop_card(site: Path, card=SCRUB_CARD, picture: str = "img/scrub.jpg") -> None:
-    """The landing page without a page's card (and the card's picture), for a site without the
-    page: the scrub page's by default."""
+def drop_card(site: Path, card=SCRUB_CARD, picture: str | None = "img/scrub.jpg") -> None:
+    """The landing page (``site``/index.html) without a page's card (and the card's picture),
+    for a site without the page: the scrub page's by default."""
     index = site / "index.html"
     html = index.read_text()
     start, end = html.find(card[0]), html.find(card[1])
     if start >= 0 and end > start:
         cut = html[: html.rfind("\n", 0, start) + 1] + html[end + len(card[1]) + 1 :]
         index.write_text(cut)
-    (site / picture).unlink(missing_ok=True)
+    if picture:
+        (site / picture).unlink(missing_ok=True)
 
 
 def sizes(site: Path) -> None:
@@ -548,12 +624,31 @@ def main(argv=None) -> int:
                     help="the Humvee's model the scrub page draws its cars with (default: "
                          f"{VEHICLE_MODEL} in --python's prefix, the cvcpkg package "
                          "vehicle-humvee's; without one the cars are boxes)")  # fmt: skip
+    ap.add_argument("--coph", action="store_true",
+                    help=f"add the CoPH page ({COPH_PAGE}/: grl-snam ariadne coph playing back "
+                         "each demo's run file, baked here by --python, which needs torch)")  # fmt: skip
+    ap.add_argument(
+        "--coph-only",
+        action="store_true",
+        help="write the CoPH page alone at --out (for another site to serve)",
+    )
+    ap.add_argument(
+        "--coph-runs",
+        nargs="+",
+        type=Path,
+        default=None,
+        metavar="RUN",
+        help="the CoPH page's run files, baked before (<demo>.coph.npz): bake nothing",
+    )
+    ap.add_argument("--coph-cache", type=Path, default=None, metavar="DIR",
+                    help="keep the CoPH demos' episodes and run files here between builds "
+                         "(default: a temporary directory)")  # fmt: skip
     ap.add_argument("--expect-libcvc", default=None, metavar="VERSION",
                     help="the libcvc --host is built from (e.g. 4.0.0): refuse runs deployed on "
                          "another, whose generated world the page would not draw the same")  # fmt: skip
     a = ap.parse_args(argv)
-    if a.learn_only and a.scrub_only:
-        sys.exit("assemble: --learn-only or --scrub-only, not both")
+    if sum((a.learn_only, a.scrub_only, a.coph_only)) > 1:
+        sys.exit("assemble: one of --learn-only, --scrub-only and --coph-only")
     if a.scrub_city and ((a.scrub_world != "data" and not a.scrub_austin)
                          or "://" not in a.scrub_city):  # fmt: skip
         sys.exit("assemble: --scrub-city is a data world's city, a URI the page can fetch "
@@ -580,6 +675,12 @@ def main(argv=None) -> int:
                 austin = deploy_scrub(sets, checkpoints, a.python, cache / SCRUB_AUSTIN_CACHE,
                                       "data", a.scrub_ticks, a.scrub_plants, a.scrub_city)  # fmt: skip
         check_libcvc(reports + (austin or []), a.expect_libcvc)
+    coph_runs, coph_tmp = None, None
+    if a.coph or a.coph_only:
+        coph_runs = a.coph_runs
+        if coph_runs is None:
+            cache = a.coph_cache or Path(coph_tmp := tempfile.mkdtemp(prefix="grl-snam-coph-"))
+            coph_runs = deploy_coph(a.python, cache)
     vehicle = a.vehicle_model or Path(a.python).resolve().parent.parent / VEHICLE_MODEL
     if not vehicle.is_file():
         if a.vehicle_model:
@@ -592,6 +693,8 @@ def main(argv=None) -> int:
             learn_page(a.host, a.out, a.histories, a.arms)
         elif a.scrub_only:
             scrub_page(a.host, a.out, reports, vehicle)
+        elif a.coph_only:
+            coph_page(a.host, a.out, coph_runs, vehicle)
         else:
             shutil.copytree(SITE_SRC, a.out)
             for dest, src in FIGURES.items():
@@ -607,9 +710,14 @@ def main(argv=None) -> int:
                 scrub_page(a.host, a.out / SCRUB_AUSTIN, austin, vehicle)
             else:
                 drop_card(a.out, SCRUB_AUSTIN_CARD, SCRUB_AUSTIN_IMG)
+            if coph_runs is not None:
+                coph_page(a.host, a.out / COPH_PAGE, coph_runs, vehicle)
+            else:  # the poster without its links to a page the site does not have
+                drop_card(a.out / "coph", COPH_LIVE, picture=None)
     finally:
-        if tmp:
-            shutil.rmtree(tmp, ignore_errors=True)
+        for t in (tmp, coph_tmp):
+            if t:
+                shutil.rmtree(t, ignore_errors=True)
     sizes(a.out)
     return 0
 
