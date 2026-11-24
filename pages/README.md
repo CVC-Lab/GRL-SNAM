@@ -45,7 +45,8 @@ python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-on
 # the CoPH page, self-contained, inside the poster: grl-snam ariadne coph playing back a run file
 # per demo, baked by the same closure (it needs torch; pillow-cp312 too, for the nameplates) from
 # the vendored demos' episodes, which DIR3 keeps between builds (~30 min cold, seconds after)
-python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --coph-only   --out _site/coph/live --python "$PREFIX/bin/python3.12" --coph-cache DIR3
+python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --coph-only \
+  --out _site/coph/live --python "$PREFIX/bin/python3.12" --coph-cache DIR3
 
 # check them where your site serves them (Node 22; Chrome or Chromium)
 node grl-snam/pages/smoke.mjs --site _site --base /your-site/ --learn learn/ --scrub scrub/ \
