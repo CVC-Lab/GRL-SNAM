@@ -396,14 +396,50 @@ python -m grl_snam.ariadne coph hazard --scene severe          # live, seed 7900
 grl-snam coph crossing --out runs/crossing                     # every arm, headless (T1)
 python -m grl_snam.ariadne coph crossing --from runs/crossing  # replay two of them
 python -m grl_snam.ariadne coph crossing --headless --log run.npz --min-goals 4
+python -m grl_snam.ariadne coph walkthrough --from runs/coph   # crossing, then hazard ('severe')
+python -m grl_snam.ariadne coph walkthrough --from runs/coph --offscreen --width 1920 \
+    --height 1080 --record coph-walkthrough.mp4                # the same, as a video
 ```
 
 The vendored crossing and hazard demos (`grl_snam.coph`, `grl-snam coph`), with communication off
 on the left and CoPH on the right, on the same seed. Crossing shows `disabled` beside
-`reciprocal_fixed`; hazard shows `none` beside `field` (`--arms A,B` picks others). The headline
-gives the reference's established result with its seed counts, this run's own number once both
-arms finish, and what the reference has not established. Replay, receiver field fitting and
-adaptive-rate sharing run all the same.
+`reciprocal_fixed`; hazard shows `none` beside `field` (`--arms A,B` picks others). A nameplate
+north of each floor names its arm.
+- **The claims, as the roadmap's §8 labels them** (the Headline window):
+  - in green, what the reference established, with its own seed counts: crossing's 27.1 m team
+    saving over 2 seeds x 4 arms with 16/16 goals, and hazard's worst-case excess cost of 4.6
+    against 68.1 over 4 scenes x 8 arms;
+  - this run's own number, once both arms finish;
+  - in amber, what the reference has not established: a gain from replay (it runs in both arms),
+    from receiver field fitting (it runs in the CoPH arm), or from adaptive-rate sharing, which
+    neither demo exercises (both export every 0.96 s);
+  - in amber, that the validation gate cannot reject: its 0.003 slack is about 100 times the
+    typical held-out field loss, and the reference's 40 episodes kept all 5,212 updates. The line
+    counts this run's kept and rejected updates up to the play head, and how many of the kept
+    ones made the held-out field loss worse.
+- **The layout.** The windows are docked so that the floors stay clear: CoPH and Learning down
+  the right, the Headline above and Agents below, and the camera frames the floors in the rest.
+  The window opens at 1600x900 unless `--width` and `--height` say otherwise.
+- **The walkthrough** (`--tour`, or `walkthrough` for both demos in turn). It plays the default
+  arms and seed as a sequence of steps, each with a caption in the Headline: camera moves, the
+  play head at a set speed, and the heat map. Its times come from the episodes. The CoPH window's
+  Back, Next and Restart buttons drive it, and Playing or a drag of the position slider hands the
+  run back to the presenter.
+  - The run never stops for a caption. During camera moves and holds it plays on slowly, and at
+    the episode's end the camera drifts.
+  - **Agents pass through each other.** CoPH-Stagewise models no contact between agents: each
+    senses only the walls, the doors and the risk. In crossing the two pass through each other
+    on the south corridor (at 63.5 s with CoPH, at 104.8 s with communication off). The tour
+    shows the first pass close up and says why. The status line says so whenever two driving
+    agents overlap.
+  - The video is on GRL-SNAM's Pages site, on the CoPH poster (`pages/site/coph/`).
+  - A tour replays episodes: `--from DIR` (for `walkthrough`, `DIR/crossing` and `DIR/hazard`).
+    It computes missing ones there first, headless, which takes about 20 minutes for crossing.
+  - In a window, a finished tour leaves the window open for questions. Close it, and
+    `walkthrough` goes on to hazard.
+  - `--shots DIR` writes a PNG at the end of each step. `--record PATH` writes every frame to an
+    H.264 mp4 through ffmpeg (on PATH, in `$FFMPEG`, or `--ffmpeg`). With `--offscreen`, frames
+    step 1/30 s of the tour whatever the machine's speed, so the video plays smoothly.
 - **Live, or a replay.**
   - Live, each arm runs in a worker process. The runner is called exactly as `grl-snam coph`
     calls it, so the outcomes are the same (`tests/test_coph_feed.py`). The play head follows the
@@ -434,7 +470,7 @@ adaptive-rate sharing run all the same.
   as before. For one agent (the Agent combo), each arm's learner at each of its updates:
   - **Held-out field loss**, before and after the update. The gate compares the two on the
     learner's validation readings, and the chart draws the gate's threshold, before + 0.003.
-    That slack is about 100 times the losses here, so the gate accepts every update.
+    That slack is about 100 times the typical loss here, so the gate accepts every update.
   - **One statistic below** (the Show combo):
     - the own field against the truth, `|r - r_true|` over the corridor its stages cover,
       where it has sensed (with a 10th..90th percentile band) and elsewhere;
