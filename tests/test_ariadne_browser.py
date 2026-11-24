@@ -242,7 +242,10 @@ def test_the_scrub_page_carries_its_runs_beside_it(tmp_path, site):
     assert config["args"][:4] == ["scrub", "--view", "data/seed7.scrub.zip",
                                   "data/seed8.scrub.zip"]  # fmt: skip
     assert config["args"][4:] == assemble.SCRUB_VIEW
-    assert config["preload"] == ["grl_snam_web.zip", "data/seed7.scrub.zip", "data/seed8.scrub.zip"]
+    # The Humvee's model ships when --python's prefix (here this Python's) has vehicle-humvee.
+    model = Path(sys.executable).resolve().parent.parent / assemble.VEHICLE_MODEL
+    assert config["preload"] == ["grl_snam_web.zip", "data/seed7.scrub.zip", "data/seed8.scrub.zip",
+                                 *([assemble.VEHICLE_MODEL] if model.is_file() else [])]  # fmt: skip
     assert all((out / f).is_file() for f in config["preload"])
     rep, names = _bundle(out / "data/seed7.scrub.zip")
     assert names == sorted(["scrub.json", "seed7.history.jsonl.gz",

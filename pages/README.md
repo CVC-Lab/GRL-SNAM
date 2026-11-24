@@ -12,7 +12,7 @@ checks this repo out and calls the scripts below.
 | `assemble.py` | writes the site (`site/` at the root, `learn/`, and with `--scrub` `scrub/`), or with `--learn-only` / `--scrub-only` one page alone: the host, `main.py`, `grl_snam_web.zip`, the page's data, `ariadne.config.json` with every preload |
 | `main.py` | the program a page runs in place of a document: unpacks `grl_snam_web.zip` and runs a port (`args`: `["learn", ...]`, `["scrub", "--view", ...]`) |
 | `smoke.mjs` | loads the site in headless Chrome as Pages serves it: learn must start, run its frames and make learn-report's claims in the page; scrub (`--scrub`) must start, show a checkpoint, draw its cars (the Humvee's model when the page ships it) and run its frames, and it says the frames a second |
-| `site/` | the landing page |
+| `site/` | the landing page, and `site/coph/`: the CoPH poster (demo 2a's walkthrough video, the results the reference establishes and what it does not), copied as it is. It loads nothing outside `coph/`, so another site can serve it beside its own landing page |
 
 ## From another repository's workflow
 

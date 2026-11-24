@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CoPH in GRL-SNAM</title>
+<meta name="description" content="CoPH-Stagewise: navigation energies learned stage by stage and shared between agents, as GRL-SNAM runs them: the two results the reference establishes, what it does not, and the demo.">
+<link rel="stylesheet" href="coph.css">
+<script src="coph.js" defer></script>
+</head>
+<body class="poster">
+<header class="band">
+  <p class="kicker"><a href="../">GRL-SNAM</a> · demo 2a</p>
+  <h1>CoPH: navigation energies learned stage by stage, and shared</h1>
+  <p class="lead">CoPH-Stagewise learns an agent's navigation energy online, one stretch of route
+  at a time, commits a revision only when it passes validation, and books every jump it causes
+  apart from the physical work. Agents share what they have learned as small packets. GRL-SNAM
+  carries the method as <code>grl_snam.coph</code> and shows its two demos in 3-D: communication
+  off on the left, CoPH on the right, on the same seed.</p>
+</header>
+
+<main>
+<section class="video">
+  <video id="walkthrough" controls preload="metadata" playsinline poster="poster.jpg"
+         width="1920" height="1080">
+    <source src="walkthrough.mp4" type="video/mp4">
+    <a href="walkthrough.mp4">The walkthrough (mp4)</a>
+  </video>
+  <p class="chapters">Jump to:
+    <button type="button" data-t="0">Crossing</button>
+    <button type="button" data-t="85.1" id="hazard-chapter">Hazard</button>
+    · <a href="walkthrough.mp4">download (mp4)</a></p>
+  <p class="caption">The scripted walkthrough of <code>python -m grl_snam.ariadne coph
+  walkthrough</code>, rendered at 1920×1080 on libcvc master (4.0.6+). It replays episodes computed by
+  GRL-SNAM's vendored copy of the reference, with no change to the method; the viewer only
+  reads them. Each caption's times come from the episodes.</p>
+</section>
+
+<section class="grid">
+  <article class="panel">
+    <h2>The method</h2>
+    <ul>
+      <li><b>Stages.</b> The route is learned in 3&nbsp;×&nbsp;4&nbsp;m stages. Each agent keeps the
+      current stage and the two before it, and revises them as new evidence arrives.</li>
+      <li><b>A field it fits.</b> Each stage holds a risk field (a 4&nbsp;×&nbsp;4 grid of radial
+      basis functions) fitted to what the agent senses. With obstacle barriers and the goal it
+      makes the potential V.</li>
+      <li><b>The plant.</b> A point of unit mass: q′&nbsp;=&nbsp;v,
+      v′&nbsp;=&nbsp;−d&nbsp;v&nbsp;+&nbsp;u, commanded by
+      u&nbsp;=&nbsp;−∇V&nbsp;−&nbsp;1.4&nbsp;v with |u|&nbsp;≤&nbsp;3.</li>
+      <li><b>A gate.</b> Every 8 control steps an update proposes a new field, damping and
+      policy, and is kept only if held-out losses do not worsen by more than a slack.</li>
+      <li><b>A ledger.</b> Work, heat and kinetic change balance to about 1e-15 a step, and every
+      jump in the shaping energy is booked apart.</li>
+      <li><b>Packets.</b> An agent sends field anchors with their gradients, a covariance and
+      provenance. A receiver takes one in only under its own gate.</li>
+    </ul>
+  </article>
+
+  <article class="panel ok">
+    <h2>What the reference establishes</h2>
+    <h3>Crossing: what one agent has seen saves the other's route</h3>
+    <p>Two agents start at opposite ends of a corridor maze whose two doors are shut, and
+    neither knows where. When each sends what it senses, the team's detour falls by
+    <b>27.1&nbsp;m</b> on both seeds (28.0&nbsp;m predicted in advance), with <b>16/16 goals</b>
+    and no collisions over <b>2 seeds × 4 arms</b>.</p>
+    <figure><img src="crossing.jpg" alt="Both crossing arms at the end: on the left the agents' tracks run into both doors, on the right they take the south corridor" width="1280" height="486"></figure>
+    <h3>Hazard: share the field, not the decision</h3>
+    <p>A risk-tolerant scout (risk weight 0.25) crosses a graded hazard, and a risk-averse
+    carrier (weight 6) follows 25&nbsp;s later. With the scout's field shared, the carrier's
+    worst-case excess cost is <b>4.6</b>, against <b>68.1</b> with no communication, over
+    <b>1 seed × 4 scenes × 8 arms</b> with 64/64 goals.</p>
+    <figure><img src="hazard.jpg" alt="Both hazard arms at the end: the carrier went into the red hazard and back on the left, and straight to the north corridor on the right" width="1280" height="486"></figure>
+    <p class="note">These are CoPH-Sense's own numbers (CROSSING_DEMO.md, HAZARD_DEMO.md), which
+    its code reproduced on 2026-11-09 to 0.1. GRL-SNAM's vendored copy reproduces upstream's 40
+    episodes field for field.</p>
+  </article>
+
+  <article class="panel warn">
+    <h2>What it does not establish</h2>
+    <ul>
+      <li><b>Replay.</b> It runs in both arms, but no gain from it is established.</li>
+      <li><b>Receiver field fitting.</b> It runs in the CoPH arm. The hazard arm without it ties
+      the shared field at 4.6, as raw readings do at more bytes: received anchors reach the
+      carrier's router either way.</li>
+      <li><b>Adaptive-rate sharing.</b> It is in the code, but neither demo exercises it: both
+      arms export every 0.96&nbsp;s.</li>
+      <li><b>The validation gate cannot reject.</b> Its slack, 0.003, is about 100 times the
+      median held-out field loss (2.8e-5). Over the reference's 40 episodes it kept all 5,212
+      updates, 3,112 of them with a worse held-out field loss (by at most 0.0022).</li>
+      <li><b>No contact between agents.</b> Each agent senses only the walls, the doors and the
+      risk, so in crossing the two pass through each other on the south corridor.</li>
+    </ul>
+  </article>
+</section>
+
+<section class="grid two">
+  <article class="panel">
+    <h2>How GRL-SNAM carries it</h2>
+    <ul>
+      <li><a href="https://github.com/CVC-Lab/GRL-SNAM/blob/main/grl_snam/coph/VENDORED.md"><code>grl_snam.coph</code></a>:
+      the method's core and the two demos, vendored from CoPH-Sense at <code>c1f1ff3</code>
+      (25 modules), with every local change recorded. <code>grl-snam coph crossing|hazard</code>
+      runs them.</li>
+      <li><a href="https://github.com/CVC-Lab/GRL-SNAM/blob/main/grl_snam/ariadne/README.md"><code>grl-snam ariadne coph</code></a>:
+      this viewer. It runs the vendored runner live, one process per arm, or replays a run. Its
+      panels show each agent's learner, packets and energy ledger, and the learning charts
+      show each update's held-out loss against the gate.</li>
+      <li>Goldens generated from the vendored Python check a C++ port in libcvc's
+      <code>cvc::nav</code>, step by step.</li>
+    </ul>
+  </article>
+
+  <article class="panel coming">
+    <h2>Coming</h2>
+    <ul>
+      <li><b>This demo, live in the page.</b> torch does not run in the browser, so it waits for
+      the C++ port's bindings and libcvc's WebAssembly build.</li>
+      <li><b>CoPH drives the cars</b> (demo 2b, exploratory). One learner per car of libcvc's
+      cars template. Its first report is the allocation residual and the ledger, not a
+      navigation gain.</li>
+    </ul>
+  </article>
+</section>
+</main>
+
+<footer>
+  <p>The method is <a href="https://github.com/SetasAditya/CoPH-Sense">CoPH-Sense</a>'s
+  CoPH-Stagewise, by SetasAditya, MIT-licensed. GRL-SNAM is MIT-licensed. The 3-D viewer runs on
+  <a href="https://github.com/transfix/libcvc">libcvc</a>.
+  · <a href="../">All of GRL-SNAM's pages</a></p>
+</footer>
+</body>
+</html>
