@@ -4,6 +4,7 @@
     python pages/assemble.py --host HOST --out _site [--histories H...] [--arms TABLE]
     python pages/assemble.py --host HOST --out DIR --learn-only [--histories H...] [--arms TABLE]
     python pages/assemble.py --host HOST --out _site --scrub --python PY [--scrub-sets SET...] ...
+    python pages/assemble.py --host HOST --out _site --scrub --scrub-austin --python PY ...
     python pages/assemble.py --host HOST --out DIR --scrub-only --scrub-reports R.json...
 
 ``--host`` is libcvc's ariglx-web, the ``share/ariglx-web`` directory pages/build-ariglx-web.sh
@@ -25,6 +26,8 @@ installs. The site:
                                       packed: grl_snam.run_log/v2); the page's loader takes
                                       at most 512 files, and a run is 43
       ariadne.config.json             ["scrub", "--view", "data/<set>/<run>.scrub.zip", ...]
+    scrub-austin/                     with --scrub-austin: the same page on the same runs,
+                                      deployed in Austin (the data world), beside scrub/
 
 ``--learn-only`` writes the learn page alone, self-contained, at ``--out`` (for another site to
 serve, at any path). Everything the page fetches is beside it, on the site's own origin.
@@ -55,10 +58,24 @@ grl-snam-learning-checkpoints), and by default ``--checkpoints`` is that package
 prefix. The page's Set combo picks a set, its Run combo a run of it. Every run's logs are
 preloaded (the page's loader has no fetch after start; libcvc's data roadmap D4), about 3 MB a run
 lean, so each five-seed set adds about 15-18 MB a plant to the first visit. They are deployed on
-``--scrub-world`` (default generated:
-libcvc's generator from scrub.ari's world.* keys, which the page builds again from the report
-with no data to fetch; Austin's bundle is 228 MB and cvcpkg.org sends no CORS for github.io, so a
-data world's page shows the windows alone). ``--scrub-cache`` keeps the run logs between builds
+``--scrub-world``, which the page builds again from the report:
+
+- ``generated`` (the default): libcvc's generator from scrub.ari's world.* keys, with no data to
+  fetch, provided the page's libcvc is the deploy's;
+- ``data``: a city, scrub.ari's ``data.city`` (Austin: the ``cy-pca/scene-austin-south-small``
+  package, the full bundle's buildings and terrain with a smaller satellite image, 10 MB) or
+  ``--scrub-city`` (a ``cvcpkg://ORG/NAME[@VERSION]`` package or an https archive). The page's data
+  store fetches the version the runs were deployed on from cvcpkg.org, which lets any origin read
+  a public package, so the page reaches one origin beside its own;
+- ``flat``: a walled square.
+
+``--scrub-austin`` deploys the same runs a second time, on the data world (Austin, or
+``--scrub-city``), into ``--scrub-cache``/austin/, and adds that page beside the first as
+scrub-austin/, with its own card on the landing page: the default page stays on its world and
+fetches nothing from another origin, and Austin's 10 MB load only for those who open its page.
+``--scrub-only --scrub-world data`` writes that page alone.
+
+``--scrub-cache`` keeps the run logs between builds
 (a checkpoint already deployed on the same scenario is read back). ``--scrub-reports`` takes
 reports deployed before instead, and deploys nothing.
 
@@ -107,6 +124,14 @@ VEHICLE_MODEL = "share/cvc-scenes/shared/Humvee.glb"
 FIGURES = {"img/curves.png": REPO / "docs" / "learning-validation" / "curves.png"}
 #: The landing page's card for the scrub page, between these marks: dropped without one.
 SCRUB_CARD = ("<!-- scrub:", "<!-- /scrub -->")
+#: The scrub page in Austin (--scrub-austin), beside scrub/: its directory, its card's marks and
+#: picture, and its runs' place in --scrub-cache. The pages' titles.
+SCRUB_AUSTIN = "scrub-austin"
+SCRUB_AUSTIN_CARD = ("<!-- scrub-austin:", "<!-- /scrub-austin -->")
+SCRUB_AUSTIN_IMG = "img/scrub-austin.jpg"
+SCRUB_AUSTIN_CACHE = "austin"
+SCRUB_TITLE = "GRL-SNAM: watch it learn"
+SCRUB_AUSTIN_TITLE = "GRL-SNAM: watch it learn in Austin"
 #: ariglx-web's files, as its recipe installs them in share/ariglx-web.
 HOST_FILES = ("index.html", "ariglx.js", "ariglx.wasm", "python312.zip", "arigl-web.js",
               "arigl-web.css", "LICENSE", "THIRD_PARTY_NOTICES.md")  # fmt: skip
@@ -201,10 +226,11 @@ def run_key(set_name: str, run: str) -> str:
     return f"{set_name}/{run}" if set_name else run
 
 
-def deploy_scrub(sets, checkpoints: Path, python: str, cache: Path, world: str,
-                 ticks: int, plants=("humvee",)) -> list[Path]:  # fmt: skip
+def deploy_scrub(sets, checkpoints: Path, python: str, cache: Path, world: str, ticks: int,
+                 plants=("humvee",), city: str | None = None) -> list[Path]:  # fmt: skip
     """Each data set's runs deployed natively (``grl-snam ariadne scrub --headless --lean
-    --report``) on each of ``plants``: ``sets`` is ``[(name, histories)]``; the reports in
+    --report``) on each of ``plants``, on ``world`` (``city``, when given, is the data world's
+    city: ``--uri``): ``sets`` is ``[(name, histories)]``; the reports in
     ``cache``/<plant>/<set>/<run>.scrub.json, the run logs in ``cache``/<plant>/<set>/<run>/. The
     first plant's runs come first, so the page opens on them."""
     keys, reports = [], []
@@ -229,6 +255,8 @@ def deploy_scrub(sets, checkpoints: Path, python: str, cache: Path, world: str,
                    plant, "--report", str(report.resolve())]  # fmt: skip
             if set_name:
                 cmd += ["--data-set", set_name]
+            if city and world == "data":
+                cmd += ["--uri", city]
             print(f"assemble: scrub: deploying {key}'s checkpoints on {world}, on {plant} ({blobs})",
                   flush=True)  # fmt: skip
             report.parent.mkdir(parents=True, exist_ok=True)
@@ -298,6 +326,12 @@ def model_credit(path: Path) -> str:
     )
 
 
+def _in_austin(rep: dict) -> bool:
+    """Whether a report's runs were deployed in Austin (one of the scene-austin-south packages)."""
+    world = (rep.get("scenario") or {}).get("world") or {}
+    return "/scene-austin-south" in str(world.get("canonical") or world.get("uri") or "")
+
+
 def open_set(reps, plant: str) -> str:
     """The data set the scrub page opens on: of the runs deployed on ``plant``, the set whose
     checkpoints get farthest from step 0 (the median, over all its checkpoints after step 0, of
@@ -330,7 +364,7 @@ def scrub_page(host: Path, page: Path, reports, vehicle: Path | None = None) -> 
     at most 512 files, and a run is 43; scrub --view reads the bundles. ``vehicle``, the Humvee's
     glTF, ships at :data:`VEHICLE_MODEL` with its credit in THIRD_PARTY_NOTICES.md (without it
     the cars are boxes). The page config views them, the first plant's runs first, opening on the
-    data set :func:`open_set` picks."""
+    data set :func:`open_set` picks, titled for Austin when they were deployed there."""
     reports = [Path(r) for r in reports]
     if not reports:
         sys.exit("assemble: no scrub reports to show")
@@ -383,7 +417,7 @@ def scrub_page(host: Path, page: Path, reports, vehicle: Path | None = None) -> 
         first = open_set(reps, plants[0])
         view += ["--data-set", first] if first else []
     config = {
-        "title": "GRL-SNAM: watch it learn",
+        "title": SCRUB_AUSTIN_TITLE if all(map(_in_austin, reps)) else SCRUB_TITLE,
         "src": "main.py",
         "src_param": False,
         "preload": preload,
@@ -434,16 +468,16 @@ def learn_page(host: Path, page: Path, histories, arms: Path | None) -> dict:
     return config
 
 
-def drop_card(site: Path) -> None:
-    """The landing page without its scrub card (and the card's picture), for a site with no
-    scrub page."""
+def drop_card(site: Path, card=SCRUB_CARD, picture: str = "img/scrub.jpg") -> None:
+    """The landing page without a page's card (and the card's picture), for a site without the
+    page: the scrub page's by default."""
     index = site / "index.html"
     html = index.read_text()
-    start, end = html.find(SCRUB_CARD[0]), html.find(SCRUB_CARD[1])
+    start, end = html.find(card[0]), html.find(card[1])
     if start >= 0 and end > start:
-        cut = html[: html.rfind("\n", 0, start) + 1] + html[end + len(SCRUB_CARD[1]) + 1 :]
+        cut = html[: html.rfind("\n", 0, start) + 1] + html[end + len(card[1]) + 1 :]
         index.write_text(cut)
-    (site / "img" / "scrub.jpg").unlink(missing_ok=True)
+    (site / picture).unlink(missing_ok=True)
 
 
 def sizes(site: Path) -> None:
@@ -493,6 +527,14 @@ def main(argv=None) -> int:
     )
     ap.add_argument("--scrub-world", default="generated", choices=("generated", "flat", "data"),
                     help="the world they are deployed on (default generated)")  # fmt: skip
+    ap.add_argument("--scrub-city", default=None, metavar="URI",
+                    help="with --scrub-world data or --scrub-austin, the city: a "
+                         "cvcpkg://ORG/NAME[@VERSION] package or an https archive the page can "
+                         "fetch (default scrub.ari's, cvcpkg://cy-pca/scene-austin-south-small)")  # fmt: skip
+    ap.add_argument("--scrub-austin", action="store_true",
+                    help=f"with --scrub, deploy the runs on Austin too and add that page beside "
+                         f"scrub/, as {SCRUB_AUSTIN}/ (its runs in --scrub-cache/"
+                         f"{SCRUB_AUSTIN_CACHE}/)")  # fmt: skip
     ap.add_argument("--scrub-ticks", type=int, default=1200, help="each checkpoint's ticks")
     ap.add_argument("--scrub-plants", nargs="+", default=list(SCRUB_PLANTS), metavar="PLANT",
                     help="the vehicles they are deployed on, each a choice in the page's Plant "
@@ -512,10 +554,18 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.learn_only and a.scrub_only:
         sys.exit("assemble: --learn-only or --scrub-only, not both")
+    if a.scrub_city and ((a.scrub_world != "data" and not a.scrub_austin)
+                         or "://" not in a.scrub_city):  # fmt: skip
+        sys.exit("assemble: --scrub-city is a data world's city, a URI the page can fetch "
+                 "(cvcpkg://ORG/NAME or https://...): with --scrub-world data or --scrub-austin")  # fmt: skip
+    if a.scrub_austin and (not a.scrub or a.scrub_only or a.scrub_reports is not None):
+        sys.exit("assemble: --scrub-austin adds a page to the whole site (--scrub) and deploys its "
+                 "runs: not with --scrub-only or --scrub-reports (--scrub-only --scrub-world data "
+                 "writes that page alone)")  # fmt: skip
     missing = [n for n in HOST_FILES if not (a.host / n).is_file()]
     if missing:
         sys.exit(f"assemble: {a.host} is not ariglx-web (no {', '.join(missing)})")
-    reports, tmp = None, None
+    reports, austin, tmp = None, None, None
     if a.scrub or a.scrub_only:
         reports = a.scrub_reports
         if reports is None:
@@ -524,9 +574,12 @@ def main(argv=None) -> int:
             checkpoints = a.checkpoints or default_checkpoints(a.python)
             sets = ([(a.scrub_set_name, a.scrub_histories)] if a.scrub_histories else
                     [(name, set_histories(name)) for name in a.scrub_sets])  # fmt: skip
-            reports = deploy_scrub(sets, checkpoints, a.python, cache,
-                                   a.scrub_world, a.scrub_ticks, a.scrub_plants)  # fmt: skip
-        check_libcvc(reports, a.expect_libcvc)
+            reports = deploy_scrub(sets, checkpoints, a.python, cache, a.scrub_world,
+                                   a.scrub_ticks, a.scrub_plants, a.scrub_city)  # fmt: skip
+            if a.scrub_austin:
+                austin = deploy_scrub(sets, checkpoints, a.python, cache / SCRUB_AUSTIN_CACHE,
+                                      "data", a.scrub_ticks, a.scrub_plants, a.scrub_city)  # fmt: skip
+        check_libcvc(reports + (austin or []), a.expect_libcvc)
     vehicle = a.vehicle_model or Path(a.python).resolve().parent.parent / VEHICLE_MODEL
     if not vehicle.is_file():
         if a.vehicle_model:
@@ -550,6 +603,10 @@ def main(argv=None) -> int:
                 scrub_page(a.host, a.out / "scrub", reports, vehicle)
             else:
                 drop_card(a.out)
+            if austin is not None:
+                scrub_page(a.host, a.out / SCRUB_AUSTIN, austin, vehicle)
+            else:
+                drop_card(a.out, SCRUB_AUSTIN_CARD, SCRUB_AUSTIN_IMG)
     finally:
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)

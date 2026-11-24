@@ -16,13 +16,16 @@ name: pages
 #      fixed/retrain, world-units/retrain), deployed here, natively, on libcvc's generated world
 #      (the page views runs; deploying a .pt checkpoint needs torch and libcvc's sim_world, so
 #      a cvcpkg closure whose libcvc is LIBCVC_REF's; the checkpoints come from the cvcpkg data
-#      package grl-snam-learning-checkpoints; the runs are cached by what they depend on); with
-#      --learn-only or --scrub-only, one page alone, for another site. Everything a page fetches
-#      is on the site's own origin.
+#      package grl-snam-learning-checkpoints; the runs are cached by what they depend on); and,
+#      with --scrub-austin, scrub-austin/ beside it: the same runs deployed in Austin, where the
+#      policies were trained, the city (the cvcpkg package cy-pca/scene-austin-south-small, 10 MB)
+#      fetched by the page from cvcpkg.org. With --learn-only or --scrub-only, one page alone, for
+#      another site. Everything a page fetches is on the site's own origin, but Austin's city.
 #   3. pages/smoke.mjs loads it in headless Chrome as Pages serves it: learn must start, run its
-#      frames and make learn-report's claims in the page, and scrub must start, show a checkpoint,
-#      draw the world its runs were deployed on and run its frames. It runs on the whole site
-#      under /GRL-SNAM/, and on the two pages alone at another path, as another site serves them.
+#      frames and make learn-report's claims in the page, and each scrub page must start, show a
+#      checkpoint, draw the world its runs were deployed on and run its frames (scrub-austin/ may
+#      reach cvcpkg.org, no other page any origin but its own). It runs on the whole site under
+#      /GRL-SNAM/, and on the pages alone at another path, as another site serves them.
 
 on:
   pull_request:
@@ -118,7 +121,7 @@ jobs:
 
       # v5: the lean run logs are packed (grl_snam.run_log/v2). A v4 cache's would still be read,
       # and packed when read, but the key moves with grl_snam/** anyway.
-      - name: Cache the scrub page's runs
+      - name: Cache the scrub pages' runs
         uses: actions/cache@v4
         with:
           path: scrub-runs
@@ -139,8 +142,10 @@ jobs:
           # each checked against the committed histories' blobs by sha256 when it was packed.
           cvcpkg install grl-snam-learning-checkpoints --prefix "$RUNNER_TEMP/checkpoints" \
             --platform any --config release --link shared --no-fallback-to-source
+          # scrub/ on libcvc's generated city, and scrub-austin/ on Austin (its runs in
+          # scrub-runs/austin/).
           python3 pages/assemble.py --host ariglx-web/share/ariglx-web --out _site \
-            --scrub --python "$PREFIX/bin/python3.12" --scrub-cache scrub-runs \
+            --scrub --scrub-austin --python "$PREFIX/bin/python3.12" --scrub-cache scrub-runs \
             --checkpoints "$RUNNER_TEMP/checkpoints/share/grl-snam-learning-checkpoints" \
             --expect-libcvc "$LIBCVC_REF"
           python3 pages/assemble.py --host ariglx-web/share/ariglx-web --learn-only \
@@ -153,6 +158,16 @@ jobs:
               scrub-runs/kinematic/retrain/*.scrub.json \
               scrub-runs/kinematic/fixed/retrain/*.scrub.json \
               scrub-runs/kinematic/world-units/retrain/*.scrub.json --expect-libcvc "$LIBCVC_REF" \
+            --vehicle-model "$PREFIX/share/cvc-scenes/shared/Humvee.glb"
+          austin=()  # the Humvee's runs first, as the page opens on them
+          for plant in humvee kinematic; do
+            for set in retrain fixed/retrain world-units/retrain; do
+              austin+=(scrub-runs/austin/"$plant"/"$set"/*.scrub.json)
+            done
+          done
+          python3 pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-only \
+            --out _other_site/demos/scrub-austin --scrub-reports "${austin[@]}" \
+            --expect-libcvc "$LIBCVC_REF" \
             --vehicle-model "$PREFIX/share/cvc-scenes/shared/Humvee.glb"
 
       - name: Load them in headless Chrome
@@ -168,11 +183,12 @@ jobs:
           chrome=$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)
           "$chrome" --version
           "$node" pages/smoke.mjs --site _site --chrome "$chrome" --base /GRL-SNAM/ \
-            --scrub scrub/ --shots shots
+            --scrub scrub/ --city-scrub scrub-austin/ --shots shots
           # The learn and scrub pages alone, as another site serves them: under its own path, no
           # landing page.
           "$node" pages/smoke.mjs --site _other_site --chrome "$chrome" --base /other-site/ \
-            --learn demos/learn/ --scrub demos/scrub/ --no-landing --shots shots/alone
+            --learn demos/learn/ --scrub demos/scrub/ --city-scrub demos/scrub-austin/ \
+            --no-landing --shots shots/alone
 
       - name: Upload the smoke's screenshots
         if: always()
