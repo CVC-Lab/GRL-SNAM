@@ -1,20 +1,64 @@
-/* The CoPH poster: the landing page's tokens (../style.css), a wider page, and green and amber
-   panels for what the reference establishes and what it does not. */
+/* The CoPH poster, self-contained like the learn and scrub pages, so that another site (the
+   GRL-SNAM demos site) can serve coph/ beside its own landing page: the landing page's tokens and
+   base rules (as in ../style.css), a wider page, and green and amber panels for what the
+   reference establishes and what it does not. */
 :root {
+  --bg: #fbfbf9;
+  --fg: #1d1f21;
+  --muted: #5b6168;
+  --card: #ffffff;
+  --line: #dfe1e4;
+  --link: #1f5fa8;
+  --accent: #1f5fa8;
+  --accent-fg: #ffffff;
+  --code: #eef0f2;
   --ok: #1d7a3a;
   --ok-bg: #edf7f0;
   --warn: #9a5b00;
   --warn-bg: #fdf4e6;
+  color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
   :root {
+    --bg: #0f1216;
+    --fg: #e4e6e9;
+    --muted: #9aa1a9;
+    --card: #171b21;
+    --line: #2a3038;
+    --link: #79b0ec;
+    --accent: #3f86d6;
+    --accent-fg: #ffffff;
+    --code: #222831;
     --ok: #6fd28f;
     --ok-bg: #12241a;
     --warn: #f3b562;
     --warn-bg: #2a2012;
   }
 }
-.poster header, .poster main, .poster footer { max-width: 1280px; }
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+header, main, footer { max-width: 1280px; margin: 0 auto; padding: 0 16px; }
+header { padding-top: 40px; }
+h1 { margin: 0 0 8px; letter-spacing: -0.01em; }
+h2 { font-size: 1.35rem; margin: 40px 0 8px; }
+h3 { font-size: 1.15rem; margin: 0 0 6px; }
+p { margin: 0 0 12px; }
+.lead { font-size: 1.1rem; color: var(--fg); }
+a { color: var(--link); }
+code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
+footer {
+  margin-top: 48px;
+  padding-top: 16px;
+  padding-bottom: 40px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
 .band { padding-bottom: 8px; }
 .kicker { margin: 0 0 6px; color: var(--muted); font-size: 0.95rem; }
 .band h1 { font-size: 2rem; line-height: 1.2; }
