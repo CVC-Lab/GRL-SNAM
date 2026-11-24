@@ -1,0 +1,79 @@
+/* The CoPH poster: the landing page's tokens (../style.css), a wider page, and green and amber
+   panels for what the reference establishes and what it does not. */
+:root {
+  --ok: #1d7a3a;
+  --ok-bg: #edf7f0;
+  --warn: #9a5b00;
+  --warn-bg: #fdf4e6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ok: #6fd28f;
+    --ok-bg: #12241a;
+    --warn: #f3b562;
+    --warn-bg: #2a2012;
+  }
+}
+.poster header, .poster main, .poster footer { max-width: 1280px; }
+.band { padding-bottom: 8px; }
+.kicker { margin: 0 0 6px; color: var(--muted); font-size: 0.95rem; }
+.band h1 { font-size: 2rem; line-height: 1.2; }
+.band .lead { max-width: 70ch; }
+.video { margin: 24px 0 8px; }
+.video video {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #000;
+}
+.chapters { margin: 10px 0 4px; color: var(--muted); }
+.chapters button {
+  font: inherit;
+  padding: 4px 12px;
+  margin: 0 2px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+}
+.chapters button:hover { border-color: var(--accent); }
+.caption, .note { color: var(--muted); font-size: 0.92rem; max-width: 90ch; }
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 24px 0;
+}
+.grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.panel {
+  padding: 16px 18px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.panel h2 { margin: 0 0 10px; font-size: 1.2rem; }
+.panel h3 { margin: 14px 0 6px; font-size: 1rem; }
+.panel ul { margin: 0; padding-left: 18px; }
+.panel li { margin-bottom: 8px; }
+.panel figure { margin: 8px 0 4px; }
+.panel figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+.panel.ok { background: var(--ok-bg); border-color: var(--ok); }
+.panel.ok h2 { color: var(--ok); }
+.panel.warn { background: var(--warn-bg); border-color: var(--warn); }
+.panel.warn h2 { color: var(--warn); }
+.panel.coming { border-style: dashed; }
+@media (max-width: 1000px) {
+  .grid, .grid.two { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 680px) {
+  .band h1 { font-size: 1.55rem; }
+}
