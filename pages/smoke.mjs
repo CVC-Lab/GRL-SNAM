@@ -7,7 +7,8 @@
 // It serves the site at --base (the project site's path on github.io) on 127.0.0.1, with an
 // ordinary site's headers: no COOP/COEP, as GitHub Pages sends none (the single-threaded ariglx-web
 // needs none), and a strict Content-Security-Policy (no inline code or style, no eval, nothing from
-// another origin), so a pass also says the pages fetch only from their own origin. Then:
+// another origin but, for the scrub page, the cvcpkg registry its city comes from), so a pass also
+// says the pages fetch only from their own origin and the registry. Then:
 //
 //   - the landing page: every link and image on the site itself must be there (--no-landing skips
 //     it, for a site whose landing page is not GRL-SNAM's);
@@ -17,10 +18,11 @@
 //     claims; no Python traceback, no CSP violation (--no-learn skips it);
 //   - the scrub page (--scrub, the path under --base; none unless given): grl-snam ariadne scrub
 //     --view must start in the page, show a checkpoint of the runs it was given (its stderr says
-//     which), draw the world they were deployed on (it says when its own libcvc built another),
-//     draw its cars with the Humvee's model when the page ships it, run its frames, and still run
-//     5 s later; no traceback, no CSP violation. It says how many frames a second the page ran
-//     (headless Chrome's software GL here, so a floor, not the figure a GPU gets).
+//     which), draw a 3-D world, the one they were deployed on (it says which, or that its own
+//     libcvc built another; Austin comes from cvcpkg.org), draw its cars with the Humvee's model
+//     when the page ships it, run its frames, and still run 5 s later; no traceback, no CSP
+//     violation. It says how many frames a second the page ran (headless Chrome's software GL
+//     here, so a floor, not the figure a GPU gets).
 //
 // --shots writes each page as DIR/<name>.png. Exit status 0 when every case passes.
 
@@ -46,8 +48,13 @@ if (!SITE || !CHROME || !BASE.startsWith('/') || !BASE.endsWith('/') || !sub(LEA
 }
 const TIMEOUT_MS = Number(process.env.GRL_SNAM_SMOKE_TIMEOUT_MS || 600000);
 
-const CSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; " +
-            "connect-src 'self'; img-src 'self' data: blob:";
+// The scrub page may also reach the registry: a run deployed on a data world (Austin) is drawn on
+// the city the deploy fetched, a cvcpkg package, which the page's data store fetches from
+// cvcpkg.org (it lets any origin read a public package).
+const REGISTRY = 'https://cvcpkg.org';
+const csp = connect => "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; " +
+                       `style-src 'self'; connect-src ${connect}; img-src 'self' data: blob:`;
+const CSP = csp("'self'"), SCRUB_CSP = csp(`'self' ${REGISTRY}`);
 const TYPES = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
                '.wasm': 'application/wasm', '.json': 'application/json', '.ari': 'text/plain',
                '.py': 'text/plain', '.zip': 'application/zip', '.png': 'image/png',
@@ -69,8 +76,10 @@ const server = http.createServer((req, res) => {
     res.end('not found');
     return;
   }
+  const scrub = SCRUB !== undefined && req.url.startsWith(BASE + SCRUB);
   res.writeHead(200, {'Content-Type': TYPES[path.extname(f)] || 'application/octet-stream',
-                      'Cache-Control': 'no-cache', 'Content-Security-Policy': CSP});
+                      'Cache-Control': 'no-cache',
+                      'Content-Security-Policy': scrub ? SCRUB_CSP : CSP});
   fs.createReadStream(f).pipe(res);
 });
 await new Promise(r => server.listen(0, '127.0.0.1', r));
@@ -216,8 +225,10 @@ try {
 
   // scrub/: the runs deployed at build time, viewed. Its stderr says how many runs and data sets
   // it has ("scrub: 15 runs in 3 data sets (retrain, fixed/retrain, world-units/retrain)"), names the checkpoint it
-  // shows ("scrub: retrain/seed0: checkpoint 22 of 41: step 2100, the pick; ...") and says when
-  // there is no 3-D world ("scrub: no 3-D world: ...").
+  // shows ("scrub: retrain/seed0: checkpoint 22 of 41: step 2100, the pick; ...") and, once the
+  // world is in (a frame after it starts; a city once it has been fetched), whether it is the one
+  // the runs drove on ("scrub: the world is the one deployed on (... compared)", "scrub: this
+  // world is not quite the one deployed on: ...") or why there is none ("scrub: no 3-D world: ...").
   if (SCRUB) {
     const t0 = Date.now();
     const page = await openPage(`${ORIGIN}${BASE}${SCRUB}`);
@@ -232,12 +243,15 @@ try {
              v.log.slice(tb >= 0 ? tb : -25).join('\n      '));
     const shown = v.log.map(l => /^scrub: (.+?): checkpoint (\d+) of (\d+): step ([^,;\s]+)/.exec(l))
                        .filter(Boolean).pop();
-    const world = v.log.find(l => /^scrub: (no 3-D world|the windows alone|this world is not)/.test(l));
+    // A city comes a while after the page starts (fetched, then decoded): wait for the line.
+    const WORLD = /^scrub: (no 3-D world|the windows alone|this world is not|the world is the one)/;
+    const w = await watch(page, v => v.log.some(l => WORLD.test(l)));
+    const world = w.log.find(l => WORLD.test(l)) || '';
+    const came = ((Date.now() - t0) / 1000).toFixed(1);
     const sets = (v.log.find(l => /^scrub: \d+ runs in \d+ data sets/.test(l)) || '').slice(7);
     record('scrub shows a checkpoint of the runs deployed at build time',
            shown !== undefined && Number(shown[3]) > 1 && sets !== '',
-           shown ? `${shown[1]}: checkpoint ${shown[2]} of ${shown[3]}, step ${shown[4]}; ` +
-                   `${sets}; ${world || 'the 3-D world drawn'}`
+           shown ? `${shown[1]}: checkpoint ${shown[2]} of ${shown[3]}, step ${shown[4]}; ${sets}`
                  : 'no "scrub: ...: checkpoint k of n" line');
     // Its frames a second over 3 s, from the page's own animation frames (each runs one frame).
     const fps = await page.evaluate(
@@ -252,16 +266,15 @@ try {
     // that differs in a few cells, as the page's wasm libcvc rasterizes it, is still that world).
     const differs = later.log.find(l => /^scrub: this world is not quite the one deployed on/.test(l));
     const same = later.log.find(l => /^scrub: the world is the one deployed on/.test(l));
-    record('scrub draws the world its runs were deployed on', differs === undefined,
+    record(`scrub draws the world its runs were deployed on (in ${came} s)`,
+           differs === undefined && same !== undefined,
            differs ? later.log.slice(later.log.indexOf(differs), later.log.indexOf(differs) + 4)
-                       .join(' / ') : same || '');
+                       .join(' / ') : same || world || 'no line says whether the 3-D world came');
     // A page that ships the Humvee's model (assemble.py --vehicle-model) draws the cars with it.
-    // (No cars without a 3-D world: a page of a city it cannot fetch shows the windows alone.)
     const shipped = fs.existsSync(path.join(SITE, SCRUB, 'share/cvc-scenes/shared/Humvee.glb'));
     const cars = later.log.find(l => /^scrub: the cars are /.test(l)) || '';
     record(`scrub draws its cars${shipped ? " with the Humvee's model" : ''}`,
-           /^scrub: (no 3-D world|the windows alone)/.test(world || '') ||
-             (shipped ? cars === "scrub: the cars are the Humvee's model" : cars !== ''),
+           shipped ? cars === "scrub: the cars are the Humvee's model" : cars !== '',
            cars || world || 'no "scrub: the cars are ..." line');
     record('scrub is still running 5 s later, with no CSP violation',
            later.state === 'running' && later.csp.length === 0 &&

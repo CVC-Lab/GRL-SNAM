@@ -91,10 +91,12 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's lean run log, `grl
   Another world fails the smoke. The page's wasm libcvc 4.0.0 rasterizes the generated city in
   365 of 251,001 cells (0.15%) otherwise than the native deploy: under 1% the page calls it the
   same world, says how many cells and how near the runs shown come to them, and the smoke passes
-  (printing the count). The policies were trained on
-  Austin, but Austin's bundle is 228 MB, cvcpkg.org sends no CORS for github.io, and nothing cuts
-  it down yet, so a `data` world's page shows the windows alone. On `flat` ground every
-  checkpoint drives the same line.
+  (printing the count). `--scrub-world data` deploys on a city, Austin by default (where the
+  policies were trained): scrub.ari's `data.city`, the `cy-pca/scene-austin-south-small` package
+  (10 MB: the full bundle's buildings and terrain, the same navigator grid, a smaller satellite
+  image), or `--scrub-city URI`. The page fetches the version the runs were deployed on from
+  cvcpkg.org, which lets any origin read a public package (cy-pca/cvcpkg#628). On `flat` ground
+  every checkpoint drives the same line.
 - **The page.** `scrub/data/<plant>/<set>/<run>.scrub.zip` (`data/<set>/<run>.scrub.zip` when the page
   has one plant) is a run's bundle: one zip (stored) with its
   report (`scrub.json`, its paths made the names inside), its history and its run logs, which
@@ -154,8 +156,11 @@ To look at it, serve the site's parent at `/GRL-SNAM/` (for example a directory 
 
 - **Single-threaded.** GitHub Pages sends no COOP/COEP headers, so the threaded `wasm-mt` build
   (SharedArrayBuffer) cannot run there.
-- **Same origin.** Everything a page fetches is beside it: the page loads documents and data only
-  from its own origin, and cvcpkg.org sends no CORS headers for github.io.
+- **Same origin, and the registry.** Everything a page fetches is beside it (the page loads
+  documents only from its own origin), but a scrub page on a city: its data store fetches the city
+  from cvcpkg.org, which answers any origin's GET of a public package with
+  `Access-Control-Allow-Origin: *`. pages/smoke.mjs serves the scrub page with
+  `connect-src 'self' https://cvcpkg.org`, the others with `connect-src 'self'`.
 - **Size.** A first visit to the learn page downloads about 35 MB gzip (29.5 MB of it
   `ariglx.wasm`, 105.6 MB raw at 4.0.0), which the browser then caches. GitHub documents no
   per-file limit for a Pages site deployed from an Actions artifact (1 GB a site). learn takes about 20 s to start in the page.

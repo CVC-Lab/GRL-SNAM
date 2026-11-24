@@ -55,10 +55,18 @@ grl-snam-learning-checkpoints), and by default ``--checkpoints`` is that package
 prefix. The page's Set combo picks a set, its Run combo a run of it. Every run's logs are
 preloaded (the page's loader has no fetch after start; libcvc's data roadmap D4), about 3 MB a run
 lean, so each five-seed set adds about 15-18 MB a plant to the first visit. They are deployed on
-``--scrub-world`` (default generated:
-libcvc's generator from scrub.ari's world.* keys, which the page builds again from the report
-with no data to fetch; Austin's bundle is 228 MB and cvcpkg.org sends no CORS for github.io, so a
-data world's page shows the windows alone). ``--scrub-cache`` keeps the run logs between builds
+``--scrub-world``, which the page builds again from the report:
+
+- ``generated`` (the default): libcvc's generator from scrub.ari's world.* keys, with no data to
+  fetch, provided the page's libcvc is the deploy's;
+- ``data``: a city, scrub.ari's ``data.city`` (Austin: the ``cy-pca/scene-austin-south-small``
+  package, the full bundle's buildings and terrain with a smaller satellite image, 10 MB) or
+  ``--scrub-city`` (a ``cvcpkg://ORG/NAME[@VERSION]`` package or an https archive). The page's data
+  store fetches the version the runs were deployed on from cvcpkg.org, which lets any origin read
+  a public package, so the page reaches one origin beside its own;
+- ``flat``: a walled square.
+
+``--scrub-cache`` keeps the run logs between builds
 (a checkpoint already deployed on the same scenario is read back). ``--scrub-reports`` takes
 reports deployed before instead, and deploys nothing.
 
@@ -201,10 +209,11 @@ def run_key(set_name: str, run: str) -> str:
     return f"{set_name}/{run}" if set_name else run
 
 
-def deploy_scrub(sets, checkpoints: Path, python: str, cache: Path, world: str,
-                 ticks: int, plants=("humvee",)) -> list[Path]:  # fmt: skip
+def deploy_scrub(sets, checkpoints: Path, python: str, cache: Path, world: str, ticks: int,
+                 plants=("humvee",), city: str | None = None) -> list[Path]:  # fmt: skip
     """Each data set's runs deployed natively (``grl-snam ariadne scrub --headless --lean
-    --report``) on each of ``plants``: ``sets`` is ``[(name, histories)]``; the reports in
+    --report``) on each of ``plants``, on ``world`` (``city``, when given, is the data world's
+    city: ``--uri``): ``sets`` is ``[(name, histories)]``; the reports in
     ``cache``/<plant>/<set>/<run>.scrub.json, the run logs in ``cache``/<plant>/<set>/<run>/. The
     first plant's runs come first, so the page opens on them."""
     keys, reports = [], []
@@ -229,6 +238,8 @@ def deploy_scrub(sets, checkpoints: Path, python: str, cache: Path, world: str,
                    plant, "--report", str(report.resolve())]  # fmt: skip
             if set_name:
                 cmd += ["--data-set", set_name]
+            if city and world == "data":
+                cmd += ["--uri", city]
             print(f"assemble: scrub: deploying {key}'s checkpoints on {world}, on {plant} ({blobs})",
                   flush=True)  # fmt: skip
             report.parent.mkdir(parents=True, exist_ok=True)
@@ -493,6 +504,10 @@ def main(argv=None) -> int:
     )
     ap.add_argument("--scrub-world", default="generated", choices=("generated", "flat", "data"),
                     help="the world they are deployed on (default generated)")  # fmt: skip
+    ap.add_argument("--scrub-city", default=None, metavar="URI",
+                    help="with --scrub-world data, the city: a cvcpkg://ORG/NAME[@VERSION] "
+                         "package or an https archive the page can fetch (default scrub.ari's, "
+                         "cvcpkg://cy-pca/scene-austin-south-small)")  # fmt: skip
     ap.add_argument("--scrub-ticks", type=int, default=1200, help="each checkpoint's ticks")
     ap.add_argument("--scrub-plants", nargs="+", default=list(SCRUB_PLANTS), metavar="PLANT",
                     help="the vehicles they are deployed on, each a choice in the page's Plant "
@@ -512,6 +527,9 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.learn_only and a.scrub_only:
         sys.exit("assemble: --learn-only or --scrub-only, not both")
+    if a.scrub_city and (a.scrub_world != "data" or "://" not in a.scrub_city):
+        sys.exit("assemble: --scrub-city is a data world's city, a URI the page can fetch "
+                 "(cvcpkg://ORG/NAME or https://...): with --scrub-world data")  # fmt: skip
     missing = [n for n in HOST_FILES if not (a.host / n).is_file()]
     if missing:
         sys.exit(f"assemble: {a.host} is not ariglx-web (no {', '.join(missing)})")
@@ -524,8 +542,8 @@ def main(argv=None) -> int:
             checkpoints = a.checkpoints or default_checkpoints(a.python)
             sets = ([(a.scrub_set_name, a.scrub_histories)] if a.scrub_histories else
                     [(name, set_histories(name)) for name in a.scrub_sets])  # fmt: skip
-            reports = deploy_scrub(sets, checkpoints, a.python, cache,
-                                   a.scrub_world, a.scrub_ticks, a.scrub_plants)  # fmt: skip
+            reports = deploy_scrub(sets, checkpoints, a.python, cache, a.scrub_world,
+                                   a.scrub_ticks, a.scrub_plants, a.scrub_city)  # fmt: skip
         check_libcvc(reports, a.expect_libcvc)
     vehicle = a.vehicle_model or Path(a.python).resolve().parent.parent / VEHICLE_MODEL
     if not vehicle.is_file():
