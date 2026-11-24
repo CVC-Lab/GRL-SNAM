@@ -496,7 +496,13 @@ def when_ready(host, fn, *, timeout=900.0):
 
     @host.on_frame
     def _arrive(_dt):
-        if done or not ready(host):
+        if done:
+            return
+        if source(host) == "data" and _pycvc().data_status(host.app, city_path(host)) == "error":
+            done.append(True)  # the city did not load (the registry, the network): say why
+            fn(RuntimeError(f"the city did not load: {_data_error(host)}"))
+            return
+        if not ready(host):
             return
         done.append(True)
         try:

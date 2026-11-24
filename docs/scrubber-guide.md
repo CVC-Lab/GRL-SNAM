@@ -97,7 +97,9 @@ A falling training loss is not enough. Look for all of the following together.
 ## What today's runs show
 
 The Pages page shows the learning check's three retrains: `retrain`, `fixed/retrain` and
-`world-units/retrain`, five seeds each, on libcvc's generated city.
+`world-units/retrain`, five seeds each, on libcvc's generated city. A second page beside it,
+`scrub-austin/`, shows the same runs deployed in Austin, where the policies were trained; the
+numbers below are the generated city's.
 [`learning-validation.md`](learning-validation.md) has the full measure. In short:
 
 - Training curves fall in the later retrains.

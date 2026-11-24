@@ -766,6 +766,20 @@ def _glb(path, extras):
     return path
 
 
+def test_assemble_takes_a_city_only_for_a_data_world(tmp_path):
+    """--scrub-city names a data world's city, as a URI the page can fetch."""
+    assemble = _assemble()
+    host = tmp_path / "ariglx-web"
+    host.mkdir()
+    for name in assemble.HOST_FILES:
+        (host / name).write_text(f"stand-in {name}\n")
+    base = ["--host", str(host), "--out", str(tmp_path / "out"), "--scrub-only"]
+    for extra in (["--scrub-city", "cvcpkg://cy-pca/scene-austin-south-small"],
+                  ["--scrub-world", "data", "--scrub-city", str(tmp_path)]):  # fmt: skip
+        with pytest.raises(SystemExit, match="--scrub-city is a data world's city"):
+            assemble.main(base + extra)
+
+
 def test_the_humvee_model_s_credit(tmp_path):
     assemble = _assemble()
     glb = _glb(tmp_path / "Humvee.glb", {"title": "A Humvee", "author": "Someone",

@@ -1064,7 +1064,8 @@ def view_main(args) -> int:
     if first is None:
         return _refuse(f"no report is of data set {args.data_set or '(any)'!r} on plant "
                        f"{plant or '(any)'!r}")  # fmt: skip
-    worlds = [(r.scenario.get("run"), r.scenario.get("world_keys")) for r in runs]
+    worlds = [(r.scenario.get("run"), r.scenario.get("world_keys"),
+               (r.scenario.get("world") or {}).get("canonical")) for r in runs]  # fmt: skip
     if not args.no_world and any(w != worlds[0] for w in worlds[1:]):
         return _refuse("the reports were deployed on different worlds: view them one at a time, "
                        "or with --no-world")  # fmt: skip
@@ -1081,11 +1082,12 @@ def view_main(args) -> int:
             else f"no 3-D world: it needs {_cars.INSTALL}"
         )
     )
-    if drawn and kind == "data" and _host.BROWSER and not os.path.isdir(str(run_keys.get("uri"))):
-        drawn, note = (
-            False,
-            "no 3-D world: the run's city is not in this page",
-        )  # cvcpkg.org: no CORS
+    # A page fetches the run's city as the deploy did: a cvcpkg:// package from the registry (it
+    # lets any origin read a public package) or an https archive. A directory on the machine
+    # that deployed it is not in the page.
+    uri = str(run_keys.get("uri") or "")
+    if drawn and kind == "data" and _host.BROWSER and "://" not in uri and not os.path.isdir(uri):
+        drawn, note = False, f"no 3-D world: the run's city ({uri or 'none'}) is not in this page"
     host = _host.open_host("scrub.ari", "scrub", args, load=False)
     _host.load_document(host, "scrub.ari")
     if note:
@@ -1093,7 +1095,11 @@ def view_main(args) -> int:
     host.set("scrub.world_note", note)
     if not drawn:  # the city the document names stays unloaded (the network is shut): no world
         return _run_view(host, args, runs, None, first=first)
-    _world.from_record(host, sc.get("run"), sc.get("world_keys"))
+    run = dict(sc.get("run") or {})
+    deployed_on = str((sc.get("world") or {}).get("canonical") or "")
+    if kind == "data" and deployed_on.startswith("cvcpkg://"):
+        run["uri"] = deployed_on  # the package's version the runs were deployed on, not the newest
+    _world.from_record(host, run, sc.get("world_keys"))
 
     def arrive(world, view):
         """The reports' world, drawn: the start, and a note when it is not the deployed one."""

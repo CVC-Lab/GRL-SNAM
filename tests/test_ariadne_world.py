@@ -13,7 +13,7 @@ host and its multi-car template (pycvc-gl 3.7.12+), as tests/test_ariadne_live_a
   sample for sample, and GRL_SNAM_ARIADNE_GL=1 checks an offscreen host against what SceneWorld
   publishes (on a pycvc whose AriApp reads a drawn host's world, that nothing is made beside it);
 - on such a pycvc, a generated world is not generated again in Python;
-- a page takes its world in a frame (``_world.when_ready``);
+- a page takes its world in a frame (``_world.when_ready``), or why its city did not come;
 - while another world is on, the city the document names is not downloaded.
 
 Austin's data world needs the installed bundle (``scene-austin-south-small``); without one those
@@ -252,6 +252,26 @@ def test_a_page_takes_its_world_in_a_frame(monkeypatch):
                 break
             host.step(1.0 / 60.0)
         assert len(got) == 1 and got[0].kind == "flat" and got[0].occ.shape == (81, 81)
+    finally:
+        host.close()
+
+
+@needs_host
+def test_a_page_says_why_its_city_did_not_come(tmp_path, monkeypatch):
+    """A page's city that fails to load (a registry or a network that cannot be reached; here a
+    directory that is not there) reaches the view as a RuntimeError in a frame, so the page says
+    why it has no 3-D world instead of waiting for one."""
+    host = _open(world="data", uri=str(tmp_path / "gone"))
+    try:
+        monkeypatch.setattr(_world, "steps", lambda h: False)
+        got = []
+        assert _world.when_ready(host, got.append) is None
+        for _ in range(60):
+            if got:
+                break
+            host.step(1.0 / 60.0)
+        assert len(got) == 1 and isinstance(got[0], RuntimeError), got
+        assert str(got[0]).startswith("the city did not load: ")
     finally:
         host.close()
 
