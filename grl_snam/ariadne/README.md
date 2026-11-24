@@ -671,8 +671,16 @@ directory's, and blobs that are not there are listed and skipped.
   and a Set combo their data set when the reports name several. Picking another set shows its run
   of the same name at the same training step, so the learning check's retrains compare side by
   side.
-  The world is rebuilt from the report: a generated world from its generator settings (the
-  view says when this libcvc's differs from the deploy's). With `--no-world`, a city that is not
+  The world is rebuilt from the report: a generated world from its generator settings, a
+  dataset from its package. Then the view compares it with what the deploy kept, field by field
+  (`world_check`): a generated world's settings and stats, a dataset's version and archive
+  sha256, and the navigator's grid (a fingerprint, and its blocked cells, `world_grid`, about 8 KB
+  a report). A field an older report lacks is not compared. Another world is "not quite the one
+  deployed on", with what differs. A grid differing in at most 1% of its cells is the same world
+  rasterized by another build of libcvc: the page's wasm libcvc 4.0.0 differs from the native
+  deploy in 365 of the generated city's 251,001 cells (0.15%), and the Scrub window says so, and
+  how near the two runs shown come to those cells (retrain/seed0: 78 m at the nearest, so what
+  they drove past is the same). stderr says which fields were compared. With `--no-world`, a city that is not
   on the machine in a browser, or a pycvc_gl without `pycvc_gl.cars`, it shows the windows
   alone. The Pages site's scrub page is this mode (`pages/README.md`).
 - **`--windows ID,...`** opens only those windows (`scrub`, `checkpoints`, `training`,

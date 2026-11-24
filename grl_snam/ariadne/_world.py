@@ -38,8 +38,11 @@ what SceneWorld publishes (``scene.world.grid.*``):
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -493,7 +496,13 @@ def when_ready(host, fn, *, timeout=900.0):
 
     @host.on_frame
     def _arrive(_dt):
-        if done or not ready(host):
+        if done:
+            return
+        if source(host) == "data" and _pycvc().data_status(host.app, city_path(host)) == "error":
+            done.append(True)  # the city did not load (the registry, the network): say why
+            fn(RuntimeError(f"the city did not load: {_data_error(host)}"))
+            return
+        if not ready(host):
             return
         done.append(True)
         try:
@@ -505,11 +514,59 @@ def when_ready(host, fn, *, timeout=900.0):
     return None
 
 
+def grid_fingerprint(occ, bounds) -> dict:
+    """The navigator's grid as the cars drive on it, in short: its ``shape`` (rows, columns), its
+    ``bounds`` (m), the share of its cells ``blocked``, and a ``sha256`` of its cells, so a world
+    another libcvc rasterizes otherwise, or another dataset, shows as another world."""
+    occ = np.ascontiguousarray(occ, np.uint8)
+    edges = np.round(np.asarray(bounds, np.float64), 3)
+    h = hashlib.sha256()
+    for part in (np.asarray(occ.shape, np.int64), edges, occ):
+        h.update(part.tobytes())
+    return {"shape": [int(n) for n in occ.shape], "bounds": [float(b) for b in edges],
+            "blocked": round(float(np.count_nonzero(occ)) / max(occ.size, 1), 5),
+            "sha256": h.hexdigest()[:16]}  # fmt: skip
+
+
+def pack_grid(occ) -> dict:
+    """The grid's blocked cells (``occ`` non-zero) for a report, small: its ``shape`` and the
+    cells' bits row by row (row 0 at the south edge), deflated, in base64 (``blocked``)."""
+    occ = np.asarray(occ)
+    bits = np.packbits(np.ascontiguousarray(occ) != 0)
+    return {"shape": [int(n) for n in occ.shape],
+            "blocked": base64.b64encode(zlib.compress(bits.tobytes(), 9)).decode("ascii")}  # fmt: skip
+
+
+def unpack_grid(packed) -> np.ndarray:
+    """:func:`pack_grid`'s grid back: a (rows, cols) bool array, True where blocked."""
+    rows, cols = (int(n) for n in packed["shape"])
+    bits = np.unpackbits(
+        np.frombuffer(zlib.decompress(base64.b64decode(packed["blocked"])), np.uint8)
+    )
+    return bits[: rows * cols].reshape(rows, cols).astype(bool)
+
+
+def grid_changes(packed, occ, bounds) -> np.ndarray | None:
+    """Where ``occ`` (a grid over ``bounds``) is blocked and :func:`pack_grid`'s ``packed`` grid
+    is not, or the other way round: the cells' centres (x, y, m), an (n, 2) array; None when the
+    two grids are not the same shape."""
+    occ = np.asarray(occ) != 0
+    if packed is None or list(occ.shape) != [int(n) for n in packed.get("shape", ())]:
+        return None
+    rows, cols = np.nonzero(unpack_grid(packed) != occ)
+    mnx, mny, mxx, mxy = (float(b) for b in bounds)
+    dx = (mxx - mnx) / max(occ.shape[1] - 1, 1)
+    dy = (mxy - mny) / max(occ.shape[0] - 1, 1)
+    return np.stack([mnx + cols * dx, mny + rows * dy], axis=1).astype(np.float64)
+
+
 def world(host, cell=None, half=None, *, timeout=900.0):
     """The world on, as a port drives on it (a ``pycvc_gl.cars.World``): the navigator's grid
     (:func:`grid`), the terrain's height, and the geometry the plant collides with (the data
     world's dataset; a generated world's colliders, SceneWorld's (:func:`scene_geometry`), else
-    generated from the node's keys; none on flat ground). Waits for the world (:func:`wait`)."""
+    generated from the node's keys; none on flat ground). Waits for the world (:func:`wait`).
+    Its ``info`` is what a run log keeps of it: the dataset (package, version, archive sha256)
+    or the generator's settings and stats, and the grid's fingerprint (:func:`grid_fingerprint`)."""
     C = _cars()
     pycvc = _pycvc()
     wait(host, timeout=timeout)
@@ -522,7 +579,7 @@ def world(host, cell=None, half=None, *, timeout=900.0):
         geometry = pycvc.data_world(host.app, path)
         height = pycvc.data_height_field(host.app, path).height
         info = {"source": "data", "uri": city_uri(host), "canonical": city_key(host, "canonical"),
-                "path": path}  # fmt: skip
+                "sha256": city_key(host, "sha256"), "path": path}  # fmt: skip
     elif k == "generated":
         geometry = scene_geometry(host)
         if geometry is None:
@@ -532,6 +589,7 @@ def world(host, cell=None, half=None, *, timeout=900.0):
     else:
         geometry = height = None
         info = {"source": k}
+    info["grid"] = grid_fingerprint(occ, bounds)
     w = C.World(k, occ, bounds, height, geometry, info)
     if not _headless(host) and not reads_drawn_worlds():
         why = check(host)
