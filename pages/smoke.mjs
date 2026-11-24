@@ -2,13 +2,15 @@
 // on libcvc's src/arigl/web/test/arigl_web_smoke.mjs, whose server and DevTools driver it follows.
 //
 //   node pages/smoke.mjs --site _site --chrome <chrome or chromium> [--base /GRL-SNAM/] [--shots DIR]
-//        [--learn learn/] [--no-learn] [--scrub scrub/] [--no-landing]
+//        [--learn learn/] [--no-learn] [--scrub scrub/] [--city-scrub scrub-austin/]...
+//        [--no-landing]
 //
 // It serves the site at --base (the project site's path on github.io) on 127.0.0.1, with an
 // ordinary site's headers: no COOP/COEP, as GitHub Pages sends none (the single-threaded ariglx-web
 // needs none), and a strict Content-Security-Policy (no inline code or style, no eval, nothing from
-// another origin but, for the scrub page, the cvcpkg registry its city comes from), so a pass also
-// says the pages fetch only from their own origin and the registry. Then:
+// another origin but, for a scrub page on a city, the cvcpkg registry the city comes from), so a
+// pass also says the pages fetch only from their own origin, and a city's page from the registry
+// too. Then:
 //
 //   - the landing page: every link and image on the site itself must be there (--no-landing skips
 //     it, for a site whose landing page is not GRL-SNAM's);
@@ -22,7 +24,10 @@
 //     libcvc built another; Austin comes from cvcpkg.org), draw its cars with the Humvee's model
 //     when the page ships it, run its frames, and still run 5 s later; no traceback, no CSP
 //     violation. It says how many frames a second the page ran (headless Chrome's software GL
-//     here, so a floor, not the figure a GPU gets).
+//     here, so a floor, not the figure a GPU gets);
+//   - each scrub page on a city (--city-scrub, the path under --base, as many as given: the runs
+//     deployed in Austin, assemble.py --scrub-austin's scrub-austin/): the same, its city fetched
+//     from cvcpkg.org, so its connect-src has the registry too.
 //
 // --shots writes each page as DIR/<name>.png. Exit status 0 when every case passes.
 
@@ -39,22 +44,25 @@ const opt = (name, dflt) => {
 };
 const SITE = opt('--site'), CHROME = opt('--chrome'), SHOTS = opt('--shots');
 const BASE = opt('--base', '/GRL-SNAM/'), LEARN = opt('--learn', 'learn/'), SCRUB = opt('--scrub');
+const CITY_SCRUBS = argv.flatMap((a, i) => a === '--city-scrub' ? [argv[i + 1]] : []);
 const LANDING = !argv.includes('--no-landing'), DO_LEARN = !argv.includes('--no-learn');
 const sub = p => p === undefined || (p.endsWith('/') && !p.startsWith('/'));
-if (!SITE || !CHROME || !BASE.startsWith('/') || !BASE.endsWith('/') || !sub(LEARN) || !sub(SCRUB)) {
+if (!SITE || !CHROME || !BASE.startsWith('/') || !BASE.endsWith('/') || !sub(LEARN) ||
+    !sub(SCRUB) || !CITY_SCRUBS.every(p => p !== undefined && sub(p))) {
   console.error('usage: smoke.mjs --site DIR --chrome PATH [--base /PATH/] [--shots DIR] ' +
-                '[--learn PATH/] [--no-learn] [--scrub PATH/] [--no-landing]');
+                '[--learn PATH/] [--no-learn] [--scrub PATH/] [--city-scrub PATH/]... ' +
+                '[--no-landing]');
   process.exit(2);
 }
 const TIMEOUT_MS = Number(process.env.GRL_SNAM_SMOKE_TIMEOUT_MS || 600000);
 
-// The scrub page may also reach the registry: a run deployed on a data world (Austin) is drawn on
-// the city the deploy fetched, a cvcpkg package, which the page's data store fetches from
-// cvcpkg.org (it lets any origin read a public package).
+// A scrub page on a city may also reach the registry: runs deployed on a data world (Austin) are
+// drawn on the city the deploy fetched, a cvcpkg package, which the page's data store fetches from
+// cvcpkg.org (it lets any origin read a public package). Every other page reaches nothing else.
 const REGISTRY = 'https://cvcpkg.org';
 const csp = connect => "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; " +
                        `style-src 'self'; connect-src ${connect}; img-src 'self' data: blob:`;
-const CSP = csp("'self'"), SCRUB_CSP = csp(`'self' ${REGISTRY}`);
+const CSP = csp("'self'"), CITY_CSP = csp(`'self' ${REGISTRY}`);
 const TYPES = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
                '.wasm': 'application/wasm', '.json': 'application/json', '.ari': 'text/plain',
                '.py': 'text/plain', '.zip': 'application/zip', '.png': 'image/png',
@@ -76,10 +84,10 @@ const server = http.createServer((req, res) => {
     res.end('not found');
     return;
   }
-  const scrub = SCRUB !== undefined && req.url.startsWith(BASE + SCRUB);
+  const city = CITY_SCRUBS.some(p => req.url.startsWith(BASE + p));
   res.writeHead(200, {'Content-Type': TYPES[path.extname(f)] || 'application/octet-stream',
                       'Cache-Control': 'no-cache',
-                      'Content-Security-Policy': scrub ? SCRUB_CSP : CSP});
+                      'Content-Security-Policy': city ? CITY_CSP : CSP});
   fs.createReadStream(f).pipe(res);
 });
 await new Promise(r => server.listen(0, '127.0.0.1', r));
@@ -229,15 +237,17 @@ try {
   // world is in (a frame after it starts; a city once it has been fetched), whether it is the one
   // the runs drove on ("scrub: the world is the one deployed on (... compared)", "scrub: this
   // world is not quite the one deployed on: ...") or why there is none ("scrub: no 3-D world: ...").
-  if (SCRUB) {
+  // The default scrub page, then each on a city: one case each, named in its records.
+  for (const where of [...(SCRUB ? [SCRUB] : []), ...CITY_SCRUBS]) {
+    const name = where === SCRUB ? 'scrub' : `scrub ${where}`;
     const t0 = Date.now();
-    const page = await openPage(`${ORIGIN}${BASE}${SCRUB}`);
+    const page = await openPage(`${ORIGIN}${BASE}${where}`);
     const v = await watch(page, v => v.log.some(l => /^grl-snam: scrub: running/.test(l)));
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     const started = v.log.find(l => /^grl-snam: scrub: started in/.test(l)) || '';
     const tb = v.log.findIndex(l => /^Traceback/.test(l));
     const running = v.state === 'running' && v.log.some(l => /^grl-snam: scrub: running/.test(l));
-    record(`scrub starts in the page and runs its frames (${secs} s; ${started})`,
+    record(`${name} starts in the page and runs its frames (${secs} s; ${started})`,
            running && tb < 0,
            running && tb < 0 ? '' : `state ${v.state}: ${v.status || ''}\n      ` +
              v.log.slice(tb >= 0 ? tb : -25).join('\n      '));
@@ -249,7 +259,7 @@ try {
     const world = w.log.find(l => WORLD.test(l)) || '';
     const came = ((Date.now() - t0) / 1000).toFixed(1);
     const sets = (v.log.find(l => /^scrub: \d+ runs in \d+ data sets/.test(l)) || '').slice(7);
-    record('scrub shows a checkpoint of the runs deployed at build time',
+    record(`${name} shows a checkpoint of the runs deployed at build time`,
            shown !== undefined && Number(shown[3]) > 1 && sets !== '',
            shown ? `${shown[1]}: checkpoint ${shown[2]} of ${shown[3]}, step ${shown[4]}; ${sets}`
                  : 'no "scrub: ...: checkpoint k of n" line');
@@ -258,7 +268,7 @@ try {
         'new Promise(res => { let n = 0; const t0 = performance.now(); const f = t => { ++n; ' +
         'if (t - t0 < 3000) requestAnimationFrame(f); else res(n / ((t - t0) / 1000)); }; ' +
         'requestAnimationFrame(f); })');
-    console.log(`      scrub runs at ${Number(fps).toFixed(1)} frames a second here`);
+    console.log(`      ${name} runs at ${Number(fps).toFixed(1)} frames a second here`);
     await new Promise(r => setTimeout(r, 2000));
     const later = await watch(page, () => true);
     // The page builds the runs' world again with its own libcvc: it must be the one they drove on
@@ -266,22 +276,24 @@ try {
     // that differs in a few cells, as the page's wasm libcvc rasterizes it, is still that world).
     const differs = later.log.find(l => /^scrub: this world is not quite the one deployed on/.test(l));
     const same = later.log.find(l => /^scrub: the world is the one deployed on/.test(l));
-    record(`scrub draws the world its runs were deployed on (in ${came} s)`,
+    record(`${name} draws the world its runs were deployed on (in ${came} s)`,
            differs === undefined && same !== undefined,
            differs ? later.log.slice(later.log.indexOf(differs), later.log.indexOf(differs) + 4)
                        .join(' / ') : same || world || 'no line says whether the 3-D world came');
     // A page that ships the Humvee's model (assemble.py --vehicle-model) draws the cars with it.
-    const shipped = fs.existsSync(path.join(SITE, SCRUB, 'share/cvc-scenes/shared/Humvee.glb'));
+    const shipped = fs.existsSync(path.join(SITE, where, 'share/cvc-scenes/shared/Humvee.glb'));
     const cars = later.log.find(l => /^scrub: the cars are /.test(l)) || '';
-    record(`scrub draws its cars${shipped ? " with the Humvee's model" : ''}`,
+    record(`${name} draws its cars${shipped ? " with the Humvee's model" : ''}`,
            shipped ? cars === "scrub: the cars are the Humvee's model" : cars !== '',
            cars || world || 'no "scrub: the cars are ..." line');
-    record('scrub is still running 5 s later, with no CSP violation',
+    record(`${name} is still running 5 s later, with no CSP violation`,
            later.state === 'running' && later.csp.length === 0 &&
              !later.log.some(l => /^Traceback/.test(l)),
            `state ${later.state}; csp ${later.csp.join(', ')}; warnings ${later.warnings.length}`);
     if (later.warnings.length) console.log('      warnings: ' + later.warnings.slice(0, 5).join(' | '));
-    if (SHOTS) await page.screenshot(path.join(SHOTS, 'scrub.png'));
+    // scrub.png, as before; a city's page by its path (scrub-austin/ -> scrub-austin.png).
+    const shot = where === SCRUB ? 'scrub.png' : `${where.slice(0, -1).replace(/\//g, '-')}.png`;
+    if (SHOTS) await page.screenshot(path.join(SHOTS, shot));
     await page.close();
   }
 } catch (e) {

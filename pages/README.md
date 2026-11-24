@@ -9,9 +9,9 @@ checks this repo out and calls the scripts below.
 | File | What it does |
 |---|---|
 | `build-ariglx-web.sh` | builds `ariglx-web` from a libcvc checkout with its recipe's own script: the single-threaded build (`wasm`), lean tier; tools, emsdk and the wasm deps from cvcpkg |
-| `assemble.py` | writes the site (`site/` at the root, `learn/`, and with `--scrub` `scrub/`), or with `--learn-only` / `--scrub-only` one page alone: the host, `main.py`, `grl_snam_web.zip`, the page's data, `ariadne.config.json` with every preload |
+| `assemble.py` | writes the site (`site/` at the root, `learn/`, with `--scrub` `scrub/`, and with `--scrub-austin` `scrub-austin/` beside it), or with `--learn-only` / `--scrub-only` one page alone: the host, `main.py`, `grl_snam_web.zip`, the page's data, `ariadne.config.json` with every preload |
 | `main.py` | the program a page runs in place of a document: unpacks `grl_snam_web.zip` and runs a port (`args`: `["learn", ...]`, `["scrub", "--view", ...]`) |
-| `smoke.mjs` | loads the site in headless Chrome as Pages serves it: learn must start, run its frames and make learn-report's claims in the page; scrub (`--scrub`) must start, show a checkpoint, draw its cars (the Humvee's model when the page ships it) and run its frames, and it says the frames a second |
+| `smoke.mjs` | loads the site in headless Chrome as Pages serves it: learn must start, run its frames and make learn-report's claims in the page; scrub (`--scrub`, and each page on a city, `--city-scrub`) must start, show a checkpoint, draw the world its runs drove on and its cars (the Humvee's model when the page ships it) and run its frames, and it says the frames a second |
 | `site/` | the landing page |
 
 ## From another repository's workflow
@@ -37,10 +37,14 @@ cvcpkg install grl-snam-learning-checkpoints vehicle-humvee --prefix "$PREFIX" -
 python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-only \
   --out _site/scrub --python "$PREFIX/bin/python3.12" --expect-libcvc "$V" [--scrub-cache DIR] \
   [--scrub-sets SET...] [--checkpoints DIR] [--scrub-world generated|flat|data]
+# the same runs in Austin, a page of its own (its runs in their own cache)
+python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-only \
+  --out _site/scrub-austin --scrub-world data --python "$PREFIX/bin/python3.12" \
+  --expect-libcvc "$V" [--scrub-cache DIR2] [--scrub-city cvcpkg://ORG/NAME]
 
 # check them where your site serves them (Node 22; Chrome or Chromium)
 node grl-snam/pages/smoke.mjs --site _site --base /your-site/ --learn learn/ --scrub scrub/ \
-  --no-landing --chrome "$CHROME" --shots shots
+  --city-scrub scrub-austin/ --no-landing --chrome "$CHROME" --shots shots
 ```
 
 - `--histories` picks the learning histories the page shows (`.jsonl` or `.jsonl.gz`; default:
@@ -91,12 +95,18 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's lean run log, `grl
   Another world fails the smoke. The page's wasm libcvc 4.0.0 rasterizes the generated city in
   365 of 251,001 cells (0.15%) otherwise than the native deploy: under 1% the page calls it the
   same world, says how many cells and how near the runs shown come to them, and the smoke passes
-  (printing the count). `--scrub-world data` deploys on a city, Austin by default (where the
-  policies were trained): scrub.ari's `data.city`, the `cy-pca/scene-austin-south-small` package
-  (10 MB: the full bundle's buildings and terrain, the same navigator grid, a smaller satellite
-  image), or `--scrub-city URI`. The page fetches the version the runs were deployed on from
-  cvcpkg.org, which lets any origin read a public package (cy-pca/cvcpkg#628). On `flat` ground
-  every checkpoint drives the same line.
+  (printing the count). On `flat` ground every checkpoint drives the same line.
+- **Austin, a second page.** `--scrub-austin` deploys the same runs on the data world, Austin
+  (where the policies were trained), and writes `scrub-austin/` beside `scrub/`, with its own card
+  on the landing page; `--scrub-only --scrub-world data` writes that page alone. Its city is
+  scrub.ari's `data.city`, the `cy-pca/scene-austin-south-small` package (10 MB: the full
+  bundle's buildings and terrain, the same navigator grid, a smaller satellite image), or
+  `--scrub-city URI`. The page fetches the version the runs were deployed on from cvcpkg.org,
+  which lets any origin read a public package (cy-pca/cvcpkg#628), so `scrub/` stays on the
+  generated city, fetching nothing from another origin, and the city loads only for those who
+  open its page. In the page, the wasm libcvc 4.0.0 rasterizes Austin's grid cell for cell as the
+  native deploy does. An Austin run deploys in about 2.2 minutes (a generated one in about 30 s),
+  so the Austin page's 30 runs add about 66 minutes to a build whose runs are not cached.
 - **The page.** `scrub/data/<plant>/<set>/<run>.scrub.zip` (`data/<set>/<run>.scrub.zip` when the page
   has one plant) is a run's bundle: one zip (stored) with its
   report (`scrub.json`, its paths made the names inside), its history and its run logs, which
@@ -157,10 +167,10 @@ To look at it, serve the site's parent at `/GRL-SNAM/` (for example a directory 
 - **Single-threaded.** GitHub Pages sends no COOP/COEP headers, so the threaded `wasm-mt` build
   (SharedArrayBuffer) cannot run there.
 - **Same origin, and the registry.** Everything a page fetches is beside it (the page loads
-  documents only from its own origin), but a scrub page on a city: its data store fetches the city
-  from cvcpkg.org, which answers any origin's GET of a public package with
-  `Access-Control-Allow-Origin: *`. pages/smoke.mjs serves the scrub page with
-  `connect-src 'self' https://cvcpkg.org`, the others with `connect-src 'self'`.
+  documents only from its own origin), but the Austin scrub page's city: its data store fetches
+  it from cvcpkg.org, which answers any origin's GET of a public package with
+  `Access-Control-Allow-Origin: *`. pages/smoke.mjs serves a `--city-scrub` page with
+  `connect-src 'self' https://cvcpkg.org`, every other page with `connect-src 'self'`.
 - **Size.** A first visit to the learn page downloads about 35 MB gzip (29.5 MB of it
   `ariglx.wasm`, 105.6 MB raw at 4.0.0), which the browser then caches. GitHub documents no
   per-file limit for a Pages site deployed from an Actions artifact (1 GB a site). learn takes about 20 s to start in the page.

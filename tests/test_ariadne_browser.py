@@ -117,9 +117,11 @@ def site(tmp_path_factory):
 
 def test_the_site_has_the_landing_page_and_learn(site):
     assert (site / "index.html").is_file() and (site / "style.css").is_file()
-    # No scrub page (no --scrub): no card for it, no picture.
-    assert 'href="scrub/"' not in (site / "index.html").read_text()
+    # No scrub page (no --scrub): no card for it, no picture; nor for Austin's (--scrub-austin).
+    html = (site / "index.html").read_text()
+    assert 'href="scrub/"' not in html and 'href="scrub-austin/"' not in html
     assert not (site / "scrub").exists() and not (site / "img" / "scrub.jpg").exists()
+    assert not (site / "img" / "scrub-austin.jpg").exists()
     assert (site / "img" / "curves.png").is_file() and (site / ".nojekyll").is_file()
     learn = site / "learn"
     for name in ("index.html", "ariglx.wasm", "python312.zip", "main.py", "grl_snam_web.zip"):
@@ -262,6 +264,30 @@ def test_the_site_with_the_scrub_page(tmp_path, site):
     assert (out / "scrub" / "data" / "seed7.scrub.zip").is_file()
     html = (out / "index.html").read_text()
     assert 'href="scrub/"' in html and (out / "img" / "scrub.jpg").is_file()
+    # Austin's page is another flag's (--scrub-austin): its card goes, the scrub page's stays.
+    assert 'href="scrub-austin/"' not in html and not (out / "scrub-austin").exists()
+    assert not (out / "img" / "scrub-austin.jpg").exists() and "<!-- /scrub -->" in html
+    config = json.loads((out / "scrub" / "ariadne.config.json").read_text())
+    assert config["title"] == assemble.SCRUB_TITLE
+
+
+def test_a_page_of_runs_deployed_in_austin_says_so(tmp_path, site):
+    """A scrub page whose runs were deployed in Austin (--scrub-only on reports of the data world,
+    as the Austin page alone) is titled for it."""
+    assemble = _pages_module("assemble")
+    report = _scrub_report(tmp_path)
+    rep = json.loads(report.read_text())
+    city = "cvcpkg://cy-pca/scene-austin-south-small"
+    rep["scenario"] = {
+        "run": {"world": "data", "uri": city},
+        "world": {"source": "data", "canonical": f"{city}@1.0.0+cvc.2"},
+    }
+    report.write_text(json.dumps(rep))
+    out = tmp_path / "scrub-austin"
+    assert assemble.main(["--host", str(site / "learn"), "--out", str(out), "--scrub-only",
+                          "--scrub-reports", str(report)]) == 0  # fmt: skip
+    config = json.loads((out / "ariadne.config.json").read_text())
+    assert config["title"] == assemble.SCRUB_AUSTIN_TITLE
 
 
 def test_assemble_refuses_what_the_scrub_page_cannot_show(tmp_path, site):
@@ -282,6 +308,11 @@ def test_assemble_refuses_what_the_scrub_page_cannot_show(tmp_path, site):
     with pytest.raises(SystemExit, match="no saved policies"):
         assemble.main(["--host", host, "--out", str(tmp_path / "v"), "--scrub-only",
                        "--checkpoints", str(tmp_path / "none")])  # fmt: skip
+    # Austin's page is added to the whole site, its runs deployed: --scrub-only --scrub-world
+    # data writes it alone.
+    for flags in (["--scrub-only"], ["--scrub", "--scrub-reports", str(report)], []):
+        with pytest.raises(SystemExit, match="--scrub-austin adds a page to the whole site"):
+            assemble.main(["--host", host, "--out", str(tmp_path / "u"), "--scrub-austin", *flags])
 
 
 def test_the_scrub_page_finds_the_checkpoints_package_beside_its_python(tmp_path):
