@@ -103,6 +103,10 @@ TORCH_ARMS = (
 )
 #: How often the arms' charts are rewritten (frames).
 CHART_EVERY = 6
+#: The follow camera's place, in car lengths behind and above the car it follows: low behind it,
+#: or, over a city (a data world: Austin), nearly overhead, since a city's streets are narrower
+#: than 4 car lengths and a camera that far back is inside the building behind the car.
+CHASE = {"low": (4.0, 2.0), "city": (0.5, 12.0)}
 
 
 def _args(p):
@@ -1019,7 +1023,8 @@ def update_ghosts(host, st, world, arms, poses, sizes, goal, follow, presets=Non
     if mode == "follow":
         if st["camera"] != "follow":
             u = float(max(sz[0] for sz in sizes))
-            host.set_many({"back": 4.0 * u, "height": 2.0 * u, "look_ahead": 1.5 * u,
+            back, height = CHASE["city" if world.kind == "data" else "low"]
+            host.set_many({"back": back * u, "height": height * u, "look_ahead": 1.5 * u,
                            "look_up": 0.4 * u, "cam_tau": 0.15, "pos_tau": 0.1},
                           prefix="viewers.main.camera.track")  # fmt: skip
         host.camera.setMode(pycvc_gl.CameraController.Mode_Track)
