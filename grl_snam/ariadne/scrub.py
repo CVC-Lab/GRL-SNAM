@@ -752,6 +752,10 @@ class ScrubView:
             names[1] += " "  # the same checkpoint twice: two arms all the same
         self.both = stack([self.r.log(0), self.r.log(self.k)], names)
         self.arms = arms_of(self.both)
+        self.st["legend_notes"] = {
+            names[0]: "untrained" if self.rows[0]["step"] == 0 else "the first checkpoint",
+            names[1]: "the checkpoint picked" if self.k else "step 0 again",
+        }
         host.set_many({"names": "\n".join(names)}, prefix="arms")
         for key in ("view.arm", "ledger.agent"):
             host.set(key, names[1])

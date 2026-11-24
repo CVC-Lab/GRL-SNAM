@@ -941,10 +941,33 @@ def draw_ghosts(host, st, arms, sizes, presets):
     st["modeled"] = modeled
 
 
+def ghost_legend(arms, notes=None, opacity=None) -> dict:
+    """The scene's legend, as the Stats window shows it (``arms.legend.*``): a line per colour
+    slot in use (``slot<j>``), naming the arm whose cube, car and path are that colour (with its
+    note from ``notes``, a name -> text dict, when it has one), and ``notes``: what stacked cubes
+    and the yellow post mean. ``opacity`` is each arm's car's (``st["opacity"]``): a car under
+    0.99 is see-through."""
+    out = {f"slot{j}": "" for j in range(len(_arms.SLOT_NAMES))}
+    for i, a in enumerate(arms):
+        colour = _arms.SLOT_NAMES[a.slot % len(_arms.SLOT_NAMES)]
+        note = (notes or {}).get(a.name, "")
+        car = "solid" if opacity is not None and float(opacity[i]) >= 0.99 else "see-through"
+        out[f"slot{a.slot % len(_arms.SLOT_NAMES)}"] = (
+            f"{colour} cube: {a.name.strip()}{f' ({note})' if note else ''}\n"
+            f"  {car} car, {colour} path"
+        )
+    out["notes"] = (
+        "cubes stacked over one car: those runs are at the same spot\nyellow post: the goal"
+    )
+    return out
+
+
 def update_ghosts(host, st, world, arms, poses, sizes, goal, follow, presets=None):
     """The ghosts at ``poses`` (each arm's rear axle x, y and heading), their tracks, the goal's
     post at ``goal``, and the camera on arm ``follow``. Live and replay both draw with it. With
-    ``st["tracks"]`` None there are no running tracks (the scrubber draws each run's whole path)."""
+    ``st["tracks"]`` None there are no running tracks (the scrubber draws each run's whole path).
+    The legend (:func:`ghost_legend`, ``st["legend_notes"]`` its notes) is written when it
+    changes."""
     import pycvc_gl
     from pycvc_gl.vehicle import seat_transform
 
@@ -959,6 +982,10 @@ def update_ghosts(host, st, world, arms, poses, sizes, goal, follow, presets=Non
     ):  # a new plant's vehicles, or the model has come since
         draw_ghosts(host, st, arms, sizes, presets)
         st["sized"] = sized
+    legend = ghost_legend(arms, st.get("legend_notes"), st.get("opacity"))
+    if st.get("legend") != legend:
+        host.set_many(legend, prefix="arms.legend")
+        st["legend"] = legend
     centers = []
     for j, ((x, y, heading), (_, _, wheelbase)) in enumerate(zip(poses, sizes, strict=True)):
         h = 0.5 * float(wheelbase)

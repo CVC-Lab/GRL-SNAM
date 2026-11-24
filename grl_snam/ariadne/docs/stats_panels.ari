@@ -7,7 +7,8 @@
 #     - include: arms_stats        # pos: / size: at the include site place it (no size: it fits)
 #     - include: arms_ledger
 #
-# replay.ari includes them too: grl_snam/ariadne/replay.py writes the same keys from a run log at
+# Stats ends with the scene's legend (arms.legend.*, live.ghost_legend): a line per arm in its
+# colour, what its cube, car and path are. replay.ari includes them too: grl_snam/ariadne/replay.py writes the same keys from a run log at
 # the play head. Both show while arms.on is 1 (live.py sets it with --arms, replay.py always); the
 # Retarget's controls only while arms.live is 1 (a live run). The charts draw a cursor at play.t
 # (the replay's play head), and a click on one writes the time there to play.seek and sends
@@ -125,6 +126,44 @@ units:
                 children:
                   - text: ""
                     bind: arms.stats.{i}.reached
+      - type: group                 # the legend (live.ghost_legend), once the ghosts are drawn
+        visible_when: (!= (state-get "arms.legend.notes") "")
+        children:
+          - text: "in the scene:"
+          - text: ""
+            bind: arms.legend.slot0
+            color: [0.165, 0.471, 0.839]
+            visible_when: (!= (state-get "arms.legend.slot0") "")
+          - text: ""
+            bind: arms.legend.slot1
+            color: [0.922, 0.408, 0.204]
+            visible_when: (!= (state-get "arms.legend.slot1") "")
+          - text: ""
+            bind: arms.legend.slot2
+            color: [0.106, 0.686, 0.478]
+            visible_when: (!= (state-get "arms.legend.slot2") "")
+          - text: ""
+            bind: arms.legend.slot3
+            color: [0.929, 0.631, 0.000]
+            visible_when: (!= (state-get "arms.legend.slot3") "")
+          - text: ""
+            bind: arms.legend.slot4
+            color: [0.910, 0.482, 0.643]
+            visible_when: (!= (state-get "arms.legend.slot4") "")
+          - text: ""
+            bind: arms.legend.slot5
+            color: [0.000, 0.514, 0.000]
+            visible_when: (!= (state-get "arms.legend.slot5") "")
+          - text: ""
+            bind: arms.legend.slot6
+            color: [0.384, 0.314, 0.839]
+            visible_when: (!= (state-get "arms.legend.slot6") "")
+          - text: ""
+            bind: arms.legend.slot7
+            color: [0.890, 0.286, 0.282]
+            visible_when: (!= (state-get "arms.legend.slot7") "")
+          - text: ""
+            bind: arms.legend.notes
       - separator
       - type: group
         visible_when: (= (state-get "arms.live") "1")

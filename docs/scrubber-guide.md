@@ -13,9 +13,10 @@ ticks. So any difference between two checkpoints comes from the policy, not from
 
 - **Two cars.** The orange car is checkpoint k, the one you picked. The blue car is step 0, the
   untrained net, drawn see-through. They drive side by side over the same episode, each with a
-  tag of its colour above it and its whole path drawn on the ground. Where the two drive the
-  same, the orange car hides the blue one and the paths lie on top of each other: the tags show
-  both are there.
+  cube of its colour above it and its whole path drawn on the ground. Where the two drive the
+  same, the orange car hides the blue one and the paths lie on top of each other: the two cubes
+  stacked over one car show both are there. The yellow post is the goal. The Stats window's
+  legend ("in the scene") says the same, with each arm's name in its colour.
 - **The plant.** The cars drive libcvc's Jolt Humvee by default (`--plant humvee`). The Humvee
   collides with the buildings: a car that drives into one stops against it. The old default,
   nav's kinematic bicycle (`--plant kinematic`), has no collision response, so its cars drove

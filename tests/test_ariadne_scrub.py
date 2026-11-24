@@ -191,6 +191,25 @@ def test_a_table_rewrites_only_the_cells_that_changed():
                           ("table", "t", 2), ("table", "u", 1), ("table", "u", 1)]  # fmt: skip
 
 
+def test_the_scene_s_legend():
+    """live.ghost_legend: a line per colour slot in use, naming the arm (and its note) whose cube,
+    car and path are that colour; the other slots empty; what stacked cubes and the post mean."""
+    from grl_snam.ariadne._arms import Arm
+    from grl_snam.ariadne.live import ghost_legend
+
+    arms = [Arm(name="step 0", slot=0), Arm(name="step 2800", slot=1)]
+    legend = ghost_legend(arms, {"step 2800": "the checkpoint picked"}, [0.45, 1.0])
+    assert legend["slot0"] == "blue cube: step 0\n  see-through car, blue path"
+    assert legend["slot1"] == (
+        "orange cube: step 2800 (the checkpoint picked)\n  solid car, orange path"
+    )
+    assert all(legend[f"slot{j}"] == "" for j in range(2, 8))
+    assert "cubes stacked over one car" in legend["notes"] and "yellow post" in legend["notes"]
+    names = ("trained", "untrained", "constant")
+    trio = ghost_legend([Arm(name=n, slot=j) for j, n in enumerate(names)])
+    assert trio["slot2"] == "green cube: constant\n  see-through car, green path"
+
+
 def test_a_lean_log_cached_before_packing_is_packed_when_read(tmp_path):
     """A lean log an older scrubber cached (grl_snam.run_log/v1) is read, not deployed again, and
     packed in place (v2): the same run, smaller. Read again, it is left as it is."""
