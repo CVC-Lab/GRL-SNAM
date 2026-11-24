@@ -9,10 +9,10 @@ checks this repo out and calls the scripts below.
 | File | What it does |
 |---|---|
 | `build-ariglx-web.sh` | builds `ariglx-web` from a libcvc checkout with its recipe's own script: the single-threaded build (`wasm`), lean tier; tools, emsdk and the wasm deps from cvcpkg |
-| `assemble.py` | writes the site (`site/` at the root, `learn/`, with `--scrub` `scrub/`, and with `--scrub-austin` `scrub-austin/` beside it), or with `--learn-only` / `--scrub-only` one page alone: the host, `main.py`, `grl_snam_web.zip`, the page's data, `ariadne.config.json` with every preload |
+| `assemble.py` | writes the site (`site/` at the root, `learn/`, with `--scrub` `scrub/`, with `--scrub-austin` `scrub-austin/` beside it, and with `--coph` `coph/live/` inside the poster), or with `--learn-only` / `--scrub-only` / `--coph-only` one page alone: the host, `main.py`, `grl_snam_web.zip`, the page's data, `ariadne.config.json` with every preload |
 | `main.py` | the program a page runs in place of a document: unpacks `grl_snam_web.zip` and runs a port (`args`: `["learn", ...]`, `["scrub", "--view", ...]`) |
-| `smoke.mjs` | loads the site in headless Chrome as Pages serves it: learn must start, run its frames and make learn-report's claims in the page; scrub (`--scrub`, and each page on a city, `--city-scrub`) must start, show a checkpoint, draw the world its runs drove on and its cars (the Humvee's model when the page ships it) and run its frames, and it says the frames a second |
-| `site/` | the landing page, and `site/coph/`: the CoPH poster (demo 2a's walkthrough video, the results the reference establishes and what it does not), copied as it is. It loads nothing outside `coph/`, so another site can serve it beside its own landing page |
+| `smoke.mjs` | loads the site in headless Chrome as Pages serves it: learn must start, run its frames and make learn-report's claims in the page; scrub (`--scrub`, and each page on a city, `--city-scrub`) must start, show a checkpoint, draw the world its runs drove on and its cars (the Humvee's model when the page ships it) and run its frames, and it says the frames a second; the CoPH page (`--coph`) must play each demo's run file, walkthrough and all |
+| `site/` | the landing page, and `site/coph/`: the CoPH poster (demo 2a's walkthrough video, the results the reference establishes and what it does not), copied as it is. It loads nothing outside `coph/`, so another site can serve it beside its own landing page. Its links to `live/` (between `<!-- coph-live:` marks) are dropped when the site has no CoPH page |
 
 ## From another repository's workflow
 
@@ -42,10 +42,20 @@ python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-on
   --out _site/scrub-austin --scrub-world data --python "$PREFIX/bin/python3.12" \
   --expect-libcvc "$V" [--scrub-cache DIR2] [--scrub-city cvcpkg://ORG/NAME]
 
+# the CoPH page, self-contained, inside the poster: grl-snam ariadne coph playing back a run file
+# per demo, baked by the same closure (it needs torch; pillow-cp312 too, for the nameplates) from
+# the vendored demos' episodes, which DIR3 keeps between builds (~30 min cold, seconds after)
+python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --coph-only \
+  --out _site/coph/live --python "$PREFIX/bin/python3.12" --coph-cache DIR3
+
 # check them where your site serves them (Node 22; Chrome or Chromium)
 node grl-snam/pages/smoke.mjs --site _site --base /your-site/ --learn learn/ --scrub scrub/ \
-  --city-scrub scrub-austin/ --no-landing --chrome "$CHROME" --shots shots
+  --city-scrub scrub-austin/ --coph coph/live/ --no-landing --chrome "$CHROME" --shots shots
 ```
+
+Serving the poster (`pages/site/coph/`) as it is with no CoPH page beside it leaves its links to
+`live/` dead: drop the lines from `<!-- coph-live:` to `<!-- /coph-live -->`, as `assemble.py`
+does for a site without the page.
 
 - `--histories` picks the learning histories the page shows (`.jsonl` or `.jsonl.gz`; default:
   the learning check's retrain, `docs/learning-validation/retrain/seed*.history.jsonl.gz`). Each

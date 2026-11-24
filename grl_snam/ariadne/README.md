@@ -399,6 +399,8 @@ python -m grl_snam.ariadne coph crossing --headless --log run.npz --min-goals 4
 python -m grl_snam.ariadne coph walkthrough --from runs/coph   # crossing, then hazard ('severe')
 python -m grl_snam.ariadne coph walkthrough --from runs/coph --offscreen --width 1920 \
     --height 1080 --record coph-walkthrough.mp4                # the same, as a video
+python -m grl_snam.ariadne coph crossing --from runs/crossing --bake crossing.coph.npz
+python -m grl_snam.ariadne coph crossing --from crossing.coph.npz --tour   # no torch needed
 ```
 
 The vendored crossing and hazard demos (`grl_snam.coph`, `grl-snam coph`), with communication off
@@ -447,6 +449,17 @@ north of each floor names its arm.
   - A full crossing arm takes about 20 minutes of computing for about 130 s of episode, and a
     hazard arm about 6 minutes. A live run therefore plays slower than real time.
   - `--out DIR` keeps the episodes in `grl-snam coph`'s layout, and `--from DIR` replays them.
+  - **A run file** (`grl_snam.coph.runfile`, `*.coph.npz`, about 0.7 MB a demo, against 15-46
+    MB of episodes an arm) plays a run back without torch. `--bake FILE` writes one from the
+    episodes under `--from` (computing them first when missing), and `--from FILE` plays it. It
+    carries each arm's messages, its floor's corridors and true risk field, its nameplate and
+    the Learning window's series. An agent's own field is drawn with numpy
+    (`grl_snam.coph.timeline.risk`, equal to the vendored torch `model.risk` to 1e-12).
+- **In a web page** (`pages/assemble.py --coph`, on libcvc's ariglx-web): the Pages site's
+  `coph/live/` plays each demo's run file, baked when the site is built. It opens on the
+  walkthrough. `?demo=crossing` or `?demo=hazard` picks the demo (`GRL_SNAM_COPH_DEMO`, which
+  `{demo}` in `--from` names), the tour runs on the page's frames, and the camera refits when the
+  canvas changes size. The poster (`pages/site/coph/`) links to it.
 - **The floor:**
   - the surveyed corridors;
   - the risk field as a heat map: the truth, or one agent's own `r` over its kept stages (the
@@ -486,7 +499,7 @@ north of each floor names its arm.
   - The exit code is 0, 1 when a run failed, 2 for bad arguments, and 3 below `--min-goals`.
   - `--at SECONDS` starts the play head mid-run, for a screenshot (`--offscreen --png`).
 
-It needs torch, as `grl-snam coph` does, and no city.
+It needs torch, as `grl-snam coph` does (but not to play a run file), and no city.
 
 ### `coph-cars`: CoPH drives the cars (demo 2b, exploratory)
 

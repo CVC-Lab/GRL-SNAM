@@ -3,7 +3,7 @@
 //
 //   node pages/smoke.mjs --site _site --chrome <chrome or chromium> [--base /GRL-SNAM/] [--shots DIR]
 //        [--learn learn/] [--no-learn] [--scrub scrub/] [--city-scrub scrub-austin/]...
-//        [--no-landing]
+//        [--coph coph/live/] [--no-landing]
 //
 // It serves the site at --base (the project site's path on github.io) on 127.0.0.1, with an
 // ordinary site's headers: no COOP/COEP, as GitHub Pages sends none (the single-threaded ariglx-web
@@ -28,7 +28,12 @@
 //     here, so a floor, not the figure a GPU gets);
 //   - each scrub page on a city (--city-scrub, the path under --base, as many as given: the runs
 //     deployed in Austin, assemble.py --scrub-austin's scrub-austin/): the same, its city fetched
-//     from cvcpkg.org, so its connect-src has the registry too.
+//     from cvcpkg.org, so its connect-src has the registry too;
+//   - the CoPH page (--coph, the path under --base: assemble.py --coph's coph/live/), once per
+//     demo it has (?demo=crossing, ?demo=hazard): grl-snam ariadne coph must start in the page
+//     on that demo's run file (its stderr says which, and the size it draws at), run its frames
+//     with the walkthrough playing, and still run 5 s later; no traceback, no CSP violation. It
+//     says the frames a second, as for scrub.
 //
 // --shots writes each page as DIR/<name>.png. Exit status 0 when every case passes.
 
@@ -46,13 +51,14 @@ const opt = (name, dflt) => {
 const SITE = opt('--site'), CHROME = opt('--chrome'), SHOTS = opt('--shots');
 const BASE = opt('--base', '/GRL-SNAM/'), LEARN = opt('--learn', 'learn/'), SCRUB = opt('--scrub');
 const CITY_SCRUBS = argv.flatMap((a, i) => a === '--city-scrub' ? [argv[i + 1]] : []);
+const COPH = opt('--coph');
 const LANDING = !argv.includes('--no-landing'), DO_LEARN = !argv.includes('--no-learn');
 const sub = p => p === undefined || (p.endsWith('/') && !p.startsWith('/'));
 if (!SITE || !CHROME || !BASE.startsWith('/') || !BASE.endsWith('/') || !sub(LEARN) ||
-    !sub(SCRUB) || !CITY_SCRUBS.every(p => p !== undefined && sub(p))) {
+    !sub(SCRUB) || !sub(COPH) || !CITY_SCRUBS.every(p => p !== undefined && sub(p))) {
   console.error('usage: smoke.mjs --site DIR --chrome PATH [--base /PATH/] [--shots DIR] ' +
                 '[--learn PATH/] [--no-learn] [--scrub PATH/] [--city-scrub PATH/]... ' +
-                '[--no-landing]');
+                '[--coph PATH/] [--no-landing]');
   process.exit(2);
 }
 const TIMEOUT_MS = Number(process.env.GRL_SNAM_SMOKE_TIMEOUT_MS || 600000);
@@ -309,6 +315,47 @@ try {
     // scrub.png, as before; a city's page by its path (scrub-austin/ -> scrub-austin.png).
     const shot = where === SCRUB ? 'scrub.png' : `${where.slice(0, -1).replace(/\//g, '-')}.png`;
     if (SHOTS) await page.screenshot(path.join(SHOTS, shot));
+    await page.close();
+  }
+
+  // coph/live/: grl-snam ariadne coph playing back the run files baked at build time, one case
+  // per demo the page has (data/<demo>.coph.npz). Its stderr names the demo and where its run
+  // comes from ("coph: hazard, none beside field, seed 79000 (run file)") and the size it draws
+  // at ("coph: the view is 1280x860 pixels").
+  const demos = COPH ? ['crossing', 'hazard'].filter(
+      d => fs.existsSync(path.join(SITE, COPH, 'data', `${d}.coph.npz`))) : [];
+  if (COPH) record('the CoPH page has run files', demos.length > 0, path.join(SITE, COPH, 'data'));
+  for (const demo of demos) {
+    const name = `coph ${demo}`;
+    const t0 = Date.now();
+    const page = await openPage(`${ORIGIN}${BASE}${COPH}?demo=${demo}`);
+    const v = await watch(page, v => v.log.some(l => /^grl-snam: coph: running/.test(l)));
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    const started = v.log.find(l => /^grl-snam: coph: started in/.test(l)) || '';
+    const tb = v.log.findIndex(l => /^Traceback/.test(l));
+    const running = v.state === 'running' && v.log.some(l => /^grl-snam: coph: running/.test(l));
+    record(`${name} starts in the page and runs its frames (${secs} s; ${started})`,
+           running && tb < 0,
+           running && tb < 0 ? '' : `state ${v.state}: ${v.status || ''}\n      ` +
+             v.log.slice(tb >= 0 ? tb : -25).join('\n      '));
+    const which = v.log.find(l => /^coph: (crossing|hazard), /.test(l)) || '';
+    const size = v.log.find(l => /^coph: the view is \d+x\d+ pixels/.test(l)) || '';
+    record(`${name} plays back its run file`,
+           which.startsWith(`coph: ${demo}, `) && which.endsWith('(run file)') && size !== '',
+           `${which || 'no "coph: <demo>, ..." line'}; ${size || 'no "coph: the view is" line'}`);
+    const fps = await page.evaluate(
+        'new Promise(res => { let n = 0; const t0 = performance.now(); const f = t => { ++n; ' +
+        'if (t - t0 < 3000) requestAnimationFrame(f); else res(n / ((t - t0) / 1000)); }; ' +
+        'requestAnimationFrame(f); })');
+    console.log(`      ${name} runs at ${Number(fps).toFixed(1)} frames a second here`);
+    await new Promise(r => setTimeout(r, 2000));
+    const later = await watch(page, () => true);
+    record(`${name} is still running 5 s later, with no CSP violation`,
+           later.state === 'running' && later.csp.length === 0 &&
+             !later.log.some(l => /^Traceback/.test(l)),
+           `state ${later.state}; csp ${later.csp.join(', ')}; warnings ${later.warnings.length}`);
+    if (later.warnings.length) console.log('      warnings: ' + later.warnings.slice(0, 5).join(' | '));
+    if (SHOTS) await page.screenshot(path.join(SHOTS, `coph-${demo}.png`));
     await page.close();
   }
 } catch (e) {

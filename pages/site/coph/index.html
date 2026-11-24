@@ -34,6 +34,18 @@
   walkthrough</code>, rendered at 1920×1080 on libcvc master (4.0.6+). It replays episodes computed by
   GRL-SNAM's vendored copy of the reference, with no change to the method; the viewer only
   reads them. Each caption's times come from the episodes.</p>
+  <!-- coph-live: the links to the page that plays the runs back (live/); assemble.py drops them when the site has no such page -->
+  <div class="live">
+    <p><b>In your browser:</b>
+      <a class="btn" href="live/?demo=crossing">Crossing, live</a>
+      <a class="btn" href="live/?demo=hazard">Hazard, live</a></p>
+    <p class="note">The same viewer and walkthrough, running in the page: Python, numpy and
+    libcvc's Ariadne compiled to WebAssembly. Pause it, drag the time, switch the heat map to an
+    agent's own field, or fly the camera. It plays back the episodes computed with torch when the
+    site was built, since torch does not run in a browser. The first visit downloads about
+    35&nbsp;MB; later visits come from the browser's cache.</p>
+  </div>
+  <!-- /coph-live -->
 </section>
 
 <section class="grid">
@@ -114,8 +126,8 @@
   <article class="panel coming">
     <h2>Coming</h2>
     <ul>
-      <li><b>This demo, live in the page.</b> torch does not run in the browser, so it waits for
-      the C++ port's bindings and libcvc's WebAssembly build.</li>
+      <li><b>CoPH learning in the page.</b> torch does not run in a browser, so running the
+      method itself in the page waits for the C++ port's bindings in a libcvc release.</li>
       <li><b>CoPH drives the cars</b> (demo 2b, exploratory). One learner per car of libcvc's
       cars template. Its first report is the allocation residual and the ledger, not a
       navigation gain.</li>
