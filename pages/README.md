@@ -11,7 +11,7 @@ checks this repo out and calls the scripts below.
 | `build-ariglx-web.sh` | builds `ariglx-web` from a libcvc checkout with its recipe's own script: the single-threaded build (`wasm`), lean tier; tools, emsdk and the wasm deps from cvcpkg |
 | `assemble.py` | writes the site (`site/` at the root, `learn/`, and with `--scrub` `scrub/`), or with `--learn-only` / `--scrub-only` one page alone: the host, `main.py`, `grl_snam_web.zip`, the page's data, `ariadne.config.json` with every preload |
 | `main.py` | the program a page runs in place of a document: unpacks `grl_snam_web.zip` and runs a port (`args`: `["learn", ...]`, `["scrub", "--view", ...]`) |
-| `smoke.mjs` | loads the site in headless Chrome as Pages serves it: learn must start, run its frames and make learn-report's claims in the page; scrub (`--scrub`) must start, show a checkpoint and run its frames |
+| `smoke.mjs` | loads the site in headless Chrome as Pages serves it: learn must start, run its frames and make learn-report's claims in the page; scrub (`--scrub`) must start, show a checkpoint, draw its cars (the Humvee's model when the page ships it) and run its frames, and it says the frames a second |
 | `site/` | the landing page, and `site/coph/`: the CoPH poster (demo 2a's walkthrough video, the results the reference establishes and what it does not), copied as it is. It loads nothing outside `coph/`, so another site can serve it beside its own landing page |
 
 ## From another repository's workflow
@@ -32,8 +32,8 @@ python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --learn-on
 # policies (cvcpkg's grl-snam-learning-checkpoints); ~10 min a five-seed set
 cvcpkg install python312 numpy-cp312 torch-cp312 "libcvc==$V" "cvcgl==$V" "pycvc-cp312==$V" \
   "pycvc-gl-cp312==$V" --platform linux --prefix "$PREFIX" --config release --link shared
-cvcpkg install grl-snam-learning-checkpoints --prefix "$PREFIX" --platform any --config release \
-  --link shared --no-fallback-to-source
+cvcpkg install grl-snam-learning-checkpoints vehicle-humvee --prefix "$PREFIX" --platform any \
+  --config release --link shared --no-fallback-to-source
 python3 grl-snam/pages/assemble.py --host ariglx-web/share/ariglx-web --scrub-only \
   --out _site/scrub --python "$PREFIX/bin/python3.12" --expect-libcvc "$V" [--scrub-cache DIR] \
   [--scrub-sets SET...] [--checkpoints DIR] [--scrub-world generated|flat|data]
@@ -101,10 +101,18 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's lean run log, `grl
   difference from the tick before, the bytes shuffled, then deflated; lossless, about 55% of an
   unpacked lean log, about 70 KB a checkpoint): 2.9–3.0 MB a run's bundle on kinematic and
   3.3–3.7 MB on the Humvee, 15–18 MB a five-seed set on one plant. It
-  opens on the first plant's first set's first run, at its pick,
-  from above (`--camera orbit`), with the Scrub, Episode and Stats windows (`--windows`). The
-  Set combo picks a data set and shows its run of the same name at the same step; the Run combo
-  picks a run in the set; the Windows menu has Training, Ledger and Simulation.
+  opens on the first plant, on the data set whose checkpoints drive farthest from step 0 (the
+  median of the reports' `apart_m`; assemble prints each set's), its first run, at the checkpoint
+  whose car gets farthest from step 0's (`--data-set SET --at far`), the camera following that
+  car, with the Scrub, Episode and Stats windows (`--windows`). Episode has Paused and Speed.
+  The Set combo picks a data set and shows its run of the same name at the same step; the Run
+  combo picks a run in the set; the Windows menu has Checkpoints (the table; Table in Scrub
+  opens it too), Training, Ledger and Simulation.
+- **The cars** are the Humvee's glTF (`vehicle-humvee`, 0.6 MB, CC BY 4.0), shipped at
+  `share/cvc-scenes/shared/Humvee.glb`, where pycvc_gl looks in a prefix (`main.py` makes the
+  page that prefix), with its credit added to the page's `THIRD_PARTY_NOTICES.md`.
+  `--vehicle-model GLB` names it (default: that path in `--python`'s prefix); without one the
+  cars are boxes.
 - **Every run is preloaded.** The page's loader fetches its files before the program starts,
   and ariglx-web has no supported fetch after that (non-blocking downloads in the browser
   are libcvc's data roadmap D4, not done), so a set cannot be loaded when it is picked. Each

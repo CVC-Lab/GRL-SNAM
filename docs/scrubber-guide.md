@@ -4,13 +4,19 @@
 is the same thing in a browser. This guide says what each window shows, and what to look for to
 tell a policy that is learning something useful from one that is not.
 
+![The scrub page as it opens: fixed/retrain, seed 0, at step 2800, the checkpoint farthest from step 0](img/scrubber/opening.jpg)
+
 ## What you are looking at
 
 Every checkpoint drives the same scenario: the same world, start, goal, seed, plant and number of
 ticks. So any difference between two checkpoints comes from the policy, not from the scene.
 
 - **Two cars.** The orange car is checkpoint k, the one you picked. The blue car is step 0, the
-  untrained net. They drive side by side over the same episode.
+  untrained net, drawn see-through. They drive side by side over the same episode, each with a
+  cube of its colour above it and its whole path drawn on the ground. Where the two drive the
+  same, the orange car hides the blue one and the paths lie on top of each other: the two cubes
+  stacked over one car show both are there. The yellow post is the goal. The Stats window's
+  legend ("in the scene") says the same, with each arm's name in its colour.
 - **The plant.** The cars drive libcvc's Jolt Humvee by default (`--plant humvee`). The Humvee
   collides with the buildings: a car that drives into one stops against it. The old default,
   nav's kinematic bicycle (`--plant kinematic`), has no collision response, so its cars drove
@@ -20,16 +26,28 @@ ticks. So any difference between two checkpoints comes from the policy, not from
 
 - **Scrub** picks what you look at and charts it.
   - *Set* and *Run* pick a data set (a retrain) and a run in it (one training seed).
-  - *Checkpoint*, the slider, *Previous* and *Next* pick checkpoint k.
+  - *Checkpoint*, the slider, *Previous* and *Next* pick checkpoint k. *Most apart* picks the
+    checkpoint whose car gets farthest from step 0's.
+  - Two lines say how far apart the cars drive: the farthest checkpoint k's car gets from step
+    0's at the same moment (and at the end), and the same for all the run's checkpoints. When
+    that is less than a car's width, the two drive as one, and the lines say so: scrubbing
+    through such a run changes nothing you can see, because the checkpoints all drive alike.
   - *Metric* picks the deployed number to chart. The options are reached the goal, time, path
-    length, ticks penetrating, minimum and mean clearance, and distance left to the goal.
+    length, ticks penetrating, minimum and mean clearance, distance left to the goal, and how far
+    the car got from step 0's.
   - The chart shows that metric against training step, one point per checkpoint. Step 0's value
     is the dashed line, and the cursor marks checkpoint k. Click a point to pick it.
-  - The table below the chart shows every metric, one row per checkpoint.
+  - *Table* opens **Checkpoints**: every metric, one row per checkpoint, `>` at checkpoint k.
+
+  | the cars parted (49 s in) | Checkpoints | `retrain`: the two drive as one |
+  |---|---|---|
+  | ![parted](img/scrubber/parted.jpg) | ![table](img/scrubber/table.jpg) | ![retrain](img/scrubber/retrain.jpg) |
+
 - **Training** is the held-out curve the training run logged. *Curve* picks the term. It has the
   same cursor, and a click on it picks the checkpoint nearest that step.
-- **Episode** is the play head: the position slider scrubs through the episode, and *Camera*
-  either follows checkpoint k's car or orbits the world from above.
+- **Episode** is the play head: *Paused*, *Step* and *Restart*, the *Speed*, the position slider,
+  which scrubs through the episode, and *Camera*, which either follows checkpoint k's car or
+  orbits the world from above.
 - **Stats** has one row per car: clearance (minimum and mean), ticks penetrating, path length,
   time elapsed, wall time per tick, and whether it reached the goal. Below the rows is the
   clearance chart over the episode.
@@ -40,7 +58,9 @@ ticks. So any difference between two checkpoints comes from the policy, not from
   - the energy books.
 
   Each comes summed over the run and for this tick.
-- **Simulation** pauses, steps and restarts the episode.
+- **Simulation** pauses, steps and restarts the episode too (the Scrub menu has *Paused*).
+- No window has a set size: each grows to fit what it shows, as far as the edge of the view, and
+  scrolls past that.
 
 ## What converging on useful behaviour looks like
 
@@ -89,6 +109,11 @@ The Pages page shows the learning check's three retrains: `retrain`, `fixed/retr
 - On the Humvee, two of the sets come to a single outcome whatever the step: the car meets a
   building and stays against it. A policy that had learned to route around buildings would not
   do that.
+- On the Humvee, every `retrain` checkpoint drives within 0.45 m of step 0, and every
+  `world-units/retrain` one within 1.4 m: the two cars overlap all the way, so scrubbing through
+  those sets shows nothing, and the Scrub window says so. `fixed/retrain`'s checkpoints part from
+  step 0 (half of them by 9.3 m or more, one a seed by 54 to 98 m), which is why the page opens
+  on that set, at the checkpoint farthest from step 0. Its history's pick is step 0 on every seed.
 
 So treat the page as the instrument to watch the next retrain with, not as evidence that the
 current policy learned. The numbers, per set and plant, are in the scrub section of

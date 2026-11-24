@@ -6,17 +6,20 @@
 #   python -m grl_snam.ariadne scrub --view scrub.json ...   # runs deployed before, read back
 #
 # - Scrub: the data set and the history (Set and Run combos when the view has several), the
-#   scenario, and the checkpoint: a combo, a slider, previous / next, or a
-#   click on either chart picks it (scrub.k). A deployed metric (Metric picks it) against the
-#   checkpoint's step, with step 0's as a dashed line and a cursor at the checkpoint; the same as
-#   a table, one row per checkpoint.
+#   scenario, and the checkpoint: a combo, a slider, previous / next, Most apart, or a
+#   click on either chart picks it (scrub.k). How far its car gets from step 0's (scrub.apart),
+#   and the run's checkpoints all told (scrub.apart_run). A deployed metric (Metric picks it)
+#   against the checkpoint's step, with step 0's as a dashed line and a cursor at the checkpoint.
+# - Checkpoints: every metric as a table, one row per checkpoint (Table in Scrub opens it).
 # - Training: a held-out curve from the history (Curve picks it), with its marks and a cursor at
 #   the checkpoint (the learn port's chart).
-# - Episode: the two runs' time: libcvc's sim transport (Paused, Speed, Step, Restart), a Position
-#   slider (play.pos) and the camera.
+# - Episode: the two runs' time: Paused, Speed, Step and Restart (libcvc's sim transport, also the
+#   Simulation window), a Position slider (play.pos) and the camera.
 # - Stats and Ledger (stats_panels.ari): step 0 and the checkpoint, at the play head.
-# - The scene: the scenario's world, the start, the goal, and the two ghosts (step 0 blue, the
-#   checkpoint orange) with their tracks. The worlds are the scene's nodes with `world:` (data,
+# - The scene: the scenario's world, the start, the goal, and the two ghosts (step 0 blue and
+#   see-through, the checkpoint orange) with their whole paths.
+# A window has no size: it fits what it shows, as far as the view's edge. A table is one grid
+# whose cells are its columns, each a header over its values, so the columns are the table's. The worlds are the scene's nodes with `world:` (data,
 #   the city data: names; generated, libcvc's generator with the node's settings; flat), the one
 #   on named by scene.world.source; libcvc's world runtime runs it, and the deploy drives on its
 #   grid (grl_snam/ariadne/_world.py).
@@ -96,7 +99,7 @@ windows:
   - window: Scrub
     id: scrub
     pos: [16, 30]
-    size: [520, 640]
+    size: { min: [480, 0] }
     children:
       - combo: Set
         bind: scrub.set_choice
@@ -118,8 +121,13 @@ windows:
         bind: scrub.scenario
       - text: ""
         bind: scrub.made
+        visible_when: (!= (state-get "scrub.made") "")
       - text: ""
         bind: scrub.world_note
+        visible_when: (!= (state-get "scrub.world_note") "")
+      - text: ""
+        bind: scrub.apart_run
+        visible_when: (!= (state-get "scrub.apart_run") "")
       - combo: Checkpoint
         bind: scrub.choice
         options: (string.split (state-get "scrub.labels") "\n")
@@ -129,18 +137,29 @@ windows:
         hi: 1
         fmt: ""
         tooltip: "drag through the checkpoints, step 0 to the last"
-      - button: Previous
-        on: scrub_prev
-      - button: Next
-        on: scrub_next
+      - type: group
+        layout: { kind: horizontal }
+        children:
+          - button: Previous
+            on: scrub_prev
+          - button: Next
+            on: scrub_next
+          - button: Most apart
+            on: scrub_far
+            tooltip: "the checkpoint whose car gets farthest from step 0's"
+          - button: Table
+            on: (state-set "tree.checkpoints.open" "1")
+            tooltip: "every checkpoint's metrics, one row each (the Checkpoints window)"
       - text: ""
         bind: scrub.now
+      - text: ""
+        bind: scrub.apart
       - separator
       - combo: Metric
         bind: scrub.metric_name
         options: [Reached the goal, Time (s), Path (m), Ticks penetrating, Clearance min (m),
-                  Clearance mean (m), Left to the goal (m)]
-        values: [reached, time_s, path_m, pen_steps, clear_min_m, clear_mean_m, goal_m]
+                  Clearance mean (m), Left to the goal (m), Apart from step 0 (m)]
+        values: [reached, time_s, path_m, pen_steps, clear_min_m, clear_mean_m, goal_m, apart_m]
       - type: group
         visible_when: (has? "chart")
         children:
@@ -154,45 +173,114 @@ windows:
             height: 130
       - text: ""
         bind: scrub.metric_text
+
+  - window: Checkpoints
+    id: checkpoints
+    pos: [740, 30]
+    children:
+      - text: "every checkpoint's deployed metrics; > marks checkpoint k"
       - type: group
-        layout: { kind: grid, col_widths: [14, 50, 40, 54, 44, 52, 36, 54, 56] }
+        id: checkpoint_table
+        layout:
+          kind: grid
+          col_widths: [auto, auto, auto, auto, auto, auto, auto, auto, auto, auto]
+          borders: { show: all }
         children:
-          - text: ""
-          - text: "step"
-          - text: "flag"
-          - text: "reached"
-          - text: "time"
-          - text: "path"
-          - text: "pen"
-          - text: "clr min"
-          - text: "to goal"
-      - type: group
-        repeat: (state-get "scrub.table")
-        layout: { kind: grid, col_widths: [14, 50, 40, 54, 44, 52, 36, 54, 56] }
-        children:
-          - text: ""
-            bind: scrub.table.{i}.at
-          - text: ""
-            bind: scrub.table.{i}.step
-          - text: ""
-            bind: scrub.table.{i}.flag
-          - text: ""
-            bind: scrub.table.{i}.reached
-          - text: ""
-            bind: scrub.table.{i}.time_s
-          - text: ""
-            bind: scrub.table.{i}.path_m
-          - text: ""
-            bind: scrub.table.{i}.pen_steps
-          - text: ""
-            bind: scrub.table.{i}.clear_min_m
-          - text: ""
-            bind: scrub.table.{i}.goal_m
+          - type: group
+            children:
+              - text: ""
+              - separator
+              - type: group
+                repeat: (state-get "scrub.table")
+                children:
+                  - text: ""
+                    bind: scrub.table.{i}.at
+          - type: group
+            children:
+              - text: "step"
+              - separator
+              - type: group
+                repeat: (state-get "scrub.table")
+                children:
+                  - text: ""
+                    bind: scrub.table.{i}.step
+          - type: group
+            children:
+              - text: "flag"
+              - separator
+              - type: group
+                repeat: (state-get "scrub.table")
+                children:
+                  - text: ""
+                    bind: scrub.table.{i}.flag
+          - type: group
+            children:
+              - text: "reached"
+              - separator
+              - type: group
+                repeat: (state-get "scrub.table")
+                children:
+                  - text: ""
+                    bind: scrub.table.{i}.reached
+          - type: group
+            children:
+              - text: "time (s)"
+              - separator
+              - type: group
+                repeat: (state-get "scrub.table")
+                children:
+                  - text: ""
+                    bind: scrub.table.{i}.time_s
+          - type: group
+            children:
+              - text: "path (m)"
+              - separator
+              - type: group
+                repeat: (state-get "scrub.table")
+                children:
+                  - text: ""
+                    bind: scrub.table.{i}.path_m
+          - type: group
+            children:
+              - text: "pen"
+              - separator
+              - type: group
+                repeat: (state-get "scrub.table")
+                children:
+                  - text: ""
+                    bind: scrub.table.{i}.pen_steps
+          - type: group
+            children:
+              - text: "clr min (m)"
+              - separator
+              - type: group
+                repeat: (state-get "scrub.table")
+                children:
+                  - text: ""
+                    bind: scrub.table.{i}.clear_min_m
+          - type: group
+            children:
+              - text: "to goal (m)"
+              - separator
+              - type: group
+                repeat: (state-get "scrub.table")
+                children:
+                  - text: ""
+                    bind: scrub.table.{i}.goal_m
+          - type: group
+            children:
+              - text: "apart (m)"
+              - separator
+              - type: group
+                repeat: (state-get "scrub.table")
+                children:
+                  - text: ""
+                    bind: scrub.table.{i}.apart_m
 
   - window: Training
     id: training
     pos: [548, 30]
-    size: [520, 300]
+    size: { min: [480, 0] }
     children:
       - combo: Curve
         bind: scrub.curve_name
@@ -214,11 +302,25 @@ windows:
 
   - window: Episode
     id: episode
-    pos: [548, 342]
-    size: [520, 150]
+    pos: [4000, 2000]               # bottom right: the view moves it in until all of it shows
+    size: { min: [460, 0] }
     children:
       - text: ""
         bind: play.title
+      - type: group
+        layout: { kind: horizontal }
+        children:
+          - checkbox: Paused
+            bind: sim.paused
+          - button: Step
+            on: sim.step
+          - button: Restart
+            on: sim.restart
+      - slider_float: Speed
+        bind: sim.speed
+        lo: 0.0
+        hi: 4.0
+        fmt: "%.2f"
       - slider_float: Position
         bind: play.pos
         lo: 0
@@ -233,15 +335,12 @@ windows:
 
   - include: sim_transport
     pos: [548, 504]
-    size: [260, 170]
 
-  - include: arms_stats
-    pos: [1080, 30]
-    size: [600, 300]
+  - include: arms_stats             # at the right: the view moves it in until all of it shows
+    pos: [4000, 30]
 
   - include: arms_ledger
-    pos: [1080, 342]
-    size: [600, 540]
+    pos: [4000, 400]
 
 scene:
   chrome: false

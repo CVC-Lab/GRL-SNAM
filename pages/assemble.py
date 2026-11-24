@@ -71,7 +71,10 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import math
 import os
+import statistics
+import struct
 import shutil
 import subprocess
 import sys
@@ -93,9 +96,14 @@ SCRUB_SETS = ("retrain", "fixed/retrain", "world-units/retrain")
 #: collides with the buildings, first; nav's kinematic bicycle, which drives through them, beside it.
 SCRUB_PLANTS = ("humvee", "kinematic")
 SCRUB_SCHEMA = "grl_snam.scrub/v1"
-#: How the scrub page opens: the world seen from above, and the windows that leave it in view
-#: (Training, Ledger and Simulation are in its Windows menu).
-SCRUB_VIEW = ["--windows", "scrub,episode,arms_stats", "--camera", "orbit"]
+#: How the scrub page opens: the windows that leave the world in view (Training, Ledger and
+#: Simulation are in its Windows menu; Episode has the pause and the speed), the camera following
+#: checkpoint k's car (scrub.ari's own), on the data set :func:`open_set` picks, at the checkpoint
+#: whose car gets farthest from step 0's, so the two cars a visit first sees part if any do.
+SCRUB_VIEW = ["--windows", "scrub,episode,arms_stats", "--at", "far"]
+#: The Humvee's model the scrub page draws its cars with (the cvcpkg package vehicle-humvee's),
+#: where pycvc_gl.scenes looks for it in a prefix: main.py makes the page that prefix.
+VEHICLE_MODEL = "share/cvc-scenes/shared/Humvee.glb"
 FIGURES = {"img/curves.png": REPO / "docs" / "learning-validation" / "curves.png"}
 #: The landing page's card for the scrub page, between these marks: dropped without one.
 SCRUB_CARD = ("<!-- scrub:", "<!-- /scrub -->")
@@ -268,13 +276,61 @@ def _plant_of(rep: dict) -> str:
     return str((rep.get("scenario") or {}).get("plant") or "")
 
 
-def scrub_page(host: Path, page: Path, reports) -> dict:
+def model_credit(path: Path) -> str:
+    """The credit a glTF binary names in its ``asset.extras`` (Sketchfab's: title, author, source,
+    license), as a THIRD_PARTY_NOTICES.md section; a plain one when it names none."""
+    extras = {}
+    try:
+        data = path.read_bytes()
+        n = struct.unpack("<I", data[12:16])[0]
+        extras = json.loads(data[20 : 20 + n]).get("asset", {}).get("extras") or {}
+    except (OSError, ValueError, struct.error):
+        pass
+    head = f"## {path.name} ({VEHICLE_MODEL})\n\nThe scrub page's cars."
+    if not extras.get("license"):
+        return f"{head} From the cvcpkg package vehicle-humvee.\n"
+    title = f'"{extras["title"]}"' if extras.get("title") else "The model"
+    by = f" by {extras['author']}" if extras.get("author") else ""
+    src = f", {extras['source']}" if extras.get("source") else ""
+    return (
+        f"{head} {title}{by}{src}, licensed {extras['license']}; from the cvcpkg package "
+        "vehicle-humvee.\n"
+    )
+
+
+def open_set(reps, plant: str) -> str:
+    """The data set the scrub page opens on: of the runs deployed on ``plant``, the set whose
+    checkpoints get farthest from step 0 (the median, over all its checkpoints after step 0, of
+    the farthest each one's car gets from step 0's: its metric ``apart_m``), so the two cars a
+    visit first sees drive apart if any do. The first set when no report has the distance."""
+    far: dict[str, list[float]] = {}
+    for rep in reps:
+        if _plant_of(rep) != plant:
+            continue
+        got = far.setdefault(str(rep.get("set") or ""), [])
+        for c in (rep.get("checkpoints") or [])[1:]:
+            v = (c.get("metrics") or {}).get("apart_m")
+            if isinstance(v, (int, float)) and math.isfinite(v):
+                got.append(float(v))
+    scored = {k: statistics.median(v) for k, v in far.items() if v}
+    if not scored:
+        return next(iter(far), "")
+    best = max(far, key=lambda k: scored.get(k, -1.0))
+    each = ", ".join(f"{k or '(none)'} {v:.1f} m" for k, v in scored.items())
+    print(f"assemble: scrub: opens on {best or '(no set)'} (the median checkpoint's farthest "
+          f"from step 0, on {plant or '?'}: {each})")  # fmt: skip
+    return best
+
+
+def scrub_page(host: Path, page: Path, reports, vehicle: Path | None = None) -> dict:
     """The scrub page at ``page`` (made here): the host, the launcher, the package, a bundle per
     run, data/<set>/<run>.scrub.zip (data/<run>.scrub.zip in no set; data/<plant>/<set>/<run>.scrub.zip
     when the runs were deployed on more than one plant): one zip with its report (scrub.json, its
     paths made the names inside), its history and its run logs, stored. The page's loader fetches
-    at most 512 files, and a run is 43; scrub --view reads the bundles. The page config views
-    them, the first report's run first."""
+    at most 512 files, and a run is 43; scrub --view reads the bundles. ``vehicle``, the Humvee's
+    glTF, ships at :data:`VEHICLE_MODEL` with its credit in THIRD_PARTY_NOTICES.md (without it
+    the cars are boxes). The page config views them, the first plant's runs first, opening on the
+    data set :func:`open_set` picks."""
     reports = [Path(r) for r in reports]
     if not reports:
         sys.exit("assemble: no scrub reports to show")
@@ -314,12 +370,24 @@ def scrub_page(host: Path, page: Path, reports) -> dict:
                 z.writestr(info, data)
         args.append(f"data/{name}.scrub.zip")
         preload.append(f"data/{name}.scrub.zip")
+    if vehicle is not None:
+        (page / VEHICLE_MODEL).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(vehicle, page / VEHICLE_MODEL)
+        preload.append(VEHICLE_MODEL)
+        with open(page / "THIRD_PARTY_NOTICES.md", "a", encoding="utf-8") as f:
+            f.write("\n" + model_credit(vehicle))
+    else:
+        print("assemble: scrub: no Humvee model (--vehicle-model): the page's cars are boxes")
+    view = list(SCRUB_VIEW)
+    if len({str(rep.get("set") or "") for rep in reps}) > 1:
+        first = open_set(reps, plants[0])
+        view += ["--data-set", first] if first else []
     config = {
         "title": "GRL-SNAM: watch it learn",
         "src": "main.py",
         "src_param": False,
         "preload": preload,
-        "args": args + SCRUB_VIEW,
+        "args": args + view,
     }
     (page / "ariadne.config.json").write_text(json.dumps(config, indent=2) + "\n")
     sets = len({str(rep.get("set") or "") for rep in reps})
@@ -434,6 +502,10 @@ def main(argv=None) -> int:
                          "directory)")  # fmt: skip
     ap.add_argument("--scrub-reports", nargs="+", type=Path, default=None, metavar="R",
                     help="scrub reports deployed before (grl_snam.scrub/v1): deploy nothing")  # fmt: skip
+    ap.add_argument("--vehicle-model", type=Path, default=None, metavar="GLB",
+                    help="the Humvee's model the scrub page draws its cars with (default: "
+                         f"{VEHICLE_MODEL} in --python's prefix, the cvcpkg package "
+                         "vehicle-humvee's; without one the cars are boxes)")  # fmt: skip
     ap.add_argument("--expect-libcvc", default=None, metavar="VERSION",
                     help="the libcvc --host is built from (e.g. 4.0.0): refuse runs deployed on "
                          "another, whose generated world the page would not draw the same")  # fmt: skip
@@ -455,13 +527,18 @@ def main(argv=None) -> int:
             reports = deploy_scrub(sets, checkpoints, a.python, cache,
                                    a.scrub_world, a.scrub_ticks, a.scrub_plants)  # fmt: skip
         check_libcvc(reports, a.expect_libcvc)
+    vehicle = a.vehicle_model or Path(a.python).resolve().parent.parent / VEHICLE_MODEL
+    if not vehicle.is_file():
+        if a.vehicle_model:
+            sys.exit(f"assemble: no Humvee model at {vehicle}")
+        vehicle = None
     if a.out.exists():
         shutil.rmtree(a.out)
     try:
         if a.learn_only:
             learn_page(a.host, a.out, a.histories, a.arms)
         elif a.scrub_only:
-            scrub_page(a.host, a.out, reports)
+            scrub_page(a.host, a.out, reports, vehicle)
         else:
             shutil.copytree(SITE_SRC, a.out)
             for dest, src in FIGURES.items():
@@ -470,7 +547,7 @@ def main(argv=None) -> int:
             (a.out / ".nojekyll").touch()  # served as is: no Jekyll
             learn_page(a.host, a.out / "learn", a.histories, a.arms)
             if reports is not None:
-                scrub_page(a.host, a.out / "scrub", reports)
+                scrub_page(a.host, a.out / "scrub", reports, vehicle)
             else:
                 drop_card(a.out)
     finally:

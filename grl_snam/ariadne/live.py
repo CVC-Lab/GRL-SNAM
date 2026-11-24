@@ -837,12 +837,33 @@ def world_meta(host) -> dict:
     }
 
 
-def publish_tables(host, tables, plant_rows, agent_name, plant_name):
-    """The Stats and Ledger windows' tables (:func:`grl_snam.ariadne._arms.panel_tables`), and the
-    plant ledger of the arm the Agent combo picks."""
-    for key, rows in tables.items():
+def set_rows(host, key, rows, last=None) -> None:
+    """``host.set_table(key, rows)``; with ``last`` (a dict the caller keeps: what this wrote at
+    each key before), only the cells that changed when the rows and their columns are the same as
+    last time, as a play head moving through a run log has them (set_table rewrites the whole
+    subtree)."""
+    prev = last.get(key) if last is not None else None
+    if (
+        prev is not None
+        and len(prev) == len(rows)
+        and all(r.keys() == q.keys() for r, q in zip(rows, prev, strict=True))
+    ):
+        for i, (r, q) in enumerate(zip(rows, prev, strict=True)):
+            for c, v in r.items():
+                if v != q[c]:
+                    host.set(f"{key}.{i}.{c}", v)
+    else:
         host.set_table(key, rows)
-    host.set_table("ledger.plant", plant_rows)
+    if last is not None:
+        last[key] = [dict(r) for r in rows]
+
+
+def publish_tables(host, tables, plant_rows, agent_name, plant_name, last=None):
+    """The Stats and Ledger windows' tables (:func:`grl_snam.ariadne._arms.panel_tables`), and the
+    plant ledger of the arm the Agent combo picks. ``last``: as :func:`set_rows`'s."""
+    for key, rows in tables.items():
+        set_rows(host, key, rows, last)
+    set_rows(host, "ledger.plant", plant_rows, last)
     applies = sum(r["value"] != "n/a" for r in plant_rows)
     host.set("ledger.plant_note", f"{agent_name} on {plant_name}: "
              + (f"{applies} of {len(plant_rows)} items apply" if applies else
@@ -888,9 +909,10 @@ def publish_arms(host, run, fleet, st, charts):
 
 
 def draw_ghosts(host, st, arms, sizes, presets):
-    """Each arm's ghost: the Humvee's model (or a box its size) in the arm's colour, see-through;
-    a tag above it; and the goal's post. ``sizes`` are each arm's (length, width, wheelbase) (m),
-    ``presets`` its vehicle preset (None on nav's bicycle, which has a Humvee's body)."""
+    """Each arm's ghost: the Humvee's model (or a box its size) in the arm's colour, see-through
+    (``st["opacity"]``, one per arm, when given; else 0.55); a tag above it; and the goal's post.
+    ``sizes`` are each arm's (length, width, wheelbase) (m), ``presets`` its vehicle preset (None on
+    nav's bicycle, which has a Humvee's body)."""
     C = _cars.C
     for name in st["nodes"]:
         if host.scene.hasGraphics(name):
@@ -908,7 +930,7 @@ def draw_ghosts(host, st, arms, sizes, presets):
         gn = host.scene.geometry_node(name)
         gn.setUseSingleColor(True)
         gn.setColor(*col)
-        gn.setOpacity(0.55)
+        gn.setOpacity(float((st.get("opacity") or [0.55] * len(arms))[j]))
         host.lab.add_mesh(f"arm{j}_tag", *_host.humvee_box(0.7, 0.7, 0.5), color=col)
         st["nodes"] += [name, f"arm{j}_tag"]
         modeled.append(model is not None)
@@ -919,9 +941,33 @@ def draw_ghosts(host, st, arms, sizes, presets):
     st["modeled"] = modeled
 
 
+def ghost_legend(arms, notes=None, opacity=None) -> dict:
+    """The scene's legend, as the Stats window shows it (``arms.legend.*``): a line per colour
+    slot in use (``slot<j>``), naming the arm whose cube, car and path are that colour (with its
+    note from ``notes``, a name -> text dict, when it has one), and ``notes``: what stacked cubes
+    and the yellow post mean. ``opacity`` is each arm's car's (``st["opacity"]``): a car under
+    0.99 is see-through."""
+    out = {f"slot{j}": "" for j in range(len(_arms.SLOT_NAMES))}
+    for i, a in enumerate(arms):
+        colour = _arms.SLOT_NAMES[a.slot % len(_arms.SLOT_NAMES)]
+        note = (notes or {}).get(a.name, "")
+        car = "solid" if opacity is not None and float(opacity[i]) >= 0.99 else "see-through"
+        out[f"slot{a.slot % len(_arms.SLOT_NAMES)}"] = (
+            f"{colour} cube: {a.name.strip()}{f' ({note})' if note else ''}\n"
+            f"  {car} car, {colour} path"
+        )
+    out["notes"] = (
+        "cubes stacked over one car: those runs are at the same spot\nyellow post: the goal"
+    )
+    return out
+
+
 def update_ghosts(host, st, world, arms, poses, sizes, goal, follow, presets=None):
     """The ghosts at ``poses`` (each arm's rear axle x, y and heading), their tracks, the goal's
-    post at ``goal``, and the camera on arm ``follow``. Live and replay both draw with it."""
+    post at ``goal``, and the camera on arm ``follow``. Live and replay both draw with it. With
+    ``st["tracks"]`` None there are no running tracks (the scrubber draws each run's whole path).
+    The legend (:func:`ghost_legend`, ``st["legend_notes"]`` its notes) is written when it
+    changes."""
     import pycvc_gl
     from pycvc_gl.vehicle import seat_transform
 
@@ -936,6 +982,10 @@ def update_ghosts(host, st, world, arms, poses, sizes, goal, follow, presets=Non
     ):  # a new plant's vehicles, or the model has come since
         draw_ghosts(host, st, arms, sizes, presets)
         st["sized"] = sized
+    legend = ghost_legend(arms, st.get("legend_notes"), st.get("opacity"))
+    if st.get("legend") != legend:
+        host.set_many(legend, prefix="arms.legend")
+        st["legend"] = legend
     centers = []
     for j, ((x, y, heading), (_, _, wheelbase)) in enumerate(zip(poses, sizes, strict=True)):
         h = 0.5 * float(wheelbase)
@@ -947,13 +997,13 @@ def update_ghosts(host, st, world, arms, poses, sizes, goal, follow, presets=Non
         host.scene.getGraphics(f"arm{j}_tag").setTransform(
             seat_transform(cx, cy, float(heading), sampler, lift=2.3 + 0.6 * j)
         )
-        if host.frame_count % 3 == 0:
+        if st["tracks"] is not None and host.frame_count % 3 == 0:
             st["tracks"][j] = (st["tracks"][j] + [(float(x), float(y))])[-600:]
     gx, gy = goal
     host.scene.getGraphics("arms_goal").setTransform(
         [1, 0, 0, gx, 0, 1, 0, gy, 0, 0, 1, world.z(gx, gy), 0, 0, 0, 1]
     )
-    if host.frame_count % 6 == 0:
+    if st["tracks"] is not None and host.frame_count % 6 == 0:
         for j, pts in enumerate(st["tracks"]):
             name = f"arm{j}_track"
             if host.scene.hasGraphics(name):

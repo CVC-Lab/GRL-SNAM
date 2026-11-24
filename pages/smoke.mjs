@@ -19,7 +19,9 @@
 //   - the scrub page (--scrub, the path under --base; none unless given): grl-snam ariadne scrub
 //     --view must start in the page, show a checkpoint of the runs it was given (its stderr says
 //     which), draw the world they were deployed on (it says when its own libcvc built another),
-//     run its frames, and still run 5 s later; no traceback, no CSP violation.
+//     draw its cars with the Humvee's model when the page ships it, run its frames, and still run
+//     5 s later; no traceback, no CSP violation. It says how many frames a second the page ran
+//     (headless Chrome's software GL here, so a floor, not the figure a GPU gets).
 //
 // --shots writes each page as DIR/<name>.png. Exit status 0 when every case passes.
 
@@ -146,7 +148,8 @@ async function openPage(url) {
     ws.send(JSON.stringify({id, method, params}));
   });
   const evaluate = async expr => {
-    const m = await send('Runtime.evaluate', {expression: expr, returnByValue: true});
+    const m = await send('Runtime.evaluate', {expression: expr, returnByValue: true,
+                                                awaitPromise: true});
     return m.result && m.result.result ? m.result.result.value : undefined;
   };
   await send('Page.enable');
@@ -256,8 +259,22 @@ try {
     const differs = v.log.find(l => /^scrub: this world is not quite the one deployed on/.test(l));
     record('scrub draws the world its runs were deployed on', differs === undefined,
            differs || '');
-    await new Promise(r => setTimeout(r, 5000));
+    // Its frames a second over 3 s, from the page's own animation frames (each runs one frame).
+    const fps = await page.evaluate(
+        'new Promise(res => { let n = 0; const t0 = performance.now(); const f = t => { ++n; ' +
+        'if (t - t0 < 3000) requestAnimationFrame(f); else res(n / ((t - t0) / 1000)); }; ' +
+        'requestAnimationFrame(f); })');
+    console.log(`      scrub runs at ${Number(fps).toFixed(1)} frames a second here`);
+    await new Promise(r => setTimeout(r, 2000));
     const later = await watch(page, () => true);
+    // A page that ships the Humvee's model (assemble.py --vehicle-model) draws the cars with it.
+    // (No cars without a 3-D world: a page of a city it cannot fetch shows the windows alone.)
+    const shipped = fs.existsSync(path.join(SITE, SCRUB, 'share/cvc-scenes/shared/Humvee.glb'));
+    const cars = later.log.find(l => /^scrub: the cars are /.test(l)) || '';
+    record(`scrub draws its cars${shipped ? " with the Humvee's model" : ''}`,
+           /^scrub: (no 3-D world|the windows alone)/.test(world || '') ||
+             (shipped ? cars === "scrub: the cars are the Humvee's model" : cars !== ''),
+           cars || world || 'no "scrub: the cars are ..." line');
     record('scrub is still running 5 s later, with no CSP violation',
            later.state === 'running' && later.csp.length === 0 &&
              !later.log.some(l => /^Traceback/.test(l)),

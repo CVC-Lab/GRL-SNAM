@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -112,6 +113,101 @@ def test_two_runs_side_by_side():
     assert both.arrays["x"].tolist() == [[0, 10], [1, 11]]
     assert both.arrays["leg_goal"].tolist() == [[3.0, 4.0]]
     assert [(a["name"], a["slot"]) for a in both.meta["arms"]] == [("step 0", 0), ("step 9", 1)]
+
+
+def test_how_far_a_checkpoint_drives_from_step_0():
+    """apart_m: how far the car gets from step 0's at the same tick, at most; the texts say how far,
+    and when it is under a car's width that the two drive as one."""
+    from grl_snam.learning.runlog import RunLog
+
+    def one(ys):
+        arrays = {"t": np.array([0.05, 0.1, 0.15]), "x": np.array([[0.0], [1.0], [2.0]]),
+                  "y": np.asarray(ys, float)[:, None]}  # fmt: skip
+        return RunLog(arrays, {"arms": [{"name": "a", "slot": 0}], "dt": 0.05})
+
+    first, other = one([0, 0, 0]), one([0, 5, 4])
+    assert scrub.apart(other, first) == (5.0, 4.0)
+    assert scrub.metrics_of(other, first)["apart_m"] == 5.0
+    assert math.isnan(scrub.metrics_of(other)["apart_m"])  # no step 0 to measure from
+    rows = [{"step": s} for s in (0, 100, 200)]
+    metrics = [{"apart_m": 0.0}, {"apart_m": 0.3}, {"apart_m": 1.5}]
+    assert scrub.apart_text(rows, metrics, 0, 0.0, 0.0, 2.2) == (
+        "this is step 0 itself: the two cars are one run"
+    )
+    near = scrub.apart_text(rows, metrics, 1, 0.3, 0.1, 2.2)
+    assert near.startswith("step 100 gets 0.3 m from step 0 at most, 0.1 m at the end:")
+    assert near.endswith("step 100 drives as step 0 does")
+    assert scrub.apart_text(rows, metrics, 2, 5.0, 4.0, 2.2) == (
+        "step 200 gets 5.0 m from step 0 at most, 4.0 m at the end"
+    )
+    whole = scrub.run_apart_text(rows, metrics, 2.2)
+    assert whole.startswith("its checkpoints get 1.5 m from step 0 at most (step 200),")
+    assert whole.endswith("on this scenario, training has not changed how it drives")
+    assert "training" not in scrub.run_apart_text(rows, metrics, 1.0)  # one parts by a car's width
+    assert scrub.run_apart_text(rows, [{}, {"apart_m": 0.3}, {}], 2.2) == ""  # not all known
+    table = scrub.table_rows([{**r, "selected": False, "best": False} for r in rows],
+                             [{**_metrics(9.0), **m} for m in metrics], 2)  # fmt: skip
+    assert [r["apart_m"] for r in table] == ["0.0", "0.3", "1.5"]
+    old = scrub.table_rows([{"step": 0, "selected": False, "best": False}], [_metrics(9.0)], 0)
+    assert old[0]["apart_m"] == "-"  # a report from before the distance was kept
+
+
+def test_the_run_a_view_opens_on():
+    from types import SimpleNamespace as Run
+
+    runs = [Run(set="retrain", plant="humvee"), Run(set="fixed/retrain", plant="humvee"),
+            Run(set="fixed/retrain", plant="kinematic")]  # fmt: skip
+    assert scrub.first_run(runs) == 0
+    assert scrub.first_run(runs, "fixed/retrain") == 1
+    assert scrub.first_run(runs, "fixed/retrain", "kinematic") == 2
+    assert scrub.first_run(runs, plant="kinematic") == 2
+    assert scrub.first_run(runs, "world-units/retrain") is None
+
+
+def test_a_table_rewrites_only_the_cells_that_changed():
+    """live.set_rows: with what it wrote before, a table of the same rows and columns changes only
+    the cells that differ; another shape is written whole."""
+    from grl_snam.ariadne.live import set_rows
+
+    class Host:
+        def __init__(self):
+            self.calls = []
+
+        def set_table(self, key, rows):
+            self.calls.append(("table", key, len(rows)))
+
+        def set(self, key, value):
+            self.calls.append(("set", key, value))
+
+    host, last = Host(), {}
+    set_rows(host, "t", [{"a": "1", "b": "2"}], last)
+    set_rows(host, "t", [{"a": "1", "b": "3"}], last)
+    set_rows(host, "t", [{"a": "1", "b": "3"}], last)
+    set_rows(host, "t", [{"a": "1", "b": "3"}, {"a": "4", "b": "5"}], last)
+    set_rows(host, "t", [{"a": "1", "c": "3"}, {"a": "4", "c": "5"}], last)
+    set_rows(host, "u", [{"a": "1"}])
+    set_rows(host, "u", [{"a": "1"}])  # without last: whole each time
+    assert host.calls == [("table", "t", 1), ("set", "t.0.b", "3"), ("table", "t", 2),
+                          ("table", "t", 2), ("table", "u", 1), ("table", "u", 1)]  # fmt: skip
+
+
+def test_the_scene_s_legend():
+    """live.ghost_legend: a line per colour slot in use, naming the arm (and its note) whose cube,
+    car and path are that colour; the other slots empty; what stacked cubes and the post mean."""
+    from grl_snam.ariadne._arms import Arm
+    from grl_snam.ariadne.live import ghost_legend
+
+    arms = [Arm(name="step 0", slot=0), Arm(name="step 2800", slot=1)]
+    legend = ghost_legend(arms, {"step 2800": "the checkpoint picked"}, [0.45, 1.0])
+    assert legend["slot0"] == "blue cube: step 0\n  see-through car, blue path"
+    assert legend["slot1"] == (
+        "orange cube: step 2800 (the checkpoint picked)\n  solid car, orange path"
+    )
+    assert all(legend[f"slot{j}"] == "" for j in range(2, 8))
+    assert "cubes stacked over one car" in legend["notes"] and "yellow post" in legend["notes"]
+    names = ("trained", "untrained", "constant")
+    trio = ghost_legend([Arm(name=n, slot=j) for j, n in enumerate(names)])
+    assert trio["slot2"] == "green cube: constant\n  see-through car, green path"
 
 
 def test_a_lean_log_cached_before_packing_is_packed_when_read(tmp_path):
@@ -332,14 +428,27 @@ def test_the_view_picks_a_checkpoint(deployed):
 
         return act
 
+    # How far each checkpoint's car gets from step 0's: in the report, the table and the texts.
+    far = [c["metrics"]["apart_m"] for c in deployed["report"]["checkpoints"]]
+    assert far[0] == 0.0 and all(v > 0 for v in far[1:])
+    assert [r["apart_m"] for r in host.get_tree("scrub.table")] == [f"{v:.1f}" for v in far]
+    assert host.get("scrub.apart").startswith(f"step 4 gets {far[2]:.1f} m from step 0 at most")
+    assert host.get("scrub.apart_run").startswith(f"its checkpoints get {max(far):.1f} m")
+    farthest = deployed["report"]["checkpoints"][int(np.argmax(far))]["step"]
+
     seen = {}
-    _, hosts = _run([*deployed["args"][:-1], "12"], {
+    _, hosts = _run([*deployed["args"][:-1], "14"], {
         2: lambda h: h.emit("scrub_next"), 4: lambda h: seen.__setitem__("next", h.get("scrub.step")),
         5: click(1.7), 7: lambda h: seen.__setitem__("click", h.get("scrub.step")),
-        8: lambda h: h.set("scrub.pos", "0"), 10: lambda h: seen.__setitem__("pos", h.get("scrub.step")),
+        8: lambda h: h.set("scrub.pos", "0"),
+        10: lambda h: seen.update(pos=h.get("scrub.step"), stats=[r["arm"] for r in h.get_tree("arms.stats")],
+                                  apart=h.get("scrub.apart")),
+        11: lambda h: h.emit("scrub_far"), 13: lambda h: seen.__setitem__("far", h.get("scrub.step")),
     })  # fmt: skip
-    assert seen == {"next": "6", "click": "2", "pos": "0"}
-    assert [r["arm"] for r in hosts[0].get_tree("arms.stats")] == ["step 0", "step 0 "]
+    assert seen.pop("stats") == ["step 0", "step 0 "]
+    assert seen.pop("apart") == "this is step 0 itself: the two cars are one run"
+    assert seen == {"next": "6", "click": "2", "pos": "0", "far": f"{farthest:g}"}
+    assert "the farthest from step 0" in hosts[0].get("scrub.now")
 
 
 @needs_host
@@ -478,6 +587,31 @@ def test_view_only_data_sets_side_by_side(deployed, tmp_path):
 
 
 @needs_host
+def test_view_only_opens_where_it_is_told(deployed, tmp_path, capsys):
+    """--data-set (and --plant) pick the run a view opens on, --at far the checkpoint whose car
+    gets farthest from step 0's; a set no report has, or an --at that is no checkpoint, is
+    refused."""
+    a = _moved(deployed, tmp_path / "a", "seed1.history.jsonl")
+    b = _moved(deployed, tmp_path / "b", "seed1.history.jsonl")
+    for path, name in ((a, "retrain"), (b, "fixed/retrain")):
+        rep = json.loads(path.read_text())
+        rep["set"] = name
+        path.write_text(json.dumps(rep))
+    far = [c["metrics"]["apart_m"] for c in deployed["report"]["checkpoints"]]
+    code, hosts = _run(["scrub", "--view", str(a), str(b), "--headless", "--frames", "2",
+                        "--data-set", "fixed/retrain", "--plant", "kinematic", "--at", "far"])  # fmt: skip
+    assert code == 0
+    host = hosts[0]
+    assert host.get("scrub.title").startswith("fixed/retrain/seed1:")
+    assert host.get("scrub.now").startswith(f"checkpoint {int(np.argmax(far)) + 1} of 4: ")
+    assert "the farthest from step 0" in host.get("scrub.now")
+    assert _main(["scrub", "--view", str(a), "--headless", "--data-set", "nope"]) == 2
+    assert _main(["scrub", "--view", str(a), "--headless", "--at", "first"]) == 2
+    err = capsys.readouterr().err
+    assert "no report is of data set 'nope'" in err and "--at first" in err
+
+
+@needs_host
 def test_view_only_refusals(deployed, tmp_path, capsys):
     report = _moved(deployed, tmp_path / "page")
     assert _main(["scrub", str(deployed["hist"]), "--view", str(report), "--headless"]) == 2
@@ -500,6 +634,43 @@ def _assemble():
     return mod
 
 
+def test_the_page_opens_on_the_set_whose_checkpoints_part_most():
+    assemble = _assemble()
+
+    def rep(name, plant, far):
+        cks = [{"metrics": {"apart_m": 0.0}}] + [{"metrics": {"apart_m": v}} for v in far]
+        return {"set": name, "scenario": {"plant": plant}, "checkpoints": cks}
+
+    reps = [rep("retrain", "humvee", [0.3, 0.4, 0.2]), rep("fixed/retrain", "humvee", [4.0, 80.0, 3.0]),
+            rep("world-units/retrain", "humvee", [1.0, 1.2, 1.1]),
+            rep("world-units/retrain", "kinematic", [90.0, 99.0, 95.0])]  # fmt: skip
+    assert assemble.open_set(reps, "humvee") == "fixed/retrain"  # its median, 4.0 m
+    assert assemble.open_set(reps, "kinematic") == "world-units/retrain"
+    unknown = [{**r, "checkpoints": [{"metrics": {}}, {"metrics": {}}]} for r in reps]
+    assert assemble.open_set(unknown, "humvee") == "retrain"  # no distances: the first set
+
+
+def _glb(path, extras):
+    """A glTF binary with only its JSON chunk: ``asset.extras`` as given."""
+    import struct
+
+    js = json.dumps({"asset": {"version": "2.0", "extras": extras}}).encode()
+    js += b" " * (-len(js) % 4)
+    path.write_bytes(struct.pack("<III", 0x46546C67, 2, 20 + len(js))
+                     + struct.pack("<II", len(js), 0x4E4F534A) + js)  # fmt: skip
+    return path
+
+
+def test_the_humvee_model_s_credit(tmp_path):
+    assemble = _assemble()
+    glb = _glb(tmp_path / "Humvee.glb", {"title": "A Humvee", "author": "Someone",
+                                         "license": "CC-BY-4.0", "source": "https://example.org/h"})  # fmt: skip
+    credit = assemble.model_credit(glb)
+    assert credit.startswith(f"## Humvee.glb ({assemble.VEHICLE_MODEL})")
+    assert '"A Humvee" by Someone, https://example.org/h, licensed CC-BY-4.0' in credit
+    assert "licensed" not in assemble.model_credit(_glb(tmp_path / "plain.glb", {}))
+
+
 @needs_host
 def test_assemble_deploys_a_scrub_page(deployed, tmp_path):
     """pages/assemble.py --scrub-only deploys a history's checkpoints (found in
@@ -512,18 +683,26 @@ def test_assemble_deploys_a_scrub_page(deployed, tmp_path):
     blobs = tmp_path / "checkpoints" / "coef_train_history"
     shutil.copytree(deployed["root"] / "run", blobs)
     page = tmp_path / "site" / "scrub"
+    glb = _glb(tmp_path / "Humvee.glb", {"license": "CC-BY-4.0", "author": "Someone"})
     assert assemble.main(["--host", str(host), "--out", str(page), "--scrub-only",
                           "--scrub-histories", str(FIXTURE), "--checkpoints", str(blobs.parent),
                           "--python", sys.executable, "--scrub-world", "flat",
-                          "--scrub-ticks", "40", "--scrub-plants", "kinematic"]) == 0  # fmt: skip
+                          "--scrub-ticks", "40", "--scrub-plants", "kinematic",
+                          "--vehicle-model", str(glb)]) == 0  # fmt: skip
     config = json.loads((page / "ariadne.config.json").read_text())
     bundle = page / config["args"][2]
     assert config["args"][:3] == ["scrub", "--view", "data/coef_train_history.scrub.zip"]
+    assert config["args"][3:] == assemble.SCRUB_VIEW  # one data set: no --data-set
+    # The Humvee's model ships where pycvc_gl looks in a prefix (main.py: the page), credited.
+    assert assemble.VEHICLE_MODEL in config["preload"]
+    assert (page / assemble.VEHICLE_MODEL).read_bytes() == glb.read_bytes()
+    assert "by Someone" in (page / "THIRD_PARTY_NOTICES.md").read_text()
     import zipfile
 
     with zipfile.ZipFile(bundle) as z:
         rep, names = json.loads(z.read("scrub.json")), set(z.namelist())
     assert rep["scenario"]["ticks"] == 40 and len(rep["checkpoints"]) == 4
+    assert [c["metrics"]["apart_m"] for c in rep["checkpoints"]][0] == 0.0
     assert all(c["cache"] in names for c in rep["checkpoints"])
     assert all(c["cache"].endswith(".lean.npz") for c in rep["checkpoints"])  # the page's are lean
     # The view reads the bundle as it is (the logs from inside it), and shows what the deploy did.
