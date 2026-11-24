@@ -8,8 +8,8 @@
 #     - include: arms_ledger
 #
 # Stats ends with the scene's legend (arms.legend.*, live.ghost_legend): a line per arm in its
-# colour, what its cube, car and path are. replay.ari includes them too: grl_snam/ariadne/replay.py writes the same keys from a run log at
-# the play head. Both show while arms.on is 1 (live.py sets it with --arms, replay.py always); the
+# colour, what its cube, car and path are. replay.ari includes them too:
+# grl_snam/ariadne/replay.py writes the same keys from a run log at the play head. Both show while arms.on is 1 (live.py sets it with --arms, replay.py always); the
 # Retarget's controls only while arms.live is 1 (a live run). The charts draw a cursor at play.t
 # (the replay's play head), and a click on one writes the time there to play.seek and sends
 # arms_seek (the replay seeks there). The keys they bind:
