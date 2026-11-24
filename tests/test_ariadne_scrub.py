@@ -191,6 +191,77 @@ def test_a_table_rewrites_only_the_cells_that_changed():
                           ("table", "t", 2), ("table", "u", 1), ("table", "u", 1)]  # fmt: skip
 
 
+def test_the_world_a_report_drove_on_against_the_one_rebuilt():
+    """world_check: field by field; what one side lacks is not compared (nor the city's state
+    path); an older generated record's flat keys read as its settings."""
+    from grl_snam.ariadne._world import grid_fingerprint
+
+    occ = np.zeros((5, 6), np.uint8)
+    occ[1, 2] = 1
+    grid = grid_fingerprint(occ, (-10.0, -12.0, 10.0, 12.0))
+    assert grid["shape"] == [5, 6] and grid["blocked"] == round(1 / 30, 5)
+    assert grid == grid_fingerprint(occ.copy(), (-10.0000001, -12.0, 10.0, 12.0))  # mm-rounded
+    other = occ.copy()
+    other[3, 3] = 1
+    assert grid_fingerprint(other, (-10.0, -12.0, 10.0, 12.0))["sha256"] != grid["sha256"]
+
+    gen = {"source": "generated", "settings": {"seed": "7", "half": "500"},
+           "stats": {"buildings": "160", "water": "12 ponds"}, "grid": grid}  # fmt: skip
+    assert scrub.world_check(gen, dict(gen)) == ([], ["source", "settings", "stats", "grid"], [])
+    moved = {**gen, "grid": grid_fingerprint(other, (-10.0, -12.0, 10.0, 12.0))}
+    diffs, _, _ = scrub.world_check(gen, moved)
+    assert diffs == ["the navigator's grid differs (6.67% of its cells blocked here, 3.33% "
+                     "deployed)"]  # fmt: skip
+    diffs, _, alike = scrub.world_check(gen, moved, changed=1)  # the cells known: 1 in 30
+    assert diffs == ["the navigator's grid differs in 1 of its 30 cells (3.33%)"] and not alike
+    big = {**gen, "grid": {**grid, "shape": [100, 100]}}  # 1 of 10,000: the same world
+    diffs, _, alike = scrub.world_check(big, {**big, "grid": {**big["grid"], "sha256": "0" * 16}},
+                                        changed=1)  # fmt: skip
+    assert not diffs and alike == ["its navigator's grid differs in 1 of 10,000 cells (0.01%)"]
+    diffs, _, _ = scrub.world_check(gen, {**gen, "settings": {"seed": "8", "half": "500"}})
+    assert diffs == ["the generator's settings differ: seed 8 here, 7 deployed"]
+    # A report from before the grid was kept, its generated world recorded flat (GRL-SNAM before
+    # #196): the same settings, no grid to compare, so nothing differs.
+    flat = {"source": "generated", "seed": 7, "half_m": 500.0, "building_count": 160}
+    assert scrub.world_check(flat, gen) == ([], ["source", "settings", "stats"], [])
+
+    data = {"source": "data", "uri": "cvcpkg://cy-pca/scene-austin-south-small",
+            "canonical": "cvcpkg://cy-pca/scene-austin-south-small@1.0.0+cvc.2",
+            "sha256": "ab" * 32, "path": "scrub.data.city", "grid": grid}  # fmt: skip
+    page = {**data, "path": "ui.docs.ari.data.city"}
+    assert scrub.world_check(data, page) == ([], ["source", "canonical", "sha256", "grid"], [])
+    diffs, _, _ = scrub.world_check(data, {**page, "canonical": data["canonical"][:-1] + "3"})
+    assert diffs[0].startswith(
+        "another dataset: cvcpkg://cy-pca/scene-austin-south-small@1.0.0+cvc.3"
+    )
+    diffs, _, _ = scrub.world_check(data, {**page, "sha256": "cd" * 32})
+    assert diffs == ["the dataset's archive differs (another build of the same version?)"]
+    diffs, _, _ = scrub.world_check(data, gen)
+    assert diffs == ["it drove on the data world, this is the generated one"]
+
+
+def test_a_report_s_grid_and_where_another_differs():
+    """pack_grid / unpack_grid round-trip a grid's blocked cells; grid_changes says where another
+    grid differs (cell centres, m); nearest and near_text say how near the runs come to them."""
+    from grl_snam.ariadne._world import grid_changes, pack_grid, unpack_grid
+
+    occ = np.zeros((11, 21), np.uint8)
+    occ[2, 3] = occ[5, 7] = 1
+    packed = pack_grid(occ)
+    assert packed["shape"] == [11, 21] and np.array_equal(unpack_grid(packed), occ != 0)
+    other = occ.copy()
+    other[5, 7], other[9, 20] = 0, 1
+    bounds = (-10.0, -5.0, 10.0, 5.0)  # 1 m cells, row 0 at the south edge
+    assert grid_changes(packed, other, bounds).tolist() == [[-3.0, 0.0], [10.0, 4.0]]
+    assert grid_changes(packed, np.zeros((3, 3)), bounds) is None  # another shape
+    path = np.array([[-3.0, 30.0], [-3.0, 3.0]])  # 3 m north of the cell at (-3, 0)
+    assert scrub.nearest(path, grid_changes(packed, other, bounds)) == pytest.approx(3.0)
+    assert math.isinf(scrub.nearest(path, np.zeros((0, 2))))
+    assert scrub.near_text(3.0, 4.7).startswith("these two runs pass 3.0 m from one of those cells")
+    assert scrub.near_text(80.0, 4.7) == ("these two runs come no nearer than 80 m to those cells:"
+                                          "\nwhat they drove past is the same here")  # fmt: skip
+
+
 def test_the_scene_s_legend():
     """live.ghost_legend: a line per colour slot in use, naming the arm (and its note) whose cube,
     car and path are that colour; the other slots empty; what stacked cubes and the post mean."""
@@ -609,6 +680,40 @@ def test_view_only_opens_where_it_is_told(deployed, tmp_path, capsys):
     assert _main(["scrub", "--view", str(a), "--headless", "--at", "first"]) == 2
     err = capsys.readouterr().err
     assert "no report is of data set 'nope'" in err and "--at first" in err
+
+
+@needs_host
+@pytest.mark.skipif(
+    os.environ.get("GRL_SNAM_ARIADNE_GL", "0") in ("", "0"),
+    reason="GRL_SNAM_ARIADNE_GL=1 runs the offscreen checks (needs a GL context)",
+)
+def test_view_only_says_when_its_world_is_another(deployed, tmp_path, capsys):
+    """A drawn view rebuilds the report's world and compares it field by field: the deploy's own
+    world says so, with the grid among the fields compared; a report whose grid was another says
+    what differs."""
+    report = _moved(deployed, tmp_path / "page")
+    rep = json.loads(report.read_text())
+    assert rep["scenario"]["world"]["grid"]["shape"]  # the deploy kept the grid's fingerprint
+    assert _main(["scrub", "--view", str(report), "--offscreen", "--frames", "2"]) == 0
+    err = capsys.readouterr().err
+    assert "scrub: the world is the one deployed on (source, grid compared)" in err
+    # The deploy's grid with one cell flipped, as another libcvc's might be.
+    from grl_snam.ariadne._world import pack_grid, unpack_grid
+
+    grid = unpack_grid(rep["world_grid"])
+    grid[1, 1] = not grid[1, 1]
+    rep["world_grid"] = pack_grid(grid)
+    rep["scenario"]["world"]["grid"]["sha256"] = "0" * 16
+    report.write_text(json.dumps(rep))
+    seen = {}
+    code, _ = _run(["scrub", "--view", str(report), "--offscreen", "--frames", "3"],
+                   {3: lambda h: seen.update(note=h.get("scrub.world_note"),
+                                             near=h.get("scrub.world_near"))})  # fmt: skip
+    assert code == 0
+    cells = int(np.prod(rep["scenario"]["world"]["grid"]["shape"]))
+    assert seen["note"].startswith(f"the world deployed on, but its navigator's grid differs in 1 "
+                                   f"of {cells:,} cells")  # fmt: skip
+    assert seen["near"].startswith("these two runs ")
 
 
 @needs_host

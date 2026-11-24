@@ -66,6 +66,16 @@ settings, which the deploy's libcvc made: another libcvc's may differ, and the v
 machine in a browser, or a pycvc_gl without the multi-car template, shows the windows alone (no
 3-D world). A run log is read when its checkpoint is first shown.
 
+**Is it the world they drove on?** A deploy keeps the world's record (``scenario.world``: a
+generated world's settings and stats, a dataset's version and archive sha256, and the navigator's
+grid's fingerprint, :func:`grl_snam.ariadne._world.grid_fingerprint`) and the grid's blocked cells
+(``world_grid``, a few KB). The view compares the world it built with them field by field
+(:func:`world_check`; a field an older report lacks is not compared). Another world is "not quite
+the one deployed on", and says what differs. A grid that differs in at most :data:`GRID_ALIKE` of
+its cells is the same world, rasterized by another build of libcvc (the page's wasm libcvc 4.0.0
+differs from the native deploy in 0.15% of the generated city's cells); the Scrub window says how
+many, and how near the two runs shown come to them.
+
 The exit code is 0, and 2 when the history names no saved policy or the plant is torch (the
 scrubber deploys on libcvc's sim_world), or when a report or a file it names is not there.
 """
@@ -389,6 +399,131 @@ def deploy_all(host, world, plant, rows, scenario, history, *, cache=None, lean=
     return out
 
 
+# ── the world the runs drove on, against the one rebuilt ───────────────────────────────────────
+
+#: A generated world's record before its settings and stats were kept apart (GRL-SNAM before
+#: #196): its flat keys -> the settings' names (``world.*``).
+_FLAT_SETTINGS = {"seed": "seed", "half_m": "half", "amp_m": "amp", "water_level_m": "water_level",
+                  "trees": "trees", "rocks": "rocks", "buildings": "buildings",
+                  "tree_gen": "tree_gen", "preset": "preset", "ontology": "ontology",
+                  "terrain": "terrain", "city": "city"}  # fmt: skip
+
+
+#: Up to this share of the navigator's grid's cells may differ, everything else alike, and the
+#: world is still the deploy's, rasterized by another build of libcvc: the page's (wasm) and the
+#: deploy's (native) libcvc 4.0.0 differ in 365 of the generated city's 251,001 cells (0.15%).
+GRID_ALIKE = 0.01
+
+
+def _record(info) -> dict:
+    """A world's record (:attr:`_world.world`'s ``info``) as :func:`world_check` reads it: an
+    older generated world's flat keys as its settings (and its building count as a stat)."""
+    info = dict(info or {})
+    if info.get("source") == "generated" and "settings" not in info:
+        flat = info
+        info = {"source": "generated", "grid": flat.get("grid"),
+                "settings": {new: flat[old] for old, new in _FLAT_SETTINGS.items() if old in flat}}  # fmt: skip
+        if "building_count" in flat:
+            info["stats"] = {"buildings": flat["building_count"]}
+    return info
+
+
+def _known(v) -> bool:
+    return v not in (None, "")
+
+
+def _same(a, b) -> bool:
+    """Two recorded values alike: as numbers when both read as numbers, else as text."""
+    try:
+        return math.isclose(float(a), float(b), rel_tol=1e-9, abs_tol=1e-9)
+    except (TypeError, ValueError):
+        return str(a) == str(b)
+
+
+def world_check(recorded, here, changed=None) -> tuple[list[str], list[str], list[str]]:
+    """What differs between the world a report's runs drove on (``recorded``: its scenario's
+    ``world``) and the one rebuilt here (``here``: :attr:`_world.world`'s ``info``), field by field:
+    the differences that make it another world, the fields compared, and the differences that
+    leave it the same world (a grid of which at most :data:`GRID_ALIKE` of the cells differ). It compares the kind of world; a generated world's settings and the
+    stats its generator published; a dataset's package version (``canonical``, else its ``uri``)
+    and archive (``sha256``); and the navigator's grid (``grid``: its shape, bounds and cells).
+    A field one side lacks (a report from before it was kept) is not compared, and neither is
+    ``path`` (the state node the city sits at, the document's own). ``changed``, when known, is
+    how many of the grid's cells are blocked on one side only (:func:`_world.grid_changes`)."""
+    a, b = _record(recorded), _record(here)
+    diffs, compared, alike = [], [], []
+    if a.get("source") != b.get("source"):
+        return [f"it drove on the {a.get('source') or '?'} world, this is the "
+                f"{b.get('source') or '?'} one"], ["source"], []  # fmt: skip
+    compared.append("source")
+
+    def fields(name, what, x, y):
+        both = [k for k in sorted(set(x or {}) & set(y or {})) if _known(x[k]) and _known(y[k])]
+        if not both:
+            return
+        compared.append(name)
+        off = [f"{k} {y[k]} here, {x[k]} deployed" for k in both if not _same(x[k], y[k])]
+        if off:
+            diffs.append(f"{what}: " + "; ".join(off[:4]) + ("; ..." if len(off) > 4 else ""))
+
+    fields("settings", "the generator's settings differ", a.get("settings"), b.get("settings"))
+    fields("stats", "the generator made another world (another libcvc's?)", a.get("stats"),
+           b.get("stats"))  # fmt: skip
+    if a.get("source") == "data":
+        key = "canonical" if _known(a.get("canonical")) and _known(b.get("canonical")) else "uri"
+        if _known(a.get(key)) and _known(b.get(key)):
+            compared.append(key)
+            if a[key] != b[key]:
+                diffs.append(f"another dataset: {b[key]} here, {a[key]} deployed")
+        if _known(a.get("sha256")) and _known(b.get("sha256")):
+            compared.append("sha256")
+            if a["sha256"] != b["sha256"]:
+                diffs.append("the dataset's archive differs (another build of the same version?)")
+    ga, gb = a.get("grid") or {}, b.get("grid") or {}
+    if _known(ga.get("sha256")) and _known(gb.get("sha256")):
+        compared.append("grid")
+        if ga.get("shape") != gb.get("shape") or ga.get("bounds") != gb.get("bounds"):
+            diffs.append(f"the navigator's grid is {gb.get('shape')} over {gb.get('bounds')} here, "
+                         f"{ga.get('shape')} over {ga.get('bounds')} deployed")  # fmt: skip
+        elif ga["sha256"] != gb["sha256"]:
+            cells = int(np.prod(gb.get("shape") or [0]))
+            if changed is not None and changed <= GRID_ALIKE * cells:
+                alike.append(f"its navigator's grid differs in {changed:,} of {cells:,} cells "
+                             f"({changed / max(cells, 1):.2%})")  # fmt: skip
+            elif changed is not None:
+                diffs.append(f"the navigator's grid differs in {changed:,} of its {cells:,} cells "
+                             f"({changed / max(cells, 1):.2%})")  # fmt: skip
+            else:
+                diffs.append(f"the navigator's grid differs ({float(gb.get('blocked', 0)):.2%} of "
+                             f"its cells blocked here, {float(ga.get('blocked', 0)):.2%} deployed)")  # fmt: skip
+    return diffs, compared, alike
+
+
+def nearest(points, cells, at_most: int = 20000) -> float:
+    """How near ``points`` ((n, 2), m) come to ``cells`` ((m, 2), m): the least distance between
+    any two (m; inf when either is empty). Over ``at_most`` cells, every k-th is taken."""
+    p = np.asarray(points, np.float64).reshape(-1, 2)
+    c = np.asarray(cells, np.float64).reshape(-1, 2)
+    if not len(p) or not len(c):
+        return math.inf
+    c = c[:: max(1, -(-len(c) // at_most))]
+    best = math.inf
+    for i in range(0, len(c), 2048):
+        d = ((c[i : i + 2048, None, :] - p[None, :, :]) ** 2).sum(-1)
+        best = min(best, float(d.min()))
+    return math.sqrt(best)
+
+
+def near_text(d: float, car: float) -> str:
+    """How near the two runs shown come to the cells where the world here is not the deploy's."""
+    if not math.isfinite(d):
+        return ""
+    if d > 2 * car:
+        return (f"these two runs come no nearer than {d:.0f} m to those cells:\n"
+                "what they drove past is the same here")  # fmt: skip
+    return f"these two runs pass {d:.1f} m from one of those cells: there, they may cross what is drawn"
+
+
 # ── the report, and runs read back ─────────────────────────────────────────────────────────────
 
 
@@ -405,15 +540,20 @@ def find_file(report, name) -> Path | None:
     return here / p.name if (here / p.name).is_file() else None
 
 
-def write_report(path, history, run, rows, metrics, scenario, provenance=None, set_name="") -> dict:
+def write_report(path, history, run, rows, metrics, scenario, provenance=None, set_name="",
+                 world_grid=None) -> dict:  # fmt: skip
     """``--report``'s JSON (``grl_snam.scrub/v1``): the history, its data set (``set``, "" for
     none), the scenario and its hash, what deployed it (``provenance``: the GRL-SNAM commit,
-    libcvc's version), and every checkpoint's row (its run log is ``cache``) with its metrics."""
+    libcvc's version), every checkpoint's row (its run log is ``cache``) with its metrics, and the
+    navigator's grid the runs drove on (``world_grid``: :func:`_world.pack_grid`'s, a few KB), so
+    a view can say which cells of its own differ."""
     prov = {k: v for k, v in (provenance or {}).items() if k != "history"}
     rep = {"schema": REPORT_SCHEMA, "history": str(history), "set": set_name, "run": run,
            "scenario": scenario,
            "scenario_hash": scenario_hash(scenario), "provenance": prov,
            "checkpoints": [{**r, "metrics": m} for r, m in zip(rows, metrics, strict=True)]}  # fmt: skip
+    if world_grid is not None:
+        rep["world_grid"] = world_grid
     Path(path).write_text(json.dumps(rep, indent=1, default=str))
     return rep
 
@@ -424,7 +564,7 @@ class Deployed:
     a file read when first shown; :data:`KEEP_LOGS` are kept read)."""
 
     def __init__(self, history, run, rows, metrics, scenario, logs, *, h=None, provenance=None,
-                 set_name=""):  # fmt: skip
+                 set_name="", world_grid=None):  # fmt: skip
         from grl_snam.ariadne import learn
 
         self.history, self.run, self.rows, self.metrics = history, run, rows, metrics
@@ -432,6 +572,8 @@ class Deployed:
         #: The plant its checkpoints were deployed on (the scenario's).
         self.plant = str((scenario or {}).get("plant") or "")
         self.scenario, self.provenance, self._h = scenario, provenance or {}, h
+        #: The navigator's grid the runs drove on (:func:`_world.pack_grid`'s), or None.
+        self.world_grid = world_grid
         self._files = list(logs)
         self._read: dict[int, object] = {}
         self.name = learn.run_label(self.h, 0) if h is not None else _stem(history)
@@ -558,7 +700,8 @@ def load_report(path) -> Deployed:
         metrics.append({n: float(got[n]) if got.get(n) is not None else math.nan for n in METRICS})
         logs.append(f)
     return Deployed(hist, int(rep.get("run", -1)), rows, metrics, rep.get("scenario") or {}, logs,
-                    provenance=rep.get("provenance"), set_name=str(rep.get("set") or ""))  # fmt: skip
+                    provenance=rep.get("provenance"), set_name=str(rep.get("set") or ""),
+                    world_grid=rep.get("world_grid"))  # fmt: skip
 
 
 # ── the view ───────────────────────────────────────────────────────────────────────────────────
@@ -597,6 +740,8 @@ class ScrubView:
         self._published: dict = {}  # the tables' rows as last written (live.set_rows)
         self._trails, self._trail0, self._shown_at = None, None, 0.0
         self._modeled = None  # what the cars were drawn as, said once
+        #: Where the world here is not the deploy's: the cells' centres ((n, 2), m), or None.
+        self.world_changes = None
         self.sets = list(dict.fromkeys(r.set for r in self.runs))
         self.plants = list(dict.fromkeys(r.plant for r in self.runs))
         self.by_set = {s: [i for i, r in enumerate(self.runs) if r.set == s] for s in self.sets}
@@ -778,7 +923,20 @@ class ScrubView:
         self.st["charts"] = None
         self._shown, self._tables_key = self.k, None
         self._shown_at = time.perf_counter()
+        self.world_near()
         print(f"scrub: {self.r.label}: {now}", file=sys.stderr, flush=True)
+
+    def world_near(self) -> None:
+        """How near the two runs shown come to the cells where the world here is not the deploy's
+        (``scrub.world_near``; empty when none differ, or the deploy kept no grid)."""
+        if self.world_changes is None or not len(self.world_changes):
+            self.host.set("scrub.world_near", "")
+            return
+        a, n = self.both.arrays, len(self.both)
+        idx = np.arange(0, n, max(1, n // 300))
+        pts = np.stack([a["x"][idx].ravel(), a["y"][idx].ravel()], axis=1)
+        length = float(a["length"][0, 0]) if "length" in a else 5.0
+        self.host.set("scrub.world_near", near_text(nearest(pts, self.world_changes), length))
 
     def _draw_trails(self) -> None:
         """Both runs' whole paths, each in its car's colour: step 0's once per run, checkpoint k's
@@ -946,14 +1104,26 @@ def view_main(args) -> int:
             return
         sx, sy = sc["start"]
         host.lab.add_markers("start", [(sx, sy, world.z(sx, sy) + 1.0)], color=(0.15, 0.85, 0.25))
-        if json.dumps(world.info, sort_keys=True, default=str) != json.dumps(
-            sc.get("world"), sort_keys=True, default=str
-        ):
-            why = ("this world is not quite the one deployed on (another libcvc's generator?):\n"
-                   "the ghosts may cross what is drawn")  # fmt: skip
+        packed = next((r.world_grid for r in runs if r.world_grid), None)
+        changes = _world.grid_changes(packed, world.occ, world.bounds) if packed else None
+        diffs, compared, alike = world_check(sc.get("world"), world.info,
+                                             None if changes is None else len(changes))  # fmt: skip
+        view.world_changes = changes
+        if diffs:
+            why = ("this world is not quite the one deployed on:\n" + "\n".join(diffs)
+                   + ("" if changes is not None else "\nthe ghosts may cross what is drawn"))  # fmt: skip
             print(f"scrub: {why}", file=sys.stderr)
             host.set("scrub.world_note", why)
+        else:
+            more = "; " + "; ".join(alike) if alike else ""
+            print(f"scrub: the world is the one deployed on ({', '.join(compared)} compared){more}",
+                  file=sys.stderr)  # fmt: skip
+            if alike:  # the same world, rasterized a little otherwise by this build of libcvc
+                host.set("scrub.world_note", "the world deployed on, but " + "; ".join(alike)
+                         + ":\nthis build of libcvc rasterizes it a little otherwise")  # fmt: skip
         view.world = world
+        if getattr(view, "both", None) is not None:
+            view.world_near()
 
     if _world.steps(host):  # the world now, before the first frame
         try:
@@ -1015,6 +1185,7 @@ def deploy_main(args) -> int:
         pt = next((r["blob"] for r in rows if r["blob"].endswith(".pt")), None)
         scale = (_arms._pt_scale(pt) if pt else None) or _arms.POLICY_SCALE
     world_keys = meta["world_keys"] if kind == "generated" else {}  # only a generated world's
+    world_grid = _world.pack_grid(world.occ)  # the grid the runs drive on, for a view to compare
     deployed = []
     for plant in plants:
         # The cars read the plant from the tree (Cars.pull), so it is set there for each one.
@@ -1032,10 +1203,10 @@ def deploy_main(args) -> int:
         prov = logs[0].meta.get("provenance")
         if args.report:
             write_report(args.report, args.history, args.run, on, metrics, scenario, prov,
-                         args.data_set)  # fmt: skip
+                         args.data_set, world_grid)  # fmt: skip
             print(f"scrub: {len(on)} checkpoints to {args.report}")
         deployed.append(Deployed(args.history, args.run, on, metrics, scenario, logs, h=h,
-                                 provenance=prov, set_name=args.data_set))  # fmt: skip
+                                 provenance=prov, set_name=args.data_set, world_grid=world_grid))  # fmt: skip
     host.set("nav_plant.vehicle", plants[0])
     if drawn:
         host.lab.add_markers("start", [(start[0], start[1], world.z(*start) + 1.0)],

@@ -126,6 +126,9 @@ windows:
         bind: scrub.world_note
         visible_when: (!= (state-get "scrub.world_note") "")
       - text: ""
+        bind: scrub.world_near
+        visible_when: (!= (state-get "scrub.world_near") "")
+      - text: ""
         bind: scrub.apart_run
         visible_when: (!= (state-get "scrub.apart_run") "")
       - combo: Checkpoint

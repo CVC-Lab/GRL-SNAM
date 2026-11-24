@@ -239,11 +239,6 @@ try {
            shown ? `${shown[1]}: checkpoint ${shown[2]} of ${shown[3]}, step ${shown[4]}; ` +
                    `${sets}; ${world || 'the 3-D world drawn'}`
                  : 'no "scrub: ...: checkpoint k of n" line');
-    // The page builds libcvc's generated world again with its own libcvc: the runs' world must be
-    // the one it draws (scrub --view compares the world it built with the report's).
-    const differs = v.log.find(l => /^scrub: this world is not quite the one deployed on/.test(l));
-    record('scrub draws the world its runs were deployed on', differs === undefined,
-           differs || '');
     // Its frames a second over 3 s, from the page's own animation frames (each runs one frame).
     const fps = await page.evaluate(
         'new Promise(res => { let n = 0; const t0 = performance.now(); const f = t => { ++n; ' +
@@ -252,6 +247,14 @@ try {
     console.log(`      scrub runs at ${Number(fps).toFixed(1)} frames a second here`);
     await new Promise(r => setTimeout(r, 2000));
     const later = await watch(page, () => true);
+    // The page builds the runs' world again with its own libcvc: it must be the one they drove on
+    // (scrub --view compares its record field by field, the navigator's grid among them; a grid
+    // that differs in a few cells, as the page's wasm libcvc rasterizes it, is still that world).
+    const differs = later.log.find(l => /^scrub: this world is not quite the one deployed on/.test(l));
+    const same = later.log.find(l => /^scrub: the world is the one deployed on/.test(l));
+    record('scrub draws the world its runs were deployed on', differs === undefined,
+           differs ? later.log.slice(later.log.indexOf(differs), later.log.indexOf(differs) + 4)
+                       .join(' / ') : same || '');
     // A page that ships the Humvee's model (assemble.py --vehicle-model) draws the cars with it.
     // (No cars without a 3-D world: a page of a city it cannot fetch shows the windows alone.)
     const shipped = fs.existsSync(path.join(SITE, SCRUB, 'share/cvc-scenes/shared/Humvee.glb'));

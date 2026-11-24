@@ -86,8 +86,12 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's lean run log, `grl
   `world.*` keys. The page builds the same world again from the report, with nothing to fetch,
   provided its libcvc is the deploy's. pages.yml pins the deploy's libcvc family (libcvc, cvcgl,
   pycvc, pycvc-gl) to `LIBCVC_REF`'s version, the tag ariglx-web is built from;
-  `--expect-libcvc` refuses runs whose report names another libcvc; and the page says when the
-  world it built differs from the deploy's, which fails the smoke. The policies were trained on
+  `--expect-libcvc` refuses runs whose report names another libcvc; and the page compares the
+  world it built with the deploy's record, field by field and the navigator's grid cell by cell.
+  Another world fails the smoke. The page's wasm libcvc 4.0.0 rasterizes the generated city in
+  365 of 251,001 cells (0.15%) otherwise than the native deploy: under 1% the page calls it the
+  same world, says how many cells and how near the runs shown come to them, and the smoke passes
+  (printing the count). The policies were trained on
   Austin, but Austin's bundle is 228 MB, cvcpkg.org sends no CORS for github.io, and nothing cuts
   it down yet, so a `data` world's page shows the windows alone. On `flat` ground every
   checkpoint drives the same line.
