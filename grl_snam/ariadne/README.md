@@ -425,6 +425,14 @@ north of each floor names its arm.
   play head at a set speed, and the heat map. Its times come from the episodes. The CoPH window's
   Back, Next and Restart buttons drive it, and Playing or a drag of the position slider hands the
   run back to the presenter.
+  - The run never stops for a caption. During camera moves and holds it plays on slowly, and at
+    the episode's end the camera drifts.
+  - **Agents pass through each other.** CoPH-Stagewise models no contact between agents: each
+    senses only the walls, the doors and the risk. In crossing the two pass through each other
+    on the south corridor (at 63.5 s with CoPH, at 104.8 s with communication off). The tour
+    shows the first pass close up and says why. The status line says so whenever two driving
+    agents overlap.
+  - The video is on GRL-SNAM's Pages site, on the CoPH poster (`pages/site/coph/`).
   - A tour replays episodes: `--from DIR` (for `walkthrough`, `DIR/crossing` and `DIR/hazard`).
     It computes missing ones there first, headless, which takes about 20 minutes for crossing.
   - In a window, a finished tour leaves the window open for questions. Close it, and

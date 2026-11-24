@@ -10,7 +10,8 @@
 // another origin), so a pass also says the pages fetch only from their own origin. Then:
 //
 //   - the landing page: every link and image on the site itself must be there (--no-landing skips
-//     it, for a site whose landing page is not GRL-SNAM's);
+//     it, for a site whose landing page is not GRL-SNAM's), and so must the CoPH poster's
+//     (coph/: its links, images and walkthrough video) when the site has one;
 //   - the learn page (--learn, the path under --base; learn/ by default): grl-snam ariadne learn
 //     must start in the page (main.py says so on stderr), its frames must run, and the learn-report
 //     it makes in the page (?arg=--report, read back from the page's file system) must hold
@@ -50,7 +51,7 @@ const TYPES = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
                '.wasm': 'application/wasm', '.json': 'application/json', '.ari': 'text/plain',
                '.py': 'text/plain', '.zip': 'application/zip', '.png': 'image/png',
                '.jpg': 'image/jpeg', '.jsonl': 'text/plain', '.md': 'text/markdown',
-               '.npz': 'application/octet-stream'};
+               '.npz': 'application/octet-stream', '.mp4': 'video/mp4'};
 
 function fileFor(urlPath) {
   const p = decodeURIComponent(urlPath);
@@ -92,6 +93,20 @@ if (LANDING) {
   }
   record(`the landing page's ${new Set(refs).size} links and images on the site resolve`,
          refs.length > 0 && missing.length === 0, missing.join(', '));
+  // The CoPH poster (pages/site/coph/): its own links, images and video.
+  const coph = path.join(SITE, 'coph', 'index.html');
+  if (fs.existsSync(coph)) {
+    const page = fs.readFileSync(coph, 'utf8');
+    const own = [...page.matchAll(/(?:href|src|poster)="([^"#]+)"/g)].map(m => m[1])
+                  .filter(r => !/^[a-z]+:/i.test(r));
+    const gone = [];
+    for (const r of new Set(own)) {
+      const resp = await fetch(new URL(r, ORIGIN + BASE + 'coph/'));
+      if (!resp.ok) gone.push(`${r} (HTTP ${resp.status})`);
+    }
+    record(`the CoPH poster's ${new Set(own).size} links, images and video resolve`,
+           own.includes('walkthrough.mp4') && gone.length === 0, gone.join(', '));
+  }
 }
 
 // ── Chrome, headless, its DevTools endpoint on a port it picks ─────────────────────────────────
