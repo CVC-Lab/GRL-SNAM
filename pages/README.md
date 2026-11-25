@@ -102,7 +102,7 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's lean run log, `grl
   pycvc, pycvc-gl) to `LIBCVC_REF`'s version, the tag ariglx-web is built from;
   `--expect-libcvc` refuses runs whose report names another libcvc; and the page compares the
   world it built with the deploy's record, field by field and the navigator's grid cell by cell.
-  Another world fails the smoke. The page's wasm libcvc 4.0.0 rasterizes the generated city in
+  Another world fails the smoke. On 4.0.0 the page's wasm libcvc rasterized the generated city in
   365 of 251,001 cells (0.15%) otherwise than the native deploy: under 1% the page calls it the
   same world, says how many cells and how near the runs shown come to them, and the smoke passes
   (printing the count). On `flat` ground every checkpoint drives the same line.
@@ -114,8 +114,8 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's lean run log, `grl
   `--scrub-city URI`. The page fetches the version the runs were deployed on from cvcpkg.org,
   which lets any origin read a public package (cy-pca/cvcpkg#628), so `scrub/` stays on the
   generated city, fetching nothing from another origin, and the city loads only for those who
-  open its page. In the page, the wasm libcvc 4.0.0 rasterizes Austin's grid cell for cell as the
-  native deploy does. An Austin run deploys in about 2.2 minutes (a generated one in about 30 s),
+  open its page. In the page, the wasm libcvc (4.0.0 measured) rasterizes Austin's grid cell for cell as
+  the native deploy does. An Austin run deploys in about 2.2 minutes (a generated one in about 30 s),
   so the Austin page's 30 runs add about 66 minutes to a build whose runs are not cached.
 - **The page.** `scrub/data/<plant>/<set>/<run>.scrub.zip` (`data/<set>/<run>.scrub.zip` when the page
   has one plant) is a run's bundle: one zip (stored) with its
@@ -157,14 +157,14 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's lean run log, `grl
 About 20 minutes for the first build; Chrome or Chromium and Node 22 for the smoke:
 
 ```bash
-git clone --depth 1 --branch v4.0.0 https://github.com/transfix/libcvc /tmp/libcvc
+git clone --depth 1 --branch v4.0.7 https://github.com/transfix/libcvc /tmp/libcvc
 bash pages/build-ariglx-web.sh /tmp/libcvc /tmp/agw-work /tmp/agw
 python3 pages/assemble.py --host /tmp/agw/share/ariglx-web --out _site
 node pages/smoke.mjs --site _site --chrome "$(command -v google-chrome)" --shots shots
 
-# with the scrub page: a Python whose libcvc is ariglx-web's (the closure above, V=4.0.0)
+# with the scrub page: a Python whose libcvc is ariglx-web's (the closure above, V=4.0.7)
 python3 pages/assemble.py --host /tmp/agw/share/ariglx-web --out _site --scrub \
-  --python "$PREFIX/bin/python3.12" --expect-libcvc 4.0.0 --scrub-cache /tmp/scrub-runs
+  --python "$PREFIX/bin/python3.12" --expect-libcvc 4.0.7 --scrub-cache /tmp/scrub-runs
 node pages/smoke.mjs --site _site --scrub scrub/ --chrome "$(command -v google-chrome)"
 ```
 
@@ -188,7 +188,7 @@ To look at it, serve the site's parent at `/GRL-SNAM/` (for example a directory 
   bundles (three data sets on two plants, lean and packed). Each page carries its own host, so a visit to both downloads `ariglx.wasm` twice.
   Gzipped histories ship as they are (the retrain's five: 1.1 MB, 5.4 MB unzipped); learn's
   reader unzips them in the page, whether or not the server marks them `Content-Encoding: gzip`.
-- **Charts.** libcvc 4.0.0 has Ariadne's `chart:` widget (3.7.14+), so learn and scrub draw their
+- **Charts.** libcvc 4.0.7 has Ariadne's `chart:` widget (3.7.14+), so learn and scrub draw their
   curves as charts (on 3.7.13 they showed the same numbers as text).
 - **One libcvc.** ariglx-web is built from `LIBCVC_REF`, and the scrub page's runs are deployed
   with the catalog's libcvc of the same version: pages.yml pins libcvc, cvcgl, pycvc and pycvc-gl
