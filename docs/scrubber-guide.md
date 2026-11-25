@@ -4,7 +4,7 @@
 is the same thing in a browser. This guide says what each window shows, and what to look for to
 tell a policy that is learning something useful from one that is not.
 
-![The scrub page as it opens: fixed/retrain, seed 0, at step 2800, the checkpoint farthest from step 0](img/scrubber/opening.jpg)
+![The scrub page as it opens: world-units/retrain, seed 0, at step 2700, the checkpoint farthest from step 0](img/scrubber/opening.jpg)
 
 ## What you are looking at
 
@@ -19,8 +19,8 @@ ticks. So any difference between two checkpoints comes from the policy, not from
   legend ("in the scene") says the same, with each arm's name in its colour.
 - **The plant.** The cars drive libcvc's Jolt Humvee by default (`--plant humvee`). The Humvee
   collides with the buildings: a car that drives into one stops against it. The old default,
-  nav's kinematic bicycle (`--plant kinematic`), has no collision response, so its cars drove
-  through buildings.
+  nav's kinematic bicycle (`--plant kinematic`), has no collision response, so its cars can drive
+  into buildings.
 
 ## The windows
 
@@ -39,7 +39,7 @@ ticks. So any difference between two checkpoints comes from the policy, not from
     is the dashed line, and the cursor marks checkpoint k. Click a point to pick it.
   - *Table* opens **Checkpoints**: every metric, one row per checkpoint, `>` at checkpoint k.
 
-  | the cars parted (49 s in) | Checkpoints | `retrain`: the two drive as one |
+  | the cars parted (49 s in) | Checkpoints | `retrain` on kinematic: the two drive as one |
   |---|---|---|
   | ![parted](img/scrubber/parted.jpg) | ![table](img/scrubber/table.jpg) | ![retrain](img/scrubber/retrain.jpg) |
 
@@ -105,17 +105,19 @@ numbers below are the generated city's.
 - Training curves fall in the later retrains.
 - Deployed outcomes are not yet ordered by training step, and no set shows criteria 1–6 together.
 - No checkpoint reaches the goal on either plant.
-- On kinematic, every checkpoint spends 355 to 636 of its 1200 ticks where the navigator says a
-  car can't be. Most of those ticks are on dry ground that libcvc 4.0.0's generated world wrongly
-  marks as deep water (transfix/libcvc#1374), and the rest are in buildings.
-- On the Humvee, two of the sets come to a single outcome whatever the step: the car meets a
-  building and stays against it. A policy that had learned to route around buildings would not
-  do that.
-- On the Humvee, every `retrain` checkpoint drives within 0.45 m of step 0, and every
-  `world-units/retrain` one within 1.4 m: the two cars overlap all the way, so scrubbing through
-  those sets shows nothing, and the Scrub window says so. `fixed/retrain`'s checkpoints part from
-  step 0 (half of them by 9.3 m or more, one a seed by 54 to 98 m), which is why the page opens
-  on that set, at the checkpoint farthest from step 0. Its history's pick is step 0 on every seed.
+- On kinematic, every checkpoint of every set drives the same line into the same small building,
+  17 s in, spends 59 or 60 of its 1200 ticks inside it, backs out and stays beside it to the end.
+  Every checkpoint drives within 1.2 m of step 0, so the two cars overlap all the way, scrubbing
+  through a kinematic set shows nothing, and the Scrub window says so. None of those ticks is on
+  water: libcvc 4.0.7 no longer marks the generated city's dry ground as deep water
+  (transfix/libcvc#1374).
+- On the Humvee no tick penetrates, but every checkpoint touches a building, and 17 of the 615
+  roll over. A policy that had learned to route around buildings would not do that.
+- On the Humvee the checkpoints part from step 0: half of them get at least 39 m from step 0's
+  car in `retrain`, 43 m in `fixed/retrain` and 95 m in `world-units/retrain`. They part with no
+  direction to it: in every set some end nearer the goal than step 0 and some farther, whatever
+  the training step. The page opens on `world-units/retrain`, whose checkpoints part most, at the
+  checkpoint farthest from step 0. `fixed/retrain`'s history picks step 0 on every seed.
 
 So treat the page as the instrument to watch the next retrain with, not as evidence that the
 current policy learned. The numbers, per set and plant, are in the scrub section of

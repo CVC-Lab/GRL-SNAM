@@ -79,8 +79,8 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's lean run log, `grl
   (`--scrub-set-name`).
 - **The plants.** `--scrub-plants` (default `humvee kinematic`) deploys every set on each, and the
   page's Plant combo switches between them at the same run and step. `humvee` (the Jolt Humvee)
-  collides with the buildings, and the page opens on it. `kinematic` (nav's bicycle) drives through
-  them, and it is there to compare.
+  collides with the buildings, and the page opens on it. `kinematic` (nav's bicycle) has no
+  collision response, so its cars can drive into them; it is there to compare.
 - **The runs.** Each is deployed with `--python` (default: the Python running assemble), as
   `scrub HISTORY --headless --lean --data-set SET --plant PLANT --report`, its saved policies found in
   `--checkpoints`/<set>/<run>/ (else `--checkpoints`/<run>/; <run> is the history's name without
@@ -102,10 +102,10 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's lean run log, `grl
   pycvc, pycvc-gl) to `LIBCVC_REF`'s version, the tag ariglx-web is built from;
   `--expect-libcvc` refuses runs whose report names another libcvc; and the page compares the
   world it built with the deploy's record, field by field and the navigator's grid cell by cell.
-  Another world fails the smoke. On 4.0.0 the page's wasm libcvc rasterized the generated city in
-  365 of 251,001 cells (0.15%) otherwise than the native deploy: under 1% the page calls it the
-  same world, says how many cells and how near the runs shown come to them, and the smoke passes
-  (printing the count). On `flat` ground every checkpoint drives the same line.
+  Another world fails the smoke. On 4.0.7, as on 4.0.0, the page's wasm libcvc rasterizes the
+  generated city in 365 of 251,001 cells (0.15%) otherwise than the native deploy: under 1% the
+  page calls it the same world, says how many cells and how near the runs shown come to them, and
+  the smoke passes (printing the count). On `flat` ground every checkpoint drives the same line.
 - **Austin, a second page.** `--scrub-austin` deploys the same runs on the data world, Austin
   (where the policies were trained), and writes `scrub-austin/` beside `scrub/`, with its own card
   on the landing page; `--scrub-only --scrub-world data` writes that page alone. Its city is
@@ -114,7 +114,7 @@ them (the reports, `grl_snam.scrub/v1`, and each checkpoint's lean run log, `grl
   `--scrub-city URI`. The page fetches the version the runs were deployed on from cvcpkg.org,
   which lets any origin read a public package (cy-pca/cvcpkg#628), so `scrub/` stays on the
   generated city, fetching nothing from another origin, and the city loads only for those who
-  open its page. In the page, the wasm libcvc (4.0.0 measured) rasterizes Austin's grid cell for cell as
+  open its page. In the page, the wasm libcvc (4.0.7 measured) rasterizes Austin's grid cell for cell as
   the native deploy does. An Austin run deploys in about 2.2 minutes (a generated one in about 30 s),
   so the Austin page's 30 runs add about 66 minutes to a build whose runs are not cached.
 - **The page.** `scrub/data/<plant>/<set>/<run>.scrub.zip` (`data/<set>/<run>.scrub.zip` when the page
