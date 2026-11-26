@@ -690,10 +690,11 @@ directory's, and blobs that are not there are listed and skipped.
   sha256, and the navigator's grid (a fingerprint, and its blocked cells, `world_grid`, about 8 KB
   a report). A field an older report lacks is not compared. Another world is "not quite the one
   deployed on", with what differs. A grid differing in at most 1% of its cells is the same world
-  rasterized by another build of libcvc: the page's wasm libcvc 4.0.0 differs from the native
-  deploy in 365 of the generated city's 251,001 cells (0.15%), and the Scrub window says so, and
-  how near the two runs shown come to those cells (retrain/seed0: 78 m at the nearest, so what
-  they drove past is the same). stderr says which fields were compared. With `--no-world`, a city that is not
+  rasterized by another build of libcvc: the page's wasm libcvc 4.0.7, like 4.0.0's, differs
+  from the native deploy in 365 of the generated city's 251,001 cells (0.15%), and the Scrub
+  window says so, and how near the two runs shown come to those cells (world-units/retrain/seed0
+  at step 2700, where the page opens: 12 m at the nearest, so what they drove past is the same).
+  stderr says which fields were compared. With `--no-world`, a city that is not
   on the machine in a browser, or a pycvc_gl without `pycvc_gl.cars`, it shows the windows
   alone. The Pages site's scrub page is this mode (`pages/README.md`).
 - **`--windows ID,...`** opens only those windows (`scrub`, `checkpoints`, `training`,
@@ -715,42 +716,50 @@ there are two outcomes:
 Nothing orders the outcomes by training step. That is the null of `docs/learning-validation.md`,
 seen checkpoint by checkpoint.
 
-The Pages page's runs, deployed again on both plants (2026-11-19): the three retrains, five seeds
-each, 41 checkpoints a seed, 205 a set, on libcvc's generated city for 1200 ticks (60 s), libcvc
-4.0.0. No checkpoint reaches the goal on either plant.
+The Pages page's runs, deployed again on both plants with libcvc 4.0.7 and GRL-SNAM 8903d993
+(2026-11-25), read back from the page's bundles: the three retrains, five seeds each, 41
+checkpoints a seed, 205 a set, on libcvc's generated city for 1200 ticks (70 s), from (−462, 356)
+to (388, 12), 917 m apart. No checkpoint reaches the goal on either plant. The start and goal are
+two free points far apart on the navigator's grid (`live.start_and_goal`). 4.0.7's grid is not
+4.0.0's (#1374, below), so they moved from 4.0.0's (−428, 350) and (36, −236), and these numbers
+do not compare with 4.0.0's.
 
 | set | plant | ticks penetrating | least clearance | path | left to the goal | apart from step 0 |
 |---|---|---|---|---|---|---|
-| `retrain` | kinematic | 375–636, every checkpoint | −28.9 m | 480–631 m | 272–353 m | 15.3 m; 39–120 m |
-| `retrain` | humvee | 0 | 1.33 m | 414–415 m | 579–580 m | 0.1 m; 0.26–0.45 m |
-| `fixed/retrain` | kinematic | 372–634, every checkpoint | −28.9 m | 479–636 m | 231–350 m | 39.1 m; 114–119 m |
-| `fixed/retrain` | humvee | 0 at 199, 71–186 at 6 | −25.7 to 49.0 m | 303–472 m | 503–667 m | 9.3 m; 54–98 m |
-| `world-units/retrain` | kinematic | 355–459, every checkpoint | −29.8 m | 471–485 m | 329–339 m | 8.1 m; 8.6–11.1 m |
-| `world-units/retrain` | humvee | 0 | 0.70–0.82 m | 212–218 m | 588 m | 1.0 m; 1.2–1.4 m |
+| `retrain` | kinematic | 60, every checkpoint | −4.47 to −4.45 m | 249–250 m | 753–755 m | 0.0 m; 0.0–1.2 m |
+| `retrain` | humvee | 0 | −2.13 to 0.71 m | 236–547 m | 744–872 m | 39.4 m; 71–178 m |
+| `fixed/retrain` | kinematic | 60, every checkpoint | −4.46 to −4.45 m | 250 m | 754–755 m | 1.2 m; 1.2 m |
+| `fixed/retrain` | humvee | 0 | −1.90 to 0.70 m | 174–542 m | 647–867 m | 42.9 m; 84–187 m |
+| `world-units/retrain` | kinematic | 59–60, every checkpoint | −4.36 to −4.26 m | 189–193 m | 745–746 m | 0.3 m; 0.4–0.5 m |
+| `world-units/retrain` | humvee | 0 | 0.22–0.71 m | 170–447 m | 595–865 m | 94.8 m; 130–232 m |
 
 "Apart from step 0" is `apart_m`, the farthest a checkpoint's car gets from step 0's at the same
-tick: the median over the set's checkpoints, then the range of each seed's farthest (measured
-2026-11-23, the same runs deployed again with libcvc 4.0.0).
+tick: the median over the set's checkpoints, then the range of each seed's farthest.
 
-- "Ticks penetrating" counts the ticks a car's centre is on a cell the navigator marks blocked:
-  a building, or deep water. On this world most of them are not buildings. libcvc 4.0.0's
-  generated world marks dry ground between its −4 m water level and −0.5 m as deep water
-  (transfix/libcvc#1374 fixes it).
-- On kinematic, every checkpoint spends 355 to 636 ticks on blocked cells, so its progress toward
-  the goal was never real. 79–93% of those ticks are on that mislabelled water; the rest are in
-  buildings.
-- On the Humvee, `retrain` and `world-units/retrain` each come to one outcome whatever the seed or
-  the step: the car meets a building and stays against it. Every `retrain` checkpoint drives
-  within 0.45 m of step 0, under a fifth of the Humvee's width, so its two cars overlap all the
-  way and scrubbing through it shows nothing; `world-units/retrain`'s stay within 1.4 m.
-- `fixed/retrain`'s history picks step 0 on every seed (its held-out best is the untrained net),
-  so the page opens on the set's checkpoint that drives farthest from step 0 instead of its pick.
-- `fixed/retrain`'s Humvees range further (303–472 m). Six of its checkpoints (seeds 0, 1, 3 and
-  4) count 71 to 186 ticks penetrating with no building contact. They are not in a building: they
-  drive into a dry basin near (−290, 175), 0.6–3.5 m above the water level, that the navigator
-  reads as deep water and the physics has nothing to collide with.
-- The page's runs are deployed on libcvc 4.0.0, so these counts stay until a libcvc with #1374 is
-  released and the runs are deployed again.
+- "Ticks penetrating" counts the ticks a car's centre is on a cell the navigator marks blocked.
+  The generated city's grid blocks 9,050 of its 251,001 cells: 6,159 under buildings, 872 deep
+  water, 19 boulders and the grid's 2,000 edge cells. libcvc 4.0.0 also marked the dry ground
+  between the −4 m water level and −0.5 m as deep water; 4.0.7 has the fix
+  (transfix/libcvc#1374). Every penetrating tick in the table is in a building, none on water.
+- On kinematic, every checkpoint of every set drives the same line. At tick 290 (17 s) it noses
+  about 2 m into a small building at (−299, 289), backs out by tick 350, and stays within 15 m of
+  it to the end: its 59–60 ticks penetrating are that building. Every checkpoint drives within
+  1.2 m of step 0, under the car's width (2.2 m), so the two cars overlap all the way and
+  scrubbing through a kinematic set shows nothing.
+- On the Humvee no tick penetrates, and every checkpoint touches a building (1 to 256 building
+  contacts). 17 of the 615 roll over, 15 of them in the last 15 s.
+- The Humvee's checkpoints part from step 0: half of a set's get at least 39 m (`retrain`), 43 m
+  (`fixed/retrain`) or 95 m (`world-units/retrain`) from step 0's car. Training does not say
+  which way: of each set's 200 checkpoints after step 0, 103, 104 and 129 end more than 1 m nearer
+  the goal than step 0, and 91, 88 and 70 more than 1 m farther. Spearman's ρ between step and
+  distance left is within ±0.14 on 14 of the 15 seeds (`fixed/retrain` seed 3: −0.39).
+- `fixed/retrain`'s history picks step 0 on every seed (its held-out best is the untrained net).
+  The page opens on `world-units/retrain`, whose checkpoints part most on the Humvee, at the
+  checkpoint farthest from step 0 (seed 0, step 2700, 168.6 m), not its pick (step 700).
+- In Austin (`scrub-austin/`, the same runs on the data world, libcvc 4.0.7) no checkpoint reaches
+  the goal either. Kinematic counts 45 to 126 ticks penetrating, the Humvee none. The Humvee's
+  checkpoints part from step 0 by a median of 3.0 to 4.5 m, and that page opens on
+  `fixed/retrain`.
 
 To see it yourself, with the retrain's checkpoints from cvcpkg.org:
 
@@ -766,10 +775,9 @@ python -m grl_snam.ariadne scrub docs/learning-validation/fixed/retrain/seed0.hi
 retrains (`retrain`, `fixed/retrain`, `world-units/retrain`; the Set combo picks one), five seeds
 each, deployed when the site is built on libcvc's generated world on two plants, the Humvee and
 kinematic (the Plant combo picks one; `pages/README.md`). It needs no download beyond the page.
-On kinematic, through the buildings, none of the 615 checkpoints reaches the goal (each ends 231 to
-353 m short), and in no set are the outcomes ordered by training step. On the Humvee none does
-either: world-units/retrain seed 0's 41 checkpoints all stop against a building about 150 m in,
-588 m from the goal, with no tick penetrating.
+On kinematic none of the 615 checkpoints reaches the goal: each stops at the same building, 745
+to 755 m short. On the Humvee none does either (595 to 872 m short, with no tick penetrating), and
+the training step does not order where its cars end.
 
 ### `cars`: N Ackermann cars driven by your own controller
 
